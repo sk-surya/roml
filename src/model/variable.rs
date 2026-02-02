@@ -185,3 +185,62 @@ impl VariableStore {
         self.iter().filter(|(_, data)| data.active)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_validation() {
+        assert!(Bounds::new(0.0, 10.0).is_valid());
+        assert!(Bounds::new(5.0, 5.0).is_valid());
+        assert!(!Bounds::new(10.0, 0.0).is_valid());
+        assert!( ! Bounds::new(10.0, 0.0).is_valid() );
+        assert!(Bounds::fixed(3.0, None).is_fixed(None));
+        assert!(Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.00001)));
+        assert!( ! Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.000001)) );
+        assert!(Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.0001)) );
+    }
+
+    #[test]
+    fn add_and_get() {
+        let mut store = VariableStore::new();
+        let id = store.add(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        let data = store.get(id).unwrap();
+        assert_eq!(data.bounds, Bounds::NON_NEGATIVE);
+        assert_eq!(data.var_type, VarType::Continuous);
+        assert!(data.active);
+    }
+
+    #[test]
+    fn remove_invalidates() {
+        let mut store = VariableStore::new();
+        let id = store.add(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        assert!(store.arena.len() == 1);
+        assert!(store.arena.capacity_used() == 1);
+        let removed = store.remove(id);
+        assert!(removed.is_some());
+        assert!(store.arena.len() == 0);
+        assert!(store.arena.capacity_used() == 1);
+        assert!(store.get(id).is_none());
+        assert!(!store.contains(id));
+    }
+
+    #[test]
+    fn active_filtering() {
+        let mut store = VariableStore::new();
+        let id1 = store.add(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let id2 = store.add(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        let active: Vec<_> = store.iter_active().map(|(id, _)| id).collect();
+        assert_eq!(active.len(), 2);
+        // Deactivate first variable
+        store.get_mut(id1).unwrap().active = false;
+
+        let active: Vec<_> = store.iter_active().map(|(id, _)| id).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0], id2);
+    }
+}
