@@ -86,3 +86,42 @@ define_id!(
     /// Variables can be continuous, integer, or binary, with bounds and an active flag.
     VarId
 );
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generation_increments() {
+        let g = Generation::new();
+        assert_eq!(g.value(), 0);
+        let g2 = g.next();
+        assert_eq!(g2.value(), 1);
+    }
+
+    #[test]
+    fn id_equality() {
+        let id1 = VarId::new(0, Generation::new());
+        let id2 = VarId::new(0, Generation::new());
+        let id3 = VarId::new(1, Generation::new());
+        let id4 = VarId::new(0, Generation::new().next());
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3); // Different index
+        assert_ne!(id1, id4); // Different generation
+    }
+
+    #[test]
+    fn id_hashing() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        let id1 = VarId::new(0, Generation::new());
+        let id2 = VarId::new(0, Generation::new());
+        set.insert(id1);
+        assert!(set.contains(&id2));
+
+        let id3 = VarId::new(1, Generation::new());
+        assert!(!set.contains(&id3));
+    }
+}
