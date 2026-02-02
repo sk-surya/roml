@@ -1,3 +1,16 @@
+//! Typed identifiers for model entities.
+//!
+//! All entities in the model have stable, opaque IDs that are never reused.
+//! Each ID consists of:
+//! - A `u32` index for O(1) slot-based lookup
+//! - A `Generation` counter for detecting stale IDs
+//!
+//! # Invariants
+//!
+//! - IDs are never reused, even after deletion
+//! - Generation is bumped when a slot is freed (for stale detection)
+//! - Indices are internal details; users should treat IDs as opaque
+
 mod arena;
 
 pub use arena::IdArena;
