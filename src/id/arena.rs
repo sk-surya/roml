@@ -23,7 +23,7 @@ impl<T> Default for Slot<T> {
     }
 }
 
-/// Arena allocator for managing entities with stable typed IDs.
+/// Arena allocator for typed IDs.
 ///
 /// # Design
 ///
@@ -31,7 +31,12 @@ impl<T> Default for Slot<T> {
 /// - Never reuses indices (deleted slots stay with bumped generation)
 /// - O(1) allocation and lookup
 /// - Generation tracking for stale ID detection
-
+///
+/// # Trade-offs
+///
+/// - Memory: Deleted slots are not reclaimed (intentional for ID stability)
+/// - For most MILP models, this is acceptable as deletions are rare
+/// - If memory becomes an issue, consider periodic compaction (TODO - maybe never)
 #[derive(Clone, Debug)]
 pub struct IdArena<T> {
     slots: Vec<Slot<T>>,
