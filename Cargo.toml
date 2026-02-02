@@ -1,0 +1,10 @@
+[package]
+name = "roml"
+version = "0.1.0"
+edition = "2021"
+description = "A production-grade, incremental MILP modeling library"
+
+[dependencies]
+log = "0.4"
+
+[dev-dependencies]
