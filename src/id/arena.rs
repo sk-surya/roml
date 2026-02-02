@@ -1,18 +1,15 @@
+//! Arena allocator for ID generation.
+//!
+//! Provides monotonic ID allocation with generation tracking for staleness detection.
+//! IDs are never reused - when an entity is deleted, its slot's generation is bumped.
 
+use super::Generation;
 
-pub struct Generation(u32);
-
-impl Generation {
-    
-    pub const fn new() -> Self {
-        Self(0)
-    }
-
-    pub fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
-
-    pub fn value(self) -> u32 {
-        self.0
-    }
+/// Slot state in the arena.
+#[derive(Clone, Debug)]
+pub struct Slot<T> {
+    /// The data stored in this slot, if occupied.
+    pub data: Option<T>,
+    /// Current generation of this slot.
+    pub generation: Generation,
 }
