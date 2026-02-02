@@ -67,7 +67,7 @@ impl Bounds {
             Some(tol) => tol,
             None => f64::EPSILON,
         };
-        (self.upper - self.lower).abs() <= 2.0 * tolerance
+        (self.upper - self.lower).abs() <= 2.0 * tolerance + f64::EPSILON
     }
 
     /// Check if bounds are valid (lower <= upper).
@@ -93,6 +93,18 @@ pub struct VariableData {
     pub active: bool,
     /// Optional name for debugging/printing.
     pub name: Option<String>,
+}
+
+impl VariableData {
+    /// Create a new variable with default settings.
+    pub fn new(bounds: Bounds, var_type: VarType) -> Self {
+        Self {
+            bounds,
+            var_type,
+            active: true,
+            name: None,
+        }
+    }
 }
 
 /// Storage for all variables in the model.
