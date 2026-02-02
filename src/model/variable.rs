@@ -1,5 +1,7 @@
 
 
+use crate::id::{IdArena, VarId};
+
 /// Internal data for a variable.
 #[derive(Clone, Debug)]
 pub struct VariableData {
@@ -13,7 +15,8 @@ pub struct VariableData {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+/// Storage for all variables in the model.
+#[derive(Clone, Debug, Default)]
 pub struct VariableStore {
-    variables: HashMap<VarId, Variable>,
+    arena: IdArena<VariableData>,
 }

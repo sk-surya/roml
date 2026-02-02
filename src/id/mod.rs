@@ -1,5 +1,6 @@
 mod arena;
 
+pub use arena::IdArena;
 
 /// Generation counter for detecting stale IDs.
 /// 
@@ -24,3 +25,51 @@ impl Generation {
         self.0
     }
 }
+
+/// Macro for defining typed ID structs consistently.
+///
+/// Each ID type has:
+/// - `index`: u32 for slot lookup
+/// - `generation`: Generation for staleness detection
+macro_rules! define_id {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        pub struct $name {
+            index: u32,
+            generation: Generation,
+        }
+
+        impl $name {
+            /// Create a new ID. Internal use only.
+            #[doc(hidden)]
+            pub const fn new(index: u32, generation: Generation) -> Self {
+                Self { index, generation }
+            }
+
+            /// Get the internal index for storage lookup.
+            ///
+            /// # Warning
+            ///
+            /// This is NOT stable across serialization or sessions.
+            /// Only use for internal slot-based storage access.
+            #[inline]
+            pub const fn index(self) -> u32 {
+                self.index
+            }
+
+            /// Get the generation for staleness checking.
+            #[inline]
+            pub const fn generation(self) -> Generation {
+                self.generation
+            }
+        }
+    };
+}
+
+define_id!(
+    /// Identifier for a decision variable.
+    ///
+    /// Variables can be continuous, integer, or binary, with bounds and an active flag.
+    VarId
+);
