@@ -47,6 +47,25 @@ impl std::fmt::Display for ModelError {
 
 impl std::error::Error for ModelError {}
 
+/// The core MILP model - solver-agnostic representation.
+///
+/// # Architecture
+///
+/// The model maintains:
+/// - Variables with bounds, type, and activity
+/// - Constraints with bounds and activity
+/// - Objectives with sense and activity (only one active)
+/// - Parameters as coefficient value sources
+/// - Coefficients linking variables to constraints/objectives
+/// - A changelog for incremental solver updates
+/// - A transaction for batched parameter changes
+///
+/// # Invariants
+///
+/// - IDs are never reused (stable identity)
+/// - Only one objective can be active at a time
+/// - Parameter changes propagate to all dependent coefficients
+/// - All mutations are logged for solver consumption
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     /// Variable storage.
