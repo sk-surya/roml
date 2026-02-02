@@ -139,4 +139,27 @@ impl<T> IdArena<T> {
     pub fn capacity_used(&self) -> usize {
         self.slots.len()
     }
+
+    /// Iterate over all occupied slots with their indices.
+    ///
+    /// Yields (index, generation, &data) for each occupied slot.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, Generation, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| {
+                slot.data.as_ref().map(|data| (idx as u32, slot.generation, data))
+            })
+    }
+
+    /// Iterate mutably over all occupied slots with their indices.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u32, Generation, &mut T)> {
+        self.slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(idx, slot)| {
+                let generation = slot.generation;
+                slot.data.as_mut().map(|data| (idx as u32, generation, data))
+            })
+    }
 }
