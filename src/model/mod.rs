@@ -15,6 +15,8 @@ pub mod coefficient;
 pub mod changelog;
 pub mod transaction;
 
+use crate::{id::{CoeffId, ConId, ObjId, ParamId, VarId}, model::{changelog::ChangeLog, coefficient::CoefficientIndex, constraint::ConstraintStore, objective::ObjectiveStore, parameter::ParameterStore, transaction::Transaction, variable::VariableStore}};
+
 /// Error type for model operations.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelError {

@@ -1,5 +1,7 @@
 
 
+use std::collections::HashMap;
+use crate::id::ConId;
 
 #[derive(Debug, Clone)]
 pub struct Constraint {

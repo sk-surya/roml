@@ -87,6 +87,34 @@ define_id!(
     VarId
 );
 
+define_id!(
+    /// Identifier for a constraint.
+    ///
+    /// Constraints are linear with lower/upper bounds and an active flag.
+    ConId
+);
+
+define_id!(
+    /// Identifier for a parameter.
+    ///
+    /// Parameters are coefficient value sources that propagate to dependent coefficients.
+    ParamId
+);
+
+define_id!(
+    /// Identifier for an objective.
+    ///
+    /// Objectives have a sense (minimize/maximize) and an active flag.
+    /// Only one objective can be active at a time.
+    ObjId
+);
+
+define_id!(
+    /// Identifier for a coefficient.
+    ///
+    /// Coefficients link a variable to a constraint or objective with a value expression.
+    CoeffId
+);
 
 #[cfg(test)]
 mod tests {
