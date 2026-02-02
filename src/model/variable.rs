@@ -100,3 +100,76 @@ pub struct VariableData {
 pub struct VariableStore {
     arena: IdArena<VariableData>,
 }
+
+impl VariableStore {
+    /// Create an empty variable store.
+    pub fn new() -> Self {
+        Self {
+            arena: IdArena::new(),
+        }
+    }
+
+    /// Create a store with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            arena: IdArena::with_capacity(capacity),
+        }
+    }
+
+    /// Add a new variable and return its ID.
+    pub fn add(&mut self, bounds: Bounds, var_type: VarType) -> VarId {
+        let data = VariableData::new(bounds, var_type);
+        let (index, generation) = self.arena.allocate(data);
+        VarId::new(index, generation)
+    }
+
+    /// Add a new variable with a name.
+    pub fn add_named(&mut self, bounds: Bounds, var_type: VarType, name: String) -> VarId {
+        let mut data = VariableData::new(bounds, var_type);
+        data.name = Some(name);
+        let (index, generation) = self.arena.allocate(data);
+        VarId::new(index, generation)
+    }
+
+    /// Remove a variable. Returns the data if it existed.
+    pub fn remove(&mut self, id: VarId) -> Option<VariableData> {
+        self.arena.remove(id.index(), id.generation())
+    }
+
+    /// Get variable data by ID.
+    pub fn get(&self, id: VarId) -> Option<&VariableData> {
+        self.arena.get(id.index(), id.generation())
+    }
+
+    /// Get mutable variable data by ID.
+    pub fn get_mut(&mut self, id: VarId) -> Option<&mut VariableData> {
+        self.arena.get_mut(id.index(), id.generation())
+    }
+
+    /// Check if a variable ID is valid.
+    pub fn contains(&self, id: VarId) -> bool {
+        self.arena.contains(id.index(), id.generation())
+    }
+
+    /// Get the number of variables.
+    pub fn len(&self) -> usize {
+        self.arena.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.arena.is_empty()
+    }
+
+    /// Iterate over all variables.
+    pub fn iter(&self) -> impl Iterator<Item = (VarId, &VariableData)> {
+        self.arena
+            .iter()
+            .map(|(idx, gen, data)| (VarId::new(idx, gen), data))
+    }
+
+    /// Iterate over active variables only.
+    pub fn iter_active(&self) -> impl Iterator<Item = (VarId, &VariableData)> {
+        self.iter().filter(|(_, data)| data.active)
+    }
+}
