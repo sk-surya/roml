@@ -13,3 +13,12 @@ pub struct Slot<T> {
     /// Current generation of this slot.
     pub generation: Generation,
 }
+
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self {
+            data: None,
+            generation: Generation::new(),
+        }
+    }
+}
