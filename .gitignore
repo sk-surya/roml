@@ -10,3 +10,4 @@ wheels/
 .venv
 
 .agents/
+CLAUDE.md
