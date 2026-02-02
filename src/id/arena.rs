@@ -36,7 +36,7 @@ impl<T> Default for Slot<T> {
 ///
 /// - Memory: Deleted slots are not reclaimed (intentional for ID stability)
 /// - For most MILP models, this is acceptable as deletions are rare
-/// - If memory becomes an issue, consider periodic compaction (TODO - maybe never)
+/// - If memory becomes an issue, consider periodic compaction (not implemented, TODO - maybe never)
 #[derive(Clone, Debug)]
 pub struct IdArena<T> {
     slots: Vec<Slot<T>>,
@@ -161,5 +161,64 @@ impl<T> IdArena<T> {
                 let generation = slot.generation;
                 slot.data.as_mut().map(|data| (idx as u32, generation, data))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocate_and_get() {
+        let mut arena: IdArena<i32> = IdArena::new();
+        let (idx, generation) = arena.allocate(42);
+        assert_eq!(arena.get(idx, generation), Some(&42));
+        assert_eq!(arena.len(), 1);
+    }
+
+    #[test]
+    fn remove_and_staleness() {
+        let mut arena: IdArena<i32> = IdArena::new();
+        let (idx, generation) = arena.allocate(42);
+
+        // Remove returns the data
+        let removed = arena.remove(idx, generation);
+        assert_eq!(removed, Some(42));
+        assert_eq!(arena.len(), 0);
+
+        // ID is now stale
+        assert!(arena.get(idx, generation).is_none());
+
+        // Second remove with same ID fails
+        assert!(arena.remove(idx, generation).is_none());
+    }
+
+    #[test]
+    fn ids_never_reused() {
+        let mut arena: IdArena<i32> = IdArena::new();
+        let (idx1, gen1) = arena.allocate(1);
+        let (idx2, _gen2) = arena.allocate(2);
+
+        // Remove first
+        arena.remove(idx1, gen1);
+
+        // Allocate again - should get new index, not reuse idx1
+        let (idx3, _gen3) = arena.allocate(3);
+        assert_eq!(idx3, idx2 + 1);
+        assert_ne!(idx3, idx1);
+    }
+
+    #[test]
+    fn iteration() {
+        let mut arena: IdArena<i32> = IdArena::new();
+        arena.allocate(1);
+        let (idx, generation) = arena.allocate(2);
+        arena.allocate(3);
+
+        // Remove middle element
+        arena.remove(idx, generation);
+        // Iteration should skip removed
+        let values: Vec<_> = arena.iter().map(|(_, _, &v)| v).collect();
+        assert_eq!(values, vec![1, 3]);
     }
 }
