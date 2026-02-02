@@ -1,4 +1,4 @@
-
+//! Variable storage and operations.
 
 use crate::id::{IdArena, VarId};
 
