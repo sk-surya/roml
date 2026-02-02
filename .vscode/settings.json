@@ -1,0 +1,7 @@
+{
+    "lldb.showDisassembly": "never",
+    "lldb.launch.initCommands": [
+        // "settings set target.process.thread.step-avoid-libraries true",
+        // "settings set target.process.thread.step-avoid-regexp \"/rustc/|/lib/rustlib/|std::|core::|alloc::\""
+    ]
+}
