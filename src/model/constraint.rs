@@ -139,7 +139,7 @@ impl ConstraintStore {
     }
 
     /// Get constraint data by ID.
-    pub fn get(&mut self, id: ConId) -> Option<&ConstraintData> {
+    pub fn get(&self, id: ConId) -> Option<&ConstraintData> {
         self.arena.get(id.index(), id.generation())
     }
 
@@ -158,17 +158,70 @@ impl ConstraintStore {
         self.arena.len()
     }
 
-    /// Get iterator over all constraints.
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.arena.is_empty()
+    }
+
+    /// Iterate over all constraints.
     pub fn iter(&self) -> impl Iterator<Item = (ConId, &ConstraintData)> {
         self.arena
             .iter()
             .map(|(idx, generation, data)| (ConId::new(idx, generation), data))
     }
 
-    /// Get iterator over active constraints only.
+    /// Iterate over active constraints only.
     pub fn iter_active(&self) -> impl Iterator<Item = (ConId, &ConstraintData)> {
         self.iter().filter(|(_, data)| data.active)
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn constraint_types() {
+        let eq = ConstraintBounds::eq(5.0);
+        assert!(eq.is_equality());
+        assert_eq!(eq.lower, 5.0);
+        assert_eq!(eq.upper, 5.0);
+
+        let le = ConstraintBounds::le(10.0);
+        assert!(!le.is_equality());
+        assert!(!le.has_lower());
+        assert!(le.has_upper());
+        assert_eq!(le.lower, f64::NEG_INFINITY);
+        assert_eq!(le.upper, 10.0);
+
+        let range = ConstraintBounds::range(1.0, 10.0);
+        assert!(range.has_lower());
+        assert!(range.has_upper());
+        assert!(!range.is_equality());
+        assert_eq!(range.lower, 1.0);
+        assert_eq!(range.upper, 10.0);
+    }
+
+    #[test]
+    fn add_and_get() {
+        let mut store = ConstraintStore::new();
+        let id = store.add(ConstraintBounds::le(100.0));
+
+        let data = store.get(id);
+        assert!(data.is_some());
+        let data = data.unwrap();
+        assert_eq!(data.bounds, ConstraintBounds::le(100.0));
+        assert!(data.active);
+        assert_eq!(store.len(), 1);
+
+        // add one more constraint
+        store.add(ConstraintBounds::ge(5.0));
+        for (i, (_, con_data)) in store.iter().enumerate() {
+            if i == 0 {
+                assert_eq!(con_data.bounds, ConstraintBounds::le(100.0));
+            } else {
+                assert_eq!(con_data.bounds, ConstraintBounds::ge(5.0));
+            }
+        }
+    }
 }
