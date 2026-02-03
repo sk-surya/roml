@@ -119,3 +119,26 @@ impl ParameterStore {
             .map(|(idx, gen, data)| (ParamId::new(idx, gen), data))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_and_get() {
+        let mut store = ParameterStore::new();
+        let id = store.add(42.0);
+
+        assert_eq!(store.get_value(id), Some(42.0));
+    }
+
+    #[test]
+    fn set_value() {
+        let mut store = ParameterStore::new();
+        let id = store.add(1.0);
+
+        let old = store.set_value(id, 2.0);
+        assert_eq!(old, Some(1.0));
+        assert_eq!(store.get_value(id), Some(2.0));
+    }
+}
