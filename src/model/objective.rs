@@ -151,3 +151,48 @@ impl ObjectiveStore {
             .map(|(idx, gen, data)| (ObjId::new(idx, gen), data))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_active_objective() {
+        let mut store = ObjectiveStore::new();
+        let obj1 = store.add(Sense::Minimize);
+        let obj2 = store.add(Sense::Maximize);
+
+        // No active objective intially
+        assert!(store.active().is_none());
+
+        // Activate obj1
+        store.set_active(obj1);
+        assert_eq!(store.active(), Some(obj1));
+        assert!(store.get(obj1).unwrap().active);
+        assert!(!store.get(obj2).unwrap().active);
+
+        // Activate obj2, should deactivate obj1
+        store.set_active(obj2);
+        assert_eq!(store.active(), Some(obj2));
+        assert!(!store.get(obj1).unwrap().active);
+        assert!(store.get(obj2).unwrap().active);
+    }
+
+    #[test]
+    fn remove_active_objective() {
+        let mut store = ObjectiveStore::new();
+        let obj1 = store.add(Sense::Minimize);
+        let obj2 = store.add(Sense::Maximize);
+
+        store.set_active(obj1);
+        assert_eq!(store.active(), Some(obj1));
+
+        // Remove active objective
+        store.remove(obj1);
+        assert!(store.active().is_none());
+        assert!(!store.contains(obj1));
+        assert!(store.contains(obj2));
+        assert!(store.get(obj1).is_none());
+        assert!(!store.get(obj2).unwrap().active);
+    }
+}
