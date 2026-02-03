@@ -58,8 +58,14 @@ impl ParameterStore {
     }
 
     /// Remove a parameter. Returns the data if it existed.
-    pub fn remove(&mut self, id: ParamId) -> Option<ParameterData> {
-        self.arena.remove(id.index(), id.generation())
+    /// 
+    /// Just keeping signature like other entity stores (I may want to codegen?). 
+    /// Parameters are rarely removed and I don't expect this to be used - What happens to dependencies?
+    // pub fn remove(&mut self, id: ParamId) -> Option<ParameterData> {
+        // self.arena.remove(id.index(), id.generation())
+    // }
+    pub fn remove(&mut self, id: ParamId) {
+        unimplemented!()
     }
 
     /// Get parameter data by ID.
