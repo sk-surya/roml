@@ -75,6 +75,7 @@ impl Default for ConstraintBounds {
 
 /// Internal data for a constraint.
 /// (which will be stored in ConstraintStore, handled by Arena, just like any other Entity Data).
+/// Intentionally non-copiable for move semantics.
 #[derive(Clone, Debug)]
 pub struct ConstraintData {
     /// Constraint bounds.
@@ -97,7 +98,77 @@ impl ConstraintData {
 }
 
 /// Storage for all constraints in the model.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ConstraintStore {
     arena: IdArena<ConstraintData>,                                    
+}
+
+impl ConstraintStore {
+    /// Create an empty constraint store.
+    pub fn new() -> Self {
+        Self {
+            arena: IdArena::new(),
+        }
+    }
+
+    /// Create a store with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            arena: IdArena::with_capacity(capacity),
+        }
+    }
+
+    /// Add a new constraint and return its ID.
+    pub fn add(&mut self, bounds: ConstraintBounds) -> ConId {
+        let data = ConstraintData::new(bounds);
+        let (index, generation) = self.arena.allocate(data);
+        ConId::new(index, generation)
+    }
+
+    /// Add a new constraint with a name.
+    pub fn add_named(&mut self, bounds: ConstraintBounds, name: String) -> ConId {
+        let mut data = ConstraintData::new(bounds);
+        data.name = Some(name);
+        let (index, generation) = self.arena.allocate(data);
+        ConId::new(index, generation)
+    }
+
+    /// Remove a constraint. Returns the data if it existed.
+    pub fn remove(&mut self, id: ConId) -> Option<ConstraintData> {
+        self.arena.remove(id.index(), id.generation())
+    }
+
+    /// Get constraint data by ID.
+    pub fn get(&mut self, id: ConId) -> Option<&ConstraintData> {
+        self.arena.get(id.index(), id.generation())
+    }
+
+    /// Get mutable constraint data by ID.
+    pub fn get_mut(&mut self, id: ConId) -> Option<&mut ConstraintData> {
+        self.arena.get_mut(id.index(), id.generation())
+    }
+
+    /// Check if a constraint ID is valid.
+    pub fn contains(&self, id: ConId) -> bool {
+        self.arena.contains(id.index(), id.generation())
+    }
+
+    /// Get the number of constraints
+    pub fn len(&self) -> usize {
+        self.arena.len()
+    }
+
+    /// Get iterator over all constraints.
+    pub fn iter(&self) -> impl Iterator<Item = (ConId, &ConstraintData)> {
+        self.arena
+            .iter()
+            .map(|(idx, generation, data)| (ConId::new(idx, generation), data))
+    }
+
+    /// Get iterator over active constraints only.
+    pub fn iter_active(&self) -> impl Iterator<Item = (ConId, &ConstraintData)> {
+        self.iter().filter(|(_, data)| data.active)
+    }
+
+
 }
