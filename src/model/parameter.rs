@@ -148,4 +148,15 @@ mod tests {
         assert_eq!(old, Some(1.0));
         assert_eq!(store.get_value(id), Some(2.0));
     }
+
+    #[test]
+    fn lookup_function() {
+        let mut store = ParameterStore::new();
+        let p1 = store.add(10.0);
+        let p2 = store.add(20.0);
+
+        let lookup = store.as_lookup();
+        assert_eq!(lookup(p1), 10.0);
+        assert_eq!(lookup(p2), 20.0);
+    }
 }
