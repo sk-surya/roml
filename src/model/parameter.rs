@@ -118,6 +118,13 @@ impl ParameterStore {
             .iter()
             .map(|(idx, gen, data)| (ParamId::new(idx, gen), data))
     }
+
+    /// Lookup function for ValueExpr evaluation.
+    /// 
+    /// Returns a closure that can be passed to `ValueExpr::eval()`.
+    pub fn as_lookup(&self) -> impl Fn(ParamId) -> f64 + '_ {
+        move |id| self.get_value(id).unwrap_or(0.0)
+    }
 }
 
 #[cfg(test)]
