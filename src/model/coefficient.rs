@@ -201,6 +201,18 @@ impl CoefficientIndex {
         self.by_constraint.get(&con).into_iter().flatten().copied()
     }
 
+    /// Check if a constraint has any coefficients.
+    pub fn constraint_has_coefficients(&self, con: ConId) -> bool {
+        self.by_constraint.get(&con).is_some_and(|s| !s.is_empty())
+    }
+
+    // ========== By-Objective Queries ==========
+
+    /// Get all coefficients for an objective.
+    pub fn for_objective(&self, obj: ObjId) -> impl Iterator<Item = CoeffId> + '_ {
+        self.by_objective.get(&obj).into_iter().flatten().copied()
+    }
+
     /// Check if an objective has any coefficients.
     pub fn objective_has_coefficients(&self, obj: ObjId) -> bool {
         self.by_objective.get(&obj).is_some_and(|s| !s.is_empty())
