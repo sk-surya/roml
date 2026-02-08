@@ -134,12 +134,123 @@ impl CoefficientIndex {
             }
         }
 
-    // Clean up by_constraint or by_objective index
+        // Clean up by_constraint or by_objective index
+        match data.target {
+            CoefficientTarget::Constraint(con) => {
+                if let Some(set) = self.by_constraint.get_mut(&con) {
+                    set.remove(&id);
+                    if set.is_empty() {
+                        self.by_constraint.remove(&con);
+                    }
+                }
+            }
+            CoefficientTarget::Objective(obj) => self.by_objective.get_mut(&obj) {
+                if let Some(set) = self.by_objective.get_mut(&obj) {
+                    set.remove(&id);
+                }
+                if set.is_empty() {
+                    self.by_objective.remove(&obj);
+                }
+            }
+        }
 
-
-    // Clean up by_param index
-
+        // Clean up by_param index
+        for param in data.value_expr.dependencies() {
+            if let Some(set) = self.by_param.get_mut(&param) {
+                set.remove(&id);
+                if set.is_empty() {
+                    self.by_param.get_mut(&param);
+                }
+            }
+        }
 
     Some(data)
     }
+
+    /// Get coefficient data by ID.
+    pub fn get(&self, id: CoeffId) -> Option<&CoefficientData> {
+        self.arena.get(id.index(), id.generation())
+    }
+
+    /// Get mutable coefficient data by ID.
+    pub fn get_mut(&mut self, id: CoeffId) -> Option<&mut CoefficientData> {
+        self.arena.get_mut(id.index(), id.generation())
+    }
+
+    /// Check if a coefficient ID is valid.
+    pub fn contains(&self, var: VarId) -> bool {
+        self.arena.contains(var.index(), var.generation())
+    }
+
+    // ========== By-Variable Queries ==========
+
+    /// Get all coefficients for a variable.
+    pub fn for_var(&self, var: VarId) -> impl Iterator<Item = CoeffId> + '_ {
+        self.by_var.get(&var).into_iter().flatten().copied()
+    }
+
+    /// Check if a variable has any coefficients.
+    pub fn var_has_coefficients(&self, var: VarId) -> bool {
+        self.by_var.get(&var).is_some_and(|s| !s.is_empty())
+    }
+
+    // ========== By-Constraint Queries ==========
+
+    /// Get all coefficients for a constraint.
+    pub fn for_constraint(&self, con: ConId) -> impl Iterator<Item = CoeffId> + '_ {
+        self.by_constraint.get(&con).into_iter().flatten().copied()
+    }
+
+    /// Check if an objective has any coefficients.
+    pub fn objective_has_coefficients(&self, obj: ObjId) -> bool {
+        self.by_objective.get(&obj).is_some_and(|s| !s.is_empty())
+    }
+
+    // ========== By-Parameter Queries (Dependency Graph) ==========
+
+    /// Get all coefficients that depend on a parameter.
+    /// 
+    /// This is the dependency graph used for parameter propagation.
+    pub fn for_param(&self, param: ParamId) -> impl Iterator<Item = CoeffId> + '_ {
+        self.by_param.get(&param).into_iter().flatten().copied()
+    }
+
+    /// Check if a parameter has any dependent coefficients.
+    pub fn param_has_dependents(&self, param: ParamId) -> bool {
+        self.by_param.get(&param).is_some_and(|s| !s.is_empty())
+    }
+
+    /// Get the count of coefficients depending on a parameter.
+    pub fn param_dependent_count(&self, param: ParamId) -> usize {
+        self.by_param.get(&param).map_or(0, |s| s.len())
+    }
+
+    // ========== General Queries ==========
+
+    /// Get the total number of coefficients.
+    pub fn len(&self) -> usize {
+        self.arena.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.arena.is_empty()
+    }
+
+    /// Iterate over all coefficients.
+    pub fn iter(&self) -> impl Iterator<Item = (CoeffId, &CoefficientData)> {
+        self.arena
+            .iter()
+            .map(|(idx, gen, data)| (CoeffId::new(idx, gen), data))
+    }
+
+    /// Iterate mutably over all coefficients.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (CoeffId, &mut CoefficientData)> {
+        self.arena
+            .iter_mut()
+            .map(|(idx, gen, data)| (CoeffId::new(idx, gen), data))
+    }
+
+
+
 }
