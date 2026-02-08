@@ -144,12 +144,12 @@ impl CoefficientIndex {
                     }
                 }
             }
-            CoefficientTarget::Objective(obj) => self.by_objective.get_mut(&obj) {
+            CoefficientTarget::Objective(obj) => {
                 if let Some(set) = self.by_objective.get_mut(&obj) {
                     set.remove(&id);
-                }
-                if set.is_empty() {
-                    self.by_objective.remove(&obj);
+                    if set.is_empty() {
+                        self.by_objective.remove(&obj);
+                    }
                 }
             }
         }
@@ -159,7 +159,7 @@ impl CoefficientIndex {
             if let Some(set) = self.by_param.get_mut(&param) {
                 set.remove(&id);
                 if set.is_empty() {
-                    self.by_param.get_mut(&param);
+                    self.by_param.remove(&param);
                 }
             }
         }
@@ -178,8 +178,8 @@ impl CoefficientIndex {
     }
 
     /// Check if a coefficient ID is valid.
-    pub fn contains(&self, var: VarId) -> bool {
-        self.arena.contains(var.index(), var.generation())
+    pub fn contains(&self, id: CoeffId) -> bool {
+        self.arena.contains(id.index(), id.generation())
     }
 
     // ========== By-Variable Queries ==========
