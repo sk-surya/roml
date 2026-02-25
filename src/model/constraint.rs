@@ -194,6 +194,13 @@ mod tests {
         assert_eq!(le.lower, f64::NEG_INFINITY);
         assert_eq!(le.upper, 10.0);
 
+        let ge = ConstraintBounds::ge(0.3);
+        assert!(!ge.is_equality());
+        assert!(ge.has_lower());
+        assert!(!ge.has_upper());
+        assert_eq!(ge.lower, 0.3);
+        assert_eq!(ge.upper, f64::INFINITY);
+
         let range = ConstraintBounds::range(1.0, 10.0);
         assert!(range.has_lower());
         assert!(range.has_upper());
