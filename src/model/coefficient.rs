@@ -262,7 +262,162 @@ impl CoefficientIndex {
             .iter_mut()
             .map(|(idx, gen, data)| (CoeffId::new(idx, gen), data))
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::Generation;
 
+    fn make_var(index: u32) -> VarId {
+        VarId::new(index, Generation::new())
+    }
 
+    fn make_con(index: u32) -> ConId {
+        ConId::new(index, Generation::new())
+    }
+
+    fn make_obj(index: u32) -> ObjId {
+        ObjId::new(index, Generation::new())
+    }
+
+    fn make_param(index: u32) -> ParamId {
+        ParamId::new(index, Generation::new())
+    }
+
+    #[test]
+    fn add_and_lookup() {
+        let mut index = CoefficientIndex::new();
+        let var = make_var(0);
+        let con = make_con(0);
+
+        let id = index.add(
+            var,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::constant(2.0),
+            2.0,
+        );
+
+        assert!(index.contains(id));
+        let data = index.get(id).unwrap();
+        assert_eq!(data.var, var);
+        assert_eq!(data.cached_value, 2.0);
+    }
+
+    #[test]
+    fn by_var_index() {
+        let mut index = CoefficientIndex::new();
+        let var1 = make_var(0);
+        let var2 = make_var(1);
+        let con = make_con(0);
+
+        let id1 = index.add(var1, CoefficientTarget::Constraint(con), ValueExpr::constant(1.0), 1.0);
+        let id2 = index.add(var1, CoefficientTarget::Constraint(con), ValueExpr::constant(2.0), 2.0);
+        let _id3 = index.add(var2, CoefficientTarget::Constraint(con), ValueExpr::constant(3.0), 3.0);
+
+        let var1_coeffs: HashSet<_> = index.for_var(var1).collect();
+        assert_eq!(var1_coeffs.len(), 2);
+        assert!(var1_coeffs.contains(&id1));
+        assert!(var1_coeffs.contains(&id2));
+    }
+
+    #[test]
+    fn by_constraint_index() {
+        let mut index = CoefficientIndex::new();
+        let var = make_var(0);
+        let con1 = make_con(0);
+        let con2 = make_con(1);
+
+        let id1 = index.add(var, CoefficientTarget::Constraint(con1), ValueExpr::constant(1.0), 1.0);
+        let _id2 = index.add(var, CoefficientTarget::Constraint(con2), ValueExpr::constant(2.0), 2.0);
+
+        let con1_coeffs: Vec<_> = index.for_constraint(con1).collect();
+        assert_eq!(con1_coeffs, vec![id1]);
+    }
+
+    #[test]
+    fn by_param_index() {
+        let mut index = CoefficientIndex::new();
+        let var = make_var(0);
+        let con = make_con(0);
+        let p1 = make_param(0);
+        let p2 = make_param(1);
+
+        // Coefficient depending on p1
+        let id1 = index.add(
+            var,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::param(p1),
+            1.0,
+        );
+
+        // Coefficient depending on both p1 and p2
+        let id2 = index.add(
+            var,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::mul(ValueExpr::param(p1), ValueExpr::param(p2)),
+            2.0,
+        );
+
+        // Constant coefficient (no dependencies)
+        let _id3 = index.add(
+            var,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::constant(3.0),
+            3.0,
+        );
+
+        // p1 should have both id1 and id2
+        let p1_coeffs: HashSet<_> = index.for_param(p1).collect();
+        assert_eq!(p1_coeffs.len(), 2);
+        assert!(p1_coeffs.contains(&id1));
+        assert!(p1_coeffs.contains(&id2));
+
+        // p2 should only have id2
+        let p2_coeffs: Vec<_> = index.for_param(p2).collect();
+        assert_eq!(p2_coeffs, vec![id2]);
+    }
+
+    #[test]
+    fn remove_cleans_indexes() {
+        let mut index = CoefficientIndex::new();
+        let var = make_var(0);
+        let con = make_con(0);
+        let param = make_param(0);
+
+        let id = index.add(
+            var,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::param(param),
+            1.0,
+        );
+
+        assert!(index.var_has_coefficients(var));
+        assert!(index.constraint_has_coefficients(con));
+        assert!(index.param_has_dependents(param));
+
+        index.remove(id);
+
+        assert!(!index.var_has_coefficients(var));
+        assert!(!index.constraint_has_coefficients(con));
+        assert!(!index.param_has_dependents(param));
+    }
+
+    #[test]
+    fn objective_coefficients() {
+        let mut index = CoefficientIndex::new();
+        let var = make_var(0);
+        let obj = make_obj(0);
+
+        let id = index.add(
+            var,
+            CoefficientTarget::Objective(obj),
+            ValueExpr::constant(5.0),
+            5.0,
+        );
+
+        assert!(index.objective_has_coefficients(obj));
+        let obj_coeffs: Vec<_> = index.for_objective(obj).collect();
+        assert_eq!(obj_coeffs, vec![id]);
+    }
 }
