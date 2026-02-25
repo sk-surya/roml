@@ -16,6 +16,42 @@ pub enum TermCoeff {
     Expr(ValueExpr),
 }
 
+impl TermCoeff {
+    /// Convert to a ValueExpr for storage.
+    pub fn into_value_expr(self) -> ValueExpr {
+        match self {
+            Self::Constant(v) => ValueExpr::constant(v),
+            Self::Expr(e) => e,
+        }
+    }
+
+    /// Get the value if this is a constant.
+    pub fn as_constant(&self) -> Option<f64> {
+        match self {
+            Self::Constant(v) => Some(*v),
+            Self::Expr(e) => e.as_constant(),
+        }
+    }
+    
+}
+
+impl From<f64> for TermCoeff {
+    fn from(value: f64) -> Self {
+        Self::Constant(value)
+    }
+}
+
+impl From<ValueExpr> for TermCoeff {
+    fn from(expr: ValueExpr) -> Self {
+        Self::Expr(expr)
+    }
+}
+
+impl From<ParamId> for TermCoeff {
+    fn from(param: ParamId) -> Self {
+        Self::Expr(ValueExpr::param(param))
+    }
+}
 
 /// A term in a linear expression: coefficient * variable.
 #[derive(Clone, Debug)]
