@@ -62,12 +62,90 @@ pub struct Term {
     pub var: VarId,
 }
 
+impl Term {
+    /// Create a new term with the given coefficient and variable.
+    pub fn new(coeff: impl Into<TermCoeff>, var: VarId) -> Self {
+        Self {
+            coeff: coeff.into(),
+            var,
+        }
+    }
+}
+
 /// A linear expression: sum of terms + constant.
 /// 
+/// Represents: Σ(coeff_i * var_i) + constant
+/// 
+/// # Design
+/// 
 /// LinExpr is a temporary builder. It collects terms and can be compiled
+/// into model coefficients. After compilation, the expression is typically
+/// discarded (not stored in the model), but the user can store them outside 
+/// if they want to.
+/// 
+/// Terms with the same variable are automatically combined when compiled.
+#[derive(Clone, Debug, Default)]
 pub struct LinExpr {
     /// Terms in the expression.
     pub terms: Vec<Term>,
     /// Constant offset.
     pub constant: f64,
+}
+
+impl LinExpr {
+    /// Create an empty expression.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create an expression with just a constant.
+    pub fn from_constant(value: f64) -> Self {
+        Self {
+            terms: Vec::new(),
+            constant: value,
+        }
+    }
+
+    /// Add a term with a constant coefficient.
+    pub fn term(mut self, coeff: impl Into<TermCoeff>, var: VarId) -> Self {
+        self.terms.push(Term::new(coeff, var));
+        self
+    }
+
+    /// Add a constant offset.
+    pub fn constant(mut self, value: f64) -> Self {
+        self.constant += value;
+        self
+    }
+
+    /// Add a term directly.
+    pub fn add_term(mut self, term: Term) -> Self {
+        self.terms.push(term);
+        self
+    }
+
+    /// Get the constant offset.
+    pub fn get_constant(&self) -> f64 {
+        self.constant
+    }
+
+    /// Get the terms.
+    pub fn terms(&self) -> &[Term] {
+        &self.terms
+    }
+
+    /// Check if this expression is empty (no terms and zero constant).
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty() && self.constant == 0.0
+    }
+
+    /// Check if this is just a constant (no variable terms).
+    pub fn is_constant(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    /// Get the number of terms.
+    pub fn num_terms(&self) -> usize {
+        self.terms.len()
+    }
 }
