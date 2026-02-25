@@ -27,7 +27,9 @@ pub struct Term {
 }
 
 /// A linear expression: sum of terms + constant.
-pub struct LinearExpr {
+/// 
+/// LinExpr is a temporary builder. It collects terms and can be compiled
+pub struct LinExpr {
     /// Terms in the expression.
     pub terms: Vec<Term>,
     /// Constant offset.
