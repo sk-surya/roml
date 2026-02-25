@@ -15,7 +15,10 @@ pub mod coefficient;
 pub mod changelog;
 pub mod transaction;
 
-use crate::{id::{CoeffId, ConId, ObjId, ParamId, VarId}, model::{changelog::ChangeLog, coefficient::CoefficientIndex, constraint::ConstraintStore, objective::ObjectiveStore, parameter::ParameterStore, transaction::Transaction, variable::VariableStore}};
+use crate::{id::{CoeffId, ConId, ObjId, ParamId, VarId}, model::{changelog::ChangeLog, coefficient::CoefficientIndex, constraint::ConstraintStore, objective::ObjectiveStore, parameter::ParameterStore, transaction::Transaction, variable::VariableStore}, value_expr::ValueExpr};
+pub use constraint::ConstraintBounds;
+pub use objective::Sense;
+
 
 /// Error type for model operations.
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +108,18 @@ impl Model {
         var: VarId,
         value_expr: ValueExpr,
     ) -> Result<CoeffId, ModelError> {
+        unimplemented!();
+    }
+
+    pub fn add_constraint(&mut self, bounds: ConstraintBounds) -> ConId {
+        unimplemented!();
+    }
+
+    pub fn add_objective(&mut self, sense: Sense) -> ObjId {
+        unimplemented!();
+    }
+
+    pub fn set_constraint_bounds(&mut self, con: ConId, bounds: ConstraintBounds) -> Result<(), ModelError> {
         unimplemented!();
     }
 }

@@ -302,3 +302,80 @@ impl std::ops::Neg for LinExpr {
         self * -1.0
     }
 }
+
+// ========== Model Integration ==========
+
+impl Model {
+    /// Add a constraint from a linear expression.
+    ///
+    /// The expression's constant term is automatically incorporated into the bounds.
+    pub fn add_constraint_expr(
+        &mut self,
+        expr: LinExpr,
+        bounds: crate::model::ConstraintBounds,
+    ) -> Result<ConId, ModelError> {
+        let con = self.add_constraint(bounds);
+        let constant = expr.compile_for_constraint(self, con)?;
+
+        // Adjust bounds for constant term: expr <= b becomes (expr - c) <= (b - c)
+        if constant.abs() >= f64::EPSILON {
+            let adjusted_bounds = crate::model::ConstraintBounds {
+                lower: bounds.lower - constant,
+                upper: bounds.upper - constant,
+            };
+            self.set_constraint_bounds(con, adjusted_bounds)?;
+        }
+
+        Ok(con)
+    }
+
+    /// Add an objective from a linear expression.
+    ///
+    /// Returns the objective ID and the constant offset (which should be added
+    /// to the objective value when reporting).
+    pub fn add_objective_expr(
+        &mut self,
+        expr: LinExpr,
+        sense: crate::model::Sense,
+    ) -> Result<(ObjId, f64), ModelError> {
+        let obj = self.add_objective(sense);
+        let constant = expr.compile_for_objective(self, obj)?;
+        Ok((obj, constant))
+    }
+
+    /// Reconstruct a linear expression from a constraint's coefficients.
+    ///
+    /// Uses cached coefficient values (not the ValueExpr).
+    pub fn constraint_expression(&self, con: ConId) -> Result<LinExpr, ModelError> {
+        if !self.constraints.contains(con) {
+            return Err(ModelError::ConstraintNotFound(con));
+        }
+
+        let mut expr = LinExpr::new();
+        for coeff_id in self.coefficients.for_constraint(con) {
+            if let Some(data) = self.coefficients.get(coeff_id) {
+                expr = expr.term(data.cached_value, data.var);
+            }
+        }
+
+        Ok(expr)
+    }
+
+    /// Reconstruct a linear expression from an objective's coefficients.
+    ///
+    /// Uses cached coefficient values (not the ValueExpr).
+    pub fn objective_expression(&self, obj: ObjId) -> Result<LinExpr, ModelError> {
+        if !self.objectives.contains(obj) {
+            return Err(ModelError::ObjectiveNotFound(obj));
+        }
+
+        let mut expr = LinExpr::new();
+        for coeff_id in self.coefficients.for_objective(obj) {
+            if let Some(data) = self.coefficients.get(coeff_id) {
+                expr = expr.term(data.cached_value, data.var);
+            }
+        }
+
+        Ok(expr)
+    }
+}
