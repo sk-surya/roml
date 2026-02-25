@@ -243,3 +243,62 @@ impl LinExpr {
         result
     }
 }
+
+// ========== Operator Overloads ==========
+
+impl std::ops::Add for LinExpr {
+    type Output = Self;
+
+    fn add(mut self, other: Self) -> Self {
+        self.terms.extend(other.terms);
+        self.constant += other.constant;
+        self
+    }
+}
+
+impl std::ops::Add<f64> for LinExpr {
+    type Output = Self;
+
+    fn add(self, value: f64) -> Self {
+        self.constant(value)
+    }
+}
+
+impl std::ops::Sub for LinExpr {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        self + (other * -1.0)
+    }
+}
+
+impl std::ops::Sub<f64> for LinExpr {
+    type Output = Self;
+
+    fn sub(self, value: f64) -> Self {
+        self.constant(-value)
+    }
+}
+
+impl std::ops::Mul<f64> for LinExpr {
+    type Output = Self;
+
+    fn mul(mut self, scalar: f64) -> Self {
+        for term in &mut self.terms {
+            term.coeff = match std::mem::replace(&mut term.coeff, TermCoeff::Constant(0.0)) {
+                TermCoeff::Constant(v) => TermCoeff::Constant(v * scalar),
+                TermCoeff::Expr(e) => TermCoeff::Expr(e * scalar),
+            };
+        }
+        self.constant *= scalar;
+        self
+    }
+}
+
+impl std::ops::Neg for LinExpr {
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        self * -1.0
+    }
+}
