@@ -87,3 +87,24 @@ pub struct Model {
     /// Optional model name.
     pub name: Option<String>,
 }
+
+
+impl Model {
+    pub fn add_constraint_coefficient(
+        &mut self,
+        con: ConId,
+        var: VarId,
+        value_expr: ValueExpr,
+    ) -> Result<CoeffId, ModelError> {
+        unimplemented!();
+    }
+
+    pub fn add_objective_coefficient(
+        &mut self,
+        obj: ObjId,
+        var: VarId,
+        value_expr: ValueExpr,
+    ) -> Result<CoeffId, ModelError> {
+        unimplemented!();
+    }
+}
