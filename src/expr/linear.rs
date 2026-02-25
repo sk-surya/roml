@@ -148,4 +148,38 @@ impl LinExpr {
     pub fn num_terms(&self) -> usize {
         self.terms.len()
     }
+
+    /// Combine terms with the same variable.
+    ///
+    /// This consolidates the expression so each variable appears at most once.
+    /// Only simplifies the constant coefficients; parameter-based terms are kept as-is.
+    pub fn simplify(self) -> Self {
+        let mut constant_terms: HashMap<VarId, f64> = HashMap::new();
+        let mut expr_terms: Vec<Term> = Vec::new();
+
+        for term in self.terms {
+            match term.coeff {
+                TermCoeff::Constant(v) => {
+                    *constant_terms.entry(term.var).or_insert(0.0) += v;
+                }
+                TermCoeff::Expr(_) => {
+                    // Can't combine expression-based terms
+                    expr_terms.push(term);
+                }
+            }
+        }
+
+        let mut terms: Vec<Term> = constant_terms
+            .into_iter()
+            .filter(|(_, v)| v.abs() >= f64::EPSILON) // Filter out zeros
+            .map(|(var, coeff)| Term::new(coeff, var))
+            .collect();
+
+        terms.extend(expr_terms);
+
+        Self {
+            terms,
+            constant: self.constant,
+        }
+    }
 }
