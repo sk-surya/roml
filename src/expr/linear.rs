@@ -182,4 +182,64 @@ impl LinExpr {
             constant: self.constant,
         }
     }
+
+    // ========== Build into the Model ==========
+
+    /// Compile this expression into coefficients for a constraint.
+    ///
+    /// Creates coefficient entries in the model and returns the constant term
+    /// (which should be subtracted from the constraint bounds).
+    pub fn compile_for_constraint(
+        self,
+        model: &mut Model,
+        con: ConId,
+    ) -> Result<f64, ModelError> {
+        let simplified = self.simplify();
+
+        for term in simplified.terms {
+            let value_expr = term.coeff.into_value_expr();
+            model.add_constraint_coefficient(con, term.var, value_expr)?;
+        }
+
+        Ok(simplified.constant)
+    }
+
+    /// Compile this expression into coefficients for an objective.
+    ///
+    /// Creates coefficient entries in the model and returns the constant offset.
+    pub fn compile_for_objective(
+        self,
+        model: &mut Model,
+        obj: ObjId,
+    ) -> Result<f64, ModelError> {
+        let simplified = self.simplify();
+
+        for term in simplified.terms {
+            let value_expr = term.coeff.into_value_expr();
+            model.add_objective_coefficient(obj, term.var, value_expr)?;
+        }
+
+        Ok(simplified.constant)
+    }
+
+    /// Evaluate this expression given variable values.
+    ///
+    /// Used for solution evaluation and feasibility checking.
+    pub fn evaluate<F, G>(&self, get_var: F, get_param: G) -> f64
+    where 
+        F: Fn(VarId) -> f64,
+        G: Fn(ParamId) -> f64,
+    {
+        let mut result = self.constant;
+
+        for term in &self.terms {
+            let coeff_value = match &term.coeff {
+                TermCoeff::Constant(v) => *v,
+                TermCoeff::Expr(e) => e.eval(&get_param),
+            };
+            result += coeff_value * get_var(term.var);
+        }
+
+        result
+    }
 }
