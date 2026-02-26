@@ -79,7 +79,6 @@ pub enum Change {
         value: f64,
     },
 
-
     /// A coefficient was removed.
     CoefficientRemoved {
         coeff: CoeffId,
@@ -87,7 +86,7 @@ pub enum Change {
         target: CoefficientTarget,
     },
 
-    /// A coefficient's value changed (due to parameter propagation or direct modification).
+    /// A coefficient value changed (due to parameter propagation or direct modification).
     CoefficientValueChanged {
         coeff: CoeffId,
         var: VarId,
@@ -113,11 +112,13 @@ pub enum Change {
     /// The active objective was changed.
     ActiveObjectiveChanged { 
         old: Option<ObjId>, 
-        new: Option<ObjId> 
+        new: Option<ObjId>,
     },
 
     // ========== Parameter Changes ==========
     /// A parameter value was changed.
+    ///
+    /// Note: This is followed by CoefficientValueChanged for each affected coefficient.
     ParameterValueChanged {
         param: ParamId,
         old: f64,
@@ -189,9 +190,9 @@ impl ChangeLog {
     }
 
     /// Clear all changes without returning them.
+    /// Sequence is not reset on clear, as it represents total changes since creation.
     pub fn clear(&mut self) {
         self.changes.clear();
-        // Should we reset sequence on clear? Probably not, as it represents total changes since creation.
     }
 }
 
