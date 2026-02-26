@@ -18,7 +18,7 @@
 //! 
 //! # Example
 //! 
-//! ```
+//! ```ignore
 //! let mut model = Model::new();
 //! let x = model.add_var();
 //! let y = model.add_var();

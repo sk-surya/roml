@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::id::{VarId, ConId, ObjId, ParamId};
 use crate::value_expr::ValueExpr;
+use crate::model::{Model, ModelError};
 
 /// Coefficient type in a linear expression term.
 /// 
@@ -246,6 +247,14 @@ impl LinExpr {
 
 // ========== Operator Overloads ==========
 
+// Allow converting a single variable into a one-term expression.
+impl From<VarId> for LinExpr {
+    fn from(var: VarId) -> LinExpr {
+        LinExpr::new().term(1.0, var)
+    }
+}
+
+// Add two full expressions.
 impl std::ops::Add for LinExpr {
     type Output = Self;
 
@@ -264,11 +273,80 @@ impl std::ops::Add<f64> for LinExpr {
     }
 }
 
+// Add a bare variable to an expression (coefficient 1).
+impl std::ops::Add<VarId> for LinExpr {
+    type Output = Self;
+
+    fn add(self, var: VarId) -> Self {
+        self.term(1.0, var)
+    }
+}
+
+// Add an expression to a bare variable.
+impl std::ops::Add<LinExpr> for VarId {
+    type Output = LinExpr;
+
+    fn add(self, other: LinExpr) -> LinExpr {
+        LinExpr::from(self) + other
+    }
+}
+
+// Add two variables directly, yielding an expression with both terms.
+impl std::ops::Add<VarId> for VarId {
+    type Output = LinExpr;
+
+    fn add(self, rhs: VarId) -> LinExpr {
+        LinExpr::from(self) + rhs
+    }
+}
+
+// Combine a constant and a variable, producing an expression.
+impl std::ops::Add<VarId> for f64 {
+    type Output = LinExpr;
+
+    fn add(self, rhs: VarId) -> LinExpr {
+        LinExpr::from_constant(self).term(1.0, rhs)
+    }
+}
+
+impl std::ops::Add<f64> for VarId {
+    type Output = LinExpr;
+
+    fn add(self, rhs: f64) -> LinExpr {
+        LinExpr::from(self).constant(rhs)
+    }
+}
+
 impl std::ops::Sub for LinExpr {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
         self + (other * -1.0)
+    }
+}
+
+// Subtraction variants involving bare variables/constants.
+impl std::ops::Sub<VarId> for LinExpr {
+    type Output = Self;
+
+    fn sub(self, var: VarId) -> Self {
+        self + (LinExpr::from(var) * -1.0)
+    }
+}
+
+impl std::ops::Sub<LinExpr> for VarId {
+    type Output = LinExpr;
+
+    fn sub(self, other: LinExpr) -> LinExpr {
+        LinExpr::from(self) - other
+    }
+}
+
+impl std::ops::Sub<f64> for VarId {
+    type Output = LinExpr;
+
+    fn sub(self, rhs: f64) -> LinExpr {
+        LinExpr::from(self).constant(-rhs)
     }
 }
 
@@ -292,6 +370,87 @@ impl std::ops::Mul<f64> for LinExpr {
         }
         self.constant *= scalar;
         self
+    }
+}
+
+// Multiply a variable by a scalar to get an expression.
+impl std::ops::Mul<f64> for VarId {
+    type Output = LinExpr;
+
+    fn mul(self, rhs: f64) -> LinExpr {
+        LinExpr::from(self).mul(rhs)
+    }
+}
+
+impl std::ops::Mul<VarId> for f64 {
+    type Output = LinExpr;
+
+    fn mul(self, rhs: VarId) -> LinExpr {
+        LinExpr::from(rhs).mul(self)
+    }
+}
+
+// Parameter-coefficient multiplication: p * x or x * p
+impl std::ops::Mul<ParamId> for VarId {
+    type Output = LinExpr;
+
+    fn mul(self, p: ParamId) -> LinExpr {
+        LinExpr::new().term(p, self)
+    }
+}
+
+impl std::ops::Mul<VarId> for ParamId {
+    type Output = LinExpr;
+
+    fn mul(self, rhs: VarId) -> LinExpr {
+        LinExpr::new().term(self, rhs)
+    }
+}
+
+// ========= Division overloads ========
+
+impl std::ops::Div<f64> for LinExpr {
+    type Output = Self;
+
+    fn div(mut self, scalar: f64) -> Self {
+        for term in &mut self.terms {
+            term.coeff = match std::mem::replace(&mut term.coeff, TermCoeff::Constant(0.0)) {
+                TermCoeff::Constant(v) => TermCoeff::Constant(v / scalar),
+                TermCoeff::Expr(e) => TermCoeff::Expr(e / scalar),
+            };
+        }
+        self.constant /= scalar;
+        self
+    }
+}
+
+impl std::ops::Div<f64> for VarId {
+    type Output = LinExpr;
+
+    fn div(self, rhs: f64) -> LinExpr {
+        LinExpr::from(self).div(rhs)
+    }
+}
+
+impl std::ops::Div<ParamId> for LinExpr {
+    type Output = LinExpr;
+
+    fn div(self, p: ParamId) -> LinExpr {
+        // divide each coefficient and constant by parameter
+        let mut result = LinExpr::new().constant(self.constant);
+        for term in self.terms {
+            let coeff_expr = term.coeff.into_value_expr() / ValueExpr::param(p);
+            result = result.add_term(Term::new(coeff_expr, term.var));
+        }
+        result
+    }
+}
+
+impl std::ops::Div<ParamId> for VarId {
+    type Output = LinExpr;
+
+    fn div(self, p: ParamId) -> LinExpr {
+        LinExpr::new().term(ValueExpr::constant(1.0) / ValueExpr::param(p), self)
     }
 }
 
@@ -377,5 +536,217 @@ impl Model {
         }
 
         Ok(expr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::Generation;
+    use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
+
+    fn make_var(index: u32) -> VarId {
+        VarId::new(index, Generation::new())
+    }
+
+    fn make_param(index: u32) -> ParamId {
+        ParamId::new(index, Generation::new())
+    }
+
+    #[test]
+    fn basic_expression() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        // let expr = LinExpr::new()
+        //     .term(2.0, x)
+        //     .term(3.0, y)
+        //     .constant(5.0);
+
+        let expr = LinExpr::from(LinExpr::from_constant(5.0) + x + y);
+
+        assert_eq!(expr.num_terms(), 2);
+        assert_eq!(expr.get_constant(), 5.0);
+    }
+
+    #[test]
+    fn simplify_combines_terms() {
+        let x = make_var(0);
+
+        let expr = LinExpr::new()
+            .term(2.0, x)
+            .term(3.0, x)
+            .constant(1.0);
+
+        let simplified = expr.simplify();
+        assert_eq!(simplified.num_terms(), 1);
+        assert_eq!(simplified.terms()[0].coeff.as_constant(), Some(5.0));
+    }
+
+    #[test]
+    fn evaluate_expression() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        let expr = LinExpr::new()
+            .term(2.0, x)
+            .term(3.0, y)
+            .constant(1.0);
+
+        // 2*10 + 3*5 + 1 = 36
+        let result = expr.evaluate(
+            |id| if id == x { 10.0 } else { 5.0 },
+            |_| 0.0,
+        );
+
+        assert_eq!(result, 36.0);
+    }
+
+    #[test]
+    fn operator_add() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        let e1 = LinExpr::new().term(2.0, x);
+        let e2 = LinExpr::new().term(3.0, y).constant(1.0);
+
+        let combined = e1 + e2;
+        assert_eq!(combined.num_terms(), 2);
+        assert_eq!(combined.get_constant(), 1.0);
+    }
+
+    #[test]
+    fn operator_mul() {
+        let x = make_var(0);
+
+        let expr = LinExpr::new().term(2.0, x).constant(3.0);
+        let scaled = expr * 2.0;
+
+        assert_eq!(scaled.terms()[0].coeff.as_constant(), Some(4.0));
+        assert_eq!(scaled.get_constant(), 6.0);
+    }
+
+    #[test]
+    fn convenience_var_scalar() {
+        let x = make_var(0);
+        let expr1: LinExpr = 2.0 * x; // f64 * VarId
+        assert_eq!(expr1.num_terms(), 1);
+        assert_eq!(expr1.terms()[0].coeff.as_constant(), Some(2.0));
+
+        let expr2: LinExpr = x * 3.0; // VarId * f64
+        assert_eq!(expr2.terms()[0].coeff.as_constant(), Some(3.0));
+
+        let p = make_param(5);
+        let expr3: LinExpr = p * x; // ParamId * VarId
+        assert!(matches!(expr3.terms()[0].coeff, TermCoeff::Expr(_)));
+
+        let expr4: LinExpr = x * p; // VarId * ParamId
+        assert!(matches!(expr4.terms()[0].coeff, TermCoeff::Expr(_)));
+    }
+
+    #[test]
+    fn convenience_addition() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        let expr: LinExpr = x + y; // VarId + VarId
+        assert_eq!(expr.num_terms(), 2);
+
+        let expr2: LinExpr = 1.0 + x; // f64 + VarId
+        assert_eq!(expr2.get_constant(), 1.0);
+
+        let expr3: LinExpr = x + 2.0; // VarId + f64
+        assert_eq!(expr3.get_constant(), 2.0);
+
+        let expr4: LinExpr = x + LinExpr::new().term(4.0, y); // VarId + LinExpr
+        assert_eq!(expr4.num_terms(), 2);
+
+        let expr5: LinExpr = LinExpr::from_constant(3.0) + x; // LinExpr + VarId
+        assert_eq!(expr5.get_constant(), 3.0);
+    }
+
+    #[test]
+    fn convenience_division() {
+        let x = make_var(0);
+        let p = make_param(7);
+
+        let expr1: LinExpr = (LinExpr::new().term(4.0, x).constant(2.0)) / 2.0;
+        assert_eq!(expr1.terms()[0].coeff.as_constant(), Some(2.0));
+        assert_eq!(expr1.get_constant(), 1.0);
+
+        let expr2: LinExpr = x / 4.0;
+        assert_eq!(expr2.terms()[0].coeff.as_constant(), Some(0.25));
+
+        let expr3: LinExpr = x / p;
+        // coefficient should be an expression representing 1/p
+        assert!(matches!(expr3.terms()[0].coeff, TermCoeff::Expr(_)));
+
+        let expr4: LinExpr = (LinExpr::new().term(p, x)) / p;
+        // dividing a p*x expression by p should numerically equal 1 when the parameter
+        // has a concrete value.  Simplification of p/p isn't performed by the helper.
+        match &expr4.terms()[0].coeff {
+            TermCoeff::Constant(v) => assert_eq!(*v, 1.0),
+            TermCoeff::Expr(e) => {
+                // evaluate with arbitrary parameter value
+                let val = e.eval(&|id| if id == p { 5.0 } else { 0.0 });
+                assert_eq!(val, 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn compile_for_constraint() {
+        let mut model = Model::new();
+        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        let expr = LinExpr::new()
+            .term(2.0, x)
+            .term(3.0, y);
+
+        let con = model.add_constraint_expr(expr, ConstraintBounds::le(10.0)).unwrap();
+
+        // Should have 2 coefficients
+        let coeff_count = model.coefficients.for_constraint(con).count();
+        assert_eq!(coeff_count, 2);
+    }
+
+    #[test]
+    fn reconstruct_expression() {
+        let mut model = Model::new();
+        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        let expr = LinExpr::new()
+            .term(2.0, x)
+            .term(3.0, y);
+
+        let con = model.add_constraint_expr(expr, ConstraintBounds::le(10.0)).unwrap();
+
+        let reconstructed = model.constraint_expression(con).unwrap();
+        assert_eq!(reconstructed.num_terms(), 2);
+    }
+
+    #[test]
+    fn param_term_expression() {
+        let mut model = Model::new();
+        let p = model.add_parameter(5.0);
+        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        // Expression: p * x
+        let expr = LinExpr::new().term(p, x);
+
+        let con = model.add_constraint_expr(expr, ConstraintBounds::le(100.0)).unwrap();
+
+        // Coefficient should have value 5.0 (current param value)
+        let coeff_id = model.coefficients.for_constraint(con).next().unwrap();
+        assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 5.0);
+
+        // Change parameter and commit
+        model.set_parameter(p, 10.0);
+        model.commit();
+
+        // Coefficient should now be 10.0
+        assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 10.0);
     }
 }
