@@ -100,14 +100,13 @@ pub struct Model {
     pub name: Option<String>,
 }
 
-
 impl Model {
-
     /// Create a new empty model.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create a new model with a name.
     pub fn with_name(name: impl Into<String>) -> Self {
         Self {
             name: Some(name.into()),
@@ -149,7 +148,7 @@ impl Model {
             return Err(ModelError::VariableNotFound(var));
         }
 
-        /// Remove all coefficients for this variable
+        // Remove all coefficients for this variable
         let coeffs: Vec<_> = self.coefficients.for_var(var).collect();
         for coeff_id in coeffs {
             self.remove_coefficient_internal(coeff_id);
@@ -294,7 +293,7 @@ impl Model {
         let old = self.objectives.active();
         if old.is_some() {
             self.objectives.clear_active();
-            self.changelog.push(Change::ActiveObjectiveChanged { old, new: None })
+            self.changelog.push(Change::ActiveObjectiveChanged { old, new: None });
         }
     }
 
@@ -309,6 +308,7 @@ impl Model {
     }
 
     // ========== Parameter Operations ==========
+
     /// Add a new parameter with the given initial value.
     pub fn add_parameter(&mut self, value: f64) -> ParamId {
         self.parameters.add(value)
@@ -511,7 +511,6 @@ impl Model {
     pub fn changelog_sequence(&self) -> u64 {
         self.changelog.sequence()
     }
-
 }
 
 #[cfg(test)]
