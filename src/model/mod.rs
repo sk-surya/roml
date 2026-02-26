@@ -15,7 +15,16 @@ pub mod coefficient;
 pub mod changelog;
 pub mod transaction;
 
-use crate::{id::{CoeffId, ConId, ObjId, ParamId, VarId}, model::{changelog::ChangeLog, coefficient::CoefficientIndex, constraint::ConstraintStore, objective::ObjectiveStore, parameter::ParameterStore, transaction::Transaction, variable::VariableStore}, value_expr::ValueExpr};
+use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
+use crate::model::changelog::{ChangeLog, Change};
+use crate::model::coefficient::{CoefficientData, CoefficientIndex, CoefficientTarget};
+use crate::model::constraint::ConstraintStore;
+use crate::model::objective::ObjectiveStore;
+use crate::model::parameter::ParameterStore;
+use crate::model::transaction::Transaction;
+use crate::model::variable::VariableStore;
+use crate::value_expr::ValueExpr;
+pub use variable::{Bounds, VarType};
 pub use constraint::ConstraintBounds;
 pub use objective::Sense;
 
