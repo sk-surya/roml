@@ -139,3 +139,154 @@ impl Solution {
         move |var| self.value_or_zero(var)
     }
 }
+
+/// Builder for constructing solutions.
+#[derive(Clone, Debug, Default)]
+pub struct SolutionBuilder {
+    values: HashMap<VarId, f64>,
+    objective_value: Option<f64>,
+    objective_id: Option<ObjId>,
+    status: SolverStatus,
+    duals: Option<HashMap<ConId, f64>>,
+    reduced_costs: Option<HashMap<VarId, f64>>,
+}
+
+impl SolutionBuilder {
+    /// Create a new builder with NotSolved status.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the solver status.
+    pub fn status(mut self, status: SolverStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Set a variable value.
+    pub fn value(mut self, var: VarId, value: f64) -> Self {
+        self.values.insert(var, value);
+        self
+    }
+
+    /// Set all variable values.
+    pub fn values(mut self, values: HashMap<VarId, f64>) -> Self {
+        self.values = values;
+        self
+    }
+
+    /// Set the objective value.
+    pub fn objective_value(mut self, value: f64) -> Self {
+        self.objective_value = Some(value);
+        self
+    }
+
+    /// Set which objective this solution is for.
+    pub fn objective_id(mut self, obj: ObjId) -> Self {
+        self.objective_id = Some(obj);
+        self
+    }
+
+    /// Set a dual value for a constraint.
+    pub fn dual(mut self, con: ConId, value: f64) -> Self {
+        self.duals.get_or_insert_with(HashMap::new).insert(con, value);
+        self
+    }
+
+    /// Set all dual values.
+    pub fn duals(mut self, duals: HashMap<ConId, f64>) -> Self {
+        self.duals = Some(duals);
+        self
+    }
+
+    /// Set a reduced cost for a variable.
+    pub fn reduced_cost(mut self, var: VarId, value: f64) -> Self {
+        self.reduced_costs.get_or_insert_with(HashMap::new).insert(var, value);
+        self
+    }
+
+    /// Set all reduced costs.
+    pub fn reduced_costs(mut self, costs: HashMap<VarId, f64>) -> Self {
+        self.reduced_costs = Some(costs);
+        self
+    }
+
+    /// Build the solution.
+    pub fn build(self) -> Solution {
+        Solution {
+            values: self.values,
+            objective_value: self.objective_value,
+            objective_id: self.objective_id,
+            status: self.status,
+            duals: self.duals,
+            reduced_costs: self.reduced_costs,
+        }
+    }
+}
+
+/// Storage for multiple solutions (latest, named, etc.).
+#[derive(Clone, Debug, Default)]
+pub struct SolutionStore {
+    /// The most recent solution.
+    latest: Option<Solution>,
+    /// Named solution snapshots.
+    named: HashMap<String, Solution>,
+}
+
+impl SolutionStore {
+    /// Create an empty solution store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Store a solution as the latest.
+    pub fn set_latest(&mut self, solution: Solution) {
+        self.latest = Some(solution);
+    }
+
+    /// Get the latest solution.
+    pub fn latest(&self) -> Option<&Solution> {
+        self.latest.as_ref()
+    }
+
+    /// Take the latest solution (removing it from the store).
+    pub fn take_latest(&mut self) -> Option<Solution> {
+        self.latest.take()
+    }
+
+    /// Save the latest solution with a name.
+    pub fn save_as(&mut self, name: impl Into<String>) -> bool {
+        if let Some(solution) = &self.latest {
+            self.named.insert(name.into(), solution.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Store a named solution.
+    pub fn set_named(&mut self, name: impl Into<String>, solution: Solution) {
+        self.named.insert(name.into(), solution);
+    }
+
+    /// Get a named solution.
+    pub fn get_named(&self, name: &str) -> Option<&Solution> {
+        self.named.get(name)
+    }
+
+    /// Remove a named solution.
+    pub fn remove_named(&mut self, name: &str) -> Option<Solution> {
+        self.named.remove(name)
+    }
+
+    /// List all named solution names.
+    pub fn named_solutions(&self) -> impl Iterator<Item = &str> {
+        self.named.keys().map(|s| s.as_str())
+    }
+
+    /// Clear all solutions.
+    pub fn clear(&mut self) {
+        self.latest = None;
+        self.named.clear();
+    }
+}

@@ -2,11 +2,16 @@
 
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SolverStatus {
+    #[default]
+    NotSolved,
     Optimal,
     Infeasible,
     Unbounded,
-    Unknown,
+    TimeLimit,
+    IterationLimit,
+    MemoryLimit,
+    Error,
 }
 
