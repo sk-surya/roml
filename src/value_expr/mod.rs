@@ -63,26 +63,31 @@ impl ValueExpr {
     }
 
     /// Create an addition expression.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(left: Self, right: Self) -> Self {
         Self::Add(Box::new(left), Box::new(right))
     }
 
     /// Create a subtraction expression.
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(left: Self, right: Self) -> Self {
         Self::Sub(Box::new(left), Box::new(right))
     }
 
     /// Create a multiplication expression.
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(left: Self, right: Self) -> Self {
         Self::Mul(Box::new(left), Box::new(right))
     }
 
     /// Create a division expression.
+    #[allow(clippy::should_implement_trait)]
     pub fn div(left: Self, right: Self) -> Self {
         Self::Div(Box::new(left), Box::new(right))
     }
 
     /// Create a negation expression.
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(inner: Self) -> Self {
         Self::Neg(Box::new(inner))
     }
