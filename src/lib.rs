@@ -19,10 +19,5 @@ pub use id::{VarId, ConId, ParamId, ObjId, CoeffId};
 pub use model::{Model, Bounds, VarType, ConstraintBounds, Sense, ModelError};
 pub use expr::LinExpr;
 pub use value_expr::ValueExpr;
-pub use solution::Solution;
-pub use solver::SolverStatus;
-
-
-// what else do we need?
-// Solution
-// Solver interface
+pub use solution::{Solution, SolutionBuilder, SolutionStore};
+pub use solver::{SolverStatus, SolverError, SolverAdapter};
