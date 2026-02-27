@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "roml-highs"]
+resolver = "2"
+
 [package]
 name = "roml"
 version = "0.1.0"

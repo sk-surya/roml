@@ -1,0 +1,10 @@
+[package]
+name = "roml-highs"
+version = "0.1.0"
+edition = "2021"
+description = "HiGHS solver adapter for roml"
+
+[dependencies]
+roml = { path = ".." }
+
+[dev-dependencies]
