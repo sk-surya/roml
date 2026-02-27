@@ -4,5 +4,21 @@
         // "settings set target.process.thread.step-avoid-libraries true",
         // "settings set target.process.thread.step-avoid-regexp \"/rustc/|/lib/rustlib/|std::|core::|alloc::\""
     ],
-    "editor.rulers": [80]
+    "editor.rulers": [80],
+    "lldb.launch.env": {
+        "_NO_DEBUG_HEAP": "1"
+    },
+    "rust-analyzer.debug.engine": "ms-vscode.cpptools",
+    "rust-analyzer.debug.engineSettings": {
+        "cppdbg": {
+            "miDebuggerPath": "${env:HOME}/.cargo/bin/rust-gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": false
+                }
+            ],
+        }
+    }
 }
