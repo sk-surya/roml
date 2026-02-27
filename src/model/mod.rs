@@ -515,6 +515,8 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
+    use crate::expr::LinExpr;
+
     use super::*;
 
     #[test]
@@ -526,11 +528,13 @@ mod tests {
         let y = model.add_var();
 
         // Add constraint
-        let c = model.add_constraint(ConstraintBounds::le(100.0));
+        // let c = model.add_constraint(ConstraintBounds::le(100.0));
 
-        // Add coefficients
-        model.add_coeff(c, x, 2.0).unwrap();
-        model.add_coeff(c, y, 3.0).unwrap();
+        // // Add coefficients
+        // model.add_coeff(c, x, 2.0).unwrap();
+        // model.add_coeff(c, y, 3.0).unwrap();
+
+        let c = model.add_constraint_expr(2.0 * x + 3.0 * y, ConstraintBounds::le(100.0)).unwrap();
 
         assert_eq!(model.num_variables(), 2);
         assert_eq!(model.num_constraints(), 1);
@@ -624,5 +628,76 @@ mod tests {
         model.remove_variable(x).unwrap();
 
         assert_eq!(model.num_coefficients(), 0);
+    }
+
+    #[test]
+    fn complex_model_flow() {
+        // build a model with variables, parameters, constraints, objective
+        let mut model = Model::new();
+        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let z = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+        let p = model.add_parameter(2.0);
+        let q = model.add_parameter(3.0);
+
+        // constraint: 2*x + p*y - q*z <= 100
+        let cons_expr: LinExpr = 2.0 * x + p * y - q * z;
+        let cons_bounds = ConstraintBounds::le(100.0);
+        let con = model.add_constraint_expr(cons_expr, cons_bounds).unwrap();
+
+        // objective: minimize p*x + 3*y + 5
+        let obj_expr: LinExpr = p * x + 3.0 * y + 5.0;
+        let (obj, offset) = model.add_objective_expr(obj_expr, Sense::Minimize).unwrap();
+        assert_eq!(offset, 5.0);
+
+        // record coefficient ids for later
+        let mut con_coeffs: Vec<_> = model.coefficients.for_constraint(con).collect();
+        let mut obj_coeffs: Vec<_> = model.coefficients.for_objective(obj).collect();
+
+        // check initial cached values
+        let mut map = std::collections::HashMap::new();
+        for cid in &con_coeffs {
+            let dat = model.coefficient(*cid).unwrap();
+            map.insert(dat.var, dat.cached_value);
+        }
+        assert_eq!(map.get(&x), Some(&2.0));
+        assert_eq!(map.get(&y), Some(&2.0)); // p=2 initial
+        assert_eq!(map.get(&z), Some(&-3.0));
+
+        let mut objmap = std::collections::HashMap::new();
+        for oid in &obj_coeffs {
+            let dat = model.coefficient(*oid).unwrap();
+            objmap.insert(dat.var, dat.cached_value);
+        }
+        assert_eq!(objmap.get(&x), Some(&2.0));
+        assert_eq!(objmap.get(&y), Some(&3.0));
+
+        // update parameters and commit
+        model.set_parameter(p, 4.0);
+        model.set_parameter(q, 6.0);
+        model.commit();
+
+        // after update, cached values should change
+        let mut map2 = std::collections::HashMap::new();
+        for cid in &con_coeffs {
+            let dat = model.coefficient(*cid).unwrap();
+            map2.insert(dat.var, dat.cached_value);
+        }
+        assert_eq!(map2.get(&y), Some(&4.0));
+        assert_eq!(map2.get(&z), Some(&-6.0));
+
+        let mut objmap2 = std::collections::HashMap::new();
+        for oid in &obj_coeffs {
+            let dat = model.coefficient(*oid).unwrap();
+            objmap2.insert(dat.var, dat.cached_value);
+        }
+        assert_eq!(objmap2.get(&x), Some(&4.0));
+
+        // also reconstruct expressions to ensure they still look right
+        let recon = model.constraint_expression(con).unwrap();
+        assert_eq!(recon.num_terms(), 3);
+        let recon_obj = model.objective_expression(obj).unwrap();
+        assert_eq!(recon_obj.num_terms(), 2);
     }
 }
