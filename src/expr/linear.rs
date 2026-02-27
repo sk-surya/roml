@@ -543,7 +543,7 @@ impl Model {
 mod tests {
     use super::*;
     use crate::id::Generation;
-    use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
+    use crate::model::{Bounds, ConstraintBounds, VarType};
 
     fn make_var(index: u32) -> VarId {
         VarId::new(index, Generation::new())

@@ -534,7 +534,7 @@ mod tests {
         // model.add_coeff(c, x, 2.0).unwrap();
         // model.add_coeff(c, y, 3.0).unwrap();
 
-        let c = model.add_constraint_expr(2.0 * x + 3.0 * y, ConstraintBounds::le(100.0)).unwrap();
+        let _c = model.add_constraint_expr(2.0 * x + 3.0 * y, ConstraintBounds::le(100.0)).unwrap();
 
         assert_eq!(model.num_variables(), 2);
         assert_eq!(model.num_constraints(), 1);
@@ -652,8 +652,8 @@ mod tests {
         assert_eq!(offset, 5.0);
 
         // record coefficient ids for later
-        let mut con_coeffs: Vec<_> = model.coefficients.for_constraint(con).collect();
-        let mut obj_coeffs: Vec<_> = model.coefficients.for_objective(obj).collect();
+        let con_coeffs: Vec<_> = model.coefficients.for_constraint(con).collect();
+        let obj_coeffs: Vec<_> = model.coefficients.for_objective(obj).collect();
 
         // check initial cached values
         let mut map = std::collections::HashMap::new();

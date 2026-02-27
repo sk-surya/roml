@@ -63,10 +63,7 @@ impl Bounds {
 
     /// Check if this is a fixed value. Optionally with tolerance.
     pub fn is_fixed(&self, tolerance: Option<f64>) -> bool {
-        let tolerance = match tolerance {
-            Some(tol) => tol,
-            None => f64::EPSILON,
-        };
+        let tolerance = tolerance.unwrap_or(f64::EPSILON);
         (self.upper - self.lower).abs() <= 2.0 * tolerance + f64::EPSILON
     }
 

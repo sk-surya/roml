@@ -64,6 +64,7 @@ impl ParameterStore {
     // pub fn remove(&mut self, id: ParamId) -> Option<ParameterData> {
         // self.arena.remove(id.index(), id.generation())
     // }
+    #[allow(unused)]
     pub fn remove(&mut self, id: ParamId) {
         unimplemented!()
     }
