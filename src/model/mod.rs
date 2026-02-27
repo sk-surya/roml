@@ -15,18 +15,16 @@ pub mod coefficient;
 pub mod changelog;
 pub mod transaction;
 
+pub use variable::{Bounds, VarType, VariableData, VariableStore};
+pub use constraint::{ConstraintBounds, ConstraintData, ConstraintStore};
+pub use objective::{ObjectiveData, ObjectiveStore, Sense};
+pub use parameter::{ParameterData, ParameterStore};
+pub use coefficient::{CoefficientData, CoefficientIndex, CoefficientTarget};
+pub use changelog::{Change, ChangeLog};
+pub use transaction::Transaction;
+
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
-use crate::model::changelog::{ChangeLog, Change};
-use crate::model::coefficient::{CoefficientData, CoefficientIndex, CoefficientTarget};
-use crate::model::constraint::ConstraintStore;
-use crate::model::objective::ObjectiveStore;
-use crate::model::parameter::ParameterStore;
-use crate::model::transaction::Transaction;
-use crate::model::variable::VariableStore;
 use crate::value_expr::ValueExpr;
-pub use variable::{Bounds, VarType};
-pub use constraint::ConstraintBounds;
-pub use objective::Sense;
 
 
 /// Error type for model operations.

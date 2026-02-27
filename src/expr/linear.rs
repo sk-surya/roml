@@ -125,6 +125,12 @@ impl LinExpr {
         self
     }
 
+    /// Add a term with any coefficient type that implements Into<TermCoeff>.
+    pub fn add_term_with(mut self, coeff: impl Into<TermCoeff>, var: VarId) -> Self {
+        self.terms.push(Term::new(coeff, var));
+        self
+    }
+
     /// Get the constant offset.
     pub fn get_constant(&self) -> f64 {
         self.constant
@@ -500,6 +506,14 @@ impl Model {
         let obj = self.add_objective(sense);
         let constant = expr.compile_for_objective(self, obj)?;
         Ok((obj, constant))
+    }
+
+    pub fn set_objective_expr(&mut self, obj: ObjId, expr: LinExpr) -> Result<f64, ModelError> {
+        if !self.objectives.contains(obj) {
+            return Err(ModelError::ObjectiveNotFound(obj));
+        }
+        let constant = expr.compile_for_objective(self, obj)?;
+        Ok(constant)
     }
 
     /// Reconstruct a linear expression from a constraint's coefficients.
