@@ -290,3 +290,98 @@ impl SolutionStore {
         self.named.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::Generation;
+
+    fn make_var(index: u32) -> VarId {
+        VarId::new(index, Generation::new())
+    }
+
+    fn make_con(index: u32) -> ConId {
+        ConId::new(index, Generation::new())
+    }
+
+    #[test]
+    fn solution_builder() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        let solution = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 1.0)
+            .value(y, 2.0)
+            .objective_value(10.0)
+            .build();
+
+        assert!(solution.is_optimal());
+        assert_eq!(solution.value(x), Some(1.0));
+        assert_eq!(solution.value(y), Some(2.0));
+        assert_eq!(solution.objective_value(), Some(10.0));
+    }
+
+    #[test]
+    fn solution_store() {
+        let x = make_var(0);
+
+        let mut store = SolutionStore::new();
+
+        let sol1 = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 1.0)
+            .build();
+
+        store.set_latest(sol1);
+        assert!(store.latest().is_some());
+
+        store.save_as("first");
+        assert!(store.get_named("first").is_some());
+
+        let sol2 = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 2.0)
+            .build();
+
+        store.set_latest(sol2);
+        assert_eq!(store.latest().unwrap().value(x), Some(2.0));
+        assert_eq!(store.get_named("first").unwrap().value(x), Some(1.0));
+    }
+
+    #[test]
+    fn var_lookup() {
+        let x = make_var(0);
+        let y = make_var(1);
+        let z = make_var(2);
+
+        let solution = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 1.0)
+            .value(y, 2.0)
+            .build();
+
+        let lookup = solution.as_var_lookup();
+        assert_eq!(lookup(x), 1.0);
+        assert_eq!(lookup(y), 2.0);
+        assert_eq!(lookup(z), 0.0); // Not in solution, defaults to 0
+    }
+
+    #[test]
+    fn duals_and_reduced_costs() {
+        let x = make_var(0);
+        let c = make_con(0);
+
+        let solution = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 1.0)
+            .dual(c, 0.5)
+            .reduced_cost(x, 0.0)
+            .build();
+
+        assert!(solution.has_duals());
+        assert_eq!(solution.dual(c), Some(0.5));
+        assert!(solution.has_reduced_costs());
+        assert_eq!(solution.reduced_cost(x), Some(0.0));
+    }
+}
