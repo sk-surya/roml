@@ -89,6 +89,24 @@ extern "C" {
         option: *const c_char,
         value: HighsInt,
     ) -> HighsInt;
+
+    pub fn Highs_setIntOptionValue(
+        highs: *mut c_void,
+        option: *const c_char,
+        value: HighsInt,
+    ) -> HighsInt;
+
+    pub fn Highs_setDoubleOptionValue(
+        highs: *mut c_void,
+        option: *const c_char,
+        value: c_double,
+    ) -> HighsInt;
+
+    pub fn Highs_setStringOptionValue(
+        highs: *mut c_void,
+        option: *const c_char,
+        value: *const c_char,
+    ) -> HighsInt;
 }
 
 // ── Model status constants ─────────────────────────────────────────────────
