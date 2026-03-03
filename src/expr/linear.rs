@@ -474,11 +474,11 @@ impl Model {
     /// Add a constraint from a linear expression.
     ///
     /// The expression's constant term is automatically incorporated into the bounds.
-    pub fn add_constraint_expr(
-        &mut self,
-        expr: LinExpr,
-        bounds: crate::model::ConstraintBounds,
-    ) -> Result<ConId, ModelError> {
+    pub fn add_constraint_expr<E>(&mut self, expr: E, bounds: crate::model::ConstraintBounds) -> Result<ConId, ModelError>
+    where
+        E: Into<LinExpr>,
+    {
+        let expr = expr.into();
         let con = self.add_constraint(bounds);
         let constant = expr.compile_for_constraint(self, con)?;
 
@@ -498,20 +498,24 @@ impl Model {
     ///
     /// Returns the objective ID and the constant offset (which should be added
     /// to the objective value when reporting).
-    pub fn add_objective_expr(
-        &mut self,
-        expr: LinExpr,
-        sense: crate::model::Sense,
-    ) -> Result<(ObjId, f64), ModelError> {
+    pub fn add_objective_expr<E>(&mut self, expr: E, sense: crate::model::Sense) -> Result<(ObjId, f64), ModelError>
+    where
+        E: Into<LinExpr>,
+    {
+        let expr = expr.into();
         let obj = self.add_objective(sense);
         let constant = expr.compile_for_objective(self, obj)?;
         Ok((obj, constant))
     }
 
-    pub fn set_objective_expr(&mut self, obj: ObjId, expr: LinExpr) -> Result<f64, ModelError> {
+    pub fn set_objective_expr<E>(&mut self, obj: ObjId, expr: E) -> Result<f64, ModelError>
+    where
+        E: Into<LinExpr>,
+    {
         if !self.objectives.contains(obj) {
             return Err(ModelError::ObjectiveNotFound(obj));
         }
+        let expr = expr.into();
         let constant = expr.compile_for_objective(self, obj)?;
         Ok(constant)
     }
