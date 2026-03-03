@@ -1,6 +1,6 @@
 //! Hand-written FFI bindings for HiGHS C API.
 //!
-//! Only binding limited functions needed by HiGHSAdapter. Lets add later as needed.
+//! Only binding limited functions needed by HighsAdapter. Lets add later as needed.
 
 #![allow(non_snake_case)]
 
@@ -58,6 +58,18 @@ extern "C" {
         upper: c_double,
     ) -> HighsInt;
     pub fn Highs_changeColCost(highs: *mut c_void, col: HighsInt, cost: c_double) -> HighsInt;
+    pub fn Highs_changeColsCostByRange(
+        highs: *mut c_void,
+        from_col: HighsInt,
+        to_col: HighsInt,
+        cost: *const c_double
+    ) -> HighsInt;
+    pub fn Highs_changeColsCostBySet(
+        highs: *mut c_void,
+        num_set_entries: HighsInt,
+        set: *const HighsInt,
+        cost: *const c_double
+    ) -> HighsInt;
     pub fn Highs_changeColIntegrality(
         highs: *mut c_void,
         col: HighsInt,
