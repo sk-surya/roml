@@ -1,0 +1,17 @@
+# sample log4rs configuration used by roml
+# writes INFO+ messages to stdout and a rotating file.
+
+refresh_rate: 30 seconds
+
+appenders:
+  stdout:
+    kind: console
+  logfile:
+    kind: file
+    path: "roml.log"
+
+root:
+  level: info
+  appenders:
+    - stdout
+    - logfile

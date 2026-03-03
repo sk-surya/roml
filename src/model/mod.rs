@@ -26,6 +26,8 @@ pub use transaction::Transaction;
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::value_expr::ValueExpr;
 
+use log::warn;
+
 
 /// Error type for model operations.
 #[derive(Clone, Debug, PartialEq)]
@@ -499,7 +501,7 @@ impl Model {
     /// 2. Auto-commit the changes
     pub fn drain_changes(&mut self) -> Vec<Change> {
         if self.has_uncommitted() {
-            log::warn!("Uncommitted parameter changes detected, auto-committing");
+            warn!("Uncommitted parameter changes detected, auto-committing");
             self.commit();
         }
         self.changelog.drain()
@@ -517,8 +519,19 @@ mod tests {
 
     use super::*;
 
+    // helper to initialize logging once per test run. we ignore the result in
+    // case the user hasn't provided a config file; most unit tests don't care
+    // about logs but they should compile/link when the function exists.
+    fn init_test_logging() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let _ = crate::init_logging();
+        });
+    }
+
     #[test]
     fn basic_model_operations() {
+        init_test_logging();
         let mut model = Model::new();
 
         // Add variables
@@ -541,6 +554,7 @@ mod tests {
 
     #[test]
     fn parameter_propagation() {
+        init_test_logging();
         let mut model = Model::new();
 
         let p = model.add_parameter(10.0);
@@ -569,6 +583,7 @@ mod tests {
 
     #[test]
     fn transaction_batching() {
+        init_test_logging();
         let mut model = Model::new();
 
         let p1 = model.add_parameter(1.0);
@@ -602,6 +617,7 @@ mod tests {
 
     #[test]
     fn changelog_tracking() {
+        init_test_logging();
         let mut model = Model::new();
 
         let x = model.add_var();
@@ -614,6 +630,7 @@ mod tests {
 
     #[test]
     fn remove_cascades() {
+        init_test_logging();
         let mut model = Model::new();
 
         let x = model.add_var();
@@ -630,6 +647,7 @@ mod tests {
 
     #[test]
     fn complex_model_flow() {
+        init_test_logging();
         // build a model with variables, parameters, constraints, objective
         let mut model = Model::new();
         let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);

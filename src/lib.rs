@@ -14,6 +14,8 @@ pub mod expr;
 pub mod solution;
 pub mod solver;
 
+mod logging;
+
 // Re-export commonly used types for public API
 pub use id::{VarId, ConId, ParamId, ObjId, CoeffId};
 pub use model::{Model, Bounds, VarType, ConstraintBounds, Sense, ModelError};
@@ -22,3 +24,13 @@ pub use expr::LinExpr;
 pub use value_expr::ValueExpr;
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
 pub use solver::{SolverStatus, SolverError, SolverAdapter};
+
+// Logging initialization helper re-exported at crate root for consumers that
+// want to configure logging via a `log4rs.yaml` file.  This function will
+// attempt to load the configuration from the path given by the
+// `LOG4RS_CONFIG` environment variable, falling back to `log4rs.yaml` in the
+// current working directory.  It returns a `log4rs::Handle` on success so the
+// caller can optionally hold it or ignore it.
+
+pub use logging::init_logging;
+

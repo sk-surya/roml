@@ -20,6 +20,7 @@ use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
 use roml::solver::{SolverAdapter, SolverError, SolverStatus};
+use log::{info, warn};
 
 use crate::ffi;
 use crate::ffi::HighsInt;
@@ -490,6 +491,19 @@ impl SolverAdapter for HighsAdapter {
     }
 
     fn solve(&mut self) -> Result<SolverStatus, SolverError> {
+        info!("Starting solve with {} variables and {} constraints", self.col_map.len(), self.row_map.len());
+        // check if objective is empty; if so log a warning
+        if let Some(obj) = self.active_obj {
+            if let Some(costs) = self.obj_costs.get(&obj) {
+                if costs.is_empty() {
+                    warn!("Solving with active objective that has no costs. Essentially no objective.");
+                }
+            } else {
+                warn!("Active objective not found in obj_costs. This should not happen, indicates a bug in change handling.");
+            }
+        } else {
+            warn!("Warning: Solving with no active objective.");
+        }
         let ret = unsafe { ffi::Highs_run(self.ptr) };
         check_status(ret, "Highs_run")?;
 
