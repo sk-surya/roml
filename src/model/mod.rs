@@ -936,4 +936,144 @@ mod tests {
         let recon_obj = model.objective_expression(obj).unwrap();
         assert_eq!(recon_obj.num_terms(), 2);
     }
+    // ── constraint_slack ─────────────────────────────────────────────────
+
+    #[test]
+    fn constraint_slack_feasible() {
+        init_test_logging();
+        let mut model = Model::new();
+        let x = model.add_var();
+        let y = model.add_var();
+
+        // 2x + 3y <= 12  →  with x=1, y=2: lhs = 2+6 = 8
+        let c = model.add_constraint_expr(
+            2.0 * x + 3.0 * y,
+            ConstraintBounds::le(12.0),
+        ).unwrap();
+
+        use crate::solution::SolutionBuilder;
+        use crate::solver::SolverStatus;
+        let sol = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 1.0)
+            .value(y, 2.0)
+            .build();
+
+        let (lower_slack, upper_slack) = model.constraint_slack(c, &sol).unwrap();
+        // lower bound is -inf → lower_slack = lhs - (-inf) = +inf
+        assert!(lower_slack.is_infinite() && lower_slack > 0.0,
+            "expected +inf lower slack, got {lower_slack}");
+        // upper_slack = 12 - 8 = 4
+        assert!((upper_slack - 4.0).abs() < model.constants.feasibility_tolerance,
+            "expected upper slack = 4, got {upper_slack}");
+    }
+
+    #[test]
+    fn constraint_slack_violated() {
+        init_test_logging();
+        let mut model = Model::new();
+        let x = model.add_var();
+
+        // x >= 5  → with x=2: lhs=2, lower_slack = 2-5 = -3 (violated)
+        let c = model.add_constraint_expr(
+            LinExpr::from(x),
+            ConstraintBounds::ge(5.0),
+        ).unwrap();
+
+        use crate::solution::SolutionBuilder;
+        use crate::solver::SolverStatus;
+        let sol = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 2.0)
+            .build();
+
+        let (lower_slack, upper_slack) = model.constraint_slack(c, &sol).unwrap();
+        // lower_slack = 2 - 5 = -3
+        assert!((lower_slack - (-3.0)).abs() < model.constants.feasibility_tolerance,
+            "expected lower slack = -3, got {lower_slack}");
+        // upper bound is +inf → upper_slack = inf - 2 = +inf
+        assert!(upper_slack.is_infinite() && upper_slack > 0.0,
+            "expected +inf upper slack, got {upper_slack}");
+    }
+
+    // ── violated_constraints ─────────────────────────────────────────────
+
+    #[test]
+    fn violated_constraints_finds_violations() {
+        init_test_logging();
+        let mut model = Model::new();
+        let x = model.add_var();
+        let y = model.add_var();
+
+        // c1: x <= 3  → satisfied with x=2
+        let c1 = model.add_constraint_expr(
+            LinExpr::from(x),
+            ConstraintBounds::le(3.0),
+        ).unwrap();
+
+        // c2: y >= 5  → violated with y=1
+        let c2 = model.add_constraint_expr(
+            LinExpr::from(y),
+            ConstraintBounds::ge(5.0),
+        ).unwrap();
+
+        use crate::solution::SolutionBuilder;
+        use crate::solver::SolverStatus;
+        let sol = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 2.0)
+            .value(y, 1.0)
+            .build();
+
+        let violations: Vec<_> = model.violated_constraints(&sol).collect();
+        assert_eq!(violations.len(), 1, "expected exactly 1 violated constraint");
+        let (con, lower_slack, _upper_slack) = violations[0];
+        assert_eq!(con, c2, "violated constraint should be c2");
+        assert!((lower_slack - (-4.0)).abs() < 1e-9,
+            "expected lower_slack = -4, got {lower_slack}");
+
+        // c1 should not appear
+        assert!(!violations.iter().any(|(c, _, _)| *c == c1));
+    }
+
+    // ── bound_violations ─────────────────────────────────────────────────
+
+    #[test]
+    fn bound_violations_detects_out_of_bounds() {
+        init_test_logging();
+        let mut model = Model::new();
+
+        // x in [0, 10]  → solution x=12 violates upper bound
+        let x = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+
+        // y in [2, 8]   → solution y=1 violates lower bound
+        let y = model.add_variable(Bounds::new(2.0, 8.0), VarType::Continuous);
+
+        // z in [0, 5]   → solution z=3 is fine
+        let z = model.add_variable(Bounds::new(0.0, 5.0), VarType::Continuous);
+
+        use crate::solution::SolutionBuilder;
+        use crate::solver::SolverStatus;
+        let sol = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 12.0) // above ub
+            .value(y, 1.0)  // below lb
+            .value(z, 3.0)  // feasible
+            .build();
+
+        let violations: Vec<_> = model.bound_violations(&sol).collect();
+        assert_eq!(violations.len(), 2, "expected 2 bound violations");
+
+        let viol_x = violations.iter().find(|(v, _)| *v == x).map(|(_, d)| *d);
+        let viol_y = violations.iter().find(|(v, _)| *v == y).map(|(_, d)| *d);
+        assert!(viol_x.is_some(), "x should have a bound violation");
+        assert!((viol_x.unwrap() - 2.0).abs() < 1e-9,
+            "x violation = 12-10 = 2, got {:?}", viol_x);
+        assert!(viol_y.is_some(), "y should have a bound violation");
+        assert!((viol_y.unwrap() - 1.0).abs() < 1e-9,
+            "y violation = 2-1 = 1, got {:?}", viol_y);
+
+        let z_violation = violations.iter().find(|(v, _)| *v == z);
+        assert!(z_violation.is_none(), "z should have no bound violation");
+    }
 }
