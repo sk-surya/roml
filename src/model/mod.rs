@@ -25,6 +25,7 @@ pub use transaction::Transaction;
 
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::value_expr::ValueExpr;
+use crate::expr::{LinExpr, TermCoeff};
 use crate::solution::Solution;
 
 use log::warn;
@@ -531,9 +532,147 @@ impl Model {
         self.changelog.sequence()
     }
 }
+
+// ── Introspection helpers ────────────────────────────────────────────────────
+
+fn format_bound(v: f64) -> String {
+    if v == f64::NEG_INFINITY {
+        "-inf".to_string()
+    } else if v == f64::INFINITY {
+        "+inf".to_string()
+    } else {
+        format!("{v}")
+    }
+}
+
+fn format_lin_expr(expr: &LinExpr) -> String {
+    let terms = expr.terms();
+    let constant = expr.get_constant();
+
+    if terms.is_empty() && constant == 0.0 {
+        return "0".to_string();
+    }
+
+    let mut out = String::new();
+    for (i, term) in terms.iter().enumerate() {
+        let coeff = match &term.coeff {
+            TermCoeff::Constant(v) => *v,
+            TermCoeff::Expr(e) => e.as_constant().unwrap_or(f64::NAN),
+        };
+        let abs_coeff = coeff.abs();
+        let negative = coeff < 0.0;
+
+        if i == 0 {
+            if (coeff - 1.0).abs() < f64::EPSILON {
+                out.push_str(&format!("x[{}]", term.var.index()));
+            } else if (coeff + 1.0).abs() < f64::EPSILON {
+                out.push_str(&format!("-x[{}]", term.var.index()));
+            } else {
+                out.push_str(&format!("{coeff}*x[{}]", term.var.index()));
+            }
+        } else if negative {
+            out.push_str(" - ");
+            if (abs_coeff - 1.0).abs() < f64::EPSILON {
+                out.push_str(&format!("x[{}]", term.var.index()));
+            } else {
+                out.push_str(&format!("{abs_coeff}*x[{}]", term.var.index()));
+            }
+        } else {
+            out.push_str(" + ");
+            if (abs_coeff - 1.0).abs() < f64::EPSILON {
+                out.push_str(&format!("x[{}]", term.var.index()));
+            } else {
+                out.push_str(&format!("{abs_coeff}*x[{}]", term.var.index()));
+            }
+        }
+    }
+
+    if constant.abs() > f64::EPSILON {
+        if out.is_empty() {
+            out.push_str(&format!("{constant}"));
+        } else if constant < 0.0 {
+            out.push_str(&format!(" - {}", constant.abs()));
+        } else {
+            out.push_str(&format!(" + {constant}"));
+        }
+    }
+
+    if out.is_empty() { "0".to_string() } else { out }
+}
+
 // ── Model introspection methods ─────────────────────────────────────────────
 
 impl Model {
+    /// Return a human-readable string representation of the model.
+    ///
+    /// Output format is deterministic (sorted by internal index) and suitable
+    /// for debugging and diffing. Similar to Pyomo's `.pprint()`.
+    pub fn pprint(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+
+        let name = self.name.as_deref().unwrap_or("unnamed");
+        writeln!(out, "Model: {name}").unwrap();
+
+        // Variables
+        writeln!(out, "  Variables ({}):", self.variables.len()).unwrap();
+        let mut vars: Vec<_> = self.variables.iter().collect();
+        vars.sort_by_key(|(id, _)| id.index());
+        for (id, data) in &vars {
+            let lb = format_bound(data.bounds.lower);
+            let ub = format_bound(data.bounds.upper);
+            let type_s = match data.var_type {
+                VarType::Continuous => "Continuous",
+                VarType::Integer => "Integer",
+                VarType::Binary => "Binary",
+            };
+            let inactive = if !data.active { " [inactive]" } else { "" };
+            writeln!(out, "    x[{}]: [{lb}, {ub}] {type_s}{inactive}", id.index()).unwrap();
+        }
+
+        // Parameters
+        writeln!(out, "  Parameters ({}):", self.parameters.len()).unwrap();
+        let mut params: Vec<_> = self.parameters.iter().collect();
+        params.sort_by_key(|(id, _)| id.index());
+        for (id, data) in &params {
+            writeln!(out, "    p[{}]: {}", id.index(), data.value).unwrap();
+        }
+
+        // Constraints
+        writeln!(out, "  Constraints ({}):", self.constraints.len()).unwrap();
+        let mut cons: Vec<_> = self.constraints.iter().collect();
+        cons.sort_by_key(|(id, _)| id.index());
+        for (id, data) in &cons {
+            let lb = format_bound(data.bounds.lower);
+            let ub = format_bound(data.bounds.upper);
+            let inactive = if !data.active { " [inactive]" } else { "" };
+            let expr_s = self
+                .constraint_expression(*id)
+                .map(|e| format_lin_expr(&e))
+                .unwrap_or_else(|_| "?".to_string());
+            writeln!(out, "    c[{}]: {lb} <= {expr_s} <= {ub}{inactive}", id.index()).unwrap();
+        }
+
+        // Objectives
+        writeln!(out, "  Objectives ({}):", self.objectives.len()).unwrap();
+        let mut objs: Vec<_> = self.objectives.iter().collect();
+        objs.sort_by_key(|(id, _)| id.index());
+        for (id, data) in &objs {
+            let sense = match data.sense {
+                Sense::Minimize => "Minimize",
+                Sense::Maximize => "Maximize",
+            };
+            let active = if data.active { " [active]" } else { "" };
+            let expr_s = self
+                .objective_expression(*id)
+                .map(|e| format_lin_expr(&e))
+                .unwrap_or_else(|_| "?".to_string());
+            writeln!(out, "    obj[{}]: {sense} {expr_s}{active}", id.index()).unwrap();
+        }
+
+        out
+    }
+
     /// Compute slack values for a constraint given a solution.
     ///
     /// Returns `(lower_slack, upper_slack)` where:
