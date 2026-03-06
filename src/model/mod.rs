@@ -104,19 +104,34 @@ pub struct Model {
     pub constants: ModelConstants,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ModelConstants {
     /// Tolerance for considering a constraint violated (negative slack).
     pub feasibility_tolerance: f64,
 }
 
+impl Default for ModelConstants {
+    fn default() -> Self {
+        // default tolerance is a small epsilon used in slack/violation checks.
+        Self { feasibility_tolerance: 1e-9 }
+    }
+}
+
 impl ModelConstants {
-    pub fn new(feasibility_tolerance: f64) -> Self {
-        Self { feasibility_tolerance: feasibility_tolerance }
+    pub fn new() -> Self {
+        Self::default()
     }
 
+    /// Helper to build a constants struct with a custom tolerance.
+    pub fn set_feas_tol(feasibility_tolerance: f64) -> Self {
+        Self { feasibility_tolerance }
+    }
+
+    // NOTE: we keep the inherent `default` method for backward compatibility,
+    // but the `Default` trait impl above is the one used when models are
+    // constructed via `Model::default()`.
     pub fn default() -> Self {
-        Self { feasibility_tolerance: 1e-9 }
+        Self::default()
     }
 }
 
@@ -1032,6 +1047,15 @@ mod tests {
         // upper_slack = 12 - 8 = 4
         assert!((upper_slack - 4.0).abs() < model.constants.feasibility_tolerance,
             "expected upper slack = 4, got {upper_slack}");
+    }
+
+    #[test]
+    fn default_tolerance_is_small_nonzero() {
+        // ensure the default value is not zero; it should match the constant
+        let m = Model::new();
+        assert!(m.constants.feasibility_tolerance > 0.0,
+            "default tolerance should be positive");
+        assert_eq!(m.constants.feasibility_tolerance, 1e-9);
     }
 
     #[test]
