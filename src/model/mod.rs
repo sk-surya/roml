@@ -936,6 +936,72 @@ mod tests {
         let recon_obj = model.objective_expression(obj).unwrap();
         assert_eq!(recon_obj.num_terms(), 2);
     }
+
+    // ── pprint ────────────────────────────────────────────────────────────
+
+    /// A production-style LP:
+    ///
+    ///   3 variables: x (continuous), y (continuous), z (binary)
+    ///   2 parameters: a=2.0, b=5.0
+    ///   2 constraints:
+    ///     c1: a*x + y <= 10     (resource)
+    ///     c2: x + b*z >= 1      (activation)
+    ///   1 objective:  minimize 3*x + 2*y + 4*z
+    ///
+    /// pprint is checked for structural presence of key tokens. Visual review
+    /// of the printed output is the primary check.
+    #[test]
+    fn pprint_medium_model() {
+        init_test_logging();
+        let mut model = Model::with_name("production_lp");
+
+        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let z = model.add_variable(Bounds::BINARY, VarType::Binary);
+
+        let a = model.add_parameter(2.0);
+        let b = model.add_parameter(5.0);
+
+        // c1: a*x + y <= 10
+        let c1 = model.add_constraint_expr(
+            LinExpr::new().term(a, x).add_term_with(1.0, y),
+            ConstraintBounds::le(10.0),
+        ).unwrap();
+
+        // c2: x + b*z >= 1
+        let _c2 = model.add_constraint_expr(
+            LinExpr::new().add_term_with(1.0, x).term(b, z),
+            ConstraintBounds::ge(1.0),
+        ).unwrap();
+
+        // objective: minimize 3x + 2y + 4z
+        let (obj, _) = model.add_objective_expr(
+            3.0 * x + 2.0 * y + 4.0 * z,
+            Sense::Minimize,
+        ).unwrap();
+        model.set_active_objective(obj).unwrap();
+
+        // Deactivate c1 to exercise [inactive] marker
+        model.set_constraint_active(c1, false).unwrap();
+
+        let output = model.pprint();
+        println!("{output}");
+
+        // Structural checks
+        assert!(output.contains("Model: production_lp"), "missing model header");
+        assert!(output.contains("Variables (3):"), "wrong variable count");
+        assert!(output.contains("Parameters (2):"), "wrong parameter count");
+        assert!(output.contains("Constraints (2):"), "wrong constraint count");
+        assert!(output.contains("Objectives (1):"), "wrong objective count");
+        assert!(output.contains("[inactive]"), "missing inactive marker on c1");
+        assert!(output.contains("[active]"), "missing active marker on objective");
+        assert!(output.contains("Binary"), "missing Binary type for z");
+        assert!(output.contains("Minimize"), "missing Minimize sense");
+        assert!(output.contains("p["), "missing parameter display");
+        assert!(output.contains("c["), "missing constraint display");
+        assert!(output.contains("obj["), "missing objective display");
+    }
+
     // ── constraint_slack ─────────────────────────────────────────────────
 
     #[test]
