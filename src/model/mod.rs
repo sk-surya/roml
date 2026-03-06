@@ -25,6 +25,7 @@ pub use transaction::Transaction;
 
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::value_expr::ValueExpr;
+use crate::solution::Solution;
 
 use log::warn;
 
@@ -98,6 +99,24 @@ pub struct Model {
     pub(crate) transaction: Transaction,
     /// Optional model name.
     pub name: Option<String>,
+    /// Model constants (e.g., tolerances).
+    pub constants: ModelConstants,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ModelConstants {
+    /// Tolerance for considering a constraint violated (negative slack).
+    pub feasibility_tolerance: f64,
+}
+
+impl ModelConstants {
+    pub fn new(feasibility_tolerance: f64) -> Self {
+        Self { feasibility_tolerance: feasibility_tolerance }
+    }
+
+    pub fn default() -> Self {
+        Self { feasibility_tolerance: 1e-9 }
+    }
 }
 
 impl Model {
@@ -510,6 +529,68 @@ impl Model {
     /// Get the changelog sequence number.
     pub fn changelog_sequence(&self) -> u64 {
         self.changelog.sequence()
+    }
+}
+// ── Model introspection methods ─────────────────────────────────────────────
+
+impl Model {
+    /// Compute slack values for a constraint given a solution.
+    ///
+    /// Returns `(lower_slack, upper_slack)` where:
+    /// - `lower_slack = lhs - lower_bound` (positive → lower bound is satisfied)
+    /// - `upper_slack = upper_bound - lhs` (positive → upper bound is satisfied)
+    pub fn constraint_slack(
+        &self,
+        con: ConId,
+        solution: &Solution,
+    ) -> Result<(f64, f64), ModelError> {
+        let bounds = self
+            .constraints
+            .get(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?
+            .bounds;
+        let expr = self.constraint_expression(con)?;
+        let lhs = expr.evaluate(solution.as_var_lookup(), self.parameters.as_lookup());
+        Ok((lhs - bounds.lower, bounds.upper - lhs))
+    }
+
+    /// Iterate over active constraints that are violated by the given solution.
+    ///
+    /// Yields `(con, lower_slack, upper_slack)` where either slack is negative
+    /// (more than a small tolerance).
+    pub fn violated_constraints<'a>(
+        &'a self,
+        solution: &'a Solution,
+    ) -> impl Iterator<Item = (ConId, f64, f64)> + 'a {
+        self.constraints.iter_active().filter_map(move |(con, _)| {
+            let (lower_slack, upper_slack) = self.constraint_slack(con, solution).ok()?;
+            if lower_slack < -self.constants.feasibility_tolerance || upper_slack < -self.constants.feasibility_tolerance {
+                Some((con, lower_slack, upper_slack))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Iterate over active variables whose solution values violate their bounds.
+    ///
+    /// Yields `(var, violation)` where `violation` is the distance outside the
+    /// feasible region (always positive).
+    pub fn bound_violations<'a>(
+        &'a self,
+        solution: &'a Solution,
+    ) -> impl Iterator<Item = (VarId, f64)> + 'a {
+        self.variables.iter_active().filter_map(move |(var, data)| {
+            let val = solution.value_or_zero(var);
+            let lower_viol = data.bounds.lower - val; // positive if val < lb
+            let upper_viol = val - data.bounds.upper; // positive if val > ub
+            let violation = lower_viol.max(upper_viol);
+            if violation > self.constants.feasibility_tolerance {
+                Some((var, violation))
+            } else {
+                None
+            }
+        })
     }
 }
 
