@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::{VarId, model::changelog::Change};
+use crate::{VarId, ConId, model::changelog::Change};
 
 /// Solver status after an optimization attempt.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +72,27 @@ pub trait SolverAdapter {
 
     /// Get the solution values for all variables, if available.
     fn solution_values(&self) -> Option<HashMap<VarId, f64>>;
+
+    /// Objective value from the last solve (if optimal).
+    ///
+    /// Default implementation returns `None`. Solvers should override this.
+    fn objective_value_raw(&self) -> Option<f64> {
+        None
+    }
+
+    /// Dual values for constraints from the last solve.
+    ///
+    /// Only meaningful for LP (not MIP). Default returns `None`.
+    fn dual_values(&self) -> Option<HashMap<ConId, f64>> {
+        None
+    }
+
+    /// Reduced costs for variables from the last solve.
+    ///
+    /// Only meaningful for LP (not MIP). Default returns `None`.
+    fn reduced_costs_raw(&self) -> Option<HashMap<VarId, f64>> {
+        None
+    }
 
     /// Reset the solver state for a full rebuild.
     fn reset(&mut self);

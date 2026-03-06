@@ -78,6 +78,15 @@ pub struct HighsAdapter {
     /// Last solution: VarId → value.
     solution: Option<HashMap<VarId, f64>>,
 
+    /// Objective value from the last solve.
+    objective_value: Option<f64>,
+
+    /// Dual values for constraints from the last solve (LP only).
+    duals: Option<HashMap<ConId, f64>>,
+
+    /// Reduced costs for variables from the last solve (LP only).
+    reduced_costs: Option<HashMap<VarId, f64>>,
+
     /// HiGHS +∞ value (from Highs_getInfinity).
     inf: f64,
 }
@@ -124,6 +133,9 @@ impl HighsAdapter {
             active_obj: None,
             status: SolverStatus::NotSolved,
             solution: None,
+            objective_value: None,
+            duals: None,
+            reduced_costs: None,
             inf,
         }
     }
@@ -486,6 +498,9 @@ impl SolverAdapter for HighsAdapter {
         }
         // Invalidate any cached solution — model has changed.
         self.solution = None;
+        self.objective_value = None;
+        self.duals = None;
+        self.reduced_costs = None;
         self.status = SolverStatus::NotSolved;
         Ok(())
     }
@@ -513,28 +528,51 @@ impl SolverAdapter for HighsAdapter {
 
         if matches!(solver_status, SolverStatus::Optimal) {
             let num_cols = unsafe { ffi::Highs_getNumCol(self.ptr) } as usize;
+            let num_rows = unsafe { ffi::Highs_getNumRow(self.ptr) } as usize;
             let mut col_values = vec![0.0f64; num_cols];
-            // We only need col_value; pass null for the rest.
+            let mut col_dual = vec![0.0f64; num_cols];
+            let mut row_dual = vec![0.0f64; num_rows];
             let ret = unsafe {
                 ffi::Highs_getSolution(
                     self.ptr,
                     col_values.as_mut_ptr(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
+                    col_dual.as_mut_ptr(),
+                    std::ptr::null_mut(), // row_value not needed
+                    row_dual.as_mut_ptr(),
                 )
             };
             check_status(ret, "Highs_getSolution")?;
 
+            let obj_val = unsafe { ffi::Highs_getObjectiveValue(self.ptr) };
+            self.objective_value = Some(obj_val);
+
             let mut sol: HashMap<VarId, f64> = HashMap::new();
+            let mut rc: HashMap<VarId, f64> = HashMap::new();
             for (var, col) in self.col_map.iter() {
                 if let Some(v) = col_values.get(col as usize) {
                     sol.insert(var, *v);
                 }
+                if let Some(v) = col_dual.get(col as usize) {
+                    rc.insert(var, *v);
+                }
             }
             self.solution = Some(sol);
+            self.reduced_costs = Some(rc);
+
+            // Row duals (constraint shadow prices). For MIP these will be
+            // all-zero; callers should check the model type before using them.
+            let mut duals: HashMap<ConId, f64> = HashMap::new();
+            for (con, row) in self.row_map.iter() {
+                if let Some(v) = row_dual.get(row as usize) {
+                    duals.insert(con, *v);
+                }
+            }
+            self.duals = Some(duals);
         } else {
             self.solution = None;
+            self.objective_value = None;
+            self.duals = None;
+            self.reduced_costs = None;
         }
 
         Ok(solver_status)
@@ -546,6 +584,18 @@ impl SolverAdapter for HighsAdapter {
 
     fn solution_values(&self) -> Option<HashMap<VarId, f64>> {
         self.solution.clone()
+    }
+
+    fn objective_value_raw(&self) -> Option<f64> {
+        self.objective_value
+    }
+
+    fn dual_values(&self) -> Option<HashMap<ConId, f64>> {
+        self.duals.clone()
+    }
+
+    fn reduced_costs_raw(&self) -> Option<HashMap<VarId, f64>> {
+        self.reduced_costs.clone()
     }
 
     fn reset(&mut self) {
@@ -564,6 +614,9 @@ impl SolverAdapter for HighsAdapter {
         self.active_obj = None;
         self.status = SolverStatus::NotSolved;
         self.solution = None;
+        self.objective_value = None;
+        self.duals = None;
+        self.reduced_costs = None;
     }
 
     fn supports_incremental(&self, _change: &Change) -> bool {

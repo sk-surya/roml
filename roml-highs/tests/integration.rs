@@ -316,3 +316,52 @@ fn infeasible_model() {
     assert_eq!(status, SolverStatus::Infeasible);
     assert!(adapter.solution_values().is_none());
 }
+
+// ── Test 8: solution enrichment (obj value + duals + reduced costs) ────────
+
+/// Simple LP:
+///   minimize  3x + 2y
+///   s.t.      x + y >= 4
+///             x, y >= 0
+///
+/// Optimal: x=0, y=4 → obj=8
+/// Dual on constraint (shadow price) should be non-zero.
+#[test]
+fn solution_enrichment_lp() {
+    init_test_logging();
+    let mut model = Model::new();
+
+    let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+    let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+
+    // x + y >= 4
+    let c1 = model.add_constraint(ConstraintBounds::ge(4.0));
+    model.add_coeff(c1, x, 1.0).unwrap();
+    model.add_coeff(c1, y, 1.0).unwrap();
+
+    // minimize 3x + 2y
+    use roml::value_expr::ValueExpr;
+    let obj = model.add_objective(Sense::Minimize);
+    model.set_active_objective(obj).unwrap();
+    model.add_objective_coefficient(obj, x, ValueExpr::constant(3.0)).unwrap();
+    model.add_objective_coefficient(obj, y, ValueExpr::constant(2.0)).unwrap();
+
+    let mut adapter = HighsAdapter::new();
+    sync(&mut model, &mut adapter);
+
+    let status = adapter.solve().unwrap();
+    assert_eq!(status, SolverStatus::Optimal);
+
+    // Objective value: optimal is x=0,y=4 → obj=8
+    let obj_val = adapter.objective_value_raw().expect("objective_value_raw should be Some after optimal solve");
+    assert!(approx_eq(obj_val, 8.0), "expected obj=8, got {obj_val}");
+
+    // Dual values: should have one entry for c1
+    let duals = adapter.dual_values().expect("dual_values should be Some after LP solve");
+    assert!(duals.contains_key(&c1), "duals should contain entry for c1");
+
+    // Reduced costs: should have entries for x and y
+    let rc = adapter.reduced_costs_raw().expect("reduced_costs_raw should be Some after LP solve");
+    assert!(rc.contains_key(&x), "reduced costs should contain entry for x");
+    assert!(rc.contains_key(&y), "reduced costs should contain entry for y");
+}
