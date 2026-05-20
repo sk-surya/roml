@@ -70,23 +70,23 @@ fn find_workspace_root(start: &std::path::Path) -> Option<PathBuf> {
 fn read_logfile_from_config() -> Option<String> {
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(root) = find_workspace_root(&cwd) {
-            let cfg = root.join("config.yaml");
-            if !cfg.exists() {
+            let _cfg = root.join("config.yaml");
+            if !_cfg.exists() {
                 // one level above
                 let parent = root.parent()?;
-                let cfg = parent.join("config.yaml");
+                let _cfg = parent.join("config.yaml");
             }
-            if cfg.exists() {
-                if let Ok(text) = std::fs::read_to_string(&cfg) {
+            if _cfg.exists() {
+                if let Ok(text) = std::fs::read_to_string(&_cfg) {
                     if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
                         if let Some(env) = val.get("env") {
                             if let Some(lf) = env.get("ROML_LOG_FILE") {
                                 if let Some(s) = lf.as_str() {
                                     // if the string is just a filename, resolve it relative to the config file directory
-                                    let path = if s.contains(std::path::MAIN_SEPARATOR) {
+                                    let _path = if s.contains(std::path::MAIN_SEPARATOR) {
                                         std::path::PathBuf::from(s)
                                     } else {
-                                        cfg.parent().unwrap_or(&root).join(s)
+                                        _cfg.parent().unwrap_or(&root).join(s)
                                     };
                                     return Some(s.to_string());
                                 }
@@ -165,7 +165,7 @@ mod tests {
         // ensure config search does not interfere with this case
         std::env::remove_var("LOG4RS_CONFIG");
         let dir = tempdir().unwrap();
-        let path = dir.path().join("cfg.yaml");
+        let path = dir.path().join("_cfg.yaml");
         let mut f = File::create(&path).unwrap();
         // minimal configuration: root logger at error level to a console appender
         writeln!(
@@ -228,9 +228,9 @@ mod tests {
         write!(workspace_toml, "[workspace]
 ").unwrap();
         let cfg_path = root.path().join("config.yaml");
-        let mut cfg = File::create(&cfg_path).unwrap();
+        let mut _cfg = File::create(&cfg_path).unwrap();
         writeln!(
-            cfg,
+            _cfg,
             "env:\n  ROML_LOG_FILE: \"/tmp/from_config.log\"\n"
         )
         .unwrap();

@@ -12,7 +12,14 @@
 
 use std::collections::HashMap;
 
-use crate::{VarId, ConId, model::changelog::Change};
+use crate::{
+    ConId,
+    Model,
+    Solution,
+    SolutionBuilder,
+    VarId,
+    model::changelog::Change,
+};
 
 /// Solver status after an optimization attempt.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -99,4 +106,139 @@ pub trait SolverAdapter {
 
     /// Check if the solver supports incremental updates for a change type.
     fn supports_incremental(&self, change: &Change) -> bool;
+}
+
+/// Convenience helpers for syncing and solving a model with a solver adapter.
+pub trait SolverModelExt: SolverAdapter {
+    /// Drain pending model changes and apply them to the adapter.
+    fn sync_model(&mut self, model: &mut Model) -> Result<(), SolverError> {
+        let changes = model.drain_changes();
+        self.apply_changes(&changes)
+    }
+
+    /// Synchronize a model, solve it, and assemble a [`Solution`].
+    fn solve_model(&mut self, model: &mut Model) -> Result<Solution, SolverError> {
+        self.sync_model(model)?;
+
+        let status = self.solve()?;
+        let mut builder = SolutionBuilder::new().status(status);
+
+        if let Some(values) = self.solution_values() {
+            builder = builder.values(values);
+        }
+
+        if let Some(objective_value) = self.objective_value_raw() {
+            builder = builder.objective_value(objective_value);
+        }
+
+        if let Some(objective_id) = model.active_objective() {
+            builder = builder.objective_id(objective_id);
+        }
+
+        if let Some(duals) = self.dual_values() {
+            builder = builder.duals(duals);
+        }
+
+        if let Some(reduced_costs) = self.reduced_costs_raw() {
+            builder = builder.reduced_costs(reduced_costs);
+        }
+
+        Ok(builder.build())
+    }
+}
+
+impl<T> SolverModelExt for T where T: SolverAdapter + ?Sized {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Change;
+    use crate::ConstraintExprExt;
+
+    #[derive(Default)]
+    struct MockAdapter {
+        applied_change_count: usize,
+        solve_calls: usize,
+        status: SolverStatus,
+        values: Option<HashMap<VarId, f64>>,
+        objective_value: Option<f64>,
+        duals: Option<HashMap<ConId, f64>>,
+        reduced_costs: Option<HashMap<VarId, f64>>,
+    }
+
+    impl SolverAdapter for MockAdapter {
+        fn apply_changes(&mut self, changes: &[Change]) -> Result<(), SolverError> {
+            self.applied_change_count += changes.len();
+            Ok(())
+        }
+
+        fn solve(&mut self) -> Result<SolverStatus, SolverError> {
+            self.solve_calls += 1;
+            Ok(self.status)
+        }
+
+        fn status(&self) -> SolverStatus {
+            self.status
+        }
+
+        fn solution_values(&self) -> Option<HashMap<VarId, f64>> {
+            self.values.clone()
+        }
+
+        fn objective_value_raw(&self) -> Option<f64> {
+            self.objective_value
+        }
+
+        fn dual_values(&self) -> Option<HashMap<ConId, f64>> {
+            self.duals.clone()
+        }
+
+        fn reduced_costs_raw(&self) -> Option<HashMap<VarId, f64>> {
+            self.reduced_costs.clone()
+        }
+
+        fn reset(&mut self) {}
+
+        fn supports_incremental(&self, _change: &Change) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn solve_model_syncs_changes_and_builds_solution() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let (obj, _) = model.minimize(x).unwrap();
+
+        let mut duals = HashMap::new();
+        let con = model.constraint(x.ge(0.0)).unwrap();
+        duals.insert(con, 0.0);
+
+        let mut values = HashMap::new();
+        values.insert(x, 3.5);
+
+        let mut reduced_costs = HashMap::new();
+        reduced_costs.insert(x, 0.0);
+
+        let mut adapter = MockAdapter {
+            status: SolverStatus::Optimal,
+            values: Some(values),
+            objective_value: Some(3.5),
+            duals: Some(duals),
+            reduced_costs: Some(reduced_costs),
+            ..Default::default()
+        };
+
+        let solution = adapter.solve_model(&mut model).unwrap();
+
+        assert_eq!(adapter.solve_calls, 1);
+        assert!(adapter.applied_change_count > 0);
+        assert!(!model.has_pending_changes());
+        assert_eq!(solution.status(), SolverStatus::Optimal);
+        assert_eq!(solution.objective_id(), Some(obj));
+        assert_eq!(solution.objective_value(), Some(3.5));
+        assert_eq!(solution.value(x), Some(3.5));
+        assert_eq!(solution.dual(con), Some(0.0));
+        assert_eq!(solution.reduced_cost(x), Some(0.0));
+    }
 }

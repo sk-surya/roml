@@ -19,21 +19,34 @@
 //! # Example
 //! 
 //! ```ignore
+//! use roml::{ConstraintExprExt, Model, ObjectiveExprExt};
+//!
 //! let mut model = Model::new();
 //! let x = model.add_var();
 //! let y = model.add_var();
 //! 
-//! // Build expression: 2*x + 3*y <= 10
-//! let expr = 2.0 * x + 3.0 * y;
-//! let con = model.add_constraint(expr <= 10.0);
+//! // Build and add a constraint: 2*x + 3*y <= 10
+//! let con = model.constrain((2.0 * x + 3.0 * y).le(10.0))?;
+//! 
+//! // Build and activate an objective in one step.
+//! let (_obj, constant) = model.maximize(x + 4.0 * y + 5.0)?;
+//! assert_eq!(constant, 5.0);
 //! 
 //! // Using method syntax:
 //! let expr = LinExpr::new()
-//!    .term(x, 2.0)
-//!    .term(y, 3.0);
-//! let con = model.add_constraint(expr, ConstraintBounds::le(10.0));
+//!    .term(2.0, x)
+//!    .term(3.0, y);
+//! let con = model.add_constraint_expr(expr, ConstraintBounds::le(10.0))?;
 //! ```
 
 mod linear;
 
-pub use linear::{LinExpr, Term, TermCoeff};
+pub use linear::{
+	ConstraintExprExt,
+	ConstraintSpec,
+	LinExpr,
+	ObjectiveExprExt,
+	ObjectiveSpec,
+	Term,
+	TermCoeff,
+};

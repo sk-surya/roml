@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::id::{VarId, ConId, ObjId, ParamId};
 use crate::value_expr::ValueExpr;
-use crate::model::{Model, ModelError};
+use crate::model::{ConstraintBounds, Model, ModelError, Sense};
 
 /// Coefficient type in a linear expression term.
 /// 
@@ -251,6 +251,90 @@ impl LinExpr {
     }
 }
 
+/// A fully-specified constraint ready to be added to a model.
+#[derive(Clone, Debug)]
+pub struct ConstraintSpec {
+    /// The linear expression on the left-hand side.
+    pub expr: LinExpr,
+    /// The bounds applied to the expression.
+    pub bounds: ConstraintBounds,
+}
+
+impl ConstraintSpec {
+    /// Create a new constraint specification from an expression and bounds.
+    pub fn new<E>(expr: E, bounds: ConstraintBounds) -> Self
+    where
+        E: Into<LinExpr>,
+    {
+        Self {
+            expr: expr.into(),
+            bounds,
+        }
+    }
+}
+
+/// Fluent helpers for turning expressions into constraint specifications.
+pub trait ConstraintExprExt: Into<LinExpr> + Sized {
+    /// Build an equality constraint `expr == rhs`.
+    fn eq(self, rhs: f64) -> ConstraintSpec {
+        ConstraintSpec::new(self, ConstraintBounds::eq(rhs))
+    }
+
+    /// Build an upper-bounded constraint `expr <= upper`.
+    fn le(self, upper: f64) -> ConstraintSpec {
+        ConstraintSpec::new(self, ConstraintBounds::le(upper))
+    }
+
+    /// Build a lower-bounded constraint `expr >= lower`.
+    fn ge(self, lower: f64) -> ConstraintSpec {
+        ConstraintSpec::new(self, ConstraintBounds::ge(lower))
+    }
+
+    /// Build a ranged constraint `lower <= expr <= upper`.
+    fn between(self, lower: f64, upper: f64) -> ConstraintSpec {
+        ConstraintSpec::new(self, ConstraintBounds::range(lower, upper))
+    }
+}
+
+impl<T> ConstraintExprExt for T where T: Into<LinExpr> + Sized {}
+
+/// A fully-specified objective ready to be added to a model.
+#[derive(Clone, Debug)]
+pub struct ObjectiveSpec {
+    /// Optimization direction.
+    pub sense: Sense,
+    /// Objective expression.
+    pub expr: LinExpr,
+}
+
+impl ObjectiveSpec {
+    /// Create a new objective specification from a sense and expression.
+    pub fn new<E>(sense: Sense, expr: E) -> Self
+    where
+        E: Into<LinExpr>,
+    {
+        Self {
+            sense,
+            expr: expr.into(),
+        }
+    }
+}
+
+/// Fluent helpers for turning expressions into objective specifications.
+pub trait ObjectiveExprExt: Into<LinExpr> + Sized {
+    /// Build a minimizing objective specification.
+    fn minimize(self) -> ObjectiveSpec {
+        ObjectiveSpec::new(Sense::Minimize, self)
+    }
+
+    /// Build a maximizing objective specification.
+    fn maximize(self) -> ObjectiveSpec {
+        ObjectiveSpec::new(Sense::Maximize, self)
+    }
+}
+
+impl<T> ObjectiveExprExt for T where T: Into<LinExpr> + Sized {}
+
 // ========== Operator Overloads ==========
 
 // Allow converting a single variable into a one-term expression.
@@ -471,6 +555,15 @@ impl std::ops::Neg for LinExpr {
 // ========== Model Integration ==========
 
 impl Model {
+    /// Add a constraint from a fluent constraint specification.
+    pub fn constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
+    where
+        S: Into<ConstraintSpec>,
+    {
+        let spec = spec.into();
+        self.add_constraint_expr(spec.expr, spec.bounds)
+    }
+
     /// Add a constraint from a linear expression.
     ///
     /// The expression's constant term is automatically incorporated into the bounds.
@@ -494,6 +587,15 @@ impl Model {
         Ok(con)
     }
 
+    /// Add an objective from a fluent objective specification.
+    pub fn add_objective_spec<S>(&mut self, spec: S) -> Result<(ObjId, f64), ModelError>
+    where
+        S: Into<ObjectiveSpec>,
+    {
+        let spec = spec.into();
+        self.add_objective_expr(spec.expr, spec.sense)
+    }
+
     /// Add an objective from a linear expression.
     ///
     /// Returns the objective ID and the constant offset (which should be added
@@ -505,6 +607,26 @@ impl Model {
         let expr = expr.into();
         let obj = self.add_objective(sense);
         let constant = expr.compile_for_objective(self, obj)?;
+        Ok((obj, constant))
+    }
+
+    /// Add and activate a minimizing objective in one step.
+    pub fn minimize<E>(&mut self, expr: E) -> Result<(ObjId, f64), ModelError>
+    where
+        E: Into<LinExpr>,
+    {
+        let (obj, constant) = self.add_objective_spec(expr.minimize())?;
+        self.set_active_objective(obj)?;
+        Ok((obj, constant))
+    }
+
+    /// Add and activate a maximizing objective in one step.
+    pub fn maximize<E>(&mut self, expr: E) -> Result<(ObjId, f64), ModelError>
+    where
+        E: Into<LinExpr>,
+    {
+        let (obj, constant) = self.add_objective_spec(expr.maximize())?;
+        self.set_active_objective(obj)?;
         Ok((obj, constant))
     }
 
@@ -618,6 +740,58 @@ mod tests {
         );
 
         assert_eq!(result, 36.0);
+    }
+
+    #[test]
+    fn fluent_specs_capture_bounds_and_sense() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        let constraint = (2.0 * x + y + 3.0).le(10.0);
+        assert_eq!(constraint.bounds, ConstraintBounds::le(10.0));
+        assert_eq!(constraint.expr.num_terms(), 2);
+        assert_eq!(constraint.expr.get_constant(), 3.0);
+
+        let ranged = x.between(-1.0, 5.0);
+        assert_eq!(ranged.bounds, ConstraintBounds::range(-1.0, 5.0));
+        assert_eq!(ranged.expr.num_terms(), 1);
+
+        let objective = (x + 2.0 * y + 4.0).maximize();
+        assert_eq!(objective.sense, Sense::Maximize);
+        assert_eq!(objective.expr.num_terms(), 2);
+        assert_eq!(objective.expr.get_constant(), 4.0);
+    }
+
+    #[test]
+    fn model_fluent_entry_points_compile_to_existing_behavior() {
+        let mut model = Model::new();
+
+        let x = model.add_var();
+        let y = model.add_var();
+
+        let con = model.constraint
+((2.0 * x + y + 3.0).le(10.0)).unwrap();
+        let (obj, constant) = model.minimize(x + 4.0 * y + 5.0).unwrap();
+
+        assert_eq!(model.num_constraints(), 1);
+        assert_eq!(model.num_objectives(), 1);
+        assert_eq!(constant, 5.0);
+        assert_eq!(model.active_objective(), Some(obj));
+
+        let con_data = model.constraints.get(con).unwrap();
+        assert_eq!(con_data.bounds, ConstraintBounds::le(7.0));
+
+        let obj_data = model.objectives.get(obj).unwrap();
+        assert_eq!(obj_data.sense, Sense::Minimize);
+        assert!(obj_data.active);
+
+        let con_expr = model.constraint_expression(con).unwrap();
+        assert_eq!(con_expr.num_terms(), 2);
+        assert_eq!(con_expr.get_constant(), 0.0);
+
+        let obj_expr = model.objective_expression(obj).unwrap();
+        assert_eq!(obj_expr.num_terms(), 2);
+        assert_eq!(obj_expr.get_constant(), 0.0);
     }
 
     #[test]

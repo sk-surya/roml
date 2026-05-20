@@ -20,10 +20,39 @@ mod logging;
 pub use id::{VarId, ConId, ParamId, ObjId, CoeffId};
 pub use model::{Model, Bounds, VarType, ConstraintBounds, Sense, ModelError};
 pub use model::changelog::Change;
-pub use expr::LinExpr;
+pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use value_expr::ValueExpr;
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
-pub use solver::{SolverStatus, SolverError, SolverAdapter};
+pub use solver::{SolverAdapter, SolverError, SolverModelExt, SolverStatus};
+
+/// Common imports for the fluent modeling API.
+pub mod prelude {
+	pub use crate::{
+		Bounds,
+		Change,
+		CoeffId,
+		ConId,
+		ConstraintBounds,
+		ConstraintExprExt,
+		ConstraintSpec,
+		LinExpr,
+		Model,
+		ModelError,
+		ObjId,
+		ObjectiveExprExt,
+		ObjectiveSpec,
+		ParamId,
+		Sense,
+		Solution,
+		SolverAdapter,
+		SolverError,
+		SolverModelExt,
+		SolverStatus,
+		ValueExpr,
+		VarId,
+		VarType,
+	};
+}
 
 // Logging initialization helper re-exported at crate root for consumers that
 // want to configure logging via a `log4rs.yaml` file.  This function will

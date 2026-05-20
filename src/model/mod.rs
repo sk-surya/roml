@@ -432,12 +432,15 @@ impl Model {
     // ========== Coefficient Operations ==========
 
     /// Add a coefficient to a constraint.
-    pub fn add_constraint_coefficient(
+    pub fn add_constraint_coefficient<E>(
         &mut self,
         con: ConId,
         var: VarId,
-        value_expr: ValueExpr,
-    ) -> Result<CoeffId, ModelError> {
+        value_expr: E,
+    ) -> Result<CoeffId, ModelError>
+    where
+        E: Into<ValueExpr>,
+    {
         if !self.constraints.contains(con) {
             return Err(ModelError::ConstraintNotFound(con));
         }
@@ -445,6 +448,7 @@ impl Model {
             return Err(ModelError::VariableNotFound(var));
         }
 
+        let value_expr = value_expr.into();
         let target = CoefficientTarget::Constraint(con);
         let initial_value = value_expr.eval(self.parameters.as_lookup());
         let id = self.coefficients.add(var, target, value_expr, initial_value);
@@ -460,12 +464,15 @@ impl Model {
     }
 
     /// Add a coefficient to an objective.
-    pub fn add_objective_coefficient(
+    pub fn add_objective_coefficient<E>(
         &mut self,
         obj: ObjId,
         var: VarId,
-        value_expr: ValueExpr,
-    ) -> Result<CoeffId, ModelError> {
+        value_expr: E,
+    ) -> Result<CoeffId, ModelError>
+    where
+        E: Into<ValueExpr>,
+    {
         if !self.objectives.contains(obj) {
             return Err(ModelError::ObjectiveNotFound(obj));
         }
@@ -473,6 +480,7 @@ impl Model {
             return Err(ModelError::VariableNotFound(var));
         }
 
+        let value_expr = value_expr.into();
         let target = CoefficientTarget::Objective(obj);
         let initial_value = value_expr.eval(self.parameters.as_lookup());
         let id = self.coefficients.add(var, target, value_expr, initial_value);
@@ -490,6 +498,11 @@ impl Model {
     /// Add a constant coefficient to a constraint.
     pub fn add_coeff(&mut self, con: ConId, var: VarId, value: f64) -> Result<CoeffId, ModelError> {
         self.add_constraint_coefficient(con, var, ValueExpr::constant(value))
+    }
+
+    /// Add a constant coefficient to an objective.
+    pub fn add_objective_coeff(&mut self, obj: ObjId, var: VarId, value: f64) -> Result<CoeffId, ModelError> {
+        self.add_objective_coefficient(obj, var, value)
     }
 
     /// Remove a coefficient.
@@ -814,6 +827,26 @@ mod tests {
 
         // Value should now be 2 * 5 = 10
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 10.0);
+    }
+
+    #[test]
+    fn coefficient_api_accepts_constants_and_parameters_symmetrically() {
+        init_test_logging();
+        let mut model = Model::new();
+
+        let p = model.add_parameter(2.5);
+        let x = model.add_var();
+        let y = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(100.0));
+        let obj = model.add_objective(Sense::Minimize);
+
+        let constraint_coeff = model.add_constraint_coefficient(con, x, p).unwrap();
+        let objective_coeff = model.add_objective_coefficient(obj, x, 1.5).unwrap();
+        let objective_shorthand = model.add_objective_coeff(obj, y, 3.0).unwrap();
+
+        assert_eq!(model.coefficient(constraint_coeff).unwrap().cached_value, 2.5);
+        assert_eq!(model.coefficient(objective_coeff).unwrap().cached_value, 1.5);
+        assert_eq!(model.coefficient(objective_shorthand).unwrap().cached_value, 3.0);
     }
 
     #[test]
