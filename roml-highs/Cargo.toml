@@ -10,4 +10,7 @@ log4rs = "1.4.0"
 roml = { path = ".." }
 serde_yaml = "0.9"
 
+[build-dependencies]
+cmake = "0.1"
+
 [dev-dependencies]

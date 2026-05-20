@@ -4,6 +4,19 @@
 //! [`SolverAdapter`] trait backed by the HiGHS mixed-integer linear
 //! programming solver.
 //!
+//! # Build Configuration
+//!
+//! The adapter's build script supports two configuration modes:
+//!
+//! 1. Link an existing HiGHS install by setting `HIGHS_ROOT` or `HIGHS_LIB_DIR`.
+//! 2. Build HiGHS from source by setting `HIGHS_SOURCE_DIR`.
+//!
+//! Optional environment variables:
+//!
+//! - `HIGHS_EXTRA_LIB_DIRS` for additional library search directories.
+//! - `HIGHS_EXTRA_LIBS` for extra link libraries such as `openblas,z`.
+//! - `HIGHS_BUILD_SHARED=ON|OFF` when building from source.
+//!
 //! # Example
 //!
 //! ```rust,ignore

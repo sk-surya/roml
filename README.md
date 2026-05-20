@@ -106,3 +106,32 @@ Parameter updates are intentionally queued.
 - `drain_changes` will auto-commit pending parameter updates and emit a warning if you forgot to commit explicitly.
 
 That behavior is deliberate: it keeps bulk parameter updates explicit today and leaves room for future transaction-level optimization work.
+
+## HiGHS Setup
+
+The `roml-highs` crate no longer hardcodes a machine-specific library path. You must choose one of these setup modes when building the HiGHS adapter:
+
+1. Link an existing HiGHS install by setting one of:
+  - `HIGHS_ROOT=/path/to/highs/install/prefix`
+  - `HIGHS_LIB_DIR=/path/to/directory/containing/libhighs`
+2. Build HiGHS from source by setting:
+  - `HIGHS_SOURCE_DIR=/path/to/highs/source/tree`
+
+Optional knobs:
+
+- `HIGHS_EXTRA_LIB_DIRS` for additional library search directories. Use your platform path separator, for example `dir1:dir2` on macOS/Linux.
+- `HIGHS_EXTRA_LIBS` for extra link libraries such as `openblas,z,pthread,dl,m` when your HiGHS build needs them.
+- `HIGHS_BUILD_SHARED=ON|OFF` when building from source. The build script defaults this to `ON`.
+
+Examples:
+
+```bash
+# Link an existing install
+HIGHS_ROOT=/opt/homebrew/opt/highs cargo test -p roml-highs
+
+# Link a specific library directory and add extra libs
+HIGHS_LIB_DIR=/custom/highs/lib HIGHS_EXTRA_LIBS=openblas,z cargo test -p roml-highs
+
+# Build from source with cmake
+HIGHS_SOURCE_DIR=$HOME/src/HiGHS cargo test -p roml-highs
+```
