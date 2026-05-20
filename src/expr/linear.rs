@@ -556,12 +556,20 @@ impl std::ops::Neg for LinExpr {
 
 impl Model {
     /// Add a constraint from a fluent constraint specification.
-    pub fn constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
+    pub fn constrain<S>(&mut self, spec: S) -> Result<ConId, ModelError>
     where
         S: Into<ConstraintSpec>,
     {
         let spec = spec.into();
         self.add_constraint_expr(spec.expr, spec.bounds)
+    }
+
+    /// Add a constraint from a fluent constraint specification.
+    pub fn constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
+    where
+        S: Into<ConstraintSpec>,
+    {
+        self.constrain(spec)
     }
 
     /// Add a constraint from a linear expression.
@@ -596,6 +604,16 @@ impl Model {
         self.add_objective_expr(spec.expr, spec.sense)
     }
 
+    /// Add and activate an objective from a fluent objective specification.
+    pub fn set_objective<S>(&mut self, spec: S) -> Result<ObjId, ModelError>
+    where
+        S: Into<ObjectiveSpec>,
+    {
+        let (obj, _constant) = self.add_objective_spec(spec)?;
+        self.set_active_objective(obj)?;
+        Ok(obj)
+    }
+
     /// Add an objective from a linear expression.
     ///
     /// Returns the objective ID and the constant offset (which should be added
@@ -607,27 +625,26 @@ impl Model {
         let expr = expr.into();
         let obj = self.add_objective(sense);
         let constant = expr.compile_for_objective(self, obj)?;
+        if let Some(data) = self.objectives.get_mut(obj) {
+            data.constant = constant;
+        }
         Ok((obj, constant))
     }
 
     /// Add and activate a minimizing objective in one step.
-    pub fn minimize<E>(&mut self, expr: E) -> Result<(ObjId, f64), ModelError>
+    pub fn minimize<E>(&mut self, expr: E) -> Result<ObjId, ModelError>
     where
         E: Into<LinExpr>,
     {
-        let (obj, constant) = self.add_objective_spec(expr.minimize())?;
-        self.set_active_objective(obj)?;
-        Ok((obj, constant))
+        self.set_objective(expr.minimize())
     }
 
     /// Add and activate a maximizing objective in one step.
-    pub fn maximize<E>(&mut self, expr: E) -> Result<(ObjId, f64), ModelError>
+    pub fn maximize<E>(&mut self, expr: E) -> Result<ObjId, ModelError>
     where
         E: Into<LinExpr>,
     {
-        let (obj, constant) = self.add_objective_spec(expr.maximize())?;
-        self.set_active_objective(obj)?;
-        Ok((obj, constant))
+        self.set_objective(expr.maximize())
     }
 
     pub fn set_objective_expr<E>(&mut self, obj: ObjId, expr: E) -> Result<f64, ModelError>
@@ -639,6 +656,9 @@ impl Model {
         }
         let expr = expr.into();
         let constant = expr.compile_for_objective(self, obj)?;
+        if let Some(data) = self.objectives.get_mut(obj) {
+            data.constant = constant;
+        }
         Ok(constant)
     }
 
@@ -664,11 +684,12 @@ impl Model {
     ///
     /// Uses cached coefficient values (not the ValueExpr).
     pub fn objective_expression(&self, obj: ObjId) -> Result<LinExpr, ModelError> {
-        if !self.objectives.contains(obj) {
-            return Err(ModelError::ObjectiveNotFound(obj));
-        }
+        let objective = self
+            .objectives
+            .get(obj)
+            .ok_or(ModelError::ObjectiveNotFound(obj))?;
 
-        let mut expr = LinExpr::new();
+        let mut expr = LinExpr::from_constant(objective.constant);
         for coeff_id in self.coefficients.for_objective(obj) {
             if let Some(data) = self.coefficients.get(coeff_id) {
                 expr = expr.term(data.cached_value, data.var);
@@ -769,13 +790,12 @@ mod tests {
         let x = model.add_var();
         let y = model.add_var();
 
-        let con = model.constraint
-((2.0 * x + y + 3.0).le(10.0)).unwrap();
-        let (obj, constant) = model.minimize(x + 4.0 * y + 5.0).unwrap();
+        let con = model.constrain((2.0 * x + y + 3.0).le(10.0)).unwrap();
+        let obj = model.minimize(x + 4.0 * y + 5.0).unwrap();
 
         assert_eq!(model.num_constraints(), 1);
         assert_eq!(model.num_objectives(), 1);
-        assert_eq!(constant, 5.0);
+        assert_eq!(model.objective_constant(obj), Some(5.0));
         assert_eq!(model.active_objective(), Some(obj));
 
         let con_data = model.constraints.get(con).unwrap();
@@ -784,6 +804,7 @@ mod tests {
         let obj_data = model.objectives.get(obj).unwrap();
         assert_eq!(obj_data.sense, Sense::Minimize);
         assert!(obj_data.active);
+        assert_eq!(obj_data.constant, 5.0);
 
         let con_expr = model.constraint_expression(con).unwrap();
         assert_eq!(con_expr.num_terms(), 2);
@@ -791,7 +812,21 @@ mod tests {
 
         let obj_expr = model.objective_expression(obj).unwrap();
         assert_eq!(obj_expr.num_terms(), 2);
-        assert_eq!(obj_expr.get_constant(), 0.0);
+        assert_eq!(obj_expr.get_constant(), 5.0);
+    }
+
+    #[test]
+    fn set_objective_activates_and_stores_constant() {
+        let mut model = Model::new();
+        let x = model.add_var();
+
+        let obj = model
+            .set_objective(ObjectiveSpec::new(Sense::Maximize, x + 9.0))
+            .unwrap();
+
+        assert_eq!(model.active_objective(), Some(obj));
+        assert_eq!(model.objective_constant(obj), Some(9.0));
+        assert_eq!(model.objective_expression(obj).unwrap().get_constant(), 9.0);
     }
 
     #[test]

@@ -337,6 +337,16 @@ impl Model {
         self.objectives.active()
     }
 
+    /// Get the constant offset for an objective.
+    pub fn objective_constant(&self, obj: ObjId) -> Option<f64> {
+        self.objectives.get(obj).map(|data| data.constant)
+    }
+
+    /// Get the constant offset for the active objective.
+    pub fn active_objective_constant(&self) -> Option<f64> {
+        self.active_objective().and_then(|obj| self.objective_constant(obj))
+    }
+
     /// Get the number of objectives.
     pub fn num_objectives(&self) -> usize {
         self.objectives.len()
@@ -934,6 +944,7 @@ mod tests {
         let obj_expr: LinExpr = p * x + 3.0 * y + 5.0;
         let (obj, offset) = model.add_objective_expr(obj_expr, Sense::Minimize).unwrap();
         assert_eq!(offset, 5.0);
+        assert_eq!(model.objective_constant(obj), Some(5.0));
 
         // record coefficient ids for later
         let con_coeffs: Vec<_> = model.coefficients.for_constraint(con).collect();
@@ -983,6 +994,7 @@ mod tests {
         assert_eq!(recon.num_terms(), 3);
         let recon_obj = model.objective_expression(obj).unwrap();
         assert_eq!(recon_obj.num_terms(), 2);
+        assert_eq!(recon_obj.get_constant(), 5.0);
     }
 
     // ── pprint ────────────────────────────────────────────────────────────

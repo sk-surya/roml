@@ -127,12 +127,15 @@ pub trait SolverModelExt: SolverAdapter {
             builder = builder.values(values);
         }
 
-        if let Some(objective_value) = self.objective_value_raw() {
-            builder = builder.objective_value(objective_value);
-        }
-
         if let Some(objective_id) = model.active_objective() {
             builder = builder.objective_id(objective_id);
+            if let Some(objective_value) = self.objective_value_raw() {
+                let objective_value = objective_value
+                    + model.objective_constant(objective_id).unwrap_or(0.0);
+                builder = builder.objective_value(objective_value);
+            }
+        } else if let Some(objective_value) = self.objective_value_raw() {
+            builder = builder.objective_value(objective_value);
         }
 
         if let Some(duals) = self.dual_values() {
@@ -208,7 +211,7 @@ mod tests {
     fn solve_model_syncs_changes_and_builds_solution() {
         let mut model = Model::new();
         let x = model.add_var();
-        let (obj, _) = model.minimize(x).unwrap();
+        let obj = model.minimize(x + 2.0).unwrap();
 
         let mut duals = HashMap::new();
         let con = model.constraint(x.ge(0.0)).unwrap();
@@ -236,7 +239,7 @@ mod tests {
         assert!(!model.has_pending_changes());
         assert_eq!(solution.status(), SolverStatus::Optimal);
         assert_eq!(solution.objective_id(), Some(obj));
-        assert_eq!(solution.objective_value(), Some(3.5));
+        assert_eq!(solution.objective_value(), Some(5.5));
         assert_eq!(solution.value(x), Some(3.5));
         assert_eq!(solution.dual(con), Some(0.0));
         assert_eq!(solution.reduced_cost(x), Some(0.0));

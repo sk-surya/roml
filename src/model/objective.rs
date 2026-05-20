@@ -19,6 +19,8 @@ pub enum Sense {
 pub struct ObjectiveData {
     /// Optimization sense.
     pub sense: Sense,
+    /// Constant offset added to the objective expression.
+    pub constant: f64,
     /// Whether this objective is active (only one can be active at a time).
     pub active: bool,
     /// Optional name for debugging/printing.
@@ -30,6 +32,7 @@ impl ObjectiveData {
     pub fn new(sense: Sense) -> Self {
         Self {
             sense,
+            constant: 0.0,
             active: false,  // Inactive by default, user must activate explicitly.
             name: None,
         }

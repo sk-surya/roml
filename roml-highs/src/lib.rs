@@ -7,23 +7,27 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use roml::{Model, Bounds, ConstraintBounds, Sense};
+//! use roml::prelude::*;
+//! use roml::{constrain, set_objective};
 //! use roml_highs::HighsAdapter;
-//! use roml::solver::SolverAdapter;
 //!
-//! let mut model = Model::new();
-//! let x = model.add_variable(Bounds::NON_NEGATIVE, Default::default()).unwrap();
-//! let y = model.add_variable(Bounds::NON_NEGATIVE, Default::default()).unwrap();
+//! fn solve_with_highs() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut model = Model::new();
+//!     let x = model.add_var();
+//!     let y = model.add_var();
 //!
-//! // Add objective: minimize x + 2y
-//! let obj = model.add_objective(Sense::Minimize).unwrap();
-//! model.set_active_objective(Some(obj)).unwrap();
-//! // ... add coefficients and constraints ...
+//!     constrain!(model, x + y <= 4.0)?;
+//!     constrain!(model, x <= 3.0)?;
+//!     constrain!(model, y <= 3.0)?;
 //!
-//! let mut adapter = HighsAdapter::new();
-//! let changes = model.drain_changelog();
-//! adapter.apply_changes(&changes).unwrap();
-//! let status = adapter.solve().unwrap();
+//!     let obj = set_objective!(model, maximize: x + y + 2.0)?;
+//!
+//!     let mut adapter = HighsAdapter::new();
+//!     let solution = adapter.solve_model(&mut model)?;
+//!     assert!(solution.is_optimal());
+//!     assert_eq!(model.objective_constant(obj), Some(2.0));
+//!     Ok(())
+//! }
 //! ```
 
 mod ffi;
@@ -31,4 +35,4 @@ mod index_map;
 pub mod adapter;
 
 pub use adapter::HighsAdapter;
-pub use roml::solver::{SolverError, SolverStatus};
+pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};
