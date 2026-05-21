@@ -64,8 +64,30 @@ pub const PRO_STA_PRIM_INFEAS_OR_UNBOUNDED: MosekInt = 8;
 pub const STREAM_LOG: MosekInt = 0;
 
 // Integer params (MSKiparame) — subset we use
-pub const IPAR_LOG:         MosekInt = 34;
-pub const IPAR_NUM_THREADS: MosekInt = 100;
+pub const IPAR_LOG:              MosekInt = 34;
+pub const IPAR_NUM_THREADS:      MosekInt = 100;
+pub const IPAR_OPTIMIZER:        MosekInt = 110;
+pub const IPAR_SIM_HOTSTART:     MosekInt = 145;
+pub const IPAR_SIM_HOTSTART_LU:  MosekInt = 146;
+pub const IPAR_INTPNT_HOTSTART:  MosekInt = 19;
+pub const MSK_ON:  MosekInt = 1;
+pub const MSK_OFF: MosekInt = 0;
+
+// Optimizer type constants (MSKoptimizertype)
+pub const OPTIMIZER_FREE:             MosekInt = 2; // let MOSEK choose
+pub const OPTIMIZER_INTPNT:           MosekInt = 4; // interior point
+pub const OPTIMIZER_DUAL_SIMPLEX:     MosekInt = 1; // legacy dual simplex
+pub const OPTIMIZER_NEW_DUAL_SIMPLEX: MosekInt = 6; // revised dual simplex (11.x)
+pub const OPTIMIZER_FREE_SIMPLEX:     MosekInt = 3; // MOSEK picks primal/dual simplex
+
+// Simplex hotstart (MSKsimhotstart_enum)
+pub const SIM_HOTSTART_NONE:        MosekInt = 0;
+pub const SIM_HOTSTART_FREE:        MosekInt = 1;
+pub const SIM_HOTSTART_STATUS_KEYS: MosekInt = 2; // reuse previous basis
+
+// Interior-point hotstart (MSKintpnthotstart_enum)
+pub const INTPNT_HOTSTART_NONE:         MosekInt = 0;
+pub const INTPNT_HOTSTART_PRIMAL_DUAL:  MosekInt = 3; // feed both primal+dual from prior solve
 
 // Return codes
 pub const RES_OK: MosekRes = 0;

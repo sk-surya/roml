@@ -54,11 +54,43 @@ fn mosek_bounds(lb: f64, ub: f64) -> (ffi::MosekInt, f64, f64) {
 
 // ── Options ────────────────────────────────────────────────────────────────
 
+/// Which LP algorithm MOSEK should use.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MosekOptimizer {
+    /// Let MOSEK choose (interior point for large LP, simplex otherwise).
+    #[default]
+    Free,
+    /// Interior-point method.
+    InteriorPoint,
+    /// Legacy dual simplex.
+    DualSimplex,
+    /// Revised dual simplex introduced in MOSEK 11 (generally faster).
+    NewDualSimplex,
+    /// MOSEK picks between primal and dual simplex.
+    FreeSimplex,
+}
+
+/// Simplex hotstart mode.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MosekSimHotstart {
+    /// No hotstart — always solve from scratch.
+    None,
+    /// Let MOSEK decide whether to hotstart.
+    #[default]
+    Free,
+    /// Reuse previous basis status keys.
+    StatusKeys,
+}
+
 /// Options forwarded to MOSEK at adapter creation time.
 #[derive(Debug, Clone, Default)]
 pub struct MosekOptions {
     num_threads: Option<i32>,
-    log_level: i32,
+    pub log_level: i32,
+    optimizer: MosekOptimizer,
+    sim_hotstart: MosekSimHotstart,
+    /// Also reuse the LU factorization from the previous solve (on top of status keys).
+    sim_hotstart_lu: bool,
 }
 
 impl MosekOptions {
@@ -67,9 +99,24 @@ impl MosekOptions {
         self
     }
 
-    /// Log verbosity; 0 = silent (default), higher = more output.
+    /// Log verbosity; 0 = silent (default), 1+ = solver output to stdout.
     pub fn log_level(mut self, level: i32) -> Self {
         self.log_level = level;
+        self
+    }
+
+    pub fn optimizer(mut self, opt: MosekOptimizer) -> Self {
+        self.optimizer = opt;
+        self
+    }
+
+    pub fn sim_hotstart(mut self, hs: MosekSimHotstart) -> Self {
+        self.sim_hotstart = hs;
+        self
+    }
+
+    pub fn sim_hotstart_lu(mut self, enabled: bool) -> Self {
+        self.sim_hotstart_lu = enabled;
         self
     }
 }
@@ -711,6 +758,25 @@ fn make_task(env: MosekEnv, opts: &MosekOptions) -> MosekTask {
     if let Some(threads) = opts.num_threads {
         unsafe { ffi::MSK_putintparam(task, ffi::IPAR_NUM_THREADS, threads) };
     }
+
+    let optimizer_code = match opts.optimizer {
+        MosekOptimizer::Free          => ffi::OPTIMIZER_FREE,
+        MosekOptimizer::InteriorPoint => ffi::OPTIMIZER_INTPNT,
+        MosekOptimizer::DualSimplex   => ffi::OPTIMIZER_DUAL_SIMPLEX,
+        MosekOptimizer::NewDualSimplex => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
+        MosekOptimizer::FreeSimplex   => ffi::OPTIMIZER_FREE_SIMPLEX,
+    };
+    unsafe { ffi::MSK_putintparam(task, ffi::IPAR_OPTIMIZER, optimizer_code) };
+
+    let sim_hs_code = match opts.sim_hotstart {
+        MosekSimHotstart::None       => ffi::SIM_HOTSTART_NONE,
+        MosekSimHotstart::Free       => ffi::SIM_HOTSTART_FREE,
+        MosekSimHotstart::StatusKeys => ffi::SIM_HOTSTART_STATUS_KEYS,
+    };
+    unsafe { ffi::MSK_putintparam(task, ffi::IPAR_SIM_HOTSTART, sim_hs_code) };
+    let lu_code = if opts.sim_hotstart_lu { ffi::MSK_ON } else { ffi::MSK_OFF };
+    unsafe { ffi::MSK_putintparam(task, ffi::IPAR_SIM_HOTSTART_LU, lu_code) };
+    unsafe { ffi::MSK_putintparam(task, ffi::IPAR_INTPNT_HOTSTART, ffi::INTPNT_HOTSTART_PRIMAL_DUAL) };
 
     task
 }

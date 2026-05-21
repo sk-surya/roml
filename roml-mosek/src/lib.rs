@@ -23,5 +23,5 @@ mod ffi;
 mod index_map;
 pub mod adapter;
 
-pub use adapter::{MosekAdapter, MosekOptions};
+pub use adapter::{MosekAdapter, MosekOptimizer, MosekOptions, MosekSimHotstart};
 pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};
