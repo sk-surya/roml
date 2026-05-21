@@ -1,0 +1,14 @@
+2026-05-21T01:22:17.852612-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 3 vars, 1 cons, mip=true
+2026-05-21T01:22:17.852751-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 0 cons, mip=false
+2026-05-21T01:22:17.852908-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 1 cons, mip=false
+2026-05-21T01:22:17.853294-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 2 vars, 1 cons, mip=false
+2026-05-21T01:22:17.853396-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 0 cons, mip=false
+2026-05-21T01:22:17.853494-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 0 cons, mip=false
+2026-05-21T01:22:17.853588-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 1 cons, mip=false
+2026-05-21T01:22:17.853670-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 2 vars, 3 cons, mip=false
+2026-05-21T01:22:17.876228-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 0 cons, mip=false
+2026-05-21T01:22:17.899958-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 0 cons, mip=false
+2026-05-21T01:22:17.907581-05:00 WARN roml::model - Uncommitted parameter changes detected, auto-committing
+2026-05-21T01:22:17.907612-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 0 cons, mip=false
+2026-05-21T01:22:17.914695-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 2 cons, mip=false
+2026-05-21T01:22:17.914738-05:00 INFO roml_mosek::adapter - Starting MOSEK solve: 1 vars, 1 cons, mip=false
