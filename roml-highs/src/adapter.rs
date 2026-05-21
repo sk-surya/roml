@@ -493,8 +493,67 @@ impl Drop for HighsAdapter {
 
 impl SolverAdapter for HighsAdapter {
     fn apply_changes(&mut self, changes: &[Change]) -> Result<(), SolverError> {
-        for change in changes {
-            self.apply_one(change)?;
+        let mut i = 0;
+        while i < changes.len() {
+            // Batch: ConstraintAdded immediately followed by CoefficientAdded(Constraint) events
+            // for the same constraint → single Highs_addRow with all coefficients instead of
+            // N individual Highs_changeCoeff calls.
+            if let Change::ConstraintAdded { con, bounds } = &changes[i] {
+                let lb = if bounds.lower == f64::NEG_INFINITY { -self.inf } else { bounds.lower };
+                let ub = if bounds.upper == f64::INFINITY { self.inf } else { bounds.upper };
+
+                let mut cols: Vec<HighsInt> = Vec::new();
+                let mut vals: Vec<f64> = Vec::new();
+                let mut j = i + 1;
+                while j < changes.len() {
+                    if let Change::CoefficientAdded {
+                        var,
+                        target: CoefficientTarget::Constraint(target_con),
+                        value,
+                        ..
+                    } = &changes[j]
+                    {
+                        if target_con == con {
+                            if let Some(col) = self.col_map.get(*var) {
+                                cols.push(col);
+                                vals.push(*value);
+                            }
+                            j += 1;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+
+                let row_idx = unsafe { ffi::Highs_getNumRow(self.ptr) };
+                let ret = if cols.is_empty() {
+                    unsafe {
+                        ffi::Highs_addRow(self.ptr, lb, ub, 0, std::ptr::null(), std::ptr::null())
+                    }
+                } else {
+                    unsafe {
+                        ffi::Highs_addRow(
+                            self.ptr,
+                            lb,
+                            ub,
+                            cols.len() as HighsInt,
+                            cols.as_ptr(),
+                            vals.as_ptr(),
+                        )
+                    }
+                };
+                if ret < 0 {
+                    return Err(highs_err("Highs_addRow failed"));
+                }
+                self.row_map.insert(*con, row_idx);
+                self.con_bounds.insert(*con, (bounds.lower, bounds.upper));
+
+                i = j;
+                continue;
+            }
+
+            self.apply_one(&changes[i])?;
+            i += 1;
         }
         // Invalidate any cached solution — model has changed.
         self.solution = None;
