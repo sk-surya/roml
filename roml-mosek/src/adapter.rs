@@ -680,7 +680,15 @@ impl SolverAdapter for MosekAdapter {
     }
 }
 
-// ── Private helper ─────────────────────────────────────────────────────────
+// ── Private helpers ────────────────────────────────────────────────────────
+
+/// C-callable stream callback that writes MOSEK log output to stdout.
+unsafe extern "C" fn mosek_stdout_cb(_handle: *mut std::ffi::c_void, msg: *const std::ffi::c_char) {
+    if msg.is_null() { return; }
+    if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(msg) }.to_str() {
+        print!("{s}");
+    }
+}
 
 fn make_task(env: MosekEnv, opts: &MosekOptions) -> MosekTask {
     let mut task: MosekTask = std::ptr::null_mut();
@@ -688,6 +696,17 @@ fn make_task(env: MosekEnv, opts: &MosekOptions) -> MosekTask {
     assert!(ret == ffi::RES_OK, "MSK_maketask failed with code {ret}");
 
     unsafe { ffi::MSK_putintparam(task, ffi::IPAR_LOG, opts.log_level) };
+
+    if opts.log_level > 0 {
+        unsafe {
+            ffi::MSK_linkfunctotaskstream(
+                task,
+                ffi::STREAM_LOG,
+                std::ptr::null_mut(),
+                Some(mosek_stdout_cb),
+            )
+        };
+    }
 
     if let Some(threads) = opts.num_threads {
         unsafe { ffi::MSK_putintparam(task, ffi::IPAR_NUM_THREADS, threads) };

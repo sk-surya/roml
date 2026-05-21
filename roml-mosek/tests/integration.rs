@@ -5,7 +5,7 @@
 
 use roml::{Bounds, ConstraintBounds, Model, Sense, VarType};
 use roml::solver::{SolverAdapter, SolverStatus};
-use roml_mosek::MosekAdapter;
+use roml_mosek::{MosekAdapter, MosekOptions};
 
 fn init_test_logging() {
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -14,6 +14,10 @@ fn init_test_logging() {
             eprintln!("warning: failed to initialise logging: {}", e);
         }
     });
+}
+
+fn new_adapter() -> MosekAdapter {
+    MosekAdapter::with_options(MosekOptions::default().log_level(10))
 }
 
 fn approx_eq(a: f64, b: f64) -> bool {
@@ -58,7 +62,7 @@ fn simple_lp_solve() {
     model.add_objective_coefficient(obj, x, ValueExpr::constant(1.0)).unwrap();
     model.add_objective_coefficient(obj, y, ValueExpr::constant(1.0)).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -89,7 +93,7 @@ fn incremental_bound_change() {
     use roml::value_expr::ValueExpr;
     model.add_objective_coefficient(obj, x, ValueExpr::constant(1.0)).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -121,7 +125,7 @@ fn constraint_add_remove() {
     let (obj, _obj_constant) = model.add_objective_expr(x, Sense::Maximize).unwrap();
     model.set_active_objective(obj).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     // First solve: x = 10
@@ -167,7 +171,7 @@ fn parameter_coefficient_update() {
     use roml::value_expr::ValueExpr;
     model.add_objective_coefficient(obj, x, ValueExpr::param(p)).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -212,7 +216,7 @@ fn binary_mip() {
     model.add_objective_coefficient(obj, y, ValueExpr::constant(4.0)).unwrap();
     model.add_objective_coefficient(obj, z, ValueExpr::constant(3.0)).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -247,7 +251,7 @@ fn objective_switch() {
 
     model.set_active_objective(obj_min).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -281,7 +285,7 @@ fn infeasible_model() {
     use roml::value_expr::ValueExpr;
     model.add_objective_coefficient(obj, x, ValueExpr::constant(1.0)).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -315,7 +319,7 @@ fn solution_enrichment_lp() {
     model.add_objective_coefficient(obj, x, ValueExpr::constant(3.0)).unwrap();
     model.add_objective_coefficient(obj, y, ValueExpr::constant(2.0)).unwrap();
 
-    let mut adapter = MosekAdapter::new();
+    let mut adapter = new_adapter();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();

@@ -60,6 +60,9 @@ pub const PRO_STA_PRIM_AND_DUAL_INFEAS:     MosekInt = 6;
 pub const PRO_STA_ILL_POSED:                MosekInt = 7;
 pub const PRO_STA_PRIM_INFEAS_OR_UNBOUNDED: MosekInt = 8;
 
+// Stream type constants (MSKstreamtypee)
+pub const STREAM_LOG: MosekInt = 0;
+
 // Integer params (MSKiparame) — subset we use
 pub const IPAR_LOG:         MosekInt = 34;
 pub const IPAR_NUM_THREADS: MosekInt = 100;
@@ -141,6 +144,14 @@ extern "C" {
         task:   MosekTask,
         num:    MosekInt,
         subset: *const MosekInt,
+    ) -> MosekRes;
+
+    // ── Logging stream ────────────────────────────────────────────────────
+    pub fn MSK_linkfunctotaskstream(
+        task:        MosekTask,
+        whichstream: MosekInt,
+        handle:      *mut c_void,
+        func:        Option<unsafe extern "C" fn(*mut c_void, *const c_char)>,
     ) -> MosekRes;
 
     // ── Optimize ──────────────────────────────────────────────────────────
