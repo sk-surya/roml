@@ -95,14 +95,33 @@ pub struct HighsAdapter {
 // Users are responsible for not calling it from multiple threads simultaneously.
 unsafe impl Send for HighsAdapter {}
 
+/// Options forwarded to HiGHS at adapter creation time.
+#[derive(Debug, Clone)]
+pub struct HighsOptions {
+    /// Number of solver threads. Defaults to 1 — LP dual simplex is sequential
+    /// and extra threads only sleep on `HighsBinarySemaphore`.
+    pub threads: i32,
+}
+
+impl Default for HighsOptions {
+    fn default() -> Self {
+        Self { threads: 1 }
+    }
+}
+
 impl HighsAdapter {
-    /// Create a new HiGHS adapter.
+    /// Create a new HiGHS adapter with default options.
     ///
     /// # Panics
     ///
     /// Panics if `Highs_create()` returns null or if HiGHS was compiled with
     /// 64-bit indexing (we require `HighsInt = i32`).
     pub fn new() -> Self {
+        Self::with_options(HighsOptions::default())
+    }
+
+    /// Create a new HiGHS adapter with explicit options.
+    pub fn with_options(opts: HighsOptions) -> Self {
         let ptr = unsafe { ffi::Highs_create() };
         assert!(!ptr.is_null(), "Highs_create() returned null");
 
@@ -118,6 +137,11 @@ impl HighsAdapter {
         let output_flag = c"output_flag";
         unsafe {
             ffi::Highs_setBoolOptionValue(ptr, output_flag.as_ptr(), 1);
+        }
+
+        let threads_key = c"threads";
+        unsafe {
+            ffi::Highs_setIntOptionValue(ptr, threads_key.as_ptr(), opts.threads);
         }
 
         let inf = unsafe { ffi::Highs_getInfinity(ptr) };

@@ -47,5 +47,5 @@ mod ffi;
 mod index_map;
 pub mod adapter;
 
-pub use adapter::HighsAdapter;
+pub use adapter::{HighsAdapter, HighsOptions};
 pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};
