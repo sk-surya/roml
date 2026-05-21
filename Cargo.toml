@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "roml-highs", "roml-mosek"]
+members = [".", "roml-highs", "roml-mosek", "roml-xpress"]
 resolver = "2"
 
 [package]

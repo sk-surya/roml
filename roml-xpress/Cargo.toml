@@ -1,0 +1,11 @@
+[package]
+name = "roml-xpress"
+version = "0.1.0"
+edition = "2021"
+description = "FICO Xpress solver adapter for roml"
+
+[dependencies]
+log = "0.4"
+roml = { path = ".." }
+
+[build-dependencies]
