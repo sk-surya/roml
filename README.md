@@ -2,6 +2,8 @@
 
 A production‑grade, incremental MILP modeling library implemented in Rust.
 
+For a detailed, agent-oriented modeling guide, see [MODELING_API.md](MODELING_API.md).
+
 ## Logging
 
 The crate uses the `log` facade for all logging calls.  At runtime you can

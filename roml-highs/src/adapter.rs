@@ -95,17 +95,39 @@ pub struct HighsAdapter {
 // Users are responsible for not calling it from multiple threads simultaneously.
 unsafe impl Send for HighsAdapter {}
 
-/// Options forwarded to HiGHS at adapter creation time.
+/// A single HiGHS option value, covering all types HiGHS exposes via its C API.
 #[derive(Debug, Clone)]
-pub struct HighsOptions {
-    /// Number of solver threads. Defaults to 1 — LP dual simplex is sequential
-    /// and extra threads only sleep on `HighsBinarySemaphore`.
-    pub threads: i32,
+pub enum HighsOption {
+    Bool(bool),
+    Int(i32),
+    Double(f64),
+    String(String),
 }
 
-impl Default for HighsOptions {
-    fn default() -> Self {
-        Self { threads: 1 }
+impl From<bool>   for HighsOption { fn from(v: bool)   -> Self { Self::Bool(v) } }
+impl From<i32>    for HighsOption { fn from(v: i32)    -> Self { Self::Int(v) } }
+impl From<f64>    for HighsOption { fn from(v: f64)    -> Self { Self::Double(v) } }
+impl From<&str>   for HighsOption { fn from(v: &str)   -> Self { Self::String(v.into()) } }
+impl From<String> for HighsOption { fn from(v: String) -> Self { Self::String(v) } }
+
+/// Options forwarded to HiGHS at adapter creation time.
+///
+/// Use the builder methods to construct: `HighsOptions::default().threads(1).set("solver", "ipx")`.
+#[derive(Debug, Clone, Default)]
+pub struct HighsOptions {
+    threads: Option<i32>,
+    extra: Vec<(String, HighsOption)>,
+}
+
+impl HighsOptions {
+    pub fn threads(mut self, n: i32) -> Self {
+        self.threads = Some(n);
+        self
+    }
+
+    pub fn set(mut self, key: &str, value: impl Into<HighsOption>) -> Self {
+        self.extra.push((key.into(), value.into()));
+        self
     }
 }
 
@@ -139,9 +161,28 @@ impl HighsAdapter {
             ffi::Highs_setBoolOptionValue(ptr, output_flag.as_ptr(), 1);
         }
 
-        let threads_key = c"threads";
-        unsafe {
-            ffi::Highs_setIntOptionValue(ptr, threads_key.as_ptr(), opts.threads);
+        if let Some(threads) = opts.threads {
+            let key = c"threads";
+            unsafe { ffi::Highs_setIntOptionValue(ptr, key.as_ptr(), threads); }
+        }
+
+        for (key, value) in &opts.extra {
+            let key = std::ffi::CString::new(key.as_str()).unwrap();
+            match value {
+                HighsOption::Bool(v) => unsafe {
+                    ffi::Highs_setBoolOptionValue(ptr, key.as_ptr(), *v as HighsInt);
+                },
+                HighsOption::Int(v) => unsafe {
+                    ffi::Highs_setIntOptionValue(ptr, key.as_ptr(), *v);
+                },
+                HighsOption::Double(v) => unsafe {
+                    ffi::Highs_setDoubleOptionValue(ptr, key.as_ptr(), *v);
+                },
+                HighsOption::String(v) => {
+                    let val = std::ffi::CString::new(v.as_str()).unwrap();
+                    unsafe { ffi::Highs_setStringOptionValue(ptr, key.as_ptr(), val.as_ptr()); }
+                }
+            }
         }
 
         let inf = unsafe { ffi::Highs_getInfinity(ptr) };
@@ -193,13 +234,18 @@ impl HighsAdapter {
         }
     }
 
+    fn highs_bounds(&self, lb: f64, ub: f64) -> (f64, f64) {
+        let lb = if lb == f64::NEG_INFINITY { -self.inf } else { lb };
+        let ub = if ub == f64::INFINITY { self.inf } else { ub };
+        (lb, ub)
+    }
+
     /// Apply a single change to HiGHS.
     fn apply_one(&mut self, change: &Change) -> Result<(), SolverError> {
         match change {
             // ── Variable Added ────────────────────────────────────────────
             Change::VariableAdded { var, bounds, var_type } => {
-                let lb = if bounds.lower == f64::NEG_INFINITY { -self.inf } else { bounds.lower };
-                let ub = if bounds.upper == f64::INFINITY { self.inf } else { bounds.upper };
+                let (lb, ub) = self.highs_bounds(bounds.lower, bounds.upper);
 
                 // Capture the next column index *before* calling addVar.
                 // Highs_addVar returns a status code.
@@ -244,8 +290,7 @@ impl HighsAdapter {
             // ── Variable Bounds Changed ────────────────────────────────────
             Change::VariableBoundsChanged { var, new, .. } => {
                 if let Some(col) = self.col_map.get(*var) {
-                    let lb = if new.lower == f64::NEG_INFINITY { -self.inf } else { new.lower };
-                    let ub = if new.upper == f64::INFINITY { self.inf } else { new.upper };
+                    let (lb, ub) = self.highs_bounds(new.lower, new.upper);
                     let ret = unsafe { ffi::Highs_changeColBounds(self.ptr, col, lb, ub) };
                     check_status(ret, "Highs_changeColBounds")?;
                     self.var_bounds.insert(*var, (new.lower, new.upper));
@@ -270,13 +315,9 @@ impl HighsAdapter {
             Change::VariableActivityChanged { var, active } => {
                 if let Some(col) = self.col_map.get(*var) {
                     let (lb, ub) = if *active {
-                        // Restore original bounds.
                         let (orig_lb, orig_ub) = self.var_bounds.get(var).copied().unwrap_or((0.0, self.inf));
-                        let lb = if orig_lb == f64::NEG_INFINITY { -self.inf } else { orig_lb };
-                        let ub = if orig_ub == f64::INFINITY { self.inf } else { orig_ub };
-                        (lb, ub)
+                        self.highs_bounds(orig_lb, orig_ub)
                     } else {
-                        // Fix at zero.
                         (0.0, 0.0)
                     };
                     let ret = unsafe { ffi::Highs_changeColBounds(self.ptr, col, lb, ub) };
@@ -286,8 +327,7 @@ impl HighsAdapter {
 
             // ── Constraint Added ───────────────────────────────────────────
             Change::ConstraintAdded { con, bounds } => {
-                let lb = if bounds.lower == f64::NEG_INFINITY { -self.inf } else { bounds.lower };
-                let ub = if bounds.upper == f64::INFINITY { self.inf } else { bounds.upper };
+                let (lb, ub) = self.highs_bounds(bounds.lower, bounds.upper);
 
                 // Capture the next row index *before* calling addRow.
                 // Highs_addRow may return the index or a status code depending
@@ -319,8 +359,7 @@ impl HighsAdapter {
             // ── Constraint Bounds Changed ──────────────────────────────────
             Change::ConstraintBoundsChanged { con, new, .. } => {
                 if let Some(row) = self.row_map.get(*con) {
-                    let lb = if new.lower == f64::NEG_INFINITY { -self.inf } else { new.lower };
-                    let ub = if new.upper == f64::INFINITY { self.inf } else { new.upper };
+                    let (lb, ub) = self.highs_bounds(new.lower, new.upper);
                     let ret = unsafe { ffi::Highs_changeRowBounds(self.ptr, row, lb, ub) };
                     check_status(ret, "Highs_changeRowBounds")?;
                     self.con_bounds.insert(*con, (new.lower, new.upper));
@@ -332,9 +371,7 @@ impl HighsAdapter {
                 if let Some(row) = self.row_map.get(*con) {
                     let (lb, ub) = if *active {
                         let (orig_lb, orig_ub) = self.con_bounds.get(con).copied().unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
-                        let lb = if orig_lb == f64::NEG_INFINITY { -self.inf } else { orig_lb };
-                        let ub = if orig_ub == f64::INFINITY { self.inf } else { orig_ub };
-                        (lb, ub)
+                        self.highs_bounds(orig_lb, orig_ub)
                     } else {
                         (-self.inf, self.inf)
                     };
@@ -523,8 +560,7 @@ impl SolverAdapter for HighsAdapter {
             // for the same constraint → single Highs_addRow with all coefficients instead of
             // N individual Highs_changeCoeff calls.
             if let Change::ConstraintAdded { con, bounds } = &changes[i] {
-                let lb = if bounds.lower == f64::NEG_INFINITY { -self.inf } else { bounds.lower };
-                let ub = if bounds.upper == f64::INFINITY { self.inf } else { bounds.upper };
+                let (lb, ub) = self.highs_bounds(bounds.lower, bounds.upper);
 
                 let mut cols: Vec<HighsInt> = Vec::new();
                 let mut vals: Vec<f64> = Vec::new();
