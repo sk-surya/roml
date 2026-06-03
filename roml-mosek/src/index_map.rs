@@ -45,6 +45,11 @@ impl<Id: Hash + Eq + Copy> IndexMap<Id> {
     pub fn iter(&self) -> impl Iterator<Item = (Id, i32)> + '_ {
         self.id_to_idx.iter().map(|(id, idx)| (*id, *idx))
     }
+
+    /// Build a reverse map: MOSEK index → Id.
+    pub fn reverse_map(&self) -> HashMap<i32, Id> {
+        self.iter().map(|(id, idx)| (idx, id)).collect()
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +67,17 @@ mod tests {
         assert_eq!(m.get(30u32), Some(2));
         assert_eq!(m.remove(20u32), Some(1));
         assert_eq!(m.get(20u32), None);
+    }
+
+    #[test]
+    fn reverse_map_works() {
+        let mut m: IndexMap<u32> = IndexMap::new();
+        m.insert(10u32, 0);
+        m.insert(20u32, 1);
+        let rev = m.reverse_map();
+        assert_eq!(rev.len(), 2);
+        assert_eq!(rev.get(&0), Some(&10u32));
+        assert_eq!(rev.get(&1), Some(&20u32));
     }
 
     #[test]
