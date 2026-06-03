@@ -79,11 +79,12 @@ fn xprs_bound(v: f64) -> f64 {
 pub struct XpressOptions {
     threads:   Option<i32>,
     log_level: i32,
+    max_time:  Option<f64>,
 }
 
 impl Default for XpressOptions {
     fn default() -> Self {
-        Self { threads: None, log_level: 5 }
+        Self { threads: None, log_level: 5, max_time: None }
     }
 }
 
@@ -95,6 +96,11 @@ impl XpressOptions {
 
     pub fn log_level(mut self, n: i32) -> Self {
         self.log_level = n;
+        self
+    }
+
+    pub fn max_time(mut self, seconds: f64) -> Self {
+        self.max_time = Some(seconds);
         self
     }
 }
@@ -138,6 +144,9 @@ fn make_prob(opts: &XpressOptions) -> ffi::XPRSprob {
         ffi::XPRSsetintcontrol(prob, ffi::XPRS_OUTPUTLOG, opts.log_level);
         if let Some(t) = opts.threads {
             ffi::XPRSsetintcontrol(prob, ffi::XPRS_THREADS, t);
+        }
+        if let Some(secs) = opts.max_time {
+            ffi::XPRSsetintcontrol(prob, ffi::XPRS_TIMELIMIT, secs as i32);
         }
         if opts.log_level > 0 {
             ffi::XPRSaddcbmessage(prob, Some(xpress_msg_cb), std::ptr::null_mut(), 0);

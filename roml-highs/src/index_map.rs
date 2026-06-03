@@ -58,6 +58,14 @@ impl<Id: Hash + Eq + Copy> IndexMap<Id> {
     pub fn iter(&self) -> impl Iterator<Item = (Id, i32)> + '_ {
         self.id_to_idx.iter().map(|(id, idx)| (*id, *idx))
     }
+
+    /// Build a reverse map: HiGHS index → Id.
+    ///
+    /// Useful for translating HiGHS column/row indices back to roml IDs
+    /// inside callback handlers.
+    pub fn reverse_map(&self) -> std::collections::HashMap<i32, Id> {
+        self.iter().map(|(id, idx)| (idx, id)).collect()
+    }
 }
 
 #[cfg(test)]
@@ -77,6 +85,20 @@ mod tests {
 
         assert_eq!(m.remove(20u32), Some(1));
         assert_eq!(m.get(20u32), None);
+    }
+
+    #[test]
+    fn reverse_map_works() {
+        let mut m: IndexMap<u32> = IndexMap::new();
+        m.insert(10u32, 0);
+        m.insert(20u32, 1);
+        m.insert(30u32, 2);
+
+        let rev = m.reverse_map();
+        assert_eq!(rev.len(), 3);
+        assert_eq!(rev.get(&0), Some(&10u32));
+        assert_eq!(rev.get(&1), Some(&20u32));
+        assert_eq!(rev.get(&2), Some(&30u32));
     }
 
     #[test]

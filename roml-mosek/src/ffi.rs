@@ -63,6 +63,9 @@ pub const PRO_STA_PRIM_INFEAS_OR_UNBOUNDED: MosekInt = 8;
 // Stream type constants (MSKstreamtypee)
 pub const STREAM_LOG: MosekInt = 0;
 
+// Double params (MSKdparame) — subset we use
+pub const DPAR_MIO_MAX_TIME: MosekInt = 42;
+
 // Integer params (MSKiparame) — subset we use
 pub const IPAR_LOG:              MosekInt = 34;
 pub const IPAR_NUM_THREADS:      MosekInt = 100;
@@ -91,6 +94,20 @@ pub const INTPNT_HOTSTART_PRIMAL_DUAL:  MosekInt = 3; // feed both primal+dual f
 
 // Return codes
 pub const RES_OK: MosekRes = 0;
+pub const RES_TRM_USER_CALLBACK: MosekRes = 100007;
+
+// ── Callback code constants (MSKcallbackcodee) ────────────────────────────
+pub const CALLBACK_BEGIN_MIO: MosekInt = 17;
+pub const CALLBACK_END_MIO: MosekInt = 54;
+pub const CALLBACK_IM_MIO: MosekInt = 80;
+pub const CALLBACK_NEW_INT_MIO: MosekInt = 91;
+
+// ── MIO info indices (for douinf / intinf arrays in callbacks) ───────────
+pub const DINF_MIO_OBJ_ABS_GAP: MosekInt = 35;
+pub const DINF_MIO_OBJ_BOUND: MosekInt = 36;
+pub const DINF_MIO_OBJ_INT: MosekInt = 37;
+pub const DINF_MIO_OBJ_REL_GAP: MosekInt = 38;
+pub const IINF_MIO_NUM_INT_SOLUTIONS: MosekInt = 47;
 
 // ── Extern C declarations ──────────────────────────────────────────────────
 
@@ -111,6 +128,11 @@ extern "C" {
         task:     MosekTask,
         param:    MosekInt,
         parvalue: MosekInt,
+    ) -> MosekRes;
+    pub fn MSK_putdouparam(
+        task:     MosekTask,
+        param:    MosekInt,
+        parvalue: MosekReal,
     ) -> MosekRes;
 
     // ── Appending variables / constraints ─────────────────────────────────
@@ -215,4 +237,44 @@ extern "C" {
         whichsol:  MosekInt,
         primalobj: *mut MosekReal,
     ) -> MosekRes;
+
+    // ── Callbacks ──────────────────────────────────────────────────────────
+    /// Register a callback function. The callback is invoked at various points
+    /// during optimization (determined by the callback code).
+    pub fn MSK_putcallbackfunc(
+        task:   MosekTask,
+        func:   Option<MosekCallbackFunc>,
+        handle: *mut c_void,
+    ) -> MosekRes;
+
+    // ── Efficient matrix modification ──────────────────────────────────────
+    /// Set multiple coefficients in the constraint matrix at once.
+    pub fn MSK_putaijlist(
+        task:   MosekTask,
+        num:    MosekInt,
+        subi:   *const MosekInt,
+        subj:   *const MosekInt,
+        valij:  *const MosekReal,
+    ) -> MosekRes;
+
+    // ── Solution existence check ───────────────────────────────────────────
+    /// Check whether a solution of the given type exists.
+    pub fn MSK_solutiondef(
+        task:     MosekTask,
+        whichsol: MosekInt,
+        isdef:    *mut MosekInt,
+    ) -> MosekRes;
 }
+
+// ── MOSEK callback function pointer type ──────────────────────────────────
+
+/// Type of the callback function registered with `MSK_putcallbackfunc`.
+/// Return 0 to continue, non-zero to terminate with `RES_TRM_USER_CALLBACK`.
+pub type MosekCallbackFunc = unsafe extern "C" fn(
+    task:   MosekTask,
+    usrptr: *mut c_void,        // user data (MosekCallbackState)
+    caller: MosekInt,           // event code (e.g., CALLBACK_NEW_INT_MIO)
+    douinf: *const MosekReal,   // double info array
+    intinf: *const MosekInt,    // int info array
+    lintinf: *const i64,        // long int info array
+) -> MosekInt;

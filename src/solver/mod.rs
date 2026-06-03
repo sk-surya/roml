@@ -10,6 +10,8 @@
 //!
 //! Solver concepts must NOT leak into the model layer.
 
+pub mod callback;
+
 use std::collections::HashMap;
 
 use crate::{
@@ -106,6 +108,22 @@ pub trait SolverAdapter {
 
     /// Check if the solver supports incremental updates for a change type.
     fn supports_incremental(&self, change: &Change) -> bool;
+
+    /// Register a callback handler for MIP callbacks (lazy constraints, cuts).
+    ///
+    /// The handler is invoked during `solve()` when the solver finds
+    /// candidate integer solutions. This enables lazy constraints,
+    /// cutting planes, and solution inspection during branch-and-cut.
+    ///
+    /// Default: returns `NotSupported`.
+    fn set_callback_handler(
+        &mut self,
+        _handler: Box<dyn callback::CallbackHandler>,
+    ) -> Result<(), SolverError> {
+        Err(SolverError::NotSupported(
+            "callbacks not supported by this solver".into(),
+        ))
+    }
 }
 
 /// Convenience helpers for syncing and solving a model with a solver adapter.

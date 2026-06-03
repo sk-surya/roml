@@ -64,6 +64,7 @@ pub const XPRS_MIPOBJVAL: XprsInt = 2003;
 
 pub const XPRS_OUTPUTLOG: XprsInt = 8035;
 pub const XPRS_THREADS:   XprsInt = 8278;
+pub const XPRS_TIMELIMIT: XprsInt = 7158;
 
 // ── Extern C declarations ──────────────────────────────────────────────────
 

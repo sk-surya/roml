@@ -14,11 +14,13 @@
 //!   with HiGHS's dense integer addressing.
 
 use std::collections::HashMap;
+use std::ffi::{c_char, c_double, c_int, c_void};
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
+use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
 use roml::solver::{SolverAdapter, SolverError, SolverStatus};
 use log::{info, warn};
 
@@ -89,6 +91,9 @@ pub struct HighsAdapter {
 
     /// HiGHS +∞ value (from Highs_getInfinity).
     inf: f64,
+
+    /// Optional callback handler for MIP lazy constraints / cutting planes.
+    callback_handler: Option<Box<dyn CallbackHandler>>,
 }
 
 // SAFETY: HiGHS is a C library. We never share the pointer across threads.
@@ -202,6 +207,7 @@ impl HighsAdapter {
             duals: None,
             reduced_costs: None,
             inf,
+            callback_handler: None,
         }
     }
 
@@ -550,6 +556,90 @@ impl Drop for HighsAdapter {
     }
 }
 
+// ── Callback bridge ────────────────────────────────────────────────────────
+
+/// State accessible from the HiGHS C callback trampoline.
+struct CallbackState {
+    /// Forward map: VarId → HiGHS column index (for building cuts).
+    var_to_col: HashMap<VarId, HighsInt>,
+    /// Reverse map: HiGHS column index → VarId (for translating solution).
+    col_to_var: HashMap<HighsInt, VarId>,
+    /// The user's callback handler.
+    handler: Box<dyn CallbackHandler>,
+    /// HiGHS instance pointer (needed inside callback for Highs_getNumCol etc.).
+    highs_ptr: *mut c_void,
+    /// HiGHS +∞ value.
+    _inf: f64,
+}
+
+/// C callback trampoline registered with HiGHS.
+///
+/// HiGHS calls this function during `Highs_run` for enabled callback types.
+/// We only handle `kCallbackMipDefineLazyConstraints`: translate HiGHS
+/// solution data to roml types, invoke the user's `CallbackHandler`, and
+/// inject any cuts via `Highs_addRow` into the running solve.
+unsafe extern "C" fn callback_trampoline(
+    event_type: c_int,
+    _message: *const c_char,
+    data_out: *const ffi::HighsCallbackDataOut,
+    _data_in: *mut ffi::HighsCallbackDataIn,
+    user_data: *mut c_void,
+) {
+    // Only handle lazy-constraint / MIP candidate events.
+    if event_type != ffi::CALLBACK_MIP_DEFINE_LAZY_CONSTRAINTS {
+        return;
+    }
+
+    let state = &mut *(user_data as *mut CallbackState);
+    let out = &*data_out;
+
+    // ── Build roml CallbackData from HiGHS solution ──
+    let num_cols = ffi::Highs_getNumCol(state.highs_ptr) as usize;
+    let sol_slice = std::slice::from_raw_parts(out.mip_solution, num_cols);
+    let mut var_values = HashMap::with_capacity(state.col_to_var.len());
+    for (&col, &var_id) in &state.col_to_var {
+        if let Some(val) = sol_slice.get(col as usize) {
+            var_values.insert(var_id, *val);
+        }
+    }
+
+    let cb_data = CallbackData {
+        var_values,
+        primal_bound: out.mip_primal_bound,
+        dual_bound: out.mip_dual_bound,
+        mip_gap: out.mip_gap,
+    };
+
+    // ── Invoke user handler ──
+    match state.handler.on_candidate(&cb_data) {
+        CallbackAction::Accept => {
+            // HiGHS accepts the candidate solution as feasible.
+        }
+        CallbackAction::AddCuts(cuts) => {
+            for cut in &cuts {
+                let mut cols: Vec<HighsInt> = Vec::with_capacity(cut.terms.len());
+                let mut vals: Vec<f64> = Vec::with_capacity(cut.terms.len());
+                for (var_id, coeff) in &cut.terms {
+                    if let Some(&col) = state.var_to_col.get(var_id) {
+                        cols.push(col);
+                        vals.push(*coeff);
+                    }
+                }
+                if !cols.is_empty() {
+                    ffi::Highs_addRow(
+                        state.highs_ptr,
+                        cut.lower,
+                        cut.upper,
+                        cols.len() as HighsInt,
+                        cols.as_ptr(),
+                        vals.as_ptr(),
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ── SolverAdapter implementation ───────────────────────────────────────────
 
 impl SolverAdapter for HighsAdapter {
@@ -638,7 +728,40 @@ impl SolverAdapter for HighsAdapter {
         } else {
             warn!("Warning: Solving with no active objective.");
         }
+
+        // ── Optional callback registration ──
+        let mut _state_ptr: *mut CallbackState = std::ptr::null_mut();
+        if let Some(handler) = self.callback_handler.take() {
+            let var_to_col: HashMap<VarId, HighsInt> = self.col_map.iter().map(|(v, c)| (v, c)).collect();
+            let col_to_var: HashMap<HighsInt, VarId> = self.col_map.reverse_map();
+
+            let cb_state = Box::new(CallbackState {
+                var_to_col,
+                col_to_var,
+                handler,
+                highs_ptr: self.ptr,
+                _inf: self.inf,
+            });
+            _state_ptr = Box::into_raw(cb_state);
+
+            unsafe {
+                ffi::Highs_setCallback(self.ptr, Some(callback_trampoline), _state_ptr as *mut c_void);
+                ffi::Highs_startCallback(self.ptr, ffi::CALLBACK_MIP_DEFINE_LAZY_CONSTRAINTS);
+            }
+        }
+
         let ret = unsafe { ffi::Highs_run(self.ptr) };
+
+        // ── Optional callback teardown ──
+        if !_state_ptr.is_null() {
+            unsafe {
+                ffi::Highs_stopCallback(self.ptr, ffi::CALLBACK_MIP_DEFINE_LAZY_CONSTRAINTS);
+                ffi::Highs_setCallback(self.ptr, None, std::ptr::null_mut());
+                let cb_state = Box::from_raw(_state_ptr);
+                self.callback_handler = Some(cb_state.handler);
+            }
+        }
+
         check_status(ret, "Highs_run")?;
 
         let raw_status = unsafe { ffi::Highs_getModelStatus(self.ptr) };
@@ -736,10 +859,19 @@ impl SolverAdapter for HighsAdapter {
         self.objective_value = None;
         self.duals = None;
         self.reduced_costs = None;
+        self.callback_handler = None;
     }
 
     fn supports_incremental(&self, _change: &Change) -> bool {
         // HiGHS supports all incremental change types we emit.
         true
+    }
+
+    fn set_callback_handler(
+        &mut self,
+        handler: Box<dyn CallbackHandler>,
+    ) -> Result<(), SolverError> {
+        self.callback_handler = Some(handler);
+        Ok(())
     }
 }

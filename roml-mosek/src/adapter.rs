@@ -14,12 +14,16 @@
 //! - When a column/row is deleted, `reindex_after_delete` keeps maps in sync
 //!   with MOSEK's dense integer addressing.
 
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
+use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
 use roml::solver::{SolverAdapter, SolverError, SolverStatus};
 use log::{info, warn};
 
@@ -87,6 +91,7 @@ pub enum MosekSimHotstart {
 pub struct MosekOptions {
     num_threads: Option<i32>,
     pub log_level: i32,
+    max_time: Option<f64>,
     optimizer: MosekOptimizer,
     sim_hotstart: MosekSimHotstart,
     /// Also reuse the LU factorization from the previous solve (on top of status keys).
@@ -94,6 +99,11 @@ pub struct MosekOptions {
 }
 
 impl MosekOptions {
+    pub fn mio_max_time(mut self, seconds: f64) -> Self {
+        self.max_time = Some(seconds);
+        self
+    }
+
     pub fn threads(mut self, n: i32) -> Self {
         self.num_threads = Some(n);
         self
@@ -145,6 +155,9 @@ pub struct MosekAdapter {
     objective_value: Option<f64>,
     duals:           Option<HashMap<ConId, f64>>,
     reduced_costs:   Option<HashMap<VarId, f64>>,
+
+    /// Optional callback handler for MIP lazy constraints / cutting planes.
+    callback_handler: Option<Box<dyn CallbackHandler>>,
 }
 
 // SAFETY: MOSEK is a C library; we never share the handles across threads.
@@ -179,6 +192,7 @@ impl MosekAdapter {
             objective_value: None,
             duals: None,
             reduced_costs: None,
+            callback_handler: None,
         }
     }
 
@@ -558,6 +572,149 @@ impl Drop for MosekAdapter {
     }
 }
 
+// ── Callback bridge ────────────────────────────────────────────────────────
+
+/// State accessible from the MOSEK C callback trampoline.
+struct MosekCallbackState {
+    col_to_var: HashMap<ffi::MosekInt, VarId>,
+    var_to_col: HashMap<VarId, ffi::MosekInt>,
+    #[allow(dead_code)]
+    task: MosekTask,
+    handler: Box<dyn CallbackHandler>,
+    /// Number of SEC cuts added during this solve.
+    cuts_added: usize,
+}
+
+/// C callback trampoline registered with MOSEK via MSK_putcallbackfunc.
+///
+/// MOSEK calls this function during optimization for various events.
+/// We handle `CALLBACK_NEW_INT_MIO` (new integer solution found):
+/// extract the current solution, invoke the user's CallbackHandler,
+/// and if cuts are returned, add them to the model and return non-zero
+/// to terminate the solve (triggering a re-optimize cycle).
+unsafe extern "C" fn mosek_callback_trampoline(
+    task: MosekTask,
+    usrptr: *mut c_void,
+    caller: ffi::MosekInt,
+    douinf: *const ffi::MosekReal,
+    _intinf: *const ffi::MosekInt,
+    _lintinf: *const i64,
+) -> ffi::MosekInt {
+    if caller != ffi::CALLBACK_NEW_INT_MIO {
+        return 0; // not an event we care about — continue
+    }
+
+    let state = &mut *(usrptr as *mut MosekCallbackState);
+
+    // Extract variable values from the current integer solution
+    let mut num_var: ffi::MosekInt = 0;
+    if ffi::MSK_getnumvar(task, &mut num_var) != ffi::RES_OK || num_var == 0 {
+        return 0;
+    }
+
+    let mut xx = vec![0.0f64; num_var as usize];
+    if ffi::MSK_getxx(task, ffi::SOL_ITG, xx.as_mut_ptr()) != ffi::RES_OK {
+        return 0;
+    }
+
+    // Map MOSEK column indices to VarIds
+    let mut var_values = std::collections::HashMap::with_capacity(state.col_to_var.len());
+    for (&col, &var_id) in &state.col_to_var {
+        if let Some(&val) = xx.get(col as usize) {
+            var_values.insert(var_id, val);
+        }
+    }
+
+    // Build CallbackData from MOSEK info arrays
+    let primal_bound = if !douinf.is_null() {
+        *douinf.add(ffi::DINF_MIO_OBJ_INT as usize)
+    } else {
+        f64::INFINITY
+    };
+    let dual_bound = if !douinf.is_null() {
+        *douinf.add(ffi::DINF_MIO_OBJ_BOUND as usize)
+    } else {
+        f64::NEG_INFINITY
+    };
+    let mip_gap = if !douinf.is_null() && primal_bound.is_finite() && primal_bound != 0.0 {
+        (primal_bound - dual_bound).abs() / primal_bound.abs()
+    } else {
+        f64::INFINITY
+    };
+
+    let cb_data = CallbackData {
+        var_values,
+        primal_bound,
+        dual_bound,
+        mip_gap,
+    };
+
+    // Invoke user handler
+    match state.handler.on_candidate(&cb_data) {
+        CallbackAction::Accept => 0, // continue — solution is feasible
+        CallbackAction::AddCuts(cuts) => {
+            let base_row: ffi::MosekInt = {
+                let mut num = 0;
+                ffi::MSK_getnumcon(task, &mut num);
+                num
+            };
+
+            if cuts.is_empty() {
+                return 0;
+            }
+
+            // Append rows for each cut
+            let n_cuts = cuts.len() as ffi::MosekInt;
+            if ffi::MSK_appendcons(task, n_cuts) != ffi::RES_OK {
+                return -1;
+            }
+
+            for (offset, cut) in cuts.iter().enumerate() {
+                let row = base_row + offset as ffi::MosekInt;
+
+                // Set constraint bound: lower <= sum coeff*var <= upper
+                let (bkc, blc, buc) = if cut.lower.is_finite() && cut.upper.is_finite() {
+                    if (cut.lower - cut.upper).abs() < 1e-12 {
+                        (ffi::BK_FX, cut.lower, cut.upper)
+                    } else {
+                        (ffi::BK_RA, cut.lower, cut.upper)
+                    }
+                } else if cut.lower.is_finite() {
+                    (ffi::BK_LO, cut.lower, 0.0)
+                } else if cut.upper.is_finite() {
+                    (ffi::BK_UP, 0.0, cut.upper)
+                } else {
+                    (ffi::BK_FR, 0.0, 0.0)
+                };
+
+                if ffi::MSK_putconbound(task, row, bkc, blc, buc) != ffi::RES_OK {
+                    continue;
+                }
+
+                // Add coefficients
+                let mut subj: Vec<ffi::MosekInt> = Vec::with_capacity(cut.terms.len());
+                let mut valij: Vec<ffi::MosekReal> = Vec::with_capacity(cut.terms.len());
+                for (var_id, coeff) in &cut.terms {
+                    if let Some(&col) = state.var_to_col.get(var_id) {
+                        subj.push(col);
+                        valij.push(*coeff);
+                    }
+                }
+
+                if !subj.is_empty() {
+                    let subi = vec![row; subj.len()];
+                    ffi::MSK_putaijlist(task, subj.len() as ffi::MosekInt, subi.as_ptr(), subj.as_ptr(), valij.as_ptr());
+                }
+            }
+
+            state.cuts_added += cuts.len();
+
+            // Return non-zero to terminate MSK_optimize — cuts were added
+            -1
+        }
+    }
+}
+
 // ── SolverAdapter implementation ───────────────────────────────────────────
 
 impl SolverAdapter for MosekAdapter {
@@ -585,11 +742,62 @@ impl SolverAdapter for MosekAdapter {
             warn!("Solving with no active objective.");
         }
 
-        let ret = unsafe { ffi::MSK_optimize(self.task) };
-        // TRM codes >= 100000 mean early termination (time/iter limit) — not
-        // errors; we proceed to inspect solution status.
-        if ret > 0 && ret < 100000 {
-            return Err(mosek_err(format!("MSK_optimize error code {ret}")));
+        // ── Optional callback loop ──
+        if let Some(handler) = self.callback_handler.take() {
+            let col_to_var: HashMap<ffi::MosekInt, VarId> = self.col_map.reverse_map();
+            let var_to_col: HashMap<VarId, ffi::MosekInt> =
+                self.col_map.iter().map(|(v, c)| (v, c)).collect();
+
+            let state = Box::new(MosekCallbackState {
+                col_to_var,
+                var_to_col,
+                task: self.task,
+                handler,
+                cuts_added: 0,
+            });
+            let state_ptr: *mut MosekCallbackState = Box::into_raw(state);
+
+            // Register callback
+            unsafe {
+                ffi::MSK_putcallbackfunc(self.task, Some(mosek_callback_trampoline), state_ptr as *mut c_void);
+            }
+
+            // Loop: optimize → if cuts added → re-optimize
+            loop {
+                let ret = unsafe { ffi::MSK_optimize(self.task) };
+                let state = unsafe { &mut *state_ptr };
+
+                if state.cuts_added > 0 {
+                    // Cuts were added; the callback terminated the solve.
+                    // Re-optimize with the tightened model.
+                    state.cuts_added = 0;
+                    continue;
+                }
+
+                // No cuts added in the last solve — check for normal termination
+                if ret > 0 && ret < ffi::RES_TRM_USER_CALLBACK {
+                    // Real error (not user-callback termination)
+                    unsafe {
+                        let _ = Box::from_raw(state_ptr);
+                    }
+                    return Err(mosek_err(format!("MSK_optimize error code {ret}")));
+                }
+                break;
+            };
+
+            // Unregister callback and reclaim state
+            unsafe {
+                ffi::MSK_putcallbackfunc(self.task, None, std::ptr::null_mut());
+                let state = Box::from_raw(state_ptr);
+                self.callback_handler = Some(state.handler);
+            }
+
+        } else {
+            // ── No callback — plain optimize ──
+            let ret = unsafe { ffi::MSK_optimize(self.task) };
+            if ret > 0 && ret < 100000 {
+                return Err(mosek_err(format!("MSK_optimize error code {ret}")));
+            }
         }
 
         let soltype = self.soltype();
@@ -720,6 +928,15 @@ impl SolverAdapter for MosekAdapter {
         self.objective_value = None;
         self.duals = None;
         self.reduced_costs = None;
+        self.callback_handler = None;
+    }
+
+    fn set_callback_handler(
+        &mut self,
+        handler: Box<dyn CallbackHandler>,
+    ) -> Result<(), SolverError> {
+        self.callback_handler = Some(handler);
+        Ok(())
     }
 
     fn supports_incremental(&self, _change: &Change) -> bool {
@@ -753,6 +970,10 @@ fn make_task(env: MosekEnv, opts: &MosekOptions) -> MosekTask {
                 Some(mosek_stdout_cb),
             )
         };
+    }
+
+    if let Some(max_time) = opts.max_time {
+        unsafe { ffi::MSK_putdouparam(task, ffi::DPAR_MIO_MAX_TIME, max_time) };
     }
 
     if let Some(threads) = opts.num_threads {
