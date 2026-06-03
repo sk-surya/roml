@@ -1,0 +1,34 @@
+2026-05-20T01:25:40.806424-05:00 INFO roml_highs::adapter - Starting solve with 2 variables and 1 constraints
+2026-05-20T01:25:40.806547-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:25:40.806708-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints
+2026-05-20T01:25:40.806846-05:00 INFO roml_highs::adapter - Starting solve with 2 variables and 3 constraints
+2026-05-20T01:25:40.806931-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:25:40.806946-05:00 WARN roml::model - Uncommitted parameter changes detected, auto-committing
+2026-05-20T01:25:40.806976-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:25:40.807109-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 2 constraints
+2026-05-20T01:25:40.807362-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:25:40.807396-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints
+2026-05-20T01:37:34.986423-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:37:34.986573-05:00 INFO roml_highs::adapter - Starting solve with 2 variables and 3 constraints
+2026-05-20T01:37:34.986605-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints
+2026-05-20T01:37:34.986673-05:00 INFO roml_highs::adapter - Starting solve with 2 variables and 1 constraints
+2026-05-20T01:37:34.986727-05:00 WARN roml::model - Uncommitted parameter changes detected, auto-committing
+2026-05-20T01:37:34.986766-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:37:34.986800-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:37:34.986945-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-20T01:37:34.987312-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 2 constraints
+2026-05-20T01:37:34.987521-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints
+2026-05-21T00:21:32.859668-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-21T00:21:32.859825-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints
+2026-05-21T00:21:32.859837-05:00 INFO roml_highs::adapter - Starting solve with 2 variables and 3 constraints
+2026-05-21T00:21:32.859847-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints
+2026-05-21T00:21:32.859892-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-21T00:21:32.859914-05:00 INFO roml_highs::adapter - Starting solve with 2 variables and 1 constraints
+2026-05-21T00:21:32.859940-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-21T00:21:32.859995-05:00 INFO roml_highs::adapter - Starting solve with 3 variables and 1 constraints
+2026-05-21T00:21:32.860508-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-21T00:21:32.860541-05:00 WARN roml::model - Uncommitted parameter changes detected, auto-committing
+2026-05-21T00:21:32.860564-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-21T00:21:32.860638-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 0 constraints
+2026-05-21T00:21:32.861371-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 2 constraints
+2026-05-21T00:21:32.861575-05:00 INFO roml_highs::adapter - Starting solve with 1 variables and 1 constraints

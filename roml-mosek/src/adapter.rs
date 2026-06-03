@@ -96,6 +96,8 @@ pub struct MosekOptions {
     sim_hotstart: MosekSimHotstart,
     /// Also reuse the LU factorization from the previous solve (on top of status keys).
     sim_hotstart_lu: bool,
+    /// Enable solver console output (iteration log). Default: false.
+    pub console_output: bool,
 }
 
 impl MosekOptions {
@@ -127,6 +129,11 @@ impl MosekOptions {
 
     pub fn sim_hotstart_lu(mut self, enabled: bool) -> Self {
         self.sim_hotstart_lu = enabled;
+        self
+    }
+
+    pub fn console_output(mut self, enabled: bool) -> Self {
+        self.console_output = enabled;
         self
     }
 }
@@ -939,6 +946,13 @@ impl SolverAdapter for MosekAdapter {
         Ok(())
     }
 
+    fn set_console_output(&mut self, enabled: bool) -> Result<(), SolverError> {
+        self.opts.console_output = enabled;
+        let level: i32 = if enabled { 3 } else { 0 };
+        unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_LOG, level); }
+        Ok(())
+    }
+
     fn supports_incremental(&self, _change: &Change) -> bool {
         true
     }
@@ -946,11 +960,15 @@ impl SolverAdapter for MosekAdapter {
 
 // ── Private helpers ────────────────────────────────────────────────────────
 
-/// C-callable stream callback that writes MOSEK log output to stdout.
+/// C-callable stream callback that writes MOSEK log output to stderr (unbuffered).
 unsafe extern "C" fn mosek_stdout_cb(_handle: *mut std::ffi::c_void, msg: *const std::ffi::c_char) {
     if msg.is_null() { return; }
     if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(msg) }.to_str() {
-        print!("{s}");
+        use std::io::Write;
+        let mut stderr = std::io::stderr();
+        let _ = stderr.write_all(s.as_bytes());
+        let _ = stderr.write_all(b"\n");
+        let _ = stderr.flush();
     }
 }
 

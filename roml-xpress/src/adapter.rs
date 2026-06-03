@@ -77,14 +77,15 @@ fn xprs_bound(v: f64) -> f64 {
 /// Configuration forwarded to Xpress at adapter creation time.
 #[derive(Debug, Clone)]
 pub struct XpressOptions {
-    threads:   Option<i32>,
-    log_level: i32,
-    max_time:  Option<f64>,
+    threads:        Option<i32>,
+    log_level:      i32,
+    max_time:       Option<f64>,
+    console_output: bool,
 }
 
 impl Default for XpressOptions {
     fn default() -> Self {
-        Self { threads: None, log_level: 5, max_time: None }
+        Self { threads: None, log_level: 5, max_time: None, console_output: false }
     }
 }
 
@@ -96,6 +97,11 @@ impl XpressOptions {
 
     pub fn log_level(mut self, n: i32) -> Self {
         self.log_level = n;
+        self
+    }
+
+    pub fn console_output(mut self, enabled: bool) -> Self {
+        self.console_output = enabled;
         self
     }
 
@@ -140,17 +146,19 @@ fn make_prob(opts: &XpressOptions) -> ffi::XPRSprob {
     let ret = unsafe { ffi::XPRScreateprob(&mut prob) };
     assert!(ret == 0 && !prob.is_null(), "XPRScreateprob failed (code {ret})");
 
+    let output_level: i32 = if opts.console_output { 1 } else { opts.log_level };
     unsafe {
-        ffi::XPRSsetintcontrol(prob, ffi::XPRS_OUTPUTLOG, opts.log_level);
+        ffi::XPRSsetintcontrol(prob, ffi::XPRS_OUTPUTLOG, output_level);
+        // Disable presolve so basis warm-start works across reoptimization
+        ffi::XPRSsetintcontrol(prob, ffi::XPRS_PRESOLVE, 0);
         if let Some(t) = opts.threads {
             ffi::XPRSsetintcontrol(prob, ffi::XPRS_THREADS, t);
         }
         if let Some(secs) = opts.max_time {
             ffi::XPRSsetintcontrol(prob, ffi::XPRS_TIMELIMIT, secs as i32);
         }
-        if opts.log_level > 0 {
-            ffi::XPRSaddcbmessage(prob, Some(xpress_msg_cb), std::ptr::null_mut(), 0);
-        }
+        // Always install message callback (overhead is negligible; OUTPUTLOG=0 suppresses messages)
+        ffi::XPRSaddcbmessage(prob, Some(xpress_msg_cb), std::ptr::null_mut(), 0);
     }
     prob
 }
@@ -166,7 +174,11 @@ unsafe extern "C" fn xpress_msg_cb(
     if msg.is_null() || msglen <= 0 { return; }
     let bytes = unsafe { std::slice::from_raw_parts(msg as *const u8, msglen as usize) };
     if let Ok(s) = std::str::from_utf8(bytes) {
-        print!("{s}");
+        use std::io::Write;
+        let mut stderr = std::io::stderr();
+        let _ = stderr.write_all(s.as_bytes());
+        let _ = stderr.write_all(b"\n");
+        let _ = stderr.flush();
     }
 }
 
@@ -662,6 +674,9 @@ impl SolverAdapter for XpressAdapter {
     }
 
     fn solve(&mut self) -> Result<SolverStatus, SolverError> {
+        // Xpress automatically preserves and extends the basis between
+        // sequential LP solves (new rows become basic, new cols non-basic at lb).
+        // PRESOLVE=0 ensures the basis isn't destroyed by re-presolve.
         self.solution        = None;
         self.objective_value = None;
         self.duals           = None;
@@ -808,6 +823,13 @@ impl SolverAdapter for XpressAdapter {
         self.objective_value = None;
         self.duals           = None;
         self.reduced_costs   = None;
+    }
+
+    fn set_console_output(&mut self, enabled: bool) -> Result<(), SolverError> {
+        self.opts.console_output = enabled;
+        let level: i32 = if enabled { 1 } else { 0 };
+        unsafe { ffi::XPRSsetintcontrol(self.prob, ffi::XPRS_OUTPUTLOG, level); }
+        Ok(())
     }
 
     fn supports_incremental(&self, _change: &Change) -> bool {

@@ -224,6 +224,31 @@ impl Model {
         Ok(())
     }
 
+    /// Change a variable's type (Continuous, Integer, Binary).
+    ///
+    /// Produces a `Change::VariableTypeChanged` which the solver adapter
+    /// applies on the next `sync_model` / `apply_changes` call.
+    pub fn set_variable_type(&mut self, var: VarId, var_type: VarType) -> Result<(), ModelError> {
+        let data = self
+            .variables
+            .get_mut(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
+        let old = data.var_type;
+        if old != var_type {
+            data.var_type = var_type;
+            self.changelog
+                .push(Change::VariableTypeChanged { var, old, new: var_type });
+        }
+        Ok(())
+    }
+
+    /// Convenience: set variable to binary [0,1].
+    pub fn set_binary(&mut self, var: VarId) -> Result<(), ModelError> {
+        self.set_variable_type(var, VarType::Binary)?;
+        self.set_variable_bounds(var, Bounds::new(0.0, 1.0))?;
+        Ok(())
+    }
+
     /// Get the number of variables.
     pub fn num_variables(&self) -> usize {
         self.variables.len()

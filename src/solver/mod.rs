@@ -109,6 +109,14 @@ pub trait SolverAdapter {
     /// Check if the solver supports incremental updates for a change type.
     fn supports_incremental(&self, change: &Change) -> bool;
 
+    /// Enable or disable solver console output (e.g. iteration log).
+    ///
+    /// When enabled, the solver prints progress information to the console
+    /// during `solve()`. Default: disabled (no output).
+    fn set_console_output(&mut self, _enabled: bool) -> Result<(), SolverError> {
+        Ok(())
+    }
+
     /// Register a callback handler for MIP callbacks (lazy constraints, cuts).
     ///
     /// The handler is invoked during `solve()` when the solver finds
