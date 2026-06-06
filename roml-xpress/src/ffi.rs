@@ -65,7 +65,7 @@ pub const XPRS_MIPOBJVAL: XprsInt = 2003;
 pub const XPRS_OUTPUTLOG:  XprsInt = 8035;
 pub const XPRS_THREADS:    XprsInt = 8278;
 pub const XPRS_TIMELIMIT:  XprsInt = 7158;
-pub const XPRS_PRESOLVE:   XprsInt = 2045;
+pub const XPRS_PRESOLVE:   XprsInt = 8011;
 
 // ── Extern C declarations ──────────────────────────────────────────────────
 
@@ -80,6 +80,7 @@ extern "C" {
 
     // ── Controls and attributes ───────────────────────────────────────────
     pub fn XPRSsetintcontrol(prob: XPRSprob, control: XprsInt, value: XprsInt) -> XprsRes;
+    pub fn XPRSsetdblcontrol(prob: XPRSprob, control: XprsInt, value: XprsReal) -> XprsRes;
     pub fn XPRSgetintattrib(prob: XPRSprob, attrib: XprsInt, p_value: *mut XprsInt) -> XprsRes;
     pub fn XPRSgetdblattrib(prob: XPRSprob, attrib: XprsInt, p_value: *mut XprsReal) -> XprsRes;
 
@@ -180,6 +181,15 @@ extern "C" {
         row:     XprsInt,
         col:     XprsInt,
         coef:    XprsReal,
+    ) -> XprsRes;
+
+    /// Change multiple matrix coefficients in one call.
+    pub fn XPRSchgmcoef(
+        prob:    XPRSprob,
+        ncoefs:  XprsInt,
+        rowind:  *const XprsInt,
+        colind:  *const XprsInt,
+        rowcoef: *const XprsReal,
     ) -> XprsRes;
 
     // ── Solve ─────────────────────────────────────────────────────────────

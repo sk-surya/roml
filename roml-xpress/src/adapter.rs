@@ -80,12 +80,19 @@ pub struct XpressOptions {
     threads:        Option<i32>,
     log_level:      i32,
     max_time:       Option<f64>,
+    presolve:       bool,
     console_output: bool,
 }
 
 impl Default for XpressOptions {
     fn default() -> Self {
-        Self { threads: None, log_level: 5, max_time: None, console_output: false }
+        Self {
+            threads: None,
+            log_level: 5,
+            max_time: None,
+            presolve: true,
+            console_output: false,
+        }
     }
 }
 
@@ -107,6 +114,12 @@ impl XpressOptions {
 
     pub fn max_time(mut self, seconds: f64) -> Self {
         self.max_time = Some(seconds);
+        self
+    }
+
+    /// Enable or disable Xpress presolve. Enabled by default.
+    pub fn presolve(mut self, enabled: bool) -> Self {
+        self.presolve = enabled;
         self
     }
 }
@@ -147,20 +160,36 @@ fn make_prob(opts: &XpressOptions) -> ffi::XPRSprob {
     assert!(ret == 0 && !prob.is_null(), "XPRScreateprob failed (code {ret})");
 
     let output_level: i32 = if opts.console_output { 1 } else { opts.log_level };
+    set_int_control(prob, ffi::XPRS_OUTPUTLOG, output_level, "OUTPUTLOG");
+    // Keep presolve configurable because disabling it allows incremental
+    // LP reoptimization to retain and extend the existing basis.
+    set_int_control(
+        prob,
+        ffi::XPRS_PRESOLVE,
+        i32::from(opts.presolve),
+        "PRESOLVE",
+    );
+    if let Some(t) = opts.threads {
+        set_int_control(prob, ffi::XPRS_THREADS, t, "THREADS");
+    }
+    if let Some(secs) = opts.max_time {
+        set_double_control(prob, ffi::XPRS_TIMELIMIT, secs, "TIMELIMIT");
+    }
     unsafe {
-        ffi::XPRSsetintcontrol(prob, ffi::XPRS_OUTPUTLOG, output_level);
-        // Disable presolve so basis warm-start works across reoptimization
-        ffi::XPRSsetintcontrol(prob, ffi::XPRS_PRESOLVE, 0);
-        if let Some(t) = opts.threads {
-            ffi::XPRSsetintcontrol(prob, ffi::XPRS_THREADS, t);
-        }
-        if let Some(secs) = opts.max_time {
-            ffi::XPRSsetintcontrol(prob, ffi::XPRS_TIMELIMIT, secs as i32);
-        }
         // Always install message callback (overhead is negligible; OUTPUTLOG=0 suppresses messages)
         ffi::XPRSaddcbmessage(prob, Some(xpress_msg_cb), std::ptr::null_mut(), 0);
     }
     prob
+}
+
+fn set_int_control(prob: ffi::XPRSprob, control: i32, value: i32, name: &str) {
+    let ret = unsafe { ffi::XPRSsetintcontrol(prob, control, value) };
+    assert_eq!(ret, 0, "XPRSsetintcontrol({name}) failed with code {ret}");
+}
+
+fn set_double_control(prob: ffi::XPRSprob, control: i32, value: f64, name: &str) {
+    let ret = unsafe { ffi::XPRSsetdblcontrol(prob, control, value) };
+    assert_eq!(ret, 0, "XPRSsetdblcontrol({name}) failed with code {ret}");
 }
 
 /// C-callable message callback — forwards Xpress output to stdout.
@@ -223,6 +252,261 @@ impl XpressAdapter {
 
     fn is_mip(&self) -> bool {
         !self.integer_vars.is_empty()
+    }
+
+    fn supports_bulk_additive_sync(changes: &[Change]) -> bool {
+        !changes.iter().any(|change| {
+            matches!(
+                change,
+                Change::VariableRemoved { .. }
+                    | Change::VariableActivityChanged { .. }
+                    | Change::ConstraintRemoved { .. }
+                    | Change::ConstraintActivityChanged { .. }
+                    | Change::CoefficientRemoved { .. }
+                    | Change::CoefficientValueChanged { .. }
+                    | Change::ObjectiveRemoved { .. }
+            )
+        })
+    }
+
+    fn reload_active_objective(&mut self) -> Result<(), SolverError> {
+        let ncols = self.col_map.len();
+        if ncols == 0 {
+            return Ok(());
+        }
+
+        let mut cols = Vec::with_capacity(ncols);
+        let mut values = Vec::with_capacity(ncols);
+        let costs = self.active_obj.and_then(|obj| self.obj_costs.get(&obj));
+        for (var, col) in self.col_map.iter() {
+            cols.push(col);
+            values.push(costs.and_then(|entries| entries.get(&var)).copied().unwrap_or(0.0));
+        }
+        check(
+            unsafe {
+                ffi::XPRSchgobj(
+                    self.prob,
+                    ncols as i32,
+                    cols.as_ptr(),
+                    values.as_ptr(),
+                )
+            },
+            "XPRSchgobj (bulk objective reload)",
+        )?;
+
+        if let Some(obj) = self.active_obj {
+            if let Some(&sense) = self.obj_senses.get(&obj) {
+                check(
+                    unsafe { ffi::XPRSchgobjsense(self.prob, sense_to_xprs(sense)) },
+                    "XPRSchgobjsense (bulk objective reload)",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_bulk_additive_changes(&mut self, changes: &[Change]) -> Result<(), SolverError> {
+        let mut new_vars = Vec::new();
+        let mut new_var_state = HashMap::new();
+        let mut new_cons = Vec::new();
+        let mut new_con_bounds = HashMap::new();
+
+        for change in changes {
+            match change {
+                Change::VariableAdded { var, bounds, var_type } => {
+                    new_vars.push(*var);
+                    new_var_state.insert(*var, (*bounds, *var_type));
+                }
+                Change::VariableBoundsChanged { var, new, .. } => {
+                    if let Some((bounds, _)) = new_var_state.get_mut(var) {
+                        *bounds = *new;
+                    }
+                }
+                Change::VariableTypeChanged { var, new, .. } => {
+                    if let Some((_, var_type)) = new_var_state.get_mut(var) {
+                        *var_type = *new;
+                    }
+                }
+                Change::ConstraintAdded { con, bounds } => {
+                    new_cons.push(*con);
+                    new_con_bounds.insert(*con, *bounds);
+                }
+                Change::ConstraintBoundsChanged { con, new, .. } => {
+                    if let Some(bounds) = new_con_bounds.get_mut(con) {
+                        *bounds = *new;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !new_vars.is_empty() {
+            let first_col = unsafe {
+                let mut count = 0;
+                ffi::XPRSgetintattrib(self.prob, ffi::XPRS_COLS, &mut count);
+                count
+            };
+            let obj = vec![0.0; new_vars.len()];
+            let starts = vec![0; new_vars.len()];
+            let mut lower = Vec::with_capacity(new_vars.len());
+            let mut upper = Vec::with_capacity(new_vars.len());
+            for var in &new_vars {
+                let (bounds, _) = new_var_state[var];
+                lower.push(xprs_bound(bounds.lower));
+                upper.push(xprs_bound(bounds.upper));
+            }
+            check(
+                unsafe {
+                    ffi::XPRSaddcols(
+                        self.prob,
+                        new_vars.len() as i32,
+                        0,
+                        obj.as_ptr(),
+                        starts.as_ptr(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        lower.as_ptr(),
+                        upper.as_ptr(),
+                    )
+                },
+                "XPRSaddcols (bulk)",
+            )?;
+
+            let mut integer_cols = Vec::new();
+            let mut integer_types = Vec::new();
+            for (offset, var) in new_vars.iter().enumerate() {
+                let (bounds, var_type) = new_var_state[var];
+                let col = first_col + offset as i32;
+                self.col_map.insert(*var, col);
+                self.var_bounds.insert(*var, (bounds.lower, bounds.upper));
+                match var_type {
+                    VarType::Continuous => {}
+                    VarType::Integer => {
+                        self.integer_vars.insert(*var);
+                        integer_cols.push(col);
+                        integer_types.push(b'I' as i8);
+                    }
+                    VarType::Binary => {
+                        self.integer_vars.insert(*var);
+                        integer_cols.push(col);
+                        integer_types.push(b'B' as i8);
+                    }
+                }
+            }
+            if !integer_cols.is_empty() {
+                check(
+                    unsafe {
+                        ffi::XPRSchgcoltype(
+                            self.prob,
+                            integer_cols.len() as i32,
+                            integer_cols.as_ptr(),
+                            integer_types.as_ptr(),
+                        )
+                    },
+                    "XPRSchgcoltype (bulk)",
+                )?;
+            }
+        }
+
+        if !new_cons.is_empty() {
+            let first_row = unsafe {
+                let mut count = 0;
+                ffi::XPRSgetintattrib(self.prob, ffi::XPRS_ROWS, &mut count);
+                count
+            };
+            let starts = vec![0; new_cons.len()];
+            let mut row_types = Vec::with_capacity(new_cons.len());
+            let mut rhs = Vec::with_capacity(new_cons.len());
+            let mut ranges = Vec::with_capacity(new_cons.len());
+            for con in &new_cons {
+                let bounds = new_con_bounds[con];
+                let (row_type, row_rhs, range) = xprs_row(bounds.lower, bounds.upper);
+                row_types.push(row_type as i8);
+                rhs.push(row_rhs);
+                ranges.push(range);
+            }
+            check(
+                unsafe {
+                    ffi::XPRSaddrows(
+                        self.prob,
+                        new_cons.len() as i32,
+                        0,
+                        row_types.as_ptr(),
+                        rhs.as_ptr(),
+                        ranges.as_ptr(),
+                        starts.as_ptr(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                    )
+                },
+                "XPRSaddrows (bulk)",
+            )?;
+            for (offset, con) in new_cons.iter().enumerate() {
+                let bounds = new_con_bounds[con];
+                self.row_map.insert(*con, first_row + offset as i32);
+                self.con_bounds.insert(*con, (bounds.lower, bounds.upper));
+            }
+        }
+
+        let new_var_set: HashSet<_> = new_vars.iter().copied().collect();
+        let new_con_set: HashSet<_> = new_cons.iter().copied().collect();
+        let mut matrix_rows = Vec::new();
+        let mut matrix_cols = Vec::new();
+        let mut matrix_values = Vec::new();
+        let mut objective_dirty = false;
+
+        for change in changes {
+            match change {
+                Change::VariableAdded { .. } | Change::ConstraintAdded { .. } => {}
+                Change::VariableBoundsChanged { var, .. }
+                | Change::VariableTypeChanged { var, .. }
+                    if new_var_set.contains(var) => {}
+                Change::ConstraintBoundsChanged { con, .. } if new_con_set.contains(con) => {}
+                Change::CoefficientAdded { var, target, value, .. } => match target {
+                    CoefficientTarget::Constraint(con) => {
+                        let row = self
+                            .row_map
+                            .get(*con)
+                            .ok_or_else(|| xprs_err(format!("missing row for {con:?}")))?;
+                        let col = self
+                            .col_map
+                            .get(*var)
+                            .ok_or_else(|| xprs_err(format!("missing column for {var:?}")))?;
+                        matrix_rows.push(row);
+                        matrix_cols.push(col);
+                        matrix_values.push(*value);
+                    }
+                    CoefficientTarget::Objective(obj) => {
+                        self.obj_costs.entry(*obj).or_default().insert(*var, *value);
+                        objective_dirty |= self.active_obj == Some(*obj);
+                    }
+                },
+                Change::ActiveObjectiveChanged { new, .. } => {
+                    self.active_obj = *new;
+                    objective_dirty = true;
+                }
+                _ => self.apply_one(change)?,
+            }
+        }
+
+        if !matrix_rows.is_empty() {
+            check(
+                unsafe {
+                    ffi::XPRSchgmcoef(
+                        self.prob,
+                        matrix_rows.len() as i32,
+                        matrix_rows.as_ptr(),
+                        matrix_cols.as_ptr(),
+                        matrix_values.as_ptr(),
+                    )
+                },
+                "XPRSchgmcoef (bulk)",
+            )?;
+        }
+        if objective_dirty {
+            self.reload_active_objective()?;
+        }
+        Ok(())
     }
 
     // ── Row-type application ───────────────────────────────────────────────
@@ -598,6 +882,10 @@ impl Drop for XpressAdapter {
 
 impl SolverAdapter for XpressAdapter {
     fn apply_changes(&mut self, changes: &[Change]) -> Result<(), SolverError> {
+        if Self::supports_bulk_additive_sync(changes) {
+            return self.apply_bulk_additive_changes(changes);
+        }
+
         // Batch ConstraintAdded + its CoefficientAdded events into a single
         // XPRSaddrows call with all coefficients, rather than adding the row
         // empty and then calling XPRSchgcoef N times.
@@ -674,9 +962,8 @@ impl SolverAdapter for XpressAdapter {
     }
 
     fn solve(&mut self) -> Result<SolverStatus, SolverError> {
-        // Xpress automatically preserves and extends the basis between
-        // sequential LP solves (new rows become basic, new cols non-basic at lb).
-        // PRESOLVE=0 ensures the basis isn't destroyed by re-presolve.
+        // Xpress can preserve and extend the basis between sequential LP solves
+        // when callers explicitly disable presolve.
         self.solution        = None;
         self.objective_value = None;
         self.duals           = None;

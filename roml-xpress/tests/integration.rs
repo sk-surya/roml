@@ -17,7 +17,7 @@ fn init_test_logging() {
 }
 
 fn new_adapter() -> XpressAdapter {
-    XpressAdapter::with_options(XpressOptions::default().log_level(10))
+    XpressAdapter::with_options(XpressOptions::default().log_level(10).max_time(60.0))
 }
 
 fn approx_eq(a: f64, b: f64) -> bool {
@@ -27,6 +27,31 @@ fn approx_eq(a: f64, b: f64) -> bool {
 fn sync(model: &mut Model, adapter: &mut XpressAdapter) {
     let changes = model.drain_changes();
     adapter.apply_changes(&changes).unwrap();
+}
+
+#[test]
+fn bulk_incremental_columns_update_existing_rows_and_objective() {
+    let mut model = Model::new();
+    let base = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+    let capacity = model.add_constraint(ConstraintBounds::le(10.0));
+    model.add_coeff(capacity, base, 1.0).unwrap();
+    let objective = model.add_objective(Sense::Maximize);
+    model.add_objective_coeff(objective, base, 1.0).unwrap();
+    model.set_active_objective(objective).unwrap();
+
+    let mut adapter = new_adapter();
+    sync(&mut model, &mut adapter);
+    assert_eq!(adapter.solve().unwrap(), SolverStatus::Optimal);
+
+    for _ in 0..256 {
+        let var = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+        model.add_coeff(capacity, var, 1.0).unwrap();
+        model.add_objective_coeff(objective, var, 2.0).unwrap();
+    }
+    sync(&mut model, &mut adapter);
+
+    assert_eq!(adapter.solve().unwrap(), SolverStatus::Optimal);
+    assert!(approx_eq(adapter.objective_value_raw().unwrap(), 20.0));
 }
 
 // ── Test 1: simple LP ─────────────────────────────────────────────────────
