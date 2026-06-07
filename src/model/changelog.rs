@@ -48,7 +48,11 @@ pub enum Change {
 
     // Variable activity was toggled.
     VariableActivityChanged { var: VarId, active: bool },
-    
+
+    // Variable was marked semi-continuous with a lower bound.
+    // When the variable is nonzero, it must be ≥ lower; zero is also feasible.
+    SemiContinuousBoundChanged { var: VarId, lower: f64 },
+
     // ========== Constraint Changes ==========
     /// Constraint was added.
     ConstraintAdded {

@@ -137,6 +137,7 @@ pub struct XpressAdapter {
     con_bounds: HashMap<ConId, (f64, f64)>,
 
     integer_vars: HashSet<VarId>,
+    semicontinuous_vars: HashSet<VarId>,
 
     obj_costs:  HashMap<ObjId, HashMap<VarId, f64>>,
     obj_senses: HashMap<ObjId, Sense>,
@@ -239,6 +240,7 @@ impl XpressAdapter {
             var_bounds:      HashMap::new(),
             con_bounds:      HashMap::new(),
             integer_vars:    HashSet::new(),
+            semicontinuous_vars: HashSet::new(),
             obj_costs:       HashMap::new(),
             obj_senses:      HashMap::new(),
             active_obj:      None,
@@ -604,14 +606,39 @@ impl XpressAdapter {
             // ── Variable Type Changed ──────────────────────────────────────
             Change::VariableTypeChanged { var, new, .. } => {
                 if let Some(col) = self.col_map.get(*var) {
-                    let ct = match new {
-                        VarType::Continuous => { self.integer_vars.remove(var); b'C' as i8 }
-                        VarType::Integer    => { self.integer_vars.insert(*var); b'I' as i8 }
-                        VarType::Binary     => { self.integer_vars.insert(*var); b'B' as i8 }
+                    let ct = if self.semicontinuous_vars.contains(var) {
+                        // Semi-continuous + integer → 'R'
+                        match new {
+                            VarType::Continuous => { self.integer_vars.remove(var); }
+                            _ => { self.integer_vars.insert(*var); }
+                        }
+                        b'R' as i8
+                    } else {
+                        match new {
+                            VarType::Continuous => { self.integer_vars.remove(var); b'C' as i8 }
+                            VarType::Integer    => { self.integer_vars.insert(*var); b'I' as i8 }
+                            VarType::Binary     => { self.integer_vars.insert(*var); b'B' as i8 }
+                        }
                     };
                     check(
                         unsafe { ffi::XPRSchgcoltype(self.prob, 1, &col, &ct) },
                         "XPRSchgcoltype (type change)",
+                    )?;
+                }
+            }
+
+            // ── Variable Semi-Continuous Bound Changed ─────────────────────
+            Change::SemiContinuousBoundChanged { var, .. } => {
+                if let Some(col) = self.col_map.get(*var) {
+                    self.semicontinuous_vars.insert(*var);
+                    let ct = if self.integer_vars.contains(var) {
+                        b'R' as i8  // SC + integer
+                    } else {
+                        b'S' as i8  // SC + continuous
+                    };
+                    check(
+                        unsafe { ffi::XPRSchgcoltype(self.prob, 1, &col, &ct) },
+                        "XPRSchgcoltype (semi-continuous)",
                     )?;
                 }
             }
@@ -1120,6 +1147,10 @@ impl SolverAdapter for XpressAdapter {
     }
 
     fn supports_incremental(&self, _change: &Change) -> bool {
+        true
+    }
+
+    fn supports_semi_continuous(&self) -> bool {
         true
     }
 }

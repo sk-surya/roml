@@ -549,6 +549,11 @@ impl HighsAdapter {
             // ── Parameter Value Changed ────────────────────────────────────
             // No-op: the coefficient deltas will follow as CoefficientValueChanged.
             Change::ParameterValueChanged { .. } => {}
+            Change::SemiContinuousBoundChanged { var: _, lower: _ } => {
+                return Err(SolverError::NotSupported(
+                    "semi-continuous variables not supported by HiGHS".into(),
+                ));
+            }
         }
         Ok(())
     }

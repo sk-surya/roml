@@ -31,8 +31,10 @@ pub const OBJ_SENSE_MINIMIZE: MosekInt = 0;
 pub const OBJ_SENSE_MAXIMIZE: MosekInt = 1;
 
 // Variable type (MSKvariabletypee)
-pub const VAR_TYPE_CONT: MosekInt = 0;
-pub const VAR_TYPE_INT:  MosekInt = 1;
+pub const VAR_TYPE_CONT:       MosekInt = 0;
+pub const VAR_TYPE_INT:        MosekInt = 1;
+pub const VAR_TYPE_SEMICONT:   MosekInt = 2;
+pub const VAR_TYPE_SEMICONT_INT: MosekInt = 3;
 
 // Solution type (MSKsoltypee)
 pub const SOL_ITR: MosekInt = 0;  // interior-point

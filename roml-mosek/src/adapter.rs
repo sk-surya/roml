@@ -152,6 +152,7 @@ pub struct MosekAdapter {
     var_bounds:   HashMap<VarId, (f64, f64)>,
     con_bounds:   HashMap<ConId, (f64, f64)>,
     integer_vars: HashSet<VarId>,
+    semicontinuous_vars: HashSet<VarId>,
 
     obj_costs:  HashMap<ObjId, HashMap<VarId, f64>>,
     obj_senses: HashMap<ObjId, Sense>,
@@ -191,6 +192,7 @@ impl MosekAdapter {
             var_bounds: HashMap::new(),
             con_bounds: HashMap::new(),
             integer_vars: HashSet::new(),
+            semicontinuous_vars: HashSet::new(),
             obj_costs: HashMap::new(),
             obj_senses: HashMap::new(),
             active_obj: None,
@@ -319,22 +321,51 @@ impl MosekAdapter {
                 }
             }
 
-            // ── Variable Type Changed ──────────────────────────────────────
-            Change::VariableTypeChanged { var, new, .. } => {
-                if let Some(col) = self.col_map.get(*var) {
-                    check(
-                        unsafe {
-                            ffi::MSK_putvartype(self.task, col, Self::var_type_to_mosek(*new))
-                        },
-                        "MSK_putvartype (type change)",
-                    )?;
-                    if matches!(new, VarType::Integer | VarType::Binary) {
+    // ── Variable Type Changed ──────────────────────────────────────
+    Change::VariableTypeChanged { var, new, .. } => {
+        if let Some(col) = self.col_map.get(*var) {
+            let msk_type = if self.semicontinuous_vars.contains(var) {
+                // If variable is SC, use SEMICONT_INT when setting to integer/binary
+                match new {
+                    VarType::Integer | VarType::Binary => {
                         self.integer_vars.insert(*var);
-                    } else {
+                        ffi::VAR_TYPE_SEMICONT_INT
+                    }
+                    VarType::Continuous => {
                         self.integer_vars.remove(var);
+                        ffi::VAR_TYPE_SEMICONT
                     }
                 }
+            } else {
+                Self::var_type_to_mosek(*new)
+            };
+            check(
+                unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                "MSK_putvartype (type change)",
+            )?;
+            if matches!(new, VarType::Integer | VarType::Binary) {
+                self.integer_vars.insert(*var);
+            } else {
+                self.integer_vars.remove(var);
             }
+        }
+    }
+
+    // ── Variable Semi-Continuous Bound Changed ─────────────────────
+    Change::SemiContinuousBoundChanged { var, .. } => {
+        if let Some(col) = self.col_map.get(*var) {
+            self.semicontinuous_vars.insert(*var);
+            let msk_type = if self.integer_vars.contains(var) {
+                ffi::VAR_TYPE_SEMICONT_INT
+            } else {
+                ffi::VAR_TYPE_SEMICONT
+            };
+            check(
+                unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                "MSK_putvartype (semi-continuous)",
+            )?;
+        }
+    }
 
             // ── Variable Activity Changed ──────────────────────────────────
             Change::VariableActivityChanged { var, active } => {
@@ -927,6 +958,7 @@ impl SolverAdapter for MosekAdapter {
         self.var_bounds.clear();
         self.con_bounds.clear();
         self.integer_vars.clear();
+        self.semicontinuous_vars.clear();
         self.obj_costs.clear();
         self.obj_senses.clear();
         self.active_obj = None;
@@ -954,6 +986,10 @@ impl SolverAdapter for MosekAdapter {
     }
 
     fn supports_incremental(&self, _change: &Change) -> bool {
+        true
+    }
+
+    fn supports_semi_continuous(&self) -> bool {
         true
     }
 }

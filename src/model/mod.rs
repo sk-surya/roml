@@ -102,6 +102,9 @@ pub struct Model {
     pub name: Option<String>,
     /// Model constants (e.g., tolerances).
     pub constants: ModelConstants,
+    /// Tracks semi-continuous lower bounds per variable.
+    /// A variable with an entry in this map must be 0 or ≥ the stored value.
+    pub(crate) semicontinuous_lower: std::collections::HashMap<VarId, f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -246,6 +249,30 @@ impl Model {
     pub fn set_binary(&mut self, var: VarId) -> Result<(), ModelError> {
         self.set_variable_type(var, VarType::Binary)?;
         self.set_variable_bounds(var, Bounds::new(0.0, 1.0))?;
+        Ok(())
+    }
+
+    /// Mark a variable as semi-continuous with the given lower bound.
+    ///
+    /// A semi-continuous variable can take value 0 or any value between
+    /// `lower` and its current upper bound. This tightens the LP relaxation
+    /// (the variable cannot be fractionally below `lower`) while remaining
+    /// feasible for all integer solutions.
+    ///
+    /// If `lower` exceeds the current lower bound, the lower bound is raised.
+    pub fn set_semicontinuous(&mut self, var: VarId, lower: f64) -> Result<(), ModelError> {
+        let bounds = self
+            .variable_bounds(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
+        if lower > bounds.upper {
+            return Err(ModelError::InvalidBounds);
+        }
+        if lower > bounds.lower {
+            self.set_variable_bounds(var, Bounds::new(lower, bounds.upper))?;
+        }
+        self.semicontinuous_lower.insert(var, lower);
+        self.changelog
+            .push(Change::SemiContinuousBoundChanged { var, lower });
         Ok(())
     }
 

@@ -109,6 +109,11 @@ pub trait SolverAdapter {
     /// Check if the solver supports incremental updates for a change type.
     fn supports_incremental(&self, change: &Change) -> bool;
 
+    /// Check if the solver supports semi-continuous variables.
+    fn supports_semi_continuous(&self) -> bool {
+        false
+    }
+
     /// Enable or disable solver console output (e.g. iteration log).
     ///
     /// When enabled, the solver prints progress information to the console
