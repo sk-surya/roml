@@ -23,7 +23,7 @@ pub use model::changelog::Change;
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use value_expr::ValueExpr;
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
-pub use solver::{SolverAdapter, SolverError, SolverModelExt, SolverStatus};
+pub use solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverModelExt, SolverStatus};
 
 /// Build a [`ConstraintSpec`] from math-like tokens.
 ///

@@ -17,12 +17,14 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::OnceLock;
 
+use log::info;
+
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
-use roml::solver::{SolverAdapter, SolverError, SolverStatus};
+use roml::solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverStatus};
 
 use crate::ffi;
 use crate::index_map::IndexMap;
@@ -148,6 +150,9 @@ pub struct XpressAdapter {
     objective_value: Option<f64>,
     duals:           Option<HashMap<ConId, f64>>,
     reduced_costs:   Option<HashMap<VarId, f64>>,
+
+    /// LP algorithm override for the next solve. Cleared after each solve.
+    next_lp_algorithm: Option<LpAlgorithm>,
 }
 
 // SAFETY: XPRSprob is a C pointer. We never share it across threads.
@@ -249,6 +254,7 @@ impl XpressAdapter {
             objective_value: None,
             duals:           None,
             reduced_costs:   None,
+            next_lp_algorithm: None,
         }
     }
 
@@ -988,6 +994,11 @@ impl SolverAdapter for XpressAdapter {
         Ok(())
     }
 
+    fn apply_options(&mut self, opts: &SolveOptions) -> Result<(), SolverError> {
+        self.next_lp_algorithm = opts.lp_algorithm;
+        Ok(())
+    }
+
     fn solve(&mut self) -> Result<SolverStatus, SolverError> {
         // Xpress can preserve and extend the basis between sequential LP solves
         // when callers explicitly disable presolve.
@@ -996,12 +1007,13 @@ impl SolverAdapter for XpressAdapter {
         self.duals           = None;
         self.reduced_costs   = None;
 
-        let empty_flags = CString::new("").unwrap();
+        self.next_lp_algorithm = None;
+        let flags = CString::new("").unwrap();
 
         let ret = if self.is_mip() {
-            unsafe { ffi::XPRSmipoptimize(self.prob, empty_flags.as_ptr()) }
+            unsafe { ffi::XPRSmipoptimize(self.prob, flags.as_ptr()) }
         } else {
-            unsafe { ffi::XPRSlpoptimize(self.prob, empty_flags.as_ptr()) }
+            unsafe { ffi::XPRSlpoptimize(self.prob, flags.as_ptr()) }
         };
         if ret != 0 {
             return Err(xprs_err(format!("XPRSoptimize returned {ret}")));

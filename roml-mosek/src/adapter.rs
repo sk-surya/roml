@@ -24,7 +24,7 @@ use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
 use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
-use roml::solver::{SolverAdapter, SolverError, SolverStatus};
+use roml::solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverStatus};
 use log::{info, warn};
 
 use crate::ffi::{self, MosekEnv, MosekTask};
@@ -59,7 +59,7 @@ fn mosek_bounds(lb: f64, ub: f64) -> (ffi::MosekInt, f64, f64) {
 // ── Options ────────────────────────────────────────────────────────────────
 
 /// Which LP algorithm MOSEK should use.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MosekOptimizer {
     /// Let MOSEK choose (interior point for large LP, simplex otherwise).
     #[default]
@@ -166,6 +166,9 @@ pub struct MosekAdapter {
 
     /// Optional callback handler for MIP lazy constraints / cutting planes.
     callback_handler: Option<Box<dyn CallbackHandler>>,
+
+    /// Per-solve optimizer override. Set via `apply_options`, consumed in `solve()`.
+    next_optimizer: Option<MosekOptimizer>,
 }
 
 // SAFETY: MOSEK is a C library; we never share the handles across threads.
@@ -202,6 +205,7 @@ impl MosekAdapter {
             duals: None,
             reduced_costs: None,
             callback_handler: None,
+            next_optimizer: None,
         }
     }
 
@@ -780,6 +784,28 @@ impl SolverAdapter for MosekAdapter {
             warn!("Solving with no active objective.");
         }
 
+        // ── Apply per-solve optimizer override ──
+        if let Some(opt) = self.next_optimizer.take() {
+            let code = match opt {
+                MosekOptimizer::Free          => ffi::OPTIMIZER_FREE,
+                MosekOptimizer::InteriorPoint => ffi::OPTIMIZER_INTPNT,
+                MosekOptimizer::DualSimplex   => ffi::OPTIMIZER_DUAL_SIMPLEX,
+                MosekOptimizer::NewDualSimplex => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
+                MosekOptimizer::FreeSimplex   => ffi::OPTIMIZER_FREE_SIMPLEX,
+            };
+            unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_OPTIMIZER, code) };
+            // Enable crossover (IPM → basis) when using barrier, so subsequent
+            // dual-simplex phases can hotstart from the basis.
+            if opt == MosekOptimizer::InteriorPoint {
+                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_INTPNT_BASIS, ffi::BI_IF_FEASIBLE) };
+            }
+            // Enable status-keys hotstart when using dual simplex.
+            if matches!(opt, MosekOptimizer::DualSimplex | MosekOptimizer::NewDualSimplex) {
+                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_SIM_HOTSTART, ffi::SIM_HOTSTART_STATUS_KEYS) };
+            }
+            info!("MOSEK: applied optimizer override = {opt:?}");
+        }
+
         // ── Optional callback loop ──
         if let Some(handler) = self.callback_handler.take() {
             let col_to_var: HashMap<ffi::MosekInt, VarId> = self.col_map.reverse_map();
@@ -975,6 +1001,19 @@ impl SolverAdapter for MosekAdapter {
         handler: Box<dyn CallbackHandler>,
     ) -> Result<(), SolverError> {
         self.callback_handler = Some(handler);
+        Ok(())
+    }
+
+    fn apply_options(&mut self, opts: &SolveOptions) -> Result<(), SolverError> {
+        if let Some(algo) = opts.lp_algorithm {
+            let mosek_opt = match algo {
+                LpAlgorithm::Automatic     => MosekOptimizer::Free,
+                LpAlgorithm::PrimalSimplex => MosekOptimizer::DualSimplex, // no primal in MosekOptimizer
+                LpAlgorithm::DualSimplex   => MosekOptimizer::NewDualSimplex,
+                LpAlgorithm::Barrier       => MosekOptimizer::InteriorPoint,
+            };
+            self.next_optimizer = Some(mosek_opt);
+        }
         Ok(())
     }
 

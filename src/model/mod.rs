@@ -24,6 +24,7 @@ pub use changelog::{Change, ChangeLog};
 pub use transaction::Transaction;
 
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
+use crate::solver::SolveOptions;
 use crate::value_expr::ValueExpr;
 use crate::expr::{LinExpr, TermCoeff};
 use crate::solution::Solution;
@@ -105,6 +106,10 @@ pub struct Model {
     /// Tracks semi-continuous lower bounds per variable.
     /// A variable with an entry in this map must be 0 or ≥ the stored value.
     pub(crate) semicontinuous_lower: std::collections::HashMap<VarId, f64>,
+
+    /// Solver options to apply before the next `solve()` call.
+    /// Cleared after each solve by `SolverModelExt::solve_model`.
+    pub(crate) solver_options: Option<SolveOptions>,
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +279,14 @@ impl Model {
         self.changelog
             .push(Change::SemiContinuousBoundChanged { var, lower });
         Ok(())
+    }
+
+    /// Set solver options to apply before the next solve.
+    ///
+    /// Options are cleared automatically after each solve by the
+    /// `SolverModelExt::solve_model` implementation.
+    pub fn set_solver_options(&mut self, opts: SolveOptions) {
+        self.solver_options = Some(opts);
     }
 
     /// Get the number of variables.

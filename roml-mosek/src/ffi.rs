@@ -94,6 +94,12 @@ pub const SIM_HOTSTART_STATUS_KEYS: MosekInt = 2; // reuse previous basis
 pub const INTPNT_HOTSTART_NONE:         MosekInt = 0;
 pub const INTPNT_HOTSTART_PRIMAL_DUAL:  MosekInt = 3; // feed both primal+dual from prior solve
 
+// Interior-point basis / crossover (MSKiparame)
+pub const IPAR_INTPNT_BASIS: MosekInt = 31;
+pub const BI_NEVER:          MosekInt = 0; // no basis after IPM
+pub const BI_IF_FEASIBLE:    MosekInt = 1; // compute basis if feasible (MOSEK default)
+pub const BI_ALWAYS:         MosekInt = 2; // always compute basis after IPM
+
 // Return codes
 pub const RES_OK: MosekRes = 0;
 pub const RES_TRM_USER_CALLBACK: MosekRes = 100007;

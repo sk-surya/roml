@@ -66,6 +66,14 @@ pub const XPRS_OUTPUTLOG:  XprsInt = 8035;
 pub const XPRS_THREADS:    XprsInt = 8278;
 pub const XPRS_TIMELIMIT:  XprsInt = 7158;
 pub const XPRS_PRESOLVE:   XprsInt = 8011;
+pub const XPRS_DEFAULTALG: XprsInt = 7997;
+
+// Algorithm values for XPRS_DEFAULTALG
+pub const ALG_AUTOMATIC:      XprsInt = 0;
+pub const ALG_PRIMAL_SIMPLEX: XprsInt = 1;
+pub const ALG_DUAL_SIMPLEX:   XprsInt = 2;
+pub const ALG_NETWORK_SIMPLEX:XprsInt = 3;
+pub const ALG_BARRIER:        XprsInt = 4;
 
 // ── Extern C declarations ──────────────────────────────────────────────────
 
