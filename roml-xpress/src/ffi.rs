@@ -62,9 +62,18 @@ pub const XPRS_MIPOBJVAL: XprsInt = 2003;
 
 // ── Integer controls (XPRSsetintcontrol) ──────────────────────────────────
 
-pub const XPRS_OUTPUTLOG: XprsInt = 8035;
-pub const XPRS_THREADS:   XprsInt = 8278;
-pub const XPRS_TIMELIMIT: XprsInt = 7158;
+pub const XPRS_OUTPUTLOG:  XprsInt = 8035;
+pub const XPRS_THREADS:    XprsInt = 8278;
+pub const XPRS_TIMELIMIT:  XprsInt = 7158;
+pub const XPRS_PRESOLVE:   XprsInt = 8011;
+pub const XPRS_DEFAULTALG: XprsInt = 7997;
+
+// Algorithm values for XPRS_DEFAULTALG
+pub const ALG_AUTOMATIC:      XprsInt = 0;
+pub const ALG_PRIMAL_SIMPLEX: XprsInt = 1;
+pub const ALG_DUAL_SIMPLEX:   XprsInt = 2;
+pub const ALG_NETWORK_SIMPLEX:XprsInt = 3;
+pub const ALG_BARRIER:        XprsInt = 4;
 
 // ── Extern C declarations ──────────────────────────────────────────────────
 
@@ -79,6 +88,7 @@ extern "C" {
 
     // ── Controls and attributes ───────────────────────────────────────────
     pub fn XPRSsetintcontrol(prob: XPRSprob, control: XprsInt, value: XprsInt) -> XprsRes;
+    pub fn XPRSsetdblcontrol(prob: XPRSprob, control: XprsInt, value: XprsReal) -> XprsRes;
     pub fn XPRSgetintattrib(prob: XPRSprob, attrib: XprsInt, p_value: *mut XprsInt) -> XprsRes;
     pub fn XPRSgetdblattrib(prob: XPRSprob, attrib: XprsInt, p_value: *mut XprsReal) -> XprsRes;
 
@@ -181,9 +191,25 @@ extern "C" {
         coef:    XprsReal,
     ) -> XprsRes;
 
+    /// Change multiple matrix coefficients in one call.
+    pub fn XPRSchgmcoef(
+        prob:    XPRSprob,
+        ncoefs:  XprsInt,
+        rowind:  *const XprsInt,
+        colind:  *const XprsInt,
+        rowcoef: *const XprsReal,
+    ) -> XprsRes;
+
     // ── Solve ─────────────────────────────────────────────────────────────
     pub fn XPRSlpoptimize(prob: XPRSprob, flags: *const c_char) -> XprsRes;
     pub fn XPRSmipoptimize(prob: XPRSprob, flags: *const c_char) -> XprsRes;
+
+    // ── Basis ──────────────────────────────────────────────────────────────
+    /// Get current basis status arrays. rowstatus[0..ROWS-1], colstatus[0..COLS-1].
+    /// Status: 0=at lower bound, 1=basic, 2=at upper bound, 3=super-basic.
+    pub fn XPRSgetbasis(prob: XPRSprob, rowstatus: *mut XprsInt, colstatus: *mut XprsInt) -> XprsRes;
+    /// Load basis from arrays (must match current ROWS/COLS).
+    pub fn XPRSloadbasis(prob: XPRSprob, rowstatus: *const XprsInt, colstatus: *const XprsInt) -> XprsRes;
 
     // ── Solution queries ──────────────────────────────────────────────────
     /// Get LP solution. Pass NULL for arrays you don't need.

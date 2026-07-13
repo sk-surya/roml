@@ -31,8 +31,10 @@ pub const OBJ_SENSE_MINIMIZE: MosekInt = 0;
 pub const OBJ_SENSE_MAXIMIZE: MosekInt = 1;
 
 // Variable type (MSKvariabletypee)
-pub const VAR_TYPE_CONT: MosekInt = 0;
-pub const VAR_TYPE_INT:  MosekInt = 1;
+pub const VAR_TYPE_CONT:       MosekInt = 0;
+pub const VAR_TYPE_INT:        MosekInt = 1;
+pub const VAR_TYPE_SEMICONT:   MosekInt = 2;
+pub const VAR_TYPE_SEMICONT_INT: MosekInt = 3;
 
 // Solution type (MSKsoltypee)
 pub const SOL_ITR: MosekInt = 0;  // interior-point
@@ -91,6 +93,12 @@ pub const SIM_HOTSTART_STATUS_KEYS: MosekInt = 2; // reuse previous basis
 // Interior-point hotstart (MSKintpnthotstart_enum)
 pub const INTPNT_HOTSTART_NONE:         MosekInt = 0;
 pub const INTPNT_HOTSTART_PRIMAL_DUAL:  MosekInt = 3; // feed both primal+dual from prior solve
+
+// Interior-point basis / crossover (MSKiparame)
+pub const IPAR_INTPNT_BASIS: MosekInt = 31;
+pub const BI_NEVER:          MosekInt = 0; // no basis after IPM
+pub const BI_IF_FEASIBLE:    MosekInt = 1; // compute basis if feasible (MOSEK default)
+pub const BI_ALWAYS:         MosekInt = 2; // always compute basis after IPM
 
 // Return codes
 pub const RES_OK: MosekRes = 0;

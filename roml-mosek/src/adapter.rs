@@ -24,7 +24,7 @@ use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
 use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
-use roml::solver::{SolverAdapter, SolverError, SolverStatus};
+use roml::solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverStatus};
 use log::{info, warn};
 
 use crate::ffi::{self, MosekEnv, MosekTask};
@@ -59,7 +59,7 @@ fn mosek_bounds(lb: f64, ub: f64) -> (ffi::MosekInt, f64, f64) {
 // ── Options ────────────────────────────────────────────────────────────────
 
 /// Which LP algorithm MOSEK should use.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MosekOptimizer {
     /// Let MOSEK choose (interior point for large LP, simplex otherwise).
     #[default]
@@ -96,6 +96,8 @@ pub struct MosekOptions {
     sim_hotstart: MosekSimHotstart,
     /// Also reuse the LU factorization from the previous solve (on top of status keys).
     sim_hotstart_lu: bool,
+    /// Enable solver console output (iteration log). Default: false.
+    pub console_output: bool,
 }
 
 impl MosekOptions {
@@ -129,6 +131,11 @@ impl MosekOptions {
         self.sim_hotstart_lu = enabled;
         self
     }
+
+    pub fn console_output(mut self, enabled: bool) -> Self {
+        self.console_output = enabled;
+        self
+    }
 }
 
 // ── Adapter struct ─────────────────────────────────────────────────────────
@@ -145,6 +152,7 @@ pub struct MosekAdapter {
     var_bounds:   HashMap<VarId, (f64, f64)>,
     con_bounds:   HashMap<ConId, (f64, f64)>,
     integer_vars: HashSet<VarId>,
+    semicontinuous_vars: HashSet<VarId>,
 
     obj_costs:  HashMap<ObjId, HashMap<VarId, f64>>,
     obj_senses: HashMap<ObjId, Sense>,
@@ -158,6 +166,9 @@ pub struct MosekAdapter {
 
     /// Optional callback handler for MIP lazy constraints / cutting planes.
     callback_handler: Option<Box<dyn CallbackHandler>>,
+
+    /// Per-solve optimizer override. Set via `apply_options`, consumed in `solve()`.
+    next_optimizer: Option<MosekOptimizer>,
 }
 
 // SAFETY: MOSEK is a C library; we never share the handles across threads.
@@ -184,6 +195,7 @@ impl MosekAdapter {
             var_bounds: HashMap::new(),
             con_bounds: HashMap::new(),
             integer_vars: HashSet::new(),
+            semicontinuous_vars: HashSet::new(),
             obj_costs: HashMap::new(),
             obj_senses: HashMap::new(),
             active_obj: None,
@@ -193,6 +205,7 @@ impl MosekAdapter {
             duals: None,
             reduced_costs: None,
             callback_handler: None,
+            next_optimizer: None,
         }
     }
 
@@ -312,22 +325,51 @@ impl MosekAdapter {
                 }
             }
 
-            // ── Variable Type Changed ──────────────────────────────────────
-            Change::VariableTypeChanged { var, new, .. } => {
-                if let Some(col) = self.col_map.get(*var) {
-                    check(
-                        unsafe {
-                            ffi::MSK_putvartype(self.task, col, Self::var_type_to_mosek(*new))
-                        },
-                        "MSK_putvartype (type change)",
-                    )?;
-                    if matches!(new, VarType::Integer | VarType::Binary) {
+    // ── Variable Type Changed ──────────────────────────────────────
+    Change::VariableTypeChanged { var, new, .. } => {
+        if let Some(col) = self.col_map.get(*var) {
+            let msk_type = if self.semicontinuous_vars.contains(var) {
+                // If variable is SC, use SEMICONT_INT when setting to integer/binary
+                match new {
+                    VarType::Integer | VarType::Binary => {
                         self.integer_vars.insert(*var);
-                    } else {
+                        ffi::VAR_TYPE_SEMICONT_INT
+                    }
+                    VarType::Continuous => {
                         self.integer_vars.remove(var);
+                        ffi::VAR_TYPE_SEMICONT
                     }
                 }
+            } else {
+                Self::var_type_to_mosek(*new)
+            };
+            check(
+                unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                "MSK_putvartype (type change)",
+            )?;
+            if matches!(new, VarType::Integer | VarType::Binary) {
+                self.integer_vars.insert(*var);
+            } else {
+                self.integer_vars.remove(var);
             }
+        }
+    }
+
+    // ── Variable Semi-Continuous Bound Changed ─────────────────────
+    Change::SemiContinuousBoundChanged { var, .. } => {
+        if let Some(col) = self.col_map.get(*var) {
+            self.semicontinuous_vars.insert(*var);
+            let msk_type = if self.integer_vars.contains(var) {
+                ffi::VAR_TYPE_SEMICONT_INT
+            } else {
+                ffi::VAR_TYPE_SEMICONT
+            };
+            check(
+                unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                "MSK_putvartype (semi-continuous)",
+            )?;
+        }
+    }
 
             // ── Variable Activity Changed ──────────────────────────────────
             Change::VariableActivityChanged { var, active } => {
@@ -742,6 +784,28 @@ impl SolverAdapter for MosekAdapter {
             warn!("Solving with no active objective.");
         }
 
+        // ── Apply per-solve optimizer override ──
+        if let Some(opt) = self.next_optimizer.take() {
+            let code = match opt {
+                MosekOptimizer::Free          => ffi::OPTIMIZER_FREE,
+                MosekOptimizer::InteriorPoint => ffi::OPTIMIZER_INTPNT,
+                MosekOptimizer::DualSimplex   => ffi::OPTIMIZER_DUAL_SIMPLEX,
+                MosekOptimizer::NewDualSimplex => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
+                MosekOptimizer::FreeSimplex   => ffi::OPTIMIZER_FREE_SIMPLEX,
+            };
+            unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_OPTIMIZER, code) };
+            // Enable crossover (IPM → basis) when using barrier, so subsequent
+            // dual-simplex phases can hotstart from the basis.
+            if opt == MosekOptimizer::InteriorPoint {
+                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_INTPNT_BASIS, ffi::BI_IF_FEASIBLE) };
+            }
+            // Enable status-keys hotstart when using dual simplex.
+            if matches!(opt, MosekOptimizer::DualSimplex | MosekOptimizer::NewDualSimplex) {
+                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_SIM_HOTSTART, ffi::SIM_HOTSTART_STATUS_KEYS) };
+            }
+            info!("MOSEK: applied optimizer override = {opt:?}");
+        }
+
         // ── Optional callback loop ──
         if let Some(handler) = self.callback_handler.take() {
             let col_to_var: HashMap<ffi::MosekInt, VarId> = self.col_map.reverse_map();
@@ -920,6 +984,7 @@ impl SolverAdapter for MosekAdapter {
         self.var_bounds.clear();
         self.con_bounds.clear();
         self.integer_vars.clear();
+        self.semicontinuous_vars.clear();
         self.obj_costs.clear();
         self.obj_senses.clear();
         self.active_obj = None;
@@ -939,18 +1004,46 @@ impl SolverAdapter for MosekAdapter {
         Ok(())
     }
 
+    fn apply_options(&mut self, opts: &SolveOptions) -> Result<(), SolverError> {
+        if let Some(algo) = opts.lp_algorithm {
+            let mosek_opt = match algo {
+                LpAlgorithm::Automatic     => MosekOptimizer::Free,
+                LpAlgorithm::PrimalSimplex => MosekOptimizer::DualSimplex, // no primal in MosekOptimizer
+                LpAlgorithm::DualSimplex   => MosekOptimizer::NewDualSimplex,
+                LpAlgorithm::Barrier       => MosekOptimizer::InteriorPoint,
+            };
+            self.next_optimizer = Some(mosek_opt);
+        }
+        Ok(())
+    }
+
+    fn set_console_output(&mut self, enabled: bool) -> Result<(), SolverError> {
+        self.opts.console_output = enabled;
+        let level: i32 = if enabled { 3 } else { 0 };
+        unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_LOG, level); }
+        Ok(())
+    }
+
     fn supports_incremental(&self, _change: &Change) -> bool {
+        true
+    }
+
+    fn supports_semi_continuous(&self) -> bool {
         true
     }
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────
 
-/// C-callable stream callback that writes MOSEK log output to stdout.
+/// C-callable stream callback that writes MOSEK log output to stderr (unbuffered).
 unsafe extern "C" fn mosek_stdout_cb(_handle: *mut std::ffi::c_void, msg: *const std::ffi::c_char) {
     if msg.is_null() { return; }
     if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(msg) }.to_str() {
-        print!("{s}");
+        use std::io::Write;
+        let mut stderr = std::io::stderr();
+        let _ = stderr.write_all(s.as_bytes());
+        let _ = stderr.write_all(b"\n");
+        let _ = stderr.flush();
     }
 }
 

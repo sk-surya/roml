@@ -52,6 +52,8 @@ pub struct HighsAdapter {
     /// Opaque HiGHS instance handle.
     ptr: *mut std::ffi::c_void,
 
+    console_output: bool,
+
     /// VarId → HiGHS column index.
     col_map: IndexMap<VarId>,
 
@@ -122,6 +124,7 @@ impl From<String> for HighsOption { fn from(v: String) -> Self { Self::String(v)
 pub struct HighsOptions {
     threads: Option<i32>,
     extra: Vec<(String, HighsOption)>,
+    pub console_output: bool,
 }
 
 impl HighsOptions {
@@ -163,7 +166,7 @@ impl HighsAdapter {
         // HiGHS output ON/OFF.
         let output_flag = c"output_flag";
         unsafe {
-            ffi::Highs_setBoolOptionValue(ptr, output_flag.as_ptr(), 1);
+            ffi::Highs_setBoolOptionValue(ptr, output_flag.as_ptr(), opts.console_output as i32);
         }
 
         if let Some(threads) = opts.threads {
@@ -194,6 +197,7 @@ impl HighsAdapter {
 
         Self {
             ptr,
+            console_output: opts.console_output,
             col_map: IndexMap::new(),
             row_map: IndexMap::new(),
             var_bounds: HashMap::new(),
@@ -545,6 +549,11 @@ impl HighsAdapter {
             // ── Parameter Value Changed ────────────────────────────────────
             // No-op: the coefficient deltas will follow as CoefficientValueChanged.
             Change::ParameterValueChanged { .. } => {}
+            Change::SemiContinuousBoundChanged { var: _, lower: _ } => {
+                return Err(SolverError::NotSupported(
+                    "semi-continuous variables not supported by HiGHS".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -842,10 +851,10 @@ impl SolverAdapter for HighsAdapter {
 
     fn reset(&mut self) {
         unsafe { ffi::Highs_clearModel(self.ptr) };
-        // Re-silence output after clear (clearModel resets options).
+        // Re-apply output setting after clear (clearModel resets options).
         let output_flag = c"output_flag";
         unsafe {
-            ffi::Highs_setBoolOptionValue(self.ptr, output_flag.as_ptr(), 0);
+            ffi::Highs_setBoolOptionValue(self.ptr, output_flag.as_ptr(), self.console_output as i32);
         }
         self.col_map = IndexMap::new();
         self.row_map = IndexMap::new();

@@ -24,6 +24,7 @@ pub use changelog::{Change, ChangeLog};
 pub use transaction::Transaction;
 
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
+use crate::solver::SolveOptions;
 use crate::value_expr::ValueExpr;
 use crate::expr::{LinExpr, TermCoeff};
 use crate::solution::Solution;
@@ -102,6 +103,13 @@ pub struct Model {
     pub name: Option<String>,
     /// Model constants (e.g., tolerances).
     pub constants: ModelConstants,
+    /// Tracks semi-continuous lower bounds per variable.
+    /// A variable with an entry in this map must be 0 or ≥ the stored value.
+    pub(crate) semicontinuous_lower: std::collections::HashMap<VarId, f64>,
+
+    /// Solver options to apply before the next `solve()` call.
+    /// Cleared after each solve by `SolverModelExt::solve_model`.
+    pub(crate) solver_options: Option<SolveOptions>,
 }
 
 #[derive(Clone, Debug)]
@@ -222,6 +230,63 @@ impl Model {
             );
         }
         Ok(())
+    }
+
+    /// Change a variable's type (Continuous, Integer, Binary).
+    ///
+    /// Produces a `Change::VariableTypeChanged` which the solver adapter
+    /// applies on the next `sync_model` / `apply_changes` call.
+    pub fn set_variable_type(&mut self, var: VarId, var_type: VarType) -> Result<(), ModelError> {
+        let data = self
+            .variables
+            .get_mut(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
+        let old = data.var_type;
+        if old != var_type {
+            data.var_type = var_type;
+            self.changelog
+                .push(Change::VariableTypeChanged { var, old, new: var_type });
+        }
+        Ok(())
+    }
+
+    /// Convenience: set variable to binary [0,1].
+    pub fn set_binary(&mut self, var: VarId) -> Result<(), ModelError> {
+        self.set_variable_type(var, VarType::Binary)?;
+        self.set_variable_bounds(var, Bounds::new(0.0, 1.0))?;
+        Ok(())
+    }
+
+    /// Mark a variable as semi-continuous with the given lower bound.
+    ///
+    /// A semi-continuous variable can take value 0 or any value between
+    /// `lower` and its current upper bound. This tightens the LP relaxation
+    /// (the variable cannot be fractionally below `lower`) while remaining
+    /// feasible for all integer solutions.
+    ///
+    /// If `lower` exceeds the current lower bound, the lower bound is raised.
+    pub fn set_semicontinuous(&mut self, var: VarId, lower: f64) -> Result<(), ModelError> {
+        let bounds = self
+            .variable_bounds(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
+        if lower > bounds.upper {
+            return Err(ModelError::InvalidBounds);
+        }
+        if lower > bounds.lower {
+            self.set_variable_bounds(var, Bounds::new(lower, bounds.upper))?;
+        }
+        self.semicontinuous_lower.insert(var, lower);
+        self.changelog
+            .push(Change::SemiContinuousBoundChanged { var, lower });
+        Ok(())
+    }
+
+    /// Set solver options to apply before the next solve.
+    ///
+    /// Options are cleared automatically after each solve by the
+    /// `SolverModelExt::solve_model` implementation.
+    pub fn set_solver_options(&mut self, opts: SolveOptions) {
+        self.solver_options = Some(opts);
     }
 
     /// Get the number of variables.

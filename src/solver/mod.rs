@@ -60,6 +60,34 @@ impl std::fmt::Display for SolverError {
 
 impl std::error::Error for SolverError {}
 
+/// Algorithm selection for LP optimization.
+///
+/// Each solver adapter maps these to its own controls.
+/// Unsupported options are silently ignored (best-effort).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LpAlgorithm {
+    /// Let the solver choose automatically (default).
+    #[default]
+    Automatic,
+    /// Primal simplex.
+    PrimalSimplex,
+    /// Dual simplex.
+    DualSimplex,
+    /// Barrier / interior point method.
+    Barrier,
+}
+
+/// Generic solver options that can be passed to any solver adapter.
+///
+/// Options are best-effort: if a solver does not support a particular
+/// option, it is silently ignored.
+#[derive(Debug, Clone, Default)]
+pub struct SolveOptions {
+    /// LP algorithm to use for the next solve.
+    /// `None` = solver default / automatic selection.
+    pub lp_algorithm: Option<LpAlgorithm>,
+}
+
 /// Trait that solver adapters must implement.
 ///
 /// The model layer only knows about this trait. Concrete implementations
@@ -109,6 +137,27 @@ pub trait SolverAdapter {
     /// Check if the solver supports incremental updates for a change type.
     fn supports_incremental(&self, change: &Change) -> bool;
 
+    /// Check if the solver supports semi-continuous variables.
+    fn supports_semi_continuous(&self) -> bool {
+        false
+    }
+
+    /// Apply solver-specific options before the next `solve()`.
+    ///
+    /// Options are best-effort: unsupported options are silently ignored.
+    /// Default implementation is a no-op.
+    fn apply_options(&mut self, _options: &SolveOptions) -> Result<(), SolverError> {
+        Ok(())
+    }
+
+    /// Enable or disable solver console output (e.g. iteration log).
+    ///
+    /// When enabled, the solver prints progress information to the console
+    /// during `solve()`. Default: disabled (no output).
+    fn set_console_output(&mut self, _enabled: bool) -> Result<(), SolverError> {
+        Ok(())
+    }
+
     /// Register a callback handler for MIP callbacks (lazy constraints, cuts).
     ///
     /// The handler is invoked during `solve()` when the solver finds
@@ -137,6 +186,14 @@ pub trait SolverModelExt: SolverAdapter {
     /// Synchronize a model, solve it, and assemble a [`Solution`].
     fn solve_model(&mut self, model: &mut Model) -> Result<Solution, SolverError> {
         self.sync_model(model)?;
+
+        // Apply and clear solver options (e.g., algorithm choice).
+        // Options are consumed here — subsequent solves within the same
+        // phase sequence must re-set them if they want the same behaviour.
+        let opts = model.solver_options.take();
+        if let Some(ref opts) = opts {
+            self.apply_options(opts)?;
+        }
 
         let status = self.solve()?;
         let mut builder = SolutionBuilder::new().status(status);
