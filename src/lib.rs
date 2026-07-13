@@ -17,6 +17,7 @@ pub mod snapshot;
 pub mod solution;
 pub mod solver;
 pub mod sync;
+pub mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API

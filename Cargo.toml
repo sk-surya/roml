@@ -33,6 +33,11 @@ exclude = [
     ".github/",
 ]
 
+[lints]
+# Core crate is solver-free; no unsafe allowed
+rust.unsafe_code = "deny"
+# missing_docs will be deny after P5 documentation debt is closed
+
 [dependencies]
 log = { workspace = true }
 
