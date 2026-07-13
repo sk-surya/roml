@@ -1,8 +1,10 @@
 # ROML Mega Roadmap — Production-Grade Public Release
 
-**Program base:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
+**Authoritative program base:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
+**Historical audit base:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
+**Current delta audit:** `docs/release/CURRENT_MAIN_DELTA_AUDIT.md`  
 **Execution model:** GSD milestone/phase control + Superpowers TDD, debugging, verification, and review.  
-**Release rule:** no crate publication until Phase 6 has passed and the owner explicitly authorizes release.
+**Release rule:** no crate publication until Phase 6 has passed and the owner explicitly authorizes the exact release SHA and crate list.
 
 ## Dependency graph
 
@@ -19,13 +21,13 @@ P0 Baseline and hygiene
 P7 Foreign-language ABI foundation begins only after P6 and is not part of v0.1.
 ```
 
-P1 and selected P4 infrastructure tasks may proceed in parallel after P0, but P3 adapter rewrites must target the P2 synchronization contract rather than preserving the current destructive changelog API.
+P1 and selected P4 infrastructure tasks may proceed in parallel after P0, but P3 adapter rewrites must target the P2 synchronization contract rather than preserving the current destructive changelog API. Current Xpress bulk synchronization is useful implementation evidence, not a contract to preserve through accidental event ordering.
 
 ## Release slices
 
 ### Slice A — Trustworthy core
 
-Phases P0–P2. Outcome: a solver-independent crate whose canonical model semantics and revision protocol are correct, portable, and testable without native libraries.
+Phases P0–P2. Outcome: a solver-independent crate whose canonical model/domain semantics, solve-request boundary, and revision protocol are correct, portable, and testable without native libraries.
 
 ### Slice B — Reference backend
 
@@ -48,40 +50,44 @@ MOSEK and Xpress graduate independently. They must not block the core/HiGHS rele
 **Deliverables:**
 
 - Baseline evidence report for formatting, clippy, tests, docs, package contents, dependency tree, unsafe inventory, public API inventory, and current backend build behavior.
-- Repository cleanup: placeholder Python scaffold, tracked logs, obsolete configuration, dead documentation link, generated/machine-local artifacts.
+- Repository cleanup: placeholder Python scaffold, all tracked solver logs, obsolete logging/configuration artifacts, generated/machine-local files, and review of `.claude/settings.json` for public-repository/package appropriateness.
+- Review `MODELING_API.md` for correctness against the planned API; its previous missing-file defect is closed.
 - Dual-license files and manifest metadata recommendation implemented after owner confirmation.
 - Workspace-level package metadata, dependencies, lints, and release profiles.
 - Initial solver-free CI on Linux/macOS/Windows.
 - `cargo deny`, `cargo machete` or equivalent unused-dependency check, `cargo audit`, rustdoc warnings, and package-list checks.
 - Explicit crate publication map: `roml` and `roml-highs` candidate; commercial adapters gated.
 
-**Gate P0:** core builds/tests/docs/packages on all three operating systems without any solver installation; package lists are reviewed; no generated log or placeholder scaffold remains.
+**Gate P0:** core builds/tests/docs/packages on all three operating systems without any solver installation; package lists are reviewed; no generated log or placeholder scaffold remains; repository guidance no longer overclaims production readiness.
 
 **Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-00-release-baseline.md`
 
-## Phase 1 — Canonical model semantics and invariant closure
+## Phase 1 — Canonical model and domain semantics
 
-**Goal:** eliminate model-level correctness ambiguity before changing synchronization or adapters.
+**Goal:** eliminate model-level correctness ambiguity and solver-policy leakage before changing synchronization or adapters.
 
-**Primary requirements:** R2, R8.3.
+**Primary requirements:** R2, R4.1–R4.2, R8.3.
 
 **Critical work:**
 
 - Introduce validated numeric/domain types or centralized validation for bounds, coefficients, parameters, tolerances, and expressions.
 - Replace silent invalid-ID behavior with typed failures.
 - Define a unique canonical coefficient cell for each `(CoefficientTarget, VarId)` and algebraically combine all terms into one `ValueExpr`.
-- Define duplicate-term, zero-term, parameter dependency, deletion cascade, objective constant, and activity semantics.
+- Replace fragmented semi-continuous state (`VarType` + bounds + side map) with a coherent validated variable-domain representation covering continuous, integer, binary, semi-continuous, and semi-integer semantics.
+- Define duplicate-term, zero-term, parameter dependency, deletion cascade, objective constant, activity, and domain-transition semantics.
+- Move transient solver options out of canonical `Model` state into a solve request/session boundary.
+- Replace “unsupported options are silently ignored” with explicit capability validation and effective-configuration reporting.
 - Remove recursive/default and API inconsistencies.
 - Add an internal `Model::validate()`/invariant checker used by tests and debug paths.
 - Add property tests for random legal model mutations and invalid-input rejection.
 
-**Gate P1:** generated model sequences preserve all invariants; duplicate parametric terms produce the mathematically correct coefficient; no public mutation silently fails.
+**Gate P1:** generated model sequences preserve all invariants; duplicate parametric terms produce the mathematically correct coefficient; variable domains are coherent; no public mutation silently fails; canonical model state contains no transient solver policy.
 
 **Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-01-core-correctness.md`
 
-## Phase 2 — Revisioned snapshots, journals, and recoverable synchronization
+## Phase 2 — Revisioned snapshots, journals, solve attempts, and recoverable synchronization
 
-**Goal:** replace the single-consumer destructive changelog with a synchronization protocol that supports failure recovery and multiple adapters.
+**Goal:** replace the single-consumer destructive changelog with a protocol that supports failure recovery, multiple adapters, and immutable solve attempts.
 
 **Primary requirements:** R3, R4.1, R8.1.
 
@@ -92,7 +98,9 @@ ModelRevision r
 CanonicalSnapshot(r)
 DeltaBatch { from: r0, to: r1, operations: [...] }
 AdapterCursor { applied_revision, health }
-apply(batch) -> Acknowledgement | RecoverableFailure | DirtyFailure
+SolveRequest { policy, capabilities_required }
+apply(batch) -> Acknowledgement | RequiresRebuild | RecoverableFailure | DirtyFailure
+solve(request) -> SolveResult { effective_configuration, termination, solution }
 rebuild(snapshot) -> Acknowledgement
 ```
 
@@ -103,10 +111,12 @@ rebuild(snapshot) -> Acknowledgement
 - Give each attached adapter an independent cursor.
 - On apply failure, preserve the model delta and mark adapter state; rebuild from snapshot when needed.
 - Make transactions atomic at the model revision boundary.
+- Make solve requests immutable for one attempt; a failed option/application/solve path cannot consume requested policy or model changes ambiguously.
 - Build a reference in-memory backend to test synchronization independent of native solvers.
 - Establish the core theorem by executable testing: applying all deltas to revision `r` is observationally equivalent to projecting snapshot `r`.
+- Add the current semi-continuous/HiGHS sequence as a mandatory partial-apply regression: ordinary bound application followed by unsupported domain operation must retain replayability and classify adapter health correctly.
 
-**Gate P2:** two adapters can independently lag/catch up; injected failures lose no model changes; randomized incremental projection equals snapshot rebuild.
+**Gate P2:** two adapters can independently lag/catch up; injected failures lose no model changes or solve policy; randomized incremental projection equals snapshot rebuild; the semi-continuous partial-apply counterexample is closed.
 
 **Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-02-revisioned-sync.md`
 
@@ -119,8 +129,9 @@ rebuild(snapshot) -> Acknowledgement
 **Binding decisions:**
 
 - **HiGHS:** adopt `rust-or/highs-sys` if its generated official-header surface covers required APIs. Upstream missing callback symbols or pin a narrow fork before creating a new ROML sys crate.
-- **MOSEK:** use the official `mosek` crate/API. Remove handwritten enum/function declarations. The current callback implementation is invalid because it mutates the task from inside a callback; redesign as collect/terminate/apply-outside/re-optimize or expose only supported callback capabilities.
+- **MOSEK:** use the official `mosek` crate/API. Remove handwritten enum/function/parameter constants. The current callback implementation is invalid because it mutates the task from inside a callback; redesign as collect/terminate/apply-outside/re-optimize or expose only supported callback capabilities.
 - **Xpress:** create a dedicated binding boundary only after verifying header redistribution and package licensing. Prefer generated bindings plus runtime loading for commercial-library availability, or a link-time sys crate with strict target discovery if runtime loading is unsuitable.
+- Characterize the current Xpress bulk-additive path and migrate its proven optimizations onto typed P2 operations. Require bulk-vs-scalar and incremental-vs-rebuild equivalence plus failure-injection coverage.
 - Add a small internal adapter-support crate/module only for genuinely solver-neutral mechanics such as dense index bookkeeping and revision application scaffolding; do not force solver semantics into false uniformity.
 
 **Unsafe rules:**
@@ -131,9 +142,10 @@ rebuild(snapshot) -> Acknowledgement
 - no undocumented `Send`/`Sync`;
 - callback cleanup is RAII and unwind-safe;
 - backend versions and capabilities are queryable;
-- constructors return errors, not asserts/panics.
+- constructors return errors, not asserts/panics;
+- copied SDK enum/control values are forbidden when authoritative generated/official bindings are available.
 
-**Gate P3:** core contains no raw FFI; HiGHS and MOSEK contain no handwritten ABI declarations; callback and lifecycle invariants have dedicated tests and safety comments; Xpress has an approved binding/licensing decision.
+**Gate P3:** core contains no raw FFI; HiGHS and MOSEK contain no handwritten ABI declarations; callback and lifecycle invariants have dedicated tests and safety comments; Xpress has an approved binding/licensing decision; current batching behavior is either migrated with equivalence evidence or intentionally replaced.
 
 **Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-03-solver-boundaries.md`
 
@@ -160,7 +172,7 @@ rebuild(snapshot) -> Acknowledgement
 - Validate both clean-host failure diagnostics and successful native discovery.
 - Test HiGHS bundled/static and optional system discovery modes.
 - Test runtime library resolution without embedding developer-machine rpaths.
-- Separate compile, native load, license acquisition, and solve failures.
+- Separate compile, native load, license acquisition, solve-policy validation, and solve failures.
 - Add randomized differential tests and benchmark smoke thresholds.
 - Add protected self-hosted runner design for commercial solvers without leaking binaries/licenses.
 
@@ -179,13 +191,14 @@ rebuild(snapshot) -> Acknowledgement
 - Audit every public module/type/field and narrow visibility.
 - Define prelude intentionally; remove implementation stores from stable surface where possible.
 - Add `#![deny(missing_docs)]` when documentation debt is closed.
+- Rewrite/revalidate `MODELING_API.md` against the released canonical-domain, revision, and solve-request contracts.
 - Write architecture, incremental protocol, native backend, migration, troubleshooting, and performance guides.
-- Provide solver-free, HiGHS, incremental-parameter, transactions, and failure-recovery examples.
+- Provide solver-free, HiGHS, incremental-parameter, transactions, solve-request, capability-negotiation, and failure-recovery examples.
 - Establish semver policy and run `cargo-semver-checks` against the release baseline.
 - Add changelog, contributing, security, support, and release documents.
 - Verify docs.rs behavior and package contents for each crate.
 
-**Gate P5:** a new Rust user can discover, install, model, synchronize, solve with HiGHS, update parameters, and diagnose failures from public documentation alone; public API review has no unintentional exposures.
+**Gate P5:** a new Rust user can discover, install, model, synchronize, solve with HiGHS, update parameters, request supported solve policy, and diagnose failures from public documentation alone; public API review has no unintentional exposures.
 
 **Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-05-public-api-packaging.md`
 
@@ -234,7 +247,7 @@ rebuild(snapshot) -> Acknowledgement
 
 After P0:
 
-- **Track A:** P1 core semantics.
+- **Track A:** P1 core/domain semantics and solve-request boundary.
 - **Track B:** CI scaffolding portions of P4 that do not encode old APIs.
 - **Track C:** external binding/legal research and upstream probes for P3.
 - **Track D:** documentation inventory and examples research for P5, without freezing unstable APIs.
@@ -257,6 +270,7 @@ Stop and escalate when:
 - a proprietary license forbids distributing generated bindings or package metadata;
 - an unsafe invariant cannot be expressed and tested;
 - a semantic change would silently alter existing model results;
+- a requested solve policy cannot be represented without silent degradation;
 - a performance optimization requires weakening recoverability or correctness;
 - crates.io name ownership or dependency publication order is unresolved;
 - the implementation agent proposes publishing before P6.
