@@ -1,8 +1,11 @@
 # ROML Public-Release Hardening Project
 
-**Baseline:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
+**Authoritative baseline:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
+**Historical audit baseline:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
 **Planning date:** 2026-07-13  
 **Target:** a trustworthy pre-1.0 Rust workspace and crates.io release process, not an immediate publication.
+
+The historical principal-engineering audit is supplemented by `docs/release/CURRENT_MAIN_DELTA_AUDIT.md`, which reconciles variable-type mutation, Xpress bulk synchronization, semi-continuous domains, and per-solve option plumbing added after `f9ba192`.
 
 ## Product thesis
 
@@ -19,9 +22,11 @@ The public release must make each arrow explicit, testable, recoverable, and ind
 Produce a workspace in which:
 
 - `roml` is a portable, solver-free modeling and incremental-state crate.
+- Solver/solve-session policy such as algorithm choice, limits, logging, and callbacks is supplied through an explicit solve request rather than stored in canonical `Model` state.
 - Solver adapters are optional crates with safe Rust APIs and explicit backend capabilities.
 - Raw FFI and native discovery are isolated behind maintained sys/official binding packages.
 - Core correctness is established by model-state invariants, property tests, differential tests, and rebuild-vs-incremental equivalence.
+- Variable domains, including semi-continuous and semi-integer semantics, are modeled coherently rather than spread across bounds, types, and side maps.
 - Linux, macOS, and Windows are first-class targets.
 - crates.io packages contain only intended source, metadata, licenses, documentation, and examples.
 - future Python/Java/.NET bindings can target a stable C ABI or versioned wire/model representation rather than Rust's unstable ABI.
@@ -38,10 +43,11 @@ The first publishable train is intentionally narrow:
 
 ### Core
 
-Owns typed identities, model entities, canonical coefficients, parameter expressions, revisions, transactions, snapshots, delta journals, solver-neutral capabilities, solution views, and user-facing modeling ergonomics.
+Owns typed identities, model entities and domains, canonical coefficients, parameter expressions, revisions, transactions, snapshots, delta journals, solver-neutral capabilities, solution views, and user-facing modeling ergonomics.
 
 The core must not own:
 
+- transient solver/algorithm options,
 - global logger initialization,
 - YAML configuration,
 - native library discovery,
@@ -53,7 +59,7 @@ The core must not own:
 
 ### Backend adapters
 
-Own safe translation from canonical model operations into a solver API, backend capability declarations, native error normalization, index mappings, lifecycle, incremental application, solve control, and solution extraction.
+Own safe translation from canonical model operations into a solver API, backend capability declarations, solve-request validation, effective-configuration reporting, native error normalization, index mappings, lifecycle, incremental application, solve control, and solution extraction.
 
 ### Raw bindings
 
@@ -73,11 +79,12 @@ Own generated or vendor-maintained declarations, native discovery/build/linking,
 
 Release readiness means:
 
-- no known correctness defects in canonical model semantics or incremental synchronization;
-- no handwritten ABI layouts where maintained generated/official bindings exist;
+- no known correctness defects in canonical model/domain semantics or incremental synchronization;
+- no handwritten ABI layouts/constants where maintained generated/official bindings exist;
 - no panics across FFI boundaries;
 - no silent native return-code loss;
-- no destructive delta loss on synchronization failure;
+- no silent ignore of requested solver options or capabilities;
+- no destructive delta or solve-request loss on synchronization/solve failure;
 - no platform path encoded as the default production behavior;
 - no mandatory native solver dependency for building/testing/docs of `roml`;
 - documented MSRV and supported target matrix;
@@ -87,6 +94,7 @@ Release readiness means:
 
 - Incremental application is observationally equivalent to rebuilding from a canonical snapshot for every supported change sequence.
 - Every model revision is either acknowledged by an adapter or remains replayable.
+- Requested solve policy is either explicitly applied, explicitly adjusted, or explicitly rejected; the effective configuration is inspectable.
 - Core CI passes on stable, MSRV, Linux, macOS, and Windows without native solvers.
 - HiGHS integration passes end-to-end on all three operating systems.
 - `cargo package --list` and `cargo package --no-verify`/`--locked` checks are clean for each publishable crate.
@@ -99,6 +107,7 @@ Release readiness means:
 - Correctness before micro-optimization.
 - Canonical state before deltas.
 - Acknowledged revisions before destructive cleanup.
+- Explicit effective configuration rather than best-effort silence.
 - Capabilities rather than optimistic booleans.
 - Generated/official ABI declarations rather than copied constants.
 - Platform matrices rather than single-host assumptions.
