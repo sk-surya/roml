@@ -11,6 +11,7 @@
 //! Solver concepts must NOT leak into the model layer.
 
 pub mod callback;
+pub mod reference;
 
 use std::collections::HashMap;
 
