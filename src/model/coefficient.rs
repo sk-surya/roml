@@ -1,18 +1,18 @@
 //! Coefficient storage with multi-indexing.
-//! 
+//!
 //! Coefficients are first-class objects linking variables to targets (constraints or objectives).
 //! They support efficient lookup by:
 //! - Variable (for deletion, solver projection)
 //! - Constraint (for deletion, iteration)
 //! - Objective (for deletion, iteration)
 //! - Parameter (for value propagation)
-//! 
+//!
 //! Key idea is the use of expr from which value can be evaluated.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::id::{CoeffId, ConId, IdArena, ObjId, ParamId, VarId};
-use crate::{value_expr::ValueExpr};
+use crate::value_expr::ValueExpr;
 
 /// Target of a coefficient (constraint or objective).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -38,7 +38,12 @@ pub struct CoefficientData {
 
 impl CoefficientData {
     /// Create a new coefficient.
-    pub fn new(var: VarId, target: CoefficientTarget, value_expr: ValueExpr, initial_value: f64) -> Self {
+    pub fn new(
+        var: VarId,
+        target: CoefficientTarget,
+        value_expr: ValueExpr,
+        initial_value: f64,
+    ) -> Self {
         Self {
             var,
             target,
@@ -49,7 +54,7 @@ impl CoefficientData {
 }
 
 /// Multi-indexed coefficient storage.
-/// 
+///
 /// Provides O(1) lookup in multiple dimensions:
 /// - By coefficient ID (primary)
 /// - By variable (for deletion cascades)
@@ -87,7 +92,7 @@ impl CoefficientIndex {
     }
 
     /// Add a new coefficient.
-    /// 
+    ///
     /// Automatically updates all secondary indexes based on the value expression's dependencies.
     pub fn add(
         &mut self,
@@ -122,7 +127,7 @@ impl CoefficientIndex {
     }
 
     /// Remove a coefficient by ID.
-    /// 
+    ///
     /// Returns the data if it existed. Automatically cleans up all secondary indices.
     pub fn remove(&mut self, id: CoeffId) -> Option<CoefficientData> {
         let data = self.arena.remove(id.index(), id.generation())?;
@@ -165,7 +170,7 @@ impl CoefficientIndex {
             }
         }
 
-    Some(data)
+        Some(data)
     }
 
     /// Get coefficient data by ID.
@@ -222,7 +227,7 @@ impl CoefficientIndex {
     // ========== By-Parameter Queries (Dependency Graph) ==========
 
     /// Get all coefficients that depend on a parameter.
-    /// 
+    ///
     /// This is the dependency graph used for parameter propagation.
     pub fn for_param(&self, param: ParamId) -> impl Iterator<Item = CoeffId> + '_ {
         self.by_param.get(&param).into_iter().flatten().copied()
@@ -312,9 +317,24 @@ mod tests {
         let var2 = make_var(1);
         let con = make_con(0);
 
-        let id1 = index.add(var1, CoefficientTarget::Constraint(con), ValueExpr::constant(1.0), 1.0);
-        let id2 = index.add(var1, CoefficientTarget::Constraint(con), ValueExpr::constant(2.0), 2.0);
-        let _id3 = index.add(var2, CoefficientTarget::Constraint(con), ValueExpr::constant(3.0), 3.0);
+        let id1 = index.add(
+            var1,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::constant(1.0),
+            1.0,
+        );
+        let id2 = index.add(
+            var1,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::constant(2.0),
+            2.0,
+        );
+        let _id3 = index.add(
+            var2,
+            CoefficientTarget::Constraint(con),
+            ValueExpr::constant(3.0),
+            3.0,
+        );
 
         let var1_coeffs: HashSet<_> = index.for_var(var1).collect();
         assert_eq!(var1_coeffs.len(), 2);
@@ -329,8 +349,18 @@ mod tests {
         let con1 = make_con(0);
         let con2 = make_con(1);
 
-        let id1 = index.add(var, CoefficientTarget::Constraint(con1), ValueExpr::constant(1.0), 1.0);
-        let _id2 = index.add(var, CoefficientTarget::Constraint(con2), ValueExpr::constant(2.0), 2.0);
+        let id1 = index.add(
+            var,
+            CoefficientTarget::Constraint(con1),
+            ValueExpr::constant(1.0),
+            1.0,
+        );
+        let _id2 = index.add(
+            var,
+            CoefficientTarget::Constraint(con2),
+            ValueExpr::constant(2.0),
+            2.0,
+        );
 
         let con1_coeffs: Vec<_> = index.for_constraint(con1).collect();
         assert_eq!(con1_coeffs, vec![id1]);

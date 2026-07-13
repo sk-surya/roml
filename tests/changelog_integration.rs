@@ -1,6 +1,6 @@
+use roml::expr::LinExpr;
 use roml::model::{Change, CoefficientTarget};
 use roml::{Bounds, ConstraintBounds, Model, Sense, ValueExpr, VarType};
-use roml::expr::LinExpr;
 
 #[test]
 fn changelog_captures_mutations() {
@@ -162,17 +162,14 @@ fn drain_changes_auto_commits_parameters() {
     ));
 }
 
-
 #[test]
 fn indexed_model_with_parameter_arrays() {
     let mut model = Model::new();
 
     // lets call add_variable in a loop to simulate indexed variables
     // and store the ids in a vector
-    let plan_mw: Vec<_> = (0..5)
-        .map(|_| model.add_var())
-        .collect();
-    
+    let plan_mw: Vec<_> = (0..5).map(|_| model.add_var()).collect();
+
     // similarly, create a parameter array for energy prices (generate random numbers)
     let rt_energy_price: Vec<_> = (0..5)
         .map(|_| model.add_parameter(rand::random::<f64>() * 100.0))
@@ -183,10 +180,10 @@ fn indexed_model_with_parameter_arrays() {
         .collect();
 
     // lets create an objective expression that uses these parameters
-    let mut obj_expr = LinExpr::new()
-        .constant(0.0);
+    let mut obj_expr = LinExpr::new().constant(0.0);
     for i in 0..5 {
-        let coeff = ValueExpr::param(rt_energy_price[i]) * ValueExpr::param(rt_energy_price_scaler[i]);
+        let coeff =
+            ValueExpr::param(rt_energy_price[i]) * ValueExpr::param(rt_energy_price_scaler[i]);
         obj_expr = obj_expr.add_term_with(coeff, plan_mw[i]);
     }
 

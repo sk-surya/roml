@@ -3,7 +3,7 @@
 use crate::id::{ConId, IdArena};
 
 /// Constraint bounds
-/// 
+///
 /// A constraint `lower <= expr <= upper` is represented by these bounds, where:
 /// - `lower = f64::NEG_INFINITY` means no lower bound (expr <= upper)
 /// - `upper = f64::INFINITY` means no upper bound (lower <= expr)
@@ -100,7 +100,7 @@ impl ConstraintData {
 /// Storage for all constraints in the model.
 #[derive(Clone, Debug, Default)]
 pub struct ConstraintStore {
-    arena: IdArena<ConstraintData>,                                    
+    arena: IdArena<ConstraintData>,
 }
 
 impl ConstraintStore {

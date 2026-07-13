@@ -1,0 +1,82 @@
+name: CI - Core
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least-privilege GITHUB_TOKEN: only read repository contents.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Compile check (all targets)
+        run: cargo check -p roml --all-targets
+
+      - name: Clippy lint check
+        run: cargo clippy -p roml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test -p roml --all-targets
+
+      - name: Documentation check (no-deps)
+        run: RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
+
+  msrv:
+    name: MSRV (Linux)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # MSRV: TBD - add after workspace rust-version is set
+      # Once rust-version is set in the workspace Cargo.toml, replace the
+      # toolchain version below (e.g. @1.80.0) and add clippy to components.
+      # The MSRV job should mirror the core test steps above but using the
+      # pinned MSRV toolchain instead of stable.
+
+      - name: Install stable toolchain (placeholder until MSRV is defined)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Replace `cargo check` below with the full set of core checks once
+      # the MSRV toolchain is pinned. Also consider adding the MSRV version
+      # to an msrv matrix axis if multiple MSRVs need validation.
+      - name: Compile check (placeholder)
+        run: cargo check -p roml --all-targets
