@@ -453,7 +453,12 @@ impl Model {
     // ========== Parameter Operations ==========
 
     /// Add a new parameter with the given initial value.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `value` is not finite.
     pub fn add_parameter(&mut self, value: f64) -> ParamId {
+        debug_assert!(value.is_finite(), "parameter value must be finite, got {value}");
         self.parameters.add(value)
     }
 
@@ -465,7 +470,12 @@ impl Model {
     /// Queue a parameter change in the current transaction.
     ///
     /// The change is not applied until `commit()` is called.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `value` is not finite.
     pub fn set_parameter(&mut self, param: ParamId, value: f64) {
+        debug_assert!(value.is_finite(), "parameter value must be finite, got {value}");
         self.transaction.set_param(param, value);
     }
 
