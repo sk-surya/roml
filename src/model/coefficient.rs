@@ -335,6 +335,28 @@ impl CoefficientIndex {
             .map(|(idx, gen, data)| (CoeffId::new(idx, gen), data))
     }
 
+    // ========== Index Iteration (for invariant checking) ==========
+
+    /// Iterate over the by_var index entries.
+    pub(crate) fn by_var_iter(&self) -> impl Iterator<Item = (&VarId, &HashSet<CoeffId>)> {
+        self.by_var.iter()
+    }
+
+    /// Iterate over the by_constraint index entries.
+    pub(crate) fn by_constraint_iter(&self) -> impl Iterator<Item = (&ConId, &HashSet<CoeffId>)> {
+        self.by_constraint.iter()
+    }
+
+    /// Iterate over the by_objective index entries.
+    pub(crate) fn by_objective_iter(&self) -> impl Iterator<Item = (&ObjId, &HashSet<CoeffId>)> {
+        self.by_objective.iter()
+    }
+
+    /// Iterate over the by_param index entries.
+    pub(crate) fn by_param_iter(&self) -> impl Iterator<Item = (&ParamId, &HashSet<CoeffId>)> {
+        self.by_param.iter()
+    }
+
     // ========== Cell Queries ==========
 
     /// Get the coefficient ID for a specific (target, variable) cell.

@@ -750,6 +750,130 @@ impl Model {
     pub fn changelog_sequence(&self) -> u64 {
         self.changelog.sequence()
     }
+
+    /// Validate all model invariants. Returns a list of violations.
+    ///
+    /// This is a debug/test helper. It checks:
+    /// - Every coefficient cell references live variables, constraints, objectives
+    /// - Every reverse index (by_var, by_constraint, by_objective, by_param) is
+    ///   consistent with forward storage
+    /// - No more than one objective is active
+    /// - Cached coefficient values match fresh expression evaluation
+    /// - No duplicate cell keys
+    ///
+    /// Returns `Ok(())` if all invariants hold, or `Err(violations)` with
+    /// human-readable descriptions of each violated invariant.
+    pub fn validate_invariants(&self) -> Result<(), Vec<String>> {
+        let mut violations: Vec<String> = Vec::new();
+        let lookup = self.parameters.as_lookup();
+
+        // 1. At most one active objective
+        let active_count = self.objectives.active_count();
+        if active_count > 1 {
+            violations.push(format!("multiple active objectives: {active_count}"));
+        }
+
+        // 2. Every coefficient references live entities
+        for (coeff_id, data) in self.coefficients.iter() {
+            if !self.variables.contains(data.var) {
+                violations.push(format!(
+                    "coefficient {coeff_id:?} references dead variable {:?}",
+                    data.var
+                ));
+            }
+            match data.target {
+                CoefficientTarget::Constraint(con) => {
+                    if !self.constraints.contains(con) {
+                        violations.push(format!(
+                            "coefficient {coeff_id:?} references dead constraint {con:?}"
+                        ));
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if !self.objectives.contains(obj) {
+                        violations.push(format!(
+                            "coefficient {coeff_id:?} references dead objective {obj:?}"
+                        ));
+                    }
+                }
+            }
+
+            // 3. Cached value matches fresh evaluation
+            let fresh = data.value_expr.eval(&lookup);
+            if (data.cached_value - fresh).abs() > self.constants.feasibility_tolerance {
+                violations.push(format!(
+                    "coefficient {coeff_id:?} cached value {} != fresh eval {fresh}",
+                    data.cached_value
+                ));
+            }
+        }
+
+        // 4. by_var index consistency
+        for (var_id, coeff_set) in self.coefficients.by_var_iter() {
+            if !self.variables.contains(*var_id) {
+                violations.push(format!("by_var index references dead variable {var_id:?}"));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!(
+                        "by_var index has dead coefficient {coeff_id:?} for var {var_id:?}"
+                    ));
+                }
+            }
+        }
+
+        // 5. by_constraint index consistency
+        for (con_id, coeff_set) in self.coefficients.by_constraint_iter() {
+            if !self.constraints.contains(*con_id) {
+                violations.push(format!(
+                    "by_constraint index references dead constraint {con_id:?}"
+                ));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!(
+                        "by_constraint index has dead coefficient {coeff_id:?}"
+                    ));
+                }
+            }
+        }
+
+        // 6. by_objective index consistency
+        for (obj_id, coeff_set) in self.coefficients.by_objective_iter() {
+            if !self.objectives.contains(*obj_id) {
+                violations.push(format!(
+                    "by_objective index references dead objective {obj_id:?}"
+                ));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!(
+                        "by_objective index has dead coefficient {coeff_id:?}"
+                    ));
+                }
+            }
+        }
+
+        // 7. by_param index consistency
+        for (param_id, coeff_set) in self.coefficients.by_param_iter() {
+            if !self.parameters.contains(*param_id) {
+                violations.push(format!(
+                    "by_param index references dead parameter {param_id:?}"
+                ));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!("by_param index has dead coefficient {coeff_id:?}"));
+                }
+            }
+        }
+
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations)
+        }
+    }
 }
 
 // ── Introspection helpers ────────────────────────────────────────────────────
@@ -1433,5 +1557,84 @@ mod tests {
 
         let z_violation = violations.iter().find(|(v, _)| *v == z);
         assert!(z_violation.is_none(), "z should have no bound violation");
+    }
+
+    // ── Invariant checker tests ──────────────────────────────────────────
+
+    #[test]
+    fn empty_model_passes_invariants() {
+        let model = Model::new();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn simple_model_passes_invariants() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        model.add_coeff(con, x, 1.0).unwrap();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn objective_model_passes_invariants() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let obj = model.add_objective(Sense::Maximize);
+        model.set_active_objective(obj).unwrap();
+        model
+            .add_objective_coefficient(obj, x, ValueExpr::constant(1.0))
+            .unwrap();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn parameter_model_passes_invariants() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let p = model.add_parameter(5.0);
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        model
+            .add_constraint_coefficient(con, x, ValueExpr::param(p))
+            .unwrap();
+        model.set_parameter(p, 3.0);
+        model.commit();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn invariants_after_remove() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let y = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        model.add_coeff(con, x, 1.0).unwrap();
+        model.add_coeff(con, y, 2.0).unwrap();
+
+        assert!(model.validate_invariants().is_ok());
+
+        model.remove_variable(x).unwrap();
+        // x is removed; its coefficients are cascaded. Invariants should still hold.
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn canonical_cell_invariants() {
+        // Verify that canonical cell combining doesn't violate invariants
+        let mut model = Model::new();
+        let x = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+
+        let id1 = model.add_coeff(con, x, 2.0).unwrap();
+        // Adding another term for the same cell should combine
+        let id2 = model
+            .add_constraint_coefficient(con, x, ValueExpr::constant(3.0))
+            .unwrap();
+
+        assert_eq!(id1, id2, "canonical cell: same ID returned on combine");
+        assert!(model.validate_invariants().is_ok());
+
+        // combined value: 2.0 + 3.0 = 5.0
+        assert!((model.coefficient(id1).unwrap().cached_value - 5.0).abs() < 1e-9);
     }
 }

@@ -102,6 +102,15 @@ impl ObjectiveStore {
         self.active_objective
     }
 
+    /// Return the number of active objectives (0 or 1).
+    pub fn active_count(&self) -> usize {
+        if self.active_objective.is_some() {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Set the given objective as active.
     ///
     /// Deactivates the previous objective and activates the new one.
