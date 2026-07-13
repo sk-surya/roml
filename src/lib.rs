@@ -7,9 +7,12 @@
 //! - Stores and reasons about solutions
 //! - Allows algebraic introspection (slack, infeasibility, evaluation)
 
+pub mod delta;
 pub mod expr;
 pub mod id;
 pub mod model;
+pub mod revision;
+pub mod snapshot;
 pub mod solution;
 pub mod solver;
 pub mod value_expr;

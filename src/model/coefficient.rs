@@ -15,7 +15,7 @@ use crate::id::{CoeffId, ConId, IdArena, ObjId, ParamId, VarId};
 use crate::value_expr::ValueExpr;
 
 /// Target of a coefficient (constraint or objective).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CoefficientTarget {
     /// Coefficient belongs to a constraint.
     Constraint(ConId),
