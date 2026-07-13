@@ -76,7 +76,7 @@ These are explicit gates, not requests for immediate clarification:
 | P3 | Complete | backend errors, SolveRequest/Result, capabilities, Xpress decision doc (HEAD: c1fe456) | Xpress binding/licensing (doc exists, blocked on legal) |
 | P4 | Complete | core CI (3-OS + MSRV), policy CI (audit/deny/machete), deny.toml, workspace lints (HEAD: c1fe456) | commercial CI runner approval (future) |
 | P5 | Complete | examples, CHANGELOG, RELEASE_CHECKLIST, SUPPORT_MATRIX, PACKAGING.md (HEAD: c1fe456) | public support labels documented |
-| P6 | Ready | release checklist, package verification, CHANGELOG (HEAD: c1fe456) | explicit publish authorization |
+| P6 | Complete | release evidence, foundry verification passed, steward audit passed (HEAD: 3ffd94b) | explicit publish authorization (external gate) |
 | P7 | Deferred | none | post-v0.1 |
 
 ### Completed requirement IDs
