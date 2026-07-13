@@ -39,5 +39,13 @@ log = { workspace = true }
 [dev-dependencies]
 rand = "0.9"
 
+[[example]]
+name = "simple_lp"
+path = "examples/simple_lp.rs"
+
+[[example]]
+name = "parameter_update"
+path = "examples/parameter_update.rs"
+
 [profile.dev]
 opt-level = 0
