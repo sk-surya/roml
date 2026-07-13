@@ -458,7 +458,10 @@ impl Model {
     ///
     /// Panics in debug builds if `value` is not finite.
     pub fn add_parameter(&mut self, value: f64) -> ParamId {
-        debug_assert!(value.is_finite(), "parameter value must be finite, got {value}");
+        debug_assert!(
+            value.is_finite(),
+            "parameter value must be finite, got {value}"
+        );
         self.parameters.add(value)
     }
 
@@ -475,7 +478,10 @@ impl Model {
     ///
     /// Panics in debug builds if `value` is not finite.
     pub fn set_parameter(&mut self, param: ParamId, value: f64) {
-        debug_assert!(value.is_finite(), "parameter value must be finite, got {value}");
+        debug_assert!(
+            value.is_finite(),
+            "parameter value must be finite, got {value}"
+        );
         self.transaction.set_param(param, value);
     }
 
@@ -586,7 +592,11 @@ impl Model {
 
         if let Some(old) = old_value {
             // Combined with existing cell — emit value change
-            let new_value = self.coefficients.get(id).map(|d| d.cached_value).unwrap_or(initial_value);
+            let new_value = self
+                .coefficients
+                .get(id)
+                .map(|d| d.cached_value)
+                .unwrap_or(initial_value);
             if (old - new_value).abs() >= f64::EPSILON {
                 self.changelog.push(Change::CoefficientValueChanged {
                     coeff: id,
@@ -645,7 +655,11 @@ impl Model {
             .add(var, target, value_expr, initial_value);
 
         if let Some(old) = old_value {
-            let new_value = self.coefficients.get(id).map(|d| d.cached_value).unwrap_or(initial_value);
+            let new_value = self
+                .coefficients
+                .get(id)
+                .map(|d| d.cached_value)
+                .unwrap_or(initial_value);
             if (old - new_value).abs() >= f64::EPSILON {
                 self.changelog.push(Change::CoefficientValueChanged {
                     coeff: id,

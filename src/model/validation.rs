@@ -47,17 +47,23 @@ impl std::fmt::Display for FiniteScalar {
 // Arithmetic for ergonomic expression use
 impl std::ops::Add for FiniteScalar {
     type Output = f64;
-    fn add(self, rhs: Self) -> f64 { self.0 + rhs.0 }
+    fn add(self, rhs: Self) -> f64 {
+        self.0 + rhs.0
+    }
 }
 
 impl std::ops::Mul for FiniteScalar {
     type Output = f64;
-    fn mul(self, rhs: Self) -> f64 { self.0 * rhs.0 }
+    fn mul(self, rhs: Self) -> f64 {
+        self.0 * rhs.0
+    }
 }
 
 impl std::ops::Neg for FiniteScalar {
     type Output = f64;
-    fn neg(self) -> f64 { -self.0 }
+    fn neg(self) -> f64 {
+        -self.0
+    }
 }
 
 /// A bound value: must not be NaN, but may be ±∞.
@@ -122,6 +128,7 @@ impl Tolerance {
 
 /// Validates that a `f64` is finite. Used inline in mutators.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn require_finite(value: f64, label: &'static str) -> Result<f64, ValidationError> {
     if value.is_finite() {
         Ok(value)
@@ -132,6 +139,7 @@ pub(crate) fn require_finite(value: f64, label: &'static str) -> Result<f64, Val
 
 /// Validates that a `f64` is not NaN. Used for bounds.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn require_not_nan(value: f64, label: &'static str) -> Result<f64, ValidationError> {
     if value.is_nan() {
         Err(ValidationError::NaN { label })
@@ -142,11 +150,10 @@ pub(crate) fn require_not_nan(value: f64, label: &'static str) -> Result<f64, Va
 
 /// Validates that a pair of bounds (lower, upper) is valid.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn require_valid_bounds(lower: f64, upper: f64) -> Result<(), ValidationError> {
     if lower.is_nan() || upper.is_nan() {
-        return Err(ValidationError::NaN {
-            label: "bounds",
-        });
+        return Err(ValidationError::NaN { label: "bounds" });
     }
     if lower > upper {
         return Err(ValidationError::InvalidBounds { lower, upper });
@@ -246,7 +253,7 @@ mod tests {
 
     #[test]
     fn require_finite_ok() {
-        assert_eq!(require_finite(3.14, "test").unwrap(), 3.14);
+        assert_eq!(require_finite(42.0, "test").unwrap(), 42.0);
     }
 
     #[test]

@@ -140,7 +140,9 @@ impl CoefficientIndex {
             }
 
             // Get the existing expression and combine
-            if let Some(existing) = self.arena.get_mut(existing_id.index(), existing_id.generation())
+            if let Some(existing) = self
+                .arena
+                .get_mut(existing_id.index(), existing_id.generation())
             {
                 let combined = existing.value_expr.clone() + value_expr;
                 let new_cached = existing.cached_value + initial_value;

@@ -26,8 +26,8 @@
 //! 10. **SolveOptions on Model** - options stored on model (KNOWN BUG -- should
 //!     move to solve request)
 
-use roml::prelude::*;
 use roml::model::ModelConstants;
+use roml::prelude::*;
 use roml::{LpAlgorithm, SolveOptions};
 
 // =========================================================================
@@ -162,12 +162,12 @@ fn variable_activity_toggle() {
     model.set_variable_active(x, true).unwrap();
 
     let changes = model.drain_changes();
-    assert!(changes
-        .iter()
-        .any(|c| matches!(c, Change::VariableActivityChanged { var, active } if *var == x && !active)));
-    assert!(changes
-        .iter()
-        .any(|c| matches!(c, Change::VariableActivityChanged { var, active } if *var == x && *active)));
+    assert!(changes.iter().any(
+        |c| matches!(c, Change::VariableActivityChanged { var, active } if *var == x && !active)
+    ));
+    assert!(changes.iter().any(
+        |c| matches!(c, Change::VariableActivityChanged { var, active } if *var == x && *active)
+    ));
 }
 
 #[test]
@@ -261,9 +261,7 @@ fn constraint_coefficient_with_parameter() {
     let coeff = model
         .add_constraint_coefficient(con, x, ValueExpr::param(p))
         .unwrap();
-    assert!(
-        (model.coefficient(coeff).unwrap().cached_value - 3.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff).unwrap().cached_value - 3.0).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -385,12 +383,8 @@ fn objective_coefficient_management() {
         .unwrap();
 
     assert_eq!(model.num_coefficients(), 2);
-    assert!(
-        (model.coefficient(coeff1).unwrap().cached_value - 3.0).abs() < f64::EPSILON
-    );
-    assert!(
-        (model.coefficient(coeff2).unwrap().cached_value - 2.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff1).unwrap().cached_value - 3.0).abs() < f64::EPSILON);
+    assert!((model.coefficient(coeff2).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
 
     let expr = model.objective_expression(obj).unwrap();
     assert_eq!(expr.num_terms(), 2);
@@ -485,15 +479,11 @@ fn parameter_change_propagates_to_coefficients() {
     let coeff = model
         .add_constraint_coefficient(con, x, 2.0 * ValueExpr::param(p))
         .unwrap();
-    assert!(
-        (model.coefficient(coeff).unwrap().cached_value - 20.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff).unwrap().cached_value - 20.0).abs() < f64::EPSILON);
 
     model.set_parameter(p, 5.0);
     model.commit();
-    assert!(
-        (model.coefficient(coeff).unwrap().cached_value - 10.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff).unwrap().cached_value - 10.0).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -507,22 +497,16 @@ fn parameter_transaction_batching() {
     let coeff = model
         .add_constraint_coefficient(con, x, ValueExpr::param(p1) * ValueExpr::param(p2))
         .unwrap();
-    assert!(
-        (model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
 
     model.set_parameter(p1, 3.0);
     model.set_parameter(p2, 4.0);
     assert!(model.has_uncommitted());
     // Not committed -- values unchanged
-    assert!(
-        (model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
 
     model.commit();
-    assert!(
-        (model.coefficient(coeff).unwrap().cached_value - 12.0).abs() < f64::EPSILON
-    );
+    assert!((model.coefficient(coeff).unwrap().cached_value - 12.0).abs() < f64::EPSILON);
     assert!(!model.has_uncommitted());
 }
 
