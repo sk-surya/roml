@@ -13,11 +13,17 @@
 /// Revisions implement `Ord` — a later revision (higher value)
 /// represents a newer state than an earlier revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ModelRevision(u64);
+pub struct ModelRevision(pub(crate) u64);
 
 impl ModelRevision {
     /// The initial revision (zero, before any mutations).
     pub const ZERO: Self = ModelRevision(0);
+
+    /// Create a revision from a raw number (for testing/internal use).
+    #[allow(dead_code)]
+    pub(crate) const fn from_u64(v: u64) -> Self {
+        ModelRevision(v)
+    }
 
     /// Return the next revision after this one.
     ///

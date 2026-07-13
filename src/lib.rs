@@ -10,11 +10,13 @@
 pub mod delta;
 pub mod expr;
 pub mod id;
+pub mod journal;
 pub mod model;
 pub mod revision;
 pub mod snapshot;
 pub mod solution;
 pub mod solver;
+pub mod sync;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
