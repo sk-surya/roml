@@ -53,6 +53,9 @@ impl CoefficientData {
     }
 }
 
+/// A unique cell key: one cell per (target, variable) pair.
+pub type CellKey = (CoefficientTarget, VarId);
+
 /// Multi-indexed coefficient storage.
 ///
 /// Provides O(1) lookup in multiple dimensions:
@@ -61,6 +64,10 @@ impl CoefficientData {
 /// - By constraint (for constraint operations)
 /// - By objective (for objective operations)
 /// - By parameter (for value propagation)
+/// - By cell key (for canonical uniqueness: one cell per (target, variable))
+///
+/// When a coefficient is added for a cell that already exists, the
+/// expressions are algebraically combined rather than creating a duplicate.
 #[derive(Clone, Debug, Default)]
 pub struct CoefficientIndex {
     /// Primary Storage
@@ -77,6 +84,9 @@ pub struct CoefficientIndex {
 
     /// Coefficients by parameter (dependency graph): ParamId -> Set of CoeffIds.
     by_param: HashMap<ParamId, HashSet<CoeffId>>,
+
+    /// Canonical cell index: exactly one CoeffId per (target, variable) pair.
+    by_cell: HashMap<CellKey, CoeffId>,
 }
 
 impl CoefficientIndex {
@@ -88,12 +98,18 @@ impl CoefficientIndex {
             by_constraint: HashMap::new(),
             by_objective: HashMap::new(),
             by_param: HashMap::new(),
+            by_cell: HashMap::new(),
         }
     }
 
-    /// Add a new coefficient.
+    /// Add a new coefficient or combine with an existing cell.
     ///
-    /// Automatically updates all secondary indexes based on the value expression's dependencies.
+    /// If a coefficient already exists for this (target, variable) pair,
+    /// the expressions are algebraically added and the existing coefficient
+    /// is updated in place. Returns the (possibly existing) CoeffId.
+    ///
+    /// Automatically updates all secondary indexes based on the value
+    /// expression's dependencies.
     pub fn add(
         &mut self,
         var: VarId,
@@ -101,6 +117,47 @@ impl CoefficientIndex {
         value_expr: ValueExpr,
         initial_value: f64,
     ) -> CoeffId {
+        let cell_key = (target, var);
+
+        // Check if a cell already exists for this (target, variable) pair.
+        if let Some(&existing_id) = self.by_cell.get(&cell_key) {
+            // Combine expressions atomically.
+            // First collect the old dependencies.
+            let old_deps: Vec<ParamId> = self
+                .arena
+                .get(existing_id.index(), existing_id.generation())
+                .map(|d| d.value_expr.dependencies().into_iter().collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            // Remove old param dependencies
+            for param in &old_deps {
+                if let Some(set) = self.by_param.get_mut(param) {
+                    set.remove(&existing_id);
+                    if set.is_empty() {
+                        self.by_param.remove(param);
+                    }
+                }
+            }
+
+            // Get the existing expression and combine
+            if let Some(existing) = self.arena.get_mut(existing_id.index(), existing_id.generation())
+            {
+                let combined = existing.value_expr.clone() + value_expr;
+                let new_cached = existing.cached_value + initial_value;
+
+                existing.value_expr = combined.clone();
+                existing.cached_value = new_cached;
+
+                // Re-add param dependencies for combined expression
+                for param in combined.dependencies() {
+                    self.by_param.entry(param).or_default().insert(existing_id);
+                }
+
+                return existing_id;
+            }
+        }
+
+        // New cell: allocate and index.
         let data = CoefficientData::new(var, target, value_expr.clone(), initial_value);
         let (index, generation) = self.arena.allocate(data);
         let id = CoeffId::new(index, generation);
@@ -123,6 +180,9 @@ impl CoefficientIndex {
             self.by_param.entry(param).or_default().insert(id);
         }
 
+        // Update by_cell index
+        self.by_cell.insert(cell_key, id);
+
         id
     }
 
@@ -131,6 +191,10 @@ impl CoefficientIndex {
     /// Returns the data if it existed. Automatically cleans up all secondary indices.
     pub fn remove(&mut self, id: CoeffId) -> Option<CoefficientData> {
         let data = self.arena.remove(id.index(), id.generation())?;
+
+        // Clean up by_cell index
+        let cell_key = (data.target, data.var);
+        self.by_cell.remove(&cell_key);
 
         // Clean up by_var index
         if let Some(set) = self.by_var.get_mut(&data.var) {
@@ -268,6 +332,19 @@ impl CoefficientIndex {
             .iter_mut()
             .map(|(idx, gen, data)| (CoeffId::new(idx, gen), data))
     }
+
+    // ========== Cell Queries ==========
+
+    /// Get the coefficient ID for a specific (target, variable) cell.
+    /// Returns `None` if no coefficient exists for that cell.
+    pub fn for_cell(&self, target: CoefficientTarget, var: VarId) -> Option<CoeffId> {
+        self.by_cell.get(&(target, var)).copied()
+    }
+
+    /// Check if a cell exists for (target, variable).
+    pub fn cell_exists(&self, target: CoefficientTarget, var: VarId) -> bool {
+        self.by_cell.contains_key(&(target, var))
+    }
 }
 
 #[cfg(test)]
@@ -315,31 +392,30 @@ mod tests {
         let mut index = CoefficientIndex::new();
         let var1 = make_var(0);
         let var2 = make_var(1);
-        let con = make_con(0);
+        let con1 = make_con(0);
+        let con2 = make_con(1);
 
+        // Two coefficients for var1 on different constraints
         let id1 = index.add(
             var1,
-            CoefficientTarget::Constraint(con),
+            CoefficientTarget::Constraint(con1),
             ValueExpr::constant(1.0),
             1.0,
         );
         let id2 = index.add(
             var1,
-            CoefficientTarget::Constraint(con),
+            CoefficientTarget::Constraint(con2),
             ValueExpr::constant(2.0),
             2.0,
-        );
-        let _id3 = index.add(
-            var2,
-            CoefficientTarget::Constraint(con),
-            ValueExpr::constant(3.0),
-            3.0,
         );
 
         let var1_coeffs: HashSet<_> = index.for_var(var1).collect();
         assert_eq!(var1_coeffs.len(), 2);
         assert!(var1_coeffs.contains(&id1));
         assert!(var1_coeffs.contains(&id2));
+
+        // var2 has no coefficients
+        assert!(index.for_var(var2).next().is_none());
     }
 
     #[test]
@@ -367,14 +443,13 @@ mod tests {
     }
 
     #[test]
-    fn by_param_index() {
+    fn canonical_cell_combines_expressions() {
         let mut index = CoefficientIndex::new();
         let var = make_var(0);
         let con = make_con(0);
         let p1 = make_param(0);
-        let p2 = make_param(1);
 
-        // Coefficient depending on p1
+        // Add first term: p1 * var
         let id1 = index.add(
             var,
             CoefficientTarget::Constraint(con),
@@ -382,31 +457,57 @@ mod tests {
             1.0,
         );
 
-        // Coefficient depending on both p1 and p2
+        // Add second term: 2.0 * var (constant) for the SAME cell
+        // Should combine with existing: p1*var + 2.0*var = (p1+2.0)*var
         let id2 = index.add(
             var,
             CoefficientTarget::Constraint(con),
-            ValueExpr::mul(ValueExpr::param(p1), ValueExpr::param(p2)),
+            ValueExpr::constant(2.0),
             2.0,
         );
 
-        // Constant coefficient (no dependencies)
-        let _id3 = index.add(
+        // Should return the same coefficient ID (combined in place)
+        assert_eq!(id1, id2, "canonical cell should return same ID on combine");
+
+        let data = index.get(id1).unwrap();
+        // Cached value combines: 1.0 + 2.0 = 3.0
+        assert_eq!(data.cached_value, 3.0);
+
+        // p1 still depends on this coefficient
+        assert!(index.param_has_dependents(p1));
+
+        // Only one coefficient exists for this cell
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn separate_cells_do_not_combine() {
+        let mut index = CoefficientIndex::new();
+        let var = make_var(0);
+        let con1 = make_con(0);
+        let con2 = make_con(1);
+        let p1 = make_param(0);
+
+        // Different constraints → different cells
+        let id1 = index.add(
             var,
-            CoefficientTarget::Constraint(con),
+            CoefficientTarget::Constraint(con1),
+            ValueExpr::param(p1),
+            1.0,
+        );
+        let id2 = index.add(
+            var,
+            CoefficientTarget::Constraint(con2),
             ValueExpr::constant(3.0),
             3.0,
         );
 
-        // p1 should have both id1 and id2
-        let p1_coeffs: HashSet<_> = index.for_param(p1).collect();
-        assert_eq!(p1_coeffs.len(), 2);
-        assert!(p1_coeffs.contains(&id1));
-        assert!(p1_coeffs.contains(&id2));
+        assert_ne!(id1, id2);
+        assert_eq!(index.len(), 2);
 
-        // p2 should only have id2
-        let p2_coeffs: Vec<_> = index.for_param(p2).collect();
-        assert_eq!(p2_coeffs, vec![id2]);
+        // p1 depends only on id1
+        let p1_coeffs: Vec<_> = index.for_param(p1).collect();
+        assert_eq!(p1_coeffs, vec![id1]);
     }
 
     #[test]

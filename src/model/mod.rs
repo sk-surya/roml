@@ -550,6 +550,10 @@ impl Model {
     // ========== Coefficient Operations ==========
 
     /// Add a coefficient to a constraint.
+    ///
+    /// If a coefficient already exists for this (constraint, variable) pair,
+    /// the expressions are algebraically combined and the existing coefficient
+    /// is updated in place. The returned `CoeffId` will be the existing ID.
     pub fn add_constraint_coefficient<E>(
         &mut self,
         con: ConId,
@@ -569,21 +573,47 @@ impl Model {
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Constraint(con);
         let initial_value = value_expr.eval(self.parameters.as_lookup());
+
+        // Check if this cell already exists (for correct changelog event)
+        let existing = self.coefficients.for_cell(target, var);
+        let old_value = existing
+            .and_then(|id| self.coefficients.get(id))
+            .map(|d| d.cached_value);
+
         let id = self
             .coefficients
             .add(var, target, value_expr, initial_value);
 
-        self.changelog.push(Change::CoefficientAdded {
-            coeff: id,
-            var,
-            target,
-            value: initial_value,
-        });
+        if let Some(old) = old_value {
+            // Combined with existing cell — emit value change
+            let new_value = self.coefficients.get(id).map(|d| d.cached_value).unwrap_or(initial_value);
+            if (old - new_value).abs() >= f64::EPSILON {
+                self.changelog.push(Change::CoefficientValueChanged {
+                    coeff: id,
+                    var,
+                    target,
+                    old,
+                    new: new_value,
+                });
+            }
+        } else {
+            // New cell
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value: initial_value,
+            });
+        }
 
         Ok(id)
     }
 
     /// Add a coefficient to an objective.
+    ///
+    /// If a coefficient already exists for this (objective, variable) pair,
+    /// the expressions are algebraically combined and the existing coefficient
+    /// is updated in place.
     pub fn add_objective_coefficient<E>(
         &mut self,
         obj: ObjId,
@@ -603,16 +633,36 @@ impl Model {
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Objective(obj);
         let initial_value = value_expr.eval(self.parameters.as_lookup());
+
+        // Check if this cell already exists
+        let existing = self.coefficients.for_cell(target, var);
+        let old_value = existing
+            .and_then(|id| self.coefficients.get(id))
+            .map(|d| d.cached_value);
+
         let id = self
             .coefficients
             .add(var, target, value_expr, initial_value);
 
-        self.changelog.push(Change::CoefficientAdded {
-            coeff: id,
-            var,
-            target,
-            value: initial_value,
-        });
+        if let Some(old) = old_value {
+            let new_value = self.coefficients.get(id).map(|d| d.cached_value).unwrap_or(initial_value);
+            if (old - new_value).abs() >= f64::EPSILON {
+                self.changelog.push(Change::CoefficientValueChanged {
+                    coeff: id,
+                    var,
+                    target,
+                    old,
+                    new: new_value,
+                });
+            }
+        } else {
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value: initial_value,
+            });
+        }
 
         Ok(id)
     }
