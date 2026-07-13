@@ -13,6 +13,7 @@ pub mod constraint;
 pub mod objective;
 pub mod parameter;
 pub mod transaction;
+pub mod validation;
 pub mod variable;
 
 pub use changelog::{Change, ChangeLog};
@@ -46,6 +47,10 @@ pub enum ModelError {
     CoefficientNotFound(CoeffId),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
+    /// A numeric value was not finite (NaN or infinite).
+    NonFiniteValue(&'static str),
+    /// A value was NaN.
+    NaNValue(&'static str),
 }
 
 impl std::fmt::Display for ModelError {
@@ -57,6 +62,8 @@ impl std::fmt::Display for ModelError {
             Self::ParameterNotFound(id) => write!(f, "Parameter not found: {:?}", id),
             Self::CoefficientNotFound(id) => write!(f, "Coefficient not found: {:?}", id),
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
+            Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
+            Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
         }
     }
 }
