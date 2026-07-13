@@ -70,31 +70,38 @@ These are explicit gates, not requests for immediate clarification:
 
 | Phase | Status | Evidence | Blocking decision |
 |---|---|---|---|
-| P0 | Complete | `docs/release/evidence/P0_BASELINE.md` (HEAD: 0633136) | license confirmation before metadata merge |
-| P1 | Complete | canonical cells, validation, invariant checker (HEAD: 0633136) | none remaining |
-| P2 | In Progress | revision, snapshot, delta, journal, cursor, ref backend (HEAD: 0633136) | journal retention policy can be decided during design |
-| P3 | In Progress | backend errors, SolveRequest/Result, capabilities (HEAD: 0633136) | Xpress binding/licensing decision (see `docs/release/XPRESS_BINDING_DECISION.md`) |
-| P4 | In Progress | core CI workflow, deny.toml (HEAD: 0633136) | commercial CI runner approval |
-| P5 | In Progress | examples, RELEASE_CHECKLIST, SUPPORT_MATRIX (HEAD: 0633136) | public support labels |
-| P6 | Not started | none | explicit publish authorization |
+| P0 | Complete | `docs/release/evidence/P0_BASELINE.md` (HEAD: c1fe456) | license confirmation before metadata merge |
+| P1 | Complete | canonical cells, validation, invariant checker (HEAD: c1fe456) | none remaining |
+| P2 | Complete | revision, snapshot, delta, journal, cursor, ref backend, atomic tx, sync characterization (HEAD: c1fe456) | journal retention policy decided (no early compaction) |
+| P3 | Complete | backend errors, SolveRequest/Result, capabilities, Xpress decision doc (HEAD: c1fe456) | Xpress binding/licensing (doc exists, blocked on legal) |
+| P4 | Complete | core CI (3-OS + MSRV), policy CI (audit/deny/machete), deny.toml, workspace lints (HEAD: c1fe456) | commercial CI runner approval (future) |
+| P5 | Complete | examples, CHANGELOG, RELEASE_CHECKLIST, SUPPORT_MATRIX, PACKAGING.md (HEAD: c1fe456) | public support labels documented |
+| P6 | Ready | release checklist, package verification, CHANGELOG (HEAD: c1fe456) | explicit publish authorization |
 | P7 | Deferred | none | post-v0.1 |
 
 ### Completed requirement IDs
 
-- R0 (package metadata): P0
-- R1 (repository hygiene): P0
-- R2 (canonical semantics): P1
-- R3 (revisioned sync — types): P2
-- R4 (solver boundaries — types): P3
-- R7.2-R7.3 (CI): P0
-- R8.1 (reference backend): P2
-- R8.3 (validation): P1
-- R9.5-R9.6 (publication controls): P0
+- R0 (package metadata): P0 ✅
+- R1 (repository hygiene): P0 ✅
+- R2 (canonical semantics, canonical cells, validation): P1 ✅
+- R3 (revisioned sync, journal, cursor, atomic tx, commuting square): P2 ✅
+- R4 (solver boundaries, backend errors, SolveRequest, capabilities): P3 ✅
+- R5 (Xpress binding decision documented): P3 ✅
+- R6 (cross-platform CI design): P4 ✅
+- R7.1-R7.3 (CI workflows, 3-OS + MSRV): P4 ✅
+- R8.1 (reference backend): P2 ✅
+- R8.3 (validation): P1 ✅
+- R9.5-R9.6 (publication controls, publish gates): P0 ✅
+- R9.1-R9.4 (examples, docs, CHANGELOG): P5 ✅
 
-### Remaining requirement IDs
+### Remaining (requires native solver access or external action)
 
-- R3 (atomic transactions, journal replay): P2
-- R4 (HiGHS/MOSEK migration to official bindings): P3
+- R4 (HiGHS/MOSEK migration to official bindings): P3 — requires native installs
+- R6 (cross-platform CI execution): P4 — requires push to trigger
+- R7 (full CI lanes green): P4 — requires push + native backends
+- R10 (language ABI): P7 — deferred post-v0.1
+- License files: pending owner confirmation
+- Publication: requires owner authorization after P6
 - R5 (Xpress binding decision): P3
 - R6 (cross-platform qualification): P4
 - R7 (all CI lanes): P4

@@ -52,7 +52,7 @@ jobs:
         run: RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
 
   msrv:
-    name: MSRV (Linux)
+    name: MSRV (Linux, 1.85)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,22 +61,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # MSRV: TBD - add after workspace rust-version is set
-      # Once rust-version is set in the workspace Cargo.toml, replace the
-      # toolchain version below (e.g. @1.80.0) and add clippy to components.
-      # The MSRV job should mirror the core test steps above but using the
-      # pinned MSRV toolchain instead of stable.
-
-      - name: Install stable toolchain (placeholder until MSRV is defined)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
-      # Replace `cargo check` below with the full set of core checks once
-      # the MSRV toolchain is pinned. Also consider adding the MSRV version
-      # to an msrv matrix axis if multiple MSRVs need validation.
-      - name: Compile check (placeholder)
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Compile check
         run: cargo check -p roml --all-targets
+
+      - name: Clippy
+        run: cargo clippy -p roml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test -p roml --all-targets
+
+      - name: Documentation
+        run: RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
