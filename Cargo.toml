@@ -24,6 +24,14 @@ repository.workspace = true
 license.workspace = true
 readme.workspace = true
 description = "A pre-release, incremental MILP modeling library"
+exclude = [
+    ".claude/",
+    "AGENTS.md",
+    ".gitignore",
+    "docs/release/evidence/",
+    "docs/superpowers/",
+    ".github/",
+]
 
 [dependencies]
 log = { workspace = true }
