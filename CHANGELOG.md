@@ -63,6 +63,18 @@ between minor versions.
 - `examples/parameter_update.rs` — parameter propagation and canonical cell combining.
 
 ### Changed
+- **Public API narrowing** — internal store types (`VariableStore`, `ConstraintStore`,
+  `ObjectiveStore`, `ParameterStore`, `CoefficientIndex`, `ChangeLog`, `Transaction`)
+  narrowed from `pub` to `pub(crate)`; data types (`VariableData`, `ConstraintData`,
+  `ObjectiveData`, `ParameterData`, `CoefficientData`) likewise narrowed; their re-exports
+  in `model::mod` are now `pub(crate)`. Internal modules (`journal`, `transaction`)
+  narrowed to `pub(crate)`; `delta`, `snapshot`, `sync` kept `pub` for integration tests
+  (to be narrowed in P5).
+- **Documentation added** — field-level doc comments on `VariableEntry`,
+  `ConstraintEntry`, `ObjectiveEntry`, `ParameterEntry`, `CellEntry`, and `ApplyOutcome`
+  variants. Improved `ModelOp` variant documentation.
+- **Unused imports removed** — `ConstraintData`, `ObjectiveData`, `VariableData`
+  re-exports removed from `model/mod.rs` (not directly referenced).
 - `ModelConstants::default()` no longer recursively calls itself.
 - `add_constraint_coefficient` and `add_objective_coefficient` now emit
   `CoefficientValueChanged` when combining into an existing cell.

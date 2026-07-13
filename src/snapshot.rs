@@ -43,9 +43,13 @@ pub struct ModelSnapshot {
 /// A variable in a snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VariableEntry {
+    /// The variable's unique identifier.
     pub id: VarId,
+    /// Current bounds for this variable.
     pub bounds: Bounds,
+    /// Variable type (Continuous, Integer, or Binary).
     pub var_type: VarType,
+    /// Whether this variable is active in the model.
     pub active: bool,
     /// Semi-continuous lower bound, if set.
     pub semicontinuous_lower: Option<f64>,
@@ -54,16 +58,22 @@ pub struct VariableEntry {
 /// A constraint in a snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConstraintEntry {
+    /// The constraint's unique identifier.
     pub id: ConId,
+    /// Current bounds for this constraint.
     pub bounds: ConstraintBounds,
+    /// Whether this constraint is active in the model.
     pub active: bool,
 }
 
 /// An objective in a snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectiveEntry {
+    /// The objective's unique identifier.
     pub id: ObjId,
+    /// Optimization sense (minimize or maximize).
     pub sense: Sense,
+    /// Whether this objective is currently active.
     pub active: bool,
     /// Objective constant term (the constant part of the expression).
     pub constant: f64,
@@ -72,7 +82,9 @@ pub struct ObjectiveEntry {
 /// A parameter in a snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParameterEntry {
+    /// The parameter's unique identifier.
     pub id: ParamId,
+    /// Current numeric value of this parameter.
     pub value: f64,
 }
 
@@ -82,9 +94,13 @@ pub struct ParameterEntry {
 /// evaluated coefficient value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellEntry {
+    /// Canonical (target, variable) pair identifying this cell.
     pub cell_key: CellKey,
+    /// The value expression (may depend on parameters).
     pub value_expr: ValueExpr,
+    /// Pre-evaluated coefficient value at snapshot time.
     pub evaluated_value: f64,
+    /// Parameter IDs this cell's expression depends on.
     pub dependencies: Vec<ParamId>,
 }
 

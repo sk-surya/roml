@@ -22,13 +22,13 @@ pub(crate) use coefficient::CoefficientData;
 pub(crate) use coefficient::CoefficientIndex;
 pub use coefficient::CoefficientTarget;
 pub use constraint::ConstraintBounds;
-pub(crate) use constraint::{ConstraintData, ConstraintStore};
+pub(crate) use constraint::ConstraintStore;
+pub(crate) use objective::ObjectiveStore;
 pub use objective::Sense;
-pub(crate) use objective::{ObjectiveData, ObjectiveStore};
 pub(crate) use parameter::ParameterStore;
 pub(crate) use transaction::Transaction;
+pub(crate) use variable::VariableStore;
 pub use variable::{Bounds, VarType};
-pub(crate) use variable::{VariableData, VariableStore};
 
 use crate::expr::{LinExpr, TermCoeff};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};

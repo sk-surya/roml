@@ -99,14 +99,28 @@ impl Default for AdapterCursor {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplyOutcome {
     /// All operations applied successfully, cursor advanced.
-    Applied { new_revision: ModelRevision },
+    Applied {
+        /// The revision after a successful application.
+        new_revision: ModelRevision,
+    },
     /// One or more operations are not incrementally supported.
     /// The adapter needs a full rebuild.
-    RequiresRebuild { failed_at_op: usize, reason: String },
+    RequiresRebuild {
+        /// Index of the first operation that could not be applied.
+        failed_at_op: usize,
+        /// Human-readable explanation of why incremental apply failed.
+        reason: String,
+    },
     /// A recoverable failure occurred; adapter state is unchanged.
-    RecoverableFailure { reason: String },
+    RecoverableFailure {
+        /// Description of the failure condition.
+        reason: String,
+    },
     /// A partial/dirty failure occurred; adapter must be rebuilt.
-    DirtyFailure { reason: String },
+    DirtyFailure {
+        /// Description of the dirty failure.
+        reason: String,
+    },
 }
 
 /// Error during apply or cursor advancement.

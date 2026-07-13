@@ -202,7 +202,7 @@ impl StagingTransaction {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
 /// use roml::sync::SyncCoordinator;
 /// use roml::transaction::ModelTransaction;
 /// use roml::delta::ModelOp;

@@ -17,6 +17,12 @@ use crate::value_expr::ValueExpr;
 /// `ModelOp` values are self-contained — they carry all information
 /// an adapter needs to apply the operation without consulting
 /// adjacent events or model state.
+///
+/// # Variants
+///
+/// Each variant represents one atomic mutation that a solver adapter
+/// can apply. Variants carry all data needed for the operation,
+/// including both old and new values for change operations.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelOp {
     /// Add a new variable.
