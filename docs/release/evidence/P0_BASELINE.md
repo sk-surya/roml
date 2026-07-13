@@ -131,10 +131,99 @@ Present in repo root and in `roml` package list. Contains project-specific AI to
 - Handwritten ABI declarations in all three backends
 - MOSEK callback mutates task inside callback
 
+---
+
+## Post-Cleanup Results (same session)
+
+**Commit:** `fa38eb6` (HEAD of worktree-phase-roml-P0-release-baseline)
+
+### Cleaned Baseline
+
+| Check | Result |
+|-------|--------|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy -p roml --all-targets -- -D warnings` | PASS |
+| `cargo test -p roml --all-targets` | PASS (80 tests, 0 failures) |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | PASS |
+| `cargo package --list -p roml` | 31 files, clean |
+| `cargo package -p roml --no-verify` | 228.0KiB (51.4KiB compressed) |
+
+### Cleaned Package Content
+
+```
+CHANGELOG.md
+CONTRIBUTING.md
+Cargo.lock
+Cargo.toml
+MODELING_API.md
+README.md
+SECURITY.md
+docs/release/RELEASE_CHECKLIST.md
+docs/release/SUPPORT_MATRIX.md
+src/ (19 .rs files)
+tests/ (2 .rs files)
+```
+
+### Removed Contamination
+
+- main.py, pyproject.toml, uv.lock (Python scaffold)
+- config.yaml, log4rs.bak (solver configuration)
+- .python-version, .vscode/settings.json (tooling)
+- roml.log, roml-*/roml.log (generated solver logs)
+- src/logging.rs (global logger, log4rs, serde_yaml)
+
+### Dependency Cleanup
+
+| Action | Details |
+|--------|---------|
+| Removed | log4rs, serde_yaml from core |
+| Moved to dev | rand (used in tests) |
+| Retained | log (facade only) |
+| Unused deps | cargo-machete: none found |
+
+### Tooling
+
+| Tool | Result |
+|------|--------|
+| cargo-audit | 1 warning: rand 0.9.2 unsound advisory (dev-dep, RUSTSEC-2026-0097) |
+| cargo-machete | No unused dependencies |
+| cargo-deny | Not installed (needs deny.toml config) |
+
+### Metadata
+
+| Crate | Version | License | Publish |
+|-------|---------|---------|---------|
+| roml | 0.1.0 | MIT OR Apache-2.0 | true |
+| roml-highs | 0.1.0 | MIT OR Apache-2.0 | true |
+| roml-mosek | 0.1.0 | MIT OR Apache-2.0 | false |
+| roml-xpress | 0.1.0 | MIT OR Apache-2.0 | false |
+
+### New Files Created
+
+- `.github/workflows/ci-core.yml` — core CI on ubuntu/macos/windows
+- `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`
+- `docs/release/RELEASE_CHECKLIST.md`
+- `docs/release/SUPPORT_MATRIX.md`
+
+### Defects Fixed
+
+- ModelConstants::default() recursion (removed inherent method, trait impl remains)
+- rustdoc broken intra-doc links and unclosed HTML tags
+- All clippy errors in core (7 total across lib and test targets)
+
+### Explicit Blockers
+
+- License files (LICENSE-MIT, LICENSE-APACHE): pending owner confirmation
+- cargo-deny: needs deny.toml configuration per workspace
+- Cross-platform CI: not yet pushed/verified (local worktree)
+- Unsafe inventory: deferred to P3 (solver boundary phase)
+- MODELING_API.md review: not completed
+
 ## Residual Risks
 
 - Backend crates not fully tested (require native libraries)
-- No CI baseline available
-- Unsafe code not inventoried
-- Windows/Linux not tested
-- No `cargo deny`/`cargo audit`/`cargo machete` run yet
+- CI workflow not yet triggered (local worktree, needs push + PR)
+- Unsafe code not inventoried (P3 task)
+- Windows/Linux not tested locally
+- rand dev-dependency advisory (RUSTSEC-2026-0097, unsound with custom logger)
+- License files absent pending owner confirmation
