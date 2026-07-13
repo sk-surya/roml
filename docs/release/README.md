@@ -1,6 +1,6 @@
 # ROML Public-Release Program
 
-This directory indexes the production-readiness program for ROML.
+This directory indexes the production-readiness program for ROML. The authoritative implementation baseline is `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`.
 
 ## Start here
 
@@ -8,7 +8,8 @@ This directory indexes the production-readiness program for ROML.
 - [`../../.planning/REQUIREMENTS.md`](../../.planning/REQUIREMENTS.md) — stable requirement IDs.
 - [`../../.planning/ROADMAP.md`](../../.planning/ROADMAP.md) — mega roadmap and phase gates.
 - [`../../.planning/STATE.md`](../../.planning/STATE.md) — current milestone state and owner decisions.
-- [`PRINCIPAL_ENGINEERING_AUDIT.md`](PRINCIPAL_ENGINEERING_AUDIT.md) — baseline findings and severity.
+- [`PRINCIPAL_ENGINEERING_AUDIT.md`](PRINCIPAL_ENGINEERING_AUDIT.md) — historical baseline audit at `f9ba192`.
+- [`CURRENT_MAIN_DELTA_AUDIT.md`](CURRENT_MAIN_DELTA_AUDIT.md) — authoritative reconciliation of current `main`, including solve options, semi-continuous domains, Xpress batching, and new tracked artifacts.
 - [`ARCHITECTURE_DECISIONS.md`](ARCHITECTURE_DECISIONS.md) — accepted implementation decisions.
 - [`../superpowers/specs/2026-07-13-public-release-hardening-design.md`](../superpowers/specs/2026-07-13-public-release-hardening-design.md) — target system design.
 - [`CODING_AGENT_PROMPT.md`](CODING_AGENT_PROMPT.md) — implementation-agent kickoff prompt.
