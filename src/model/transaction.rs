@@ -17,7 +17,7 @@ use crate::id::ParamId;
 ///
 /// Collects parameter changes and applies them atomically on commit.
 #[derive(Clone, Debug, Default)]
-pub struct Transaction {
+pub(crate) struct Transaction {
     /// Pending parameter changes: ParamId -> new value.
     pending: HashMap<ParamId, f64>,
 }

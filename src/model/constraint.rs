@@ -77,7 +77,7 @@ impl Default for ConstraintBounds {
 /// (which will be stored in ConstraintStore, handled by Arena, just like any other Entity Data).
 /// Intentionally non-copiable for move semantics.
 #[derive(Clone, Debug)]
-pub struct ConstraintData {
+pub(crate) struct ConstraintData {
     /// Constraint bounds.
     pub bounds: ConstraintBounds,
     /// Whether this constraint is active in the model.
@@ -99,7 +99,7 @@ impl ConstraintData {
 
 /// Storage for all constraints in the model.
 #[derive(Clone, Debug, Default)]
-pub struct ConstraintStore {
+pub(crate) struct ConstraintStore {
     arena: IdArena<ConstraintData>,
 }
 

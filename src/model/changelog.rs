@@ -159,7 +159,7 @@ impl Change {
 
 /// Tracks all changes since last solver sync.
 #[derive(Clone, Debug, Default)]
-pub struct ChangeLog {
+pub(crate) struct ChangeLog {
     changes: Vec<Change>,
     /// Monotonically increasing sequence number.
     sequence: u64,

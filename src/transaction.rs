@@ -13,7 +13,7 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```ignore
 //! use roml::sync::SyncCoordinator;
 //! use roml::transaction::{StagingTransaction, TransactionError};
 //! use roml::delta::ModelOp;

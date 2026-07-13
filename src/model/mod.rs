@@ -16,13 +16,19 @@ pub mod transaction;
 pub mod validation;
 pub mod variable;
 
-pub use changelog::{Change, ChangeLog};
-pub use coefficient::{CoefficientData, CoefficientIndex, CoefficientTarget};
-pub use constraint::{ConstraintBounds, ConstraintData, ConstraintStore};
-pub use objective::{ObjectiveData, ObjectiveStore, Sense};
-pub use parameter::{ParameterData, ParameterStore};
-pub use transaction::Transaction;
-pub use variable::{Bounds, VarType, VariableData, VariableStore};
+pub use changelog::Change;
+pub(crate) use changelog::ChangeLog;
+pub(crate) use coefficient::CoefficientData;
+pub(crate) use coefficient::CoefficientIndex;
+pub use coefficient::CoefficientTarget;
+pub use constraint::ConstraintBounds;
+pub(crate) use constraint::{ConstraintData, ConstraintStore};
+pub use objective::Sense;
+pub(crate) use objective::{ObjectiveData, ObjectiveStore};
+pub(crate) use parameter::ParameterStore;
+pub(crate) use transaction::Transaction;
+pub use variable::{Bounds, VarType};
+pub(crate) use variable::{VariableData, VariableStore};
 
 use crate::expr::{LinExpr, TermCoeff};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};

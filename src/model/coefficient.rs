@@ -54,7 +54,7 @@ impl CoefficientData {
 }
 
 /// A unique cell key: one cell per (target, variable) pair.
-pub type CellKey = (CoefficientTarget, VarId);
+pub(crate) type CellKey = (CoefficientTarget, VarId);
 
 /// Multi-indexed coefficient storage.
 ///
@@ -69,7 +69,7 @@ pub type CellKey = (CoefficientTarget, VarId);
 /// When a coefficient is added for a cell that already exists, the
 /// expressions are algebraically combined rather than creating a duplicate.
 #[derive(Clone, Debug, Default)]
-pub struct CoefficientIndex {
+pub(crate) struct CoefficientIndex {
     /// Primary Storage
     arena: IdArena<CoefficientData>,
 

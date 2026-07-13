@@ -79,7 +79,7 @@ impl Default for Bounds {
 
 /// Internal data for a variable.
 #[derive(Clone, Debug)]
-pub struct VariableData {
+pub(crate) struct VariableData {
     /// Variable bounds.
     pub bounds: Bounds,
     /// Variable type.
@@ -104,7 +104,7 @@ impl VariableData {
 
 /// Storage for all variables in the model.
 #[derive(Clone, Debug, Default)]
-pub struct VariableStore {
+pub(crate) struct VariableStore {
     arena: IdArena<VariableData>,
 }
 

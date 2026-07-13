@@ -7,17 +7,17 @@
 //! - Stores and reasons about solutions
 //! - Allows algebraic introspection (slack, infeasibility, evaluation)
 
-pub mod delta;
+pub(crate) mod delta;
 pub mod expr;
 pub mod id;
-pub mod journal;
+pub(crate) mod journal;
 pub mod model;
 pub mod revision;
-pub mod snapshot;
+pub(crate) mod snapshot;
 pub mod solution;
 pub mod solver;
-pub mod sync;
-pub mod transaction;
+pub(crate) mod sync;
+pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API

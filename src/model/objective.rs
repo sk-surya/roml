@@ -15,7 +15,7 @@ pub enum Sense {
 
 /// internal data for an objective.
 #[derive(Clone, Debug)]
-pub struct ObjectiveData {
+pub(crate) struct ObjectiveData {
     /// Optimization sense.
     pub sense: Sense,
     /// Constant offset added to the objective expression.
@@ -45,7 +45,7 @@ impl ObjectiveData {
 /// Only one objective can be active at time. The store enforces this
 /// by deactivating the current active objective when a new one is activated.
 #[derive(Clone, Debug, Default)]
-pub struct ObjectiveStore {
+pub(crate) struct ObjectiveStore {
     arena: IdArena<ObjectiveData>,
     /// Currently active objective, if any.
     active_objective: Option<ObjId>,

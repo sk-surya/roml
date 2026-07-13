@@ -4,7 +4,7 @@ use crate::id::{IdArena, ParamId};
 
 /// Internal data for a parameter.
 #[derive(Clone, Debug)]
-pub struct ParameterData {
+pub(crate) struct ParameterData {
     /// Current parameter value.
     pub value: f64,
     /// Optional name for the debugging/printing.
@@ -23,7 +23,7 @@ impl ParameterData {
 /// Parameters are coefficient value sources that can be modified at runtime.
 /// When a parameter changes, all dependent coefficients must be updated.
 #[derive(Clone, Debug, Default)]
-pub struct ParameterStore {
+pub(crate) struct ParameterStore {
     arena: IdArena<ParameterData>,
 }
 
