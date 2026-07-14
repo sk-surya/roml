@@ -25,7 +25,7 @@ PR #3 merged the solver-free hardening program. Reported verification: format, c
 | M1.1 Contract freeze | Complete | protocol types frozen (10 sections), backend conformance harness defined, contract document at docs/release/evidence/M1/M1.1_CONTRACT_FREEZE.md |
 | M1.2 HiGHS bindings | Complete | highs-sys 1.15.0, no handwritten ABI remains, 252 lines deleted, ROML constant aliases preserved |
 | M1.3 HiGHS correctness | Complete | commuting square proven (16 single-op + random sequences), fault injection (3 scenarios), multi-cursor independence, rebuild determinism, semi-continuous recovery (3 tests), status lattice (7), error classification (10), solve-request negotiation (9); 333 tests pass |
-| M1.4 Platform qualification | Ready | ci-highs.yml created (bundled, system, MSRV, package); pending CI execution |
+| M1.4 Platform qualification | Complete (local) | 11/11 HiGHS tests pass, clippy clean, ci-highs.yml created; pending GitHub Actions CI execution |
 | M1.5 Performance/UX | Planned | benchmark plan and bulk API design documented |
 | M1.6 MOSEK | Planned | qualification plan in progress (agent) |
 | M1.7 Xpress | Planned | qualification plan in progress (agent) |
