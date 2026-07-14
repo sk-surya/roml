@@ -49,7 +49,9 @@ jobs:
         run: cargo test -p roml --all-targets
 
       - name: Documentation check (no-deps)
-        run: RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
+        run: cargo doc -p roml --no-deps
+        env:
+          RUSTDOCFLAGS: '-D warnings'
 
   msrv:
     name: MSRV (Linux, 1.85)
@@ -82,4 +84,6 @@ jobs:
         run: cargo test -p roml --all-targets
 
       - name: Documentation
-        run: RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
+        run: cargo doc -p roml --no-deps
+        env:
+          RUSTDOCFLAGS: '-D warnings'
