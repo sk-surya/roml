@@ -24,7 +24,7 @@ PR #3 merged the solver-free hardening program. Reported verification: format, c
 | M1.0 Admission | Complete | licenses committed, support labels corrected, ignored tests reconciled, SDK inventory done; name ownership pending crates.io access |
 | M1.1 Contract freeze | Complete | protocol types frozen (10 sections), backend conformance harness defined, contract document at docs/release/evidence/M1/M1.1_CONTRACT_FREEZE.md |
 | M1.2 HiGHS bindings | Complete | highs-sys 1.15.0, no handwritten ABI remains, 252 lines deleted, ROML constant aliases preserved |
-| M1.3 HiGHS correctness | Not started | M1.2 |
+| M1.3 HiGHS correctness | In Progress | differential harness and status/negotiation tests via agents; semi-continuous fix pending |
 | M1.4 Platform qualification | Not started | M1.2/M1.3 |
 | M1.5 Performance/UX | Not started | stable semantic path |
 | M1.6 MOSEK | Deferred parallel | licensed environment |
