@@ -71,7 +71,14 @@ fn build_snapshot_with_bound(
         vec![],
     )];
 
-    take_snapshot(revision, &variables, &constraints, &objectives, &parameters, &cells)
+    take_snapshot(
+        revision,
+        &variables,
+        &constraints,
+        &objectives,
+        &parameters,
+        &cells,
+    )
 }
 
 #[test]
@@ -201,7 +208,9 @@ fn journal_preserves_all_deltas_after_adapter_terminal_failure() {
     assert_eq!(cursor.health, AdapterHealth::Terminal);
 
     // Journal still has the batch for replay by a new adapter
-    let batches = coordinator.batches_for_cursor(&AdapterCursor::new()).unwrap();
+    let batches = coordinator
+        .batches_for_cursor(&AdapterCursor::new())
+        .unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].from, r0);
     assert_eq!(batches[0].to, r1);

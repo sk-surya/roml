@@ -1,4 +1,8 @@
-#![allow(clippy::type_complexity, clippy::approx_constant, clippy::needless_range_loop)]
+#![allow(
+    clippy::type_complexity,
+    clippy::approx_constant,
+    clippy::needless_range_loop
+)]
 //! Differential test harness — proves the commuting square property
 //! using the `ReferenceBackend` as the reference implementation.
 //!
@@ -80,11 +84,7 @@ fn rev_from_u64(n: u64) -> ModelRevision {
 
 // ── Setup helpers ────────────────────────────────────────────────────────────
 
-fn rebuild(
-    backend: &mut ReferenceBackend,
-    cursor: &mut AdapterCursor,
-    snapshot: &ModelSnapshot,
-) {
+fn rebuild(backend: &mut ReferenceBackend, cursor: &mut AdapterCursor, snapshot: &ModelSnapshot) {
     backend.rebuild(snapshot, cursor);
 }
 
@@ -107,11 +107,7 @@ fn fresh() -> (ReferenceBackend, AdapterCursor) {
 /// ```text
 /// project(snapshot r1) == apply(project(snapshot r0), deltas r0→r1)
 /// ```
-fn assert_commuting_square(
-    snap_r0: &ModelSnapshot,
-    snap_r1: &ModelSnapshot,
-    batch: &DeltaBatch,
-) {
+fn assert_commuting_square(snap_r0: &ModelSnapshot, snap_r1: &ModelSnapshot, batch: &DeltaBatch) {
     let (mut backend_a, mut cursor_a) = fresh();
     rebuild(&mut backend_a, &mut cursor_a, snap_r1);
     let view_a = backend_a.normalized_view();
@@ -158,7 +154,8 @@ fn assert_commuting_square_multi(
     let view_b = backend_b.normalized_view();
 
     assert_eq!(
-        view_a, view_b,
+        view_a,
+        view_b,
         "commuting square violated across {} batches (r{} → r{})",
         batches.len(),
         batches.first().map(|b| b.from).unwrap_or(snap_r0.revision),
@@ -644,8 +641,7 @@ fn dx_remove_objective_round_trip() {
         ],
     )
     .unwrap();
-    let batch2 =
-        DeltaBatch::new(r1, r2, vec![ModelOp::RemoveObjective { obj: o }]).unwrap();
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveObjective { obj: o }]).unwrap();
 
     let snap_r0 = ModelSnapshot::empty(r0);
     let snap_r2 = make_snapshot(
@@ -827,20 +823,9 @@ fn dx_random_mutation_sequences() {
                     &mut live_params,
                 )
             } else if roll < add_weight + remove_weight {
-                gen_remove_op(
-                    &mut rng,
-                    &mut live_vars,
-                    &mut live_cons,
-                    &mut live_objs,
-                )
+                gen_remove_op(&mut rng, &mut live_vars, &mut live_cons, &mut live_objs)
             } else {
-                gen_mutate_op(
-                    &mut rng,
-                    &live_vars,
-                    &live_cons,
-                    &live_objs,
-                    &live_params,
-                )
+                gen_mutate_op(&mut rng, &live_vars, &live_cons, &live_objs, &live_params)
             };
 
             ops.push(op);
@@ -877,10 +862,7 @@ fn dx_random_mutation_sequences() {
         let tracker_view = tracker_backend.normalized_view();
 
         // Build a reference snapshot from the tracker's state.
-        let snap_ref = build_snapshot_from_view(
-            target_rev,
-            &tracker_view,
-        );
+        let snap_ref = build_snapshot_from_view(target_rev, &tracker_view);
 
         // Verify: rebuild(rN) == rebuild(r0) + apply(batches[0..=j])
         let (mut snap_backend, mut snap_cursor) = fresh();
@@ -1228,22 +1210,24 @@ fn build_snapshot_from_view(rev: ModelRevision, view: &NormalizedView) -> ModelS
         .collect();
 
     // Objective cells — must be included in the snapshot so they survive rebuild
-    let objective_cells_from_view: Vec<(
-        (CoefficientTarget, VarId),
-        ValueExpr,
-        f64,
-        Vec<ParamId>,
-    )> = view
-        .objective_cells
-        .iter()
-        .map(|(ck, val, _constant)| (*ck, ValueExpr::constant(*val), *val, vec![]))
-        .collect();
+    let objective_cells_from_view: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> =
+        view.objective_cells
+            .iter()
+            .map(|(ck, val, _constant)| (*ck, ValueExpr::constant(*val), *val, vec![]))
+            .collect();
 
     // Combine both into the cells parameter for take_snapshot
     let mut all_cells = constraint_cells;
     all_cells.extend(objective_cells_from_view);
 
-    take_snapshot(rev, &variables, &constraints, &objectives, &params, &all_cells)
+    take_snapshot(
+        rev,
+        &variables,
+        &constraints,
+        &objectives,
+        &params,
+        &all_cells,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1550,9 +1534,7 @@ fn dx_fault_injection_recoverable_failure() {
         }],
     )
     .unwrap();
-    let outcome = backend
-        .apply_batch(&init_batch, &mut cursor)
-        .unwrap();
+    let outcome = backend.apply_batch(&init_batch, &mut cursor).unwrap();
     assert!(matches!(outcome, ApplyOutcome::Applied { .. }));
     assert_eq!(cursor.applied_revision, r1);
 
@@ -1561,10 +1543,7 @@ fn dx_fault_injection_recoverable_failure() {
     assert_eq!(view_before.variables.len(), 1);
 
     // Configure fault at global op 1 (first op of next batch)
-    backend.configure_fault(
-        1,
-        FaultOutcome::Recoverable("simulated recoverable".into()),
-    );
+    backend.configure_fault(1, FaultOutcome::Recoverable("simulated recoverable".into()));
 
     // Attempt to apply batch 1→2
     let fault_batch = DeltaBatch::new(
@@ -1576,9 +1555,7 @@ fn dx_fault_injection_recoverable_failure() {
         }],
     )
     .unwrap();
-    let outcome = backend
-        .apply_batch(&fault_batch, &mut cursor)
-        .unwrap();
+    let outcome = backend.apply_batch(&fault_batch, &mut cursor).unwrap();
 
     // Must be RecoverableFailure with state unchanged
     assert!(
@@ -1633,10 +1610,7 @@ fn dx_fault_injection_dirty_failure() {
     assert_eq!(cursor.applied_revision, r1);
 
     // Configure fault at global op 2 (second op in the next batch)
-    backend.configure_fault(
-        2,
-        FaultOutcome::Dirty("simulated dirty".into()),
-    );
+    backend.configure_fault(2, FaultOutcome::Dirty("simulated dirty".into()));
 
     // Batch 1→2: three ops; fault fires on the second (index 1 within batch)
     let fault_batch = DeltaBatch::new(
@@ -1730,10 +1704,7 @@ fn dx_fault_injection_rebuild_recovery() {
     assert_eq!(cursor.applied_revision, r1);
 
     // Configure fault at global op 2 (first op of next batch)
-    backend.configure_fault(
-        2,
-        FaultOutcome::Dirty("simulated dirty".into()),
-    );
+    backend.configure_fault(2, FaultOutcome::Dirty("simulated dirty".into()));
 
     // Attempt dirty batch r1→r2
     let dirty_batch = DeltaBatch::new(
@@ -1814,12 +1785,14 @@ fn dx_rebuild_determinism() {
     let mut variables = HashMap::new();
     variables.insert(
         v,
-        (Bounds::new(0.0, 100.0), VarType::Continuous, true, Some(5.0)),
+        (
+            Bounds::new(0.0, 100.0),
+            VarType::Continuous,
+            true,
+            Some(5.0),
+        ),
     );
-    variables.insert(
-        v2,
-        (Bounds::BINARY, VarType::Binary, false, None),
-    );
+    variables.insert(v2, (Bounds::BINARY, VarType::Binary, false, None));
 
     let mut constraints = HashMap::new();
     constraints.insert(c, (ConstraintBounds::le(50.0), true));
@@ -1979,11 +1952,7 @@ fn dx_semicontinuous_partial_apply() {
     // ── Verify journal preservation ──────────────────────────────────────
     // Both batches must be in the journal.
     let deltas = coordinator.journal.deltas_since(r0).unwrap();
-    assert_eq!(
-        deltas.len(),
-        2,
-        "journal must preserve both delta batches"
-    );
+    assert_eq!(deltas.len(), 2, "journal must preserve both delta batches");
 
     // The first batch (add variable) is preserved intact
     assert_eq!(deltas[0].operations.len(), 1);
@@ -2003,10 +1972,7 @@ fn dx_semicontinuous_partial_apply() {
         1,
         "rebuilt state should have one variable"
     );
-    assert_eq!(
-        rebuilt_view.variables[0].0, v,
-        "variable ID should match"
-    );
+    assert_eq!(rebuilt_view.variables[0].0, v, "variable ID should match");
     assert_eq!(
         rebuilt_view.variables[0].1,
         Bounds::new(0.0, 100.0),

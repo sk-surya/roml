@@ -21,8 +21,8 @@
 use roml::solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
-use roml::solver::request::{ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest};
 use roml::solver::request::validate_request;
+use roml::solver::request::{ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest};
 use roml::solver::LpAlgorithm;
 
 // ---------------------------------------------------------------------------
@@ -97,20 +97,38 @@ fn mip_only_backend() -> BackendCapabilities {
 
 #[test]
 fn optimal_is_more_informative_than_feasible() {
-    assert!(is_more_informative(TerminationStatus::Optimal, TerminationStatus::Feasible));
-    assert!(!is_more_informative(TerminationStatus::Feasible, TerminationStatus::Optimal));
+    assert!(is_more_informative(
+        TerminationStatus::Optimal,
+        TerminationStatus::Feasible
+    ));
+    assert!(!is_more_informative(
+        TerminationStatus::Feasible,
+        TerminationStatus::Optimal
+    ));
 }
 
 #[test]
 fn feasible_is_more_informative_than_time_limit() {
-    assert!(is_more_informative(TerminationStatus::Feasible, TerminationStatus::TimeLimit));
-    assert!(!is_more_informative(TerminationStatus::TimeLimit, TerminationStatus::Feasible));
+    assert!(is_more_informative(
+        TerminationStatus::Feasible,
+        TerminationStatus::TimeLimit
+    ));
+    assert!(!is_more_informative(
+        TerminationStatus::TimeLimit,
+        TerminationStatus::Feasible
+    ));
 }
 
 #[test]
 fn optimal_is_more_informative_than_time_limit() {
-    assert!(is_more_informative(TerminationStatus::Optimal, TerminationStatus::TimeLimit));
-    assert!(!is_more_informative(TerminationStatus::TimeLimit, TerminationStatus::Optimal));
+    assert!(is_more_informative(
+        TerminationStatus::Optimal,
+        TerminationStatus::TimeLimit
+    ));
+    assert!(!is_more_informative(
+        TerminationStatus::TimeLimit,
+        TerminationStatus::Optimal
+    ));
 }
 
 #[test]
@@ -183,9 +201,18 @@ fn error_and_unknown_are_least_informative() {
 #[test]
 fn transitive_ordering() {
     // Optimal > Feasible > TimeLimit  ⇒  Optimal > TimeLimit
-    assert!(is_more_informative(TerminationStatus::Optimal, TerminationStatus::Feasible));
-    assert!(is_more_informative(TerminationStatus::Feasible, TerminationStatus::TimeLimit));
-    assert!(is_more_informative(TerminationStatus::Optimal, TerminationStatus::TimeLimit));
+    assert!(is_more_informative(
+        TerminationStatus::Optimal,
+        TerminationStatus::Feasible
+    ));
+    assert!(is_more_informative(
+        TerminationStatus::Feasible,
+        TerminationStatus::TimeLimit
+    ));
+    assert!(is_more_informative(
+        TerminationStatus::Optimal,
+        TerminationStatus::TimeLimit
+    ));
 }
 
 #[test]
@@ -204,7 +231,11 @@ fn same_status_is_not_more_informative() {
         TerminationStatus::Unknown,
     ];
     for s in &statuses {
-        assert!(!is_more_informative(*s, *s), "{:?} should not be more informative than itself", s);
+        assert!(
+            !is_more_informative(*s, *s),
+            "{:?} should not be more informative than itself",
+            s
+        );
     }
 }
 
@@ -244,37 +275,58 @@ fn partial_order_reflexivity() {
 
 #[test]
 fn library_not_found_is_terminal() {
-    assert_eq!(classify_health(ErrorCategory::LibraryNotFound), HealthEffect::Terminal);
+    assert_eq!(
+        classify_health(ErrorCategory::LibraryNotFound),
+        HealthEffect::Terminal
+    );
 }
 
 #[test]
 fn license_failure_is_terminal() {
-    assert_eq!(classify_health(ErrorCategory::LicenseFailure), HealthEffect::Terminal);
+    assert_eq!(
+        classify_health(ErrorCategory::LicenseFailure),
+        HealthEffect::Terminal
+    );
 }
 
 #[test]
 fn unsupported_requires_rebuild() {
-    assert_eq!(classify_health(ErrorCategory::Unsupported), HealthEffect::RequiresRebuild);
+    assert_eq!(
+        classify_health(ErrorCategory::Unsupported),
+        HealthEffect::RequiresRebuild
+    );
 }
 
 #[test]
 fn numerical_is_recoverable() {
-    assert_eq!(classify_health(ErrorCategory::Numerical), HealthEffect::Recoverable);
+    assert_eq!(
+        classify_health(ErrorCategory::Numerical),
+        HealthEffect::Recoverable
+    );
 }
 
 #[test]
 fn out_of_memory_is_terminal() {
-    assert_eq!(classify_health(ErrorCategory::OutOfMemory), HealthEffect::Terminal);
+    assert_eq!(
+        classify_health(ErrorCategory::OutOfMemory),
+        HealthEffect::Terminal
+    );
 }
 
 #[test]
 fn internal_requires_rebuild() {
-    assert_eq!(classify_health(ErrorCategory::Internal), HealthEffect::RequiresRebuild);
+    assert_eq!(
+        classify_health(ErrorCategory::Internal),
+        HealthEffect::RequiresRebuild
+    );
 }
 
 #[test]
 fn invalid_input_is_recoverable() {
-    assert_eq!(classify_health(ErrorCategory::InvalidInput), HealthEffect::Recoverable);
+    assert_eq!(
+        classify_health(ErrorCategory::InvalidInput),
+        HealthEffect::Recoverable
+    );
 }
 
 #[test]
@@ -284,7 +336,10 @@ fn limit_has_no_health_effect() {
 
 #[test]
 fn unknown_error_is_recoverable() {
-    assert_eq!(classify_health(ErrorCategory::Unknown), HealthEffect::Recoverable);
+    assert_eq!(
+        classify_health(ErrorCategory::Unknown),
+        HealthEffect::Recoverable
+    );
 }
 
 #[test]
@@ -388,7 +443,11 @@ fn all_options_accepted_on_full_capability_backend() {
         .with_threads(8)
         .with_option("presolve", "on");
     let rejections = validate_request(&req, &caps);
-    assert!(rejections.is_empty(), "Expected no rejections, got: {:?}", rejections);
+    assert!(
+        rejections.is_empty(),
+        "Expected no rejections, got: {:?}",
+        rejections
+    );
 }
 
 #[test]
@@ -408,7 +467,11 @@ fn mip_options_all_individually_rejected_on_lp_only_backend() {
         ..SolveRequest::new()
     };
     let rejections = validate_request(&req, &caps);
-    assert_eq!(rejections.len(), 2, "Expected both MIP options to be rejected");
+    assert_eq!(
+        rejections.len(),
+        2,
+        "Expected both MIP options to be rejected"
+    );
     let keys: Vec<&str> = rejections.iter().map(|r| r.key.as_str()).collect();
     assert!(keys.contains(&"mip_rel_gap"));
     assert!(keys.contains(&"mip_abs_gap"));
@@ -431,7 +494,10 @@ fn validate_request_does_not_mutate_request() {
     let req = SolveRequest::new().with_mip_rel_gap(0.01);
     let original = req.clone();
     let _rejections = validate_request(&req, &caps);
-    assert_eq!(req, original, "validate_request should not mutate the request");
+    assert_eq!(
+        req, original,
+        "validate_request should not mutate the request"
+    );
 }
 
 #[test]
@@ -633,7 +699,10 @@ fn full_negotiation_round_trip() {
     assert_eq!(effective.lp_algorithm, Some(LpAlgorithm::DualSimplex));
     assert_eq!(effective.time_limit_secs, Some(120.0));
     assert_eq!(effective.threads, Some(4));
-    assert!(effective.mip_rel_gap.is_none(), "MIP options should not appear in effective config");
+    assert!(
+        effective.mip_rel_gap.is_none(),
+        "MIP options should not appear in effective config"
+    );
     assert!(effective.adjustments.is_empty());
     assert_eq!(effective.rejections.len(), 2);
 }

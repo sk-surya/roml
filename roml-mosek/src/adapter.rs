@@ -174,6 +174,12 @@ pub struct MosekAdapter {
 // SAFETY: MOSEK is a C library; we never share the handles across threads.
 unsafe impl Send for MosekAdapter {}
 
+impl Default for MosekAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MosekAdapter {
     pub fn new() -> Self {
         Self::with_options(MosekOptions::default())
@@ -831,8 +837,7 @@ impl SolverAdapter for MosekAdapter {
         // ── Optional callback loop ──
         if let Some(handler) = self.callback_handler.take() {
             let col_to_var: HashMap<ffi::MosekInt, VarId> = self.col_map.reverse_map();
-            let var_to_col: HashMap<VarId, ffi::MosekInt> =
-                self.col_map.iter().map(|(v, c)| (v, c)).collect();
+            let var_to_col: HashMap<VarId, ffi::MosekInt> = self.col_map.iter().collect();
 
             let state = Box::new(MosekCallbackState {
                 col_to_var,

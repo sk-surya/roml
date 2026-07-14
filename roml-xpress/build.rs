@@ -16,9 +16,7 @@ fn main() {
     // Embed rpath so the binary finds libxprs.dylib and libxprl.dylib at run time
     // without requiring DYLD_LIBRARY_PATH.
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os == "macos" {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
-    } else if target_os == "linux" {
+    if target_os == "macos" || target_os == "linux" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
     }
 

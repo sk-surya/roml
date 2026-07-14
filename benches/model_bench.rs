@@ -46,11 +46,7 @@ fn bench_parameter_propagation(c: &mut Criterion) {
             // Each parameter drives 200 cells
             for (j, param) in params.iter().enumerate() {
                 for v in &vars {
-                    let _ = model.add_constraint_coefficient(
-                        con,
-                        *v,
-                        ValueExpr::param(*param),
-                    );
+                    let _ = model.add_constraint_coefficient(con, *v, ValueExpr::param(*param));
                 }
                 // Only do first param to keep benchmark size reasonable
                 if j == 0 {
@@ -82,9 +78,7 @@ fn bench_invariant_checking(c: &mut Criterion) {
         }
         model.commit();
 
-        b.iter(|| {
-            black_box(model.validate_invariants())
-        });
+        b.iter(|| black_box(model.validate_invariants()));
     });
 }
 
@@ -96,11 +90,7 @@ fn bench_canonical_cell_combining(c: &mut Criterion) {
             let con = model.add_constraint(ConstraintBounds::le(10.0));
 
             for i in 0..100 {
-                let _ = model.add_constraint_coefficient(
-                    con,
-                    x,
-                    ValueExpr::constant(i as f64),
-                );
+                let _ = model.add_constraint_coefficient(con, x, ValueExpr::constant(i as f64));
             }
             black_box(model)
         });
