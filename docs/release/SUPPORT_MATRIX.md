@@ -2,47 +2,48 @@
 
 This document describes the platform and layer support for ROML and its solver adapters.
 
+**Important distinction:** The v0.1 hardening program verified the **solver-free core**. No native backend has been qualified for publication. HiGHS qualification is the primary goal of M1 (M1.2-M1.4). MOSEK and Xpress are deferred to independent qualification.
+
 ## Layer Descriptions
 
-| Layer | Crate | Description |
-|-------|-------|-------------|
-| **Core** | `roml` | Solver-agnostic MILP model layer, expression DSL, change tracking, solution store |
-| **HiGHS** | `roml-highs` | HiGHS solver adapter — builds, links, and solves with the HiGHS library |
-| **MOSEK** | `roml-mosek` | MOSEK solver adapter — builds and compiles; solving requires a MOSEK license |
-| **Xpress** | `roml-xpress` | FICO Xpress solver adapter — builds and compiles; solving requires an Xpress license |
+| Layer | Crate | Status |
+|-------|-------|--------|
+| **Core** | `roml` | Verified — solver-agnostic MILP model layer, expression DSL, revision protocol, change tracking |
+| **HiGHS** | `roml-highs` | Experimental — awaiting M1.2 binding migration, M1.3 semantic qualification, M1.4 cross-platform CI |
+| **MOSEK** | `roml-mosek` | Experimental (`publish = false`) — requires official binding migration and licensed environment |
+| **Xpress** | `roml-xpress` | Experimental (`publish = false`) — requires legal/binding decision and licensed environment |
 
 ## Platform Support
 
-| Layer       | Linux | macOS | Windows |
-|-------------|-------|-------|---------|
-| **Core**    | supported | supported | supported |
-| **HiGHS**   | supported | supported | supported |
-| **MOSEK**   | compile-only | compile-only | compile-only |
-| **Xpress**  | compile-only | compile-only | compile-only |
+| Layer | Linux | macOS | Windows | MSRV |
+|-------|-------|-------|---------|------|
+| **Core** | ✅ verified | ✅ verified | ✅ verified | ✅ 1.85 |
+| **HiGHS** | ⬜ experimental | ⬜ experimental | ⬜ experimental | TBD |
+| **MOSEK** | ⬜ compile-only | ⬜ compile-only | ⬜ compile-only | TBD |
+| **Xpress** | ⬜ compile-only | ⬜ compile-only | ⬜ compile-only | TBD |
 
 ## Support Labels
 
 | Label | Meaning |
 |-------|---------|
-| **supported** | Tested in CI. Builds, links, and runs on the target platform. |
-| **tested** | Tested in CI on this platform but not officially supported (may have limitations). |
-| **compile-only** | The crate compiles on this platform without a solver library. Solving is not guaranteed without a license or runtime; not tested in CI for solve paths. |
-| **experimental** | May compile but is not tested. Not recommended for production use. |
+| **verified** | Tested in CI on all three platforms + MSRV. Builds, tests, documents, and packages without native solver dependencies. |
+| **qualified** | Tested in CI with native solver. Commuting-square property holds. Incremental, rebuild, and extracted observables agree. |
+| **compile-only** | The crate compiles on this platform. Solving is not guaranteed without a native solver installation and license. Not tested in CI for solve paths. |
+| **experimental** | May compile but is not yet qualified. Not recommended for production use. |
 
 ## Rust Toolchain
 
 | Setting | Value |
 |---------|-------|
-| **Minimum Supported Rust Version (MSRV)** | TBD (to be determined — currently targets Rust 1.75+) |
+| **Minimum Supported Rust Version (MSRV)** | 1.85 (stable) |
 | **Target toolchain** | Stable Rust |
 | **Edition** | 2021 |
 | **Resolver** | v2 |
 
-The MSRV is not yet pinned. It will be determined once the 1.0 release is prepared. During pre-1.0 development, the project tracks the latest stable Rust toolchain.
-
 ## Notes
 
-- **Core** requires no external libraries beyond the Rust standard library.
-- **HiGHS** requires the HiGHS shared library to be pre-installed on the build system. The `roml-highs/build.rs` script locates it automatically.
-- **MOSEK** and **Xpress** adapters are gated for publication. See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the publication policy.
+- **Core** requires no external libraries beyond the Rust standard library. Verified on Linux, macOS, Windows, and MSRV 1.85.
+- **HiGHS** requires the HiGHS native library. Current adapter uses handwritten FFI (`roml-highs/src/ffi.rs`). M1.2 will migrate to `rust-or/highs-sys` with bundled static build as the default.
+- **MOSEK** and **Xpress** adapters are gated with `publish = false`. See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the publication policy.
 - All layers use stable Rust features only. No nightly features are used.
+- The `roml` core denies `unsafe_code` at the lint level. Backend crates isolate unsafe code behind binding boundaries.

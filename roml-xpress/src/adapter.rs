@@ -17,8 +17,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::OnceLock;
 
-use log::info;
-
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
@@ -245,6 +243,12 @@ fn check(ret: ffi::XprsRes, op: &str) -> Result<(), SolverError> {
 }
 
 // ── impl XpressAdapter ─────────────────────────────────────────────────────
+
+impl Default for XpressAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl XpressAdapter {
     pub fn new() -> Self {

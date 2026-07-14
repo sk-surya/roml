@@ -42,6 +42,7 @@ rust.unsafe_code = "deny"
 log = { workspace = true }
 
 [dev-dependencies]
+criterion = "0.7.0"
 rand = "0.9"
 
 [[example]]
@@ -51,6 +52,10 @@ path = "examples/simple_lp.rs"
 [[example]]
 name = "parameter_update"
 path = "examples/parameter_update.rs"
+
+[[bench]]
+name = "model_bench"
+harness = false
 
 [profile.dev]
 opt-level = 0
