@@ -16,8 +16,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
-use std::ffi::c_void;
+use log::{info, warn};
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
@@ -25,7 +24,8 @@ use roml::model::objective::Sense;
 use roml::model::variable::VarType;
 use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
 use roml::solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverStatus};
-use log::{info, warn};
+use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
 
 use crate::ffi::{self, MosekEnv, MosekTask};
 use crate::index_map::IndexMap;
@@ -49,10 +49,10 @@ fn check(ret: ffi::MosekRes, op: &str) -> Result<(), SolverError> {
 fn mosek_bounds(lb: f64, ub: f64) -> (ffi::MosekInt, f64, f64) {
     match (lb.is_finite(), ub.is_finite()) {
         (false, false) => (ffi::BK_FR, 0.0, 0.0),
-        (true, false)  => (ffi::BK_LO, lb, 0.0),
-        (false, true)  => (ffi::BK_UP, 0.0, ub),
+        (true, false) => (ffi::BK_LO, lb, 0.0),
+        (false, true) => (ffi::BK_UP, 0.0, ub),
         (true, true) if (lb - ub).abs() < f64::EPSILON => (ffi::BK_FX, lb, ub),
-        (true, true)   => (ffi::BK_RA, lb, ub),
+        (true, true) => (ffi::BK_RA, lb, ub),
     }
 }
 
@@ -141,7 +141,7 @@ impl MosekOptions {
 // ── Adapter struct ─────────────────────────────────────────────────────────
 
 pub struct MosekAdapter {
-    env:  MosekEnv,
+    env: MosekEnv,
     task: MosekTask,
 
     opts: MosekOptions,
@@ -149,20 +149,20 @@ pub struct MosekAdapter {
     col_map: IndexMap<VarId>,
     row_map: IndexMap<ConId>,
 
-    var_bounds:   HashMap<VarId, (f64, f64)>,
-    con_bounds:   HashMap<ConId, (f64, f64)>,
+    var_bounds: HashMap<VarId, (f64, f64)>,
+    con_bounds: HashMap<ConId, (f64, f64)>,
     integer_vars: HashSet<VarId>,
     semicontinuous_vars: HashSet<VarId>,
 
-    obj_costs:  HashMap<ObjId, HashMap<VarId, f64>>,
+    obj_costs: HashMap<ObjId, HashMap<VarId, f64>>,
     obj_senses: HashMap<ObjId, Sense>,
     active_obj: Option<ObjId>,
 
-    status:          SolverStatus,
-    solution:        Option<HashMap<VarId, f64>>,
+    status: SolverStatus,
+    solution: Option<HashMap<VarId, f64>>,
     objective_value: Option<f64>,
-    duals:           Option<HashMap<ConId, f64>>,
-    reduced_costs:   Option<HashMap<VarId, f64>>,
+    duals: Option<HashMap<ConId, f64>>,
+    reduced_costs: Option<HashMap<VarId, f64>>,
 
     /// Optional callback handler for MIP lazy constraints / cutting planes.
     callback_handler: Option<Box<dyn CallbackHandler>>,
@@ -230,7 +230,11 @@ impl MosekAdapter {
     }
 
     fn soltype(&self) -> ffi::MosekInt {
-        if self.is_mip() { ffi::SOL_ITG } else { ffi::SOL_BAS }
+        if self.is_mip() {
+            ffi::SOL_ITG
+        } else {
+            ffi::SOL_BAS
+        }
     }
 
     fn num_vars(&self) -> i32 {
@@ -267,9 +271,16 @@ impl MosekAdapter {
     fn apply_one(&mut self, change: &Change) -> Result<(), SolverError> {
         match change {
             // ── Variable Added ────────────────────────────────────────────
-            Change::VariableAdded { var, bounds, var_type } => {
+            Change::VariableAdded {
+                var,
+                bounds,
+                var_type,
+            } => {
                 let col_idx = self.num_vars();
-                check(unsafe { ffi::MSK_appendvars(self.task, 1) }, "MSK_appendvars")?;
+                check(
+                    unsafe { ffi::MSK_appendvars(self.task, 1) },
+                    "MSK_appendvars",
+                )?;
 
                 let (bk, lb, ub) = mosek_bounds(bounds.lower, bounds.upper);
                 check(
@@ -325,58 +336,61 @@ impl MosekAdapter {
                 }
             }
 
-    // ── Variable Type Changed ──────────────────────────────────────
-    Change::VariableTypeChanged { var, new, .. } => {
-        if let Some(col) = self.col_map.get(*var) {
-            let msk_type = if self.semicontinuous_vars.contains(var) {
-                // If variable is SC, use SEMICONT_INT when setting to integer/binary
-                match new {
-                    VarType::Integer | VarType::Binary => {
+            // ── Variable Type Changed ──────────────────────────────────────
+            Change::VariableTypeChanged { var, new, .. } => {
+                if let Some(col) = self.col_map.get(*var) {
+                    let msk_type = if self.semicontinuous_vars.contains(var) {
+                        // If variable is SC, use SEMICONT_INT when setting to integer/binary
+                        match new {
+                            VarType::Integer | VarType::Binary => {
+                                self.integer_vars.insert(*var);
+                                ffi::VAR_TYPE_SEMICONT_INT
+                            }
+                            VarType::Continuous => {
+                                self.integer_vars.remove(var);
+                                ffi::VAR_TYPE_SEMICONT
+                            }
+                        }
+                    } else {
+                        Self::var_type_to_mosek(*new)
+                    };
+                    check(
+                        unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                        "MSK_putvartype (type change)",
+                    )?;
+                    if matches!(new, VarType::Integer | VarType::Binary) {
                         self.integer_vars.insert(*var);
-                        ffi::VAR_TYPE_SEMICONT_INT
-                    }
-                    VarType::Continuous => {
+                    } else {
                         self.integer_vars.remove(var);
-                        ffi::VAR_TYPE_SEMICONT
                     }
                 }
-            } else {
-                Self::var_type_to_mosek(*new)
-            };
-            check(
-                unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
-                "MSK_putvartype (type change)",
-            )?;
-            if matches!(new, VarType::Integer | VarType::Binary) {
-                self.integer_vars.insert(*var);
-            } else {
-                self.integer_vars.remove(var);
             }
-        }
-    }
 
-    // ── Variable Semi-Continuous Bound Changed ─────────────────────
-    Change::SemiContinuousBoundChanged { var, .. } => {
-        if let Some(col) = self.col_map.get(*var) {
-            self.semicontinuous_vars.insert(*var);
-            let msk_type = if self.integer_vars.contains(var) {
-                ffi::VAR_TYPE_SEMICONT_INT
-            } else {
-                ffi::VAR_TYPE_SEMICONT
-            };
-            check(
-                unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
-                "MSK_putvartype (semi-continuous)",
-            )?;
-        }
-    }
+            // ── Variable Semi-Continuous Bound Changed ─────────────────────
+            Change::SemiContinuousBoundChanged { var, .. } => {
+                if let Some(col) = self.col_map.get(*var) {
+                    self.semicontinuous_vars.insert(*var);
+                    let msk_type = if self.integer_vars.contains(var) {
+                        ffi::VAR_TYPE_SEMICONT_INT
+                    } else {
+                        ffi::VAR_TYPE_SEMICONT
+                    };
+                    check(
+                        unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                        "MSK_putvartype (semi-continuous)",
+                    )?;
+                }
+            }
 
             // ── Variable Activity Changed ──────────────────────────────────
             Change::VariableActivityChanged { var, active } => {
                 if let Some(col) = self.col_map.get(*var) {
                     let (bk, lb, ub) = if *active {
-                        let (orig_lb, orig_ub) =
-                            self.var_bounds.get(var).copied().unwrap_or((0.0, f64::INFINITY));
+                        let (orig_lb, orig_ub) = self
+                            .var_bounds
+                            .get(var)
+                            .copied()
+                            .unwrap_or((0.0, f64::INFINITY));
                         mosek_bounds(orig_lb, orig_ub)
                     } else {
                         (ffi::BK_FX, 0.0, 0.0)
@@ -391,7 +405,10 @@ impl MosekAdapter {
             // ── Constraint Added ───────────────────────────────────────────
             Change::ConstraintAdded { con, bounds } => {
                 let row_idx = self.num_cons();
-                check(unsafe { ffi::MSK_appendcons(self.task, 1) }, "MSK_appendcons")?;
+                check(
+                    unsafe { ffi::MSK_appendcons(self.task, 1) },
+                    "MSK_appendcons",
+                )?;
 
                 let (bk, lb, ub) = mosek_bounds(bounds.lower, bounds.upper);
                 check(
@@ -450,89 +467,84 @@ impl MosekAdapter {
             }
 
             // ── Coefficient Added ──────────────────────────────────────────
-            Change::CoefficientAdded { var, target, value, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
+            Change::CoefficientAdded {
+                var, target, value, ..
+            } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        check(
+                            unsafe { ffi::MSK_putaij(self.task, row, col, *value) },
+                            "MSK_putaij (add)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    self.obj_costs.entry(*obj).or_default().insert(*var, *value);
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
                             check(
-                                unsafe { ffi::MSK_putaij(self.task, row, col, *value) },
-                                "MSK_putaij (add)",
+                                unsafe { ffi::MSK_putcj(self.task, col, *value) },
+                                "MSK_putcj (add)",
                             )?;
                         }
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        self.obj_costs.entry(*obj).or_default().insert(*var, *value);
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                check(
-                                    unsafe { ffi::MSK_putcj(self.task, col, *value) },
-                                    "MSK_putcj (add)",
-                                )?;
-                            }
-                        }
-                    }
                 }
-            }
+            },
 
             // ── Coefficient Removed ────────────────────────────────────────
-            Change::CoefficientRemoved { var, target, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
+            Change::CoefficientRemoved { var, target, .. } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        check(
+                            unsafe { ffi::MSK_putaij(self.task, row, col, 0.0) },
+                            "MSK_putaij (remove)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if let Some(costs) = self.obj_costs.get_mut(obj) {
+                        costs.remove(var);
+                    }
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
                             check(
-                                unsafe { ffi::MSK_putaij(self.task, row, col, 0.0) },
-                                "MSK_putaij (remove)",
+                                unsafe { ffi::MSK_putcj(self.task, col, 0.0) },
+                                "MSK_putcj (remove)",
                             )?;
                         }
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        if let Some(costs) = self.obj_costs.get_mut(obj) {
-                            costs.remove(var);
-                        }
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                check(
-                                    unsafe { ffi::MSK_putcj(self.task, col, 0.0) },
-                                    "MSK_putcj (remove)",
-                                )?;
-                            }
-                        }
-                    }
                 }
-            }
+            },
 
             // ── Coefficient Value Changed ──────────────────────────────────
-            Change::CoefficientValueChanged { var, target, new, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
+            Change::CoefficientValueChanged {
+                var, target, new, ..
+            } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        check(
+                            unsafe { ffi::MSK_putaij(self.task, row, col, *new) },
+                            "MSK_putaij (update)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if let Some(costs) = self.obj_costs.get_mut(obj) {
+                        costs.insert(*var, *new);
+                    }
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
                             check(
-                                unsafe { ffi::MSK_putaij(self.task, row, col, *new) },
-                                "MSK_putaij (update)",
+                                unsafe { ffi::MSK_putcj(self.task, col, *new) },
+                                "MSK_putcj (update)",
                             )?;
                         }
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        if let Some(costs) = self.obj_costs.get_mut(obj) {
-                            costs.insert(*var, *new);
-                        }
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                check(
-                                    unsafe { ffi::MSK_putcj(self.task, col, *new) },
-                                    "MSK_putcj (update)",
-                                )?;
-                            }
-                        }
-                    }
                 }
-            }
+            },
 
             // ── Objective Added ────────────────────────────────────────────
             Change::ObjectiveAdded { obj, sense } => {
@@ -554,9 +566,7 @@ impl MosekAdapter {
                 self.obj_senses.insert(*obj, *new);
                 if Some(*obj) == self.active_obj {
                     check(
-                        unsafe {
-                            ffi::MSK_putobjsense(self.task, Self::sense_to_mosek(*new))
-                        },
+                        unsafe { ffi::MSK_putobjsense(self.task, Self::sense_to_mosek(*new)) },
                         "MSK_putobjsense (sense change)",
                     )?;
                 }
@@ -588,12 +598,7 @@ impl MosekAdapter {
                     }
                     // Apply new sense.
                     if let Some(&sense) = self.obj_senses.get(new_obj) {
-                        unsafe {
-                            ffi::MSK_putobjsense(
-                                self.task,
-                                Self::sense_to_mosek(sense),
-                            )
-                        };
+                        unsafe { ffi::MSK_putobjsense(self.task, Self::sense_to_mosek(sense)) };
                     }
                 }
             }
@@ -745,7 +750,13 @@ unsafe extern "C" fn mosek_callback_trampoline(
 
                 if !subj.is_empty() {
                     let subi = vec![row; subj.len()];
-                    ffi::MSK_putaijlist(task, subj.len() as ffi::MosekInt, subi.as_ptr(), subj.as_ptr(), valij.as_ptr());
+                    ffi::MSK_putaijlist(
+                        task,
+                        subj.len() as ffi::MosekInt,
+                        subi.as_ptr(),
+                        subj.as_ptr(),
+                        valij.as_ptr(),
+                    );
                 }
             }
 
@@ -787,21 +798,32 @@ impl SolverAdapter for MosekAdapter {
         // ── Apply per-solve optimizer override ──
         if let Some(opt) = self.next_optimizer.take() {
             let code = match opt {
-                MosekOptimizer::Free          => ffi::OPTIMIZER_FREE,
+                MosekOptimizer::Free => ffi::OPTIMIZER_FREE,
                 MosekOptimizer::InteriorPoint => ffi::OPTIMIZER_INTPNT,
-                MosekOptimizer::DualSimplex   => ffi::OPTIMIZER_DUAL_SIMPLEX,
+                MosekOptimizer::DualSimplex => ffi::OPTIMIZER_DUAL_SIMPLEX,
                 MosekOptimizer::NewDualSimplex => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
-                MosekOptimizer::FreeSimplex   => ffi::OPTIMIZER_FREE_SIMPLEX,
+                MosekOptimizer::FreeSimplex => ffi::OPTIMIZER_FREE_SIMPLEX,
             };
             unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_OPTIMIZER, code) };
             // Enable crossover (IPM → basis) when using barrier, so subsequent
             // dual-simplex phases can hotstart from the basis.
             if opt == MosekOptimizer::InteriorPoint {
-                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_INTPNT_BASIS, ffi::BI_IF_FEASIBLE) };
+                unsafe {
+                    ffi::MSK_putintparam(self.task, ffi::IPAR_INTPNT_BASIS, ffi::BI_IF_FEASIBLE)
+                };
             }
             // Enable status-keys hotstart when using dual simplex.
-            if matches!(opt, MosekOptimizer::DualSimplex | MosekOptimizer::NewDualSimplex) {
-                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_SIM_HOTSTART, ffi::SIM_HOTSTART_STATUS_KEYS) };
+            if matches!(
+                opt,
+                MosekOptimizer::DualSimplex | MosekOptimizer::NewDualSimplex
+            ) {
+                unsafe {
+                    ffi::MSK_putintparam(
+                        self.task,
+                        ffi::IPAR_SIM_HOTSTART,
+                        ffi::SIM_HOTSTART_STATUS_KEYS,
+                    )
+                };
             }
             info!("MOSEK: applied optimizer override = {opt:?}");
         }
@@ -823,7 +845,11 @@ impl SolverAdapter for MosekAdapter {
 
             // Register callback
             unsafe {
-                ffi::MSK_putcallbackfunc(self.task, Some(mosek_callback_trampoline), state_ptr as *mut c_void);
+                ffi::MSK_putcallbackfunc(
+                    self.task,
+                    Some(mosek_callback_trampoline),
+                    state_ptr as *mut c_void,
+                );
             }
 
             // Loop: optimize → if cuts added → re-optimize
@@ -847,7 +873,7 @@ impl SolverAdapter for MosekAdapter {
                     return Err(mosek_err(format!("MSK_optimize error code {ret}")));
                 }
                 break;
-            };
+            }
 
             // Unregister callback and reclaim state
             unsafe {
@@ -855,7 +881,6 @@ impl SolverAdapter for MosekAdapter {
                 let state = Box::from_raw(state_ptr);
                 self.callback_handler = Some(state.handler);
             }
-
         } else {
             // ── No callback — plain optimize ──
             let ret = unsafe { ffi::MSK_optimize(self.task) };
@@ -910,19 +935,16 @@ impl SolverAdapter for MosekAdapter {
 
             // Dual values and reduced costs — only available for LP (BAS solution).
             if !self.is_mip() {
-                let mut y   = vec![0.0f64; nc];
+                let mut y = vec![0.0f64; nc];
                 let mut slx = vec![0.0f64; nv];
                 let mut sux = vec![0.0f64; nv];
 
-                let y_ok = unsafe {
-                    ffi::MSK_gety(self.task, soltype, y.as_mut_ptr())
-                } == ffi::RES_OK;
-                let rc_ok = unsafe {
-                    ffi::MSK_getslx(self.task, soltype, slx.as_mut_ptr())
-                } == ffi::RES_OK
-                    && unsafe {
-                        ffi::MSK_getsux(self.task, soltype, sux.as_mut_ptr())
-                    } == ffi::RES_OK;
+                let y_ok =
+                    unsafe { ffi::MSK_gety(self.task, soltype, y.as_mut_ptr()) } == ffi::RES_OK;
+                let rc_ok = unsafe { ffi::MSK_getslx(self.task, soltype, slx.as_mut_ptr()) }
+                    == ffi::RES_OK
+                    && unsafe { ffi::MSK_getsux(self.task, soltype, sux.as_mut_ptr()) }
+                        == ffi::RES_OK;
 
                 if y_ok {
                     let mut duals: HashMap<ConId, f64> = HashMap::new();
@@ -938,8 +960,8 @@ impl SolverAdapter for MosekAdapter {
                     let mut rc: HashMap<VarId, f64> = HashMap::new();
                     for (var, col) in self.col_map.iter() {
                         let c = col as usize;
-                        let v = slx.get(c).copied().unwrap_or(0.0)
-                            - sux.get(c).copied().unwrap_or(0.0);
+                        let v =
+                            slx.get(c).copied().unwrap_or(0.0) - sux.get(c).copied().unwrap_or(0.0);
                         rc.insert(var, v);
                     }
                     self.reduced_costs = Some(rc);
@@ -1007,10 +1029,10 @@ impl SolverAdapter for MosekAdapter {
     fn apply_options(&mut self, opts: &SolveOptions) -> Result<(), SolverError> {
         if let Some(algo) = opts.lp_algorithm {
             let mosek_opt = match algo {
-                LpAlgorithm::Automatic     => MosekOptimizer::Free,
+                LpAlgorithm::Automatic => MosekOptimizer::Free,
                 LpAlgorithm::PrimalSimplex => MosekOptimizer::DualSimplex, // no primal in MosekOptimizer
-                LpAlgorithm::DualSimplex   => MosekOptimizer::NewDualSimplex,
-                LpAlgorithm::Barrier       => MosekOptimizer::InteriorPoint,
+                LpAlgorithm::DualSimplex => MosekOptimizer::NewDualSimplex,
+                LpAlgorithm::Barrier => MosekOptimizer::InteriorPoint,
             };
             self.next_optimizer = Some(mosek_opt);
         }
@@ -1020,7 +1042,9 @@ impl SolverAdapter for MosekAdapter {
     fn set_console_output(&mut self, enabled: bool) -> Result<(), SolverError> {
         self.opts.console_output = enabled;
         let level: i32 = if enabled { 3 } else { 0 };
-        unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_LOG, level); }
+        unsafe {
+            ffi::MSK_putintparam(self.task, ffi::IPAR_LOG, level);
+        }
         Ok(())
     }
 
@@ -1037,7 +1061,9 @@ impl SolverAdapter for MosekAdapter {
 
 /// C-callable stream callback that writes MOSEK log output to stderr (unbuffered).
 unsafe extern "C" fn mosek_stdout_cb(_handle: *mut std::ffi::c_void, msg: *const std::ffi::c_char) {
-    if msg.is_null() { return; }
+    if msg.is_null() {
+        return;
+    }
     if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(msg) }.to_str() {
         use std::io::Write;
         let mut stderr = std::io::stderr();
@@ -1074,23 +1100,33 @@ fn make_task(env: MosekEnv, opts: &MosekOptions) -> MosekTask {
     }
 
     let optimizer_code = match opts.optimizer {
-        MosekOptimizer::Free          => ffi::OPTIMIZER_FREE,
+        MosekOptimizer::Free => ffi::OPTIMIZER_FREE,
         MosekOptimizer::InteriorPoint => ffi::OPTIMIZER_INTPNT,
-        MosekOptimizer::DualSimplex   => ffi::OPTIMIZER_DUAL_SIMPLEX,
+        MosekOptimizer::DualSimplex => ffi::OPTIMIZER_DUAL_SIMPLEX,
         MosekOptimizer::NewDualSimplex => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
-        MosekOptimizer::FreeSimplex   => ffi::OPTIMIZER_FREE_SIMPLEX,
+        MosekOptimizer::FreeSimplex => ffi::OPTIMIZER_FREE_SIMPLEX,
     };
     unsafe { ffi::MSK_putintparam(task, ffi::IPAR_OPTIMIZER, optimizer_code) };
 
     let sim_hs_code = match opts.sim_hotstart {
-        MosekSimHotstart::None       => ffi::SIM_HOTSTART_NONE,
-        MosekSimHotstart::Free       => ffi::SIM_HOTSTART_FREE,
+        MosekSimHotstart::None => ffi::SIM_HOTSTART_NONE,
+        MosekSimHotstart::Free => ffi::SIM_HOTSTART_FREE,
         MosekSimHotstart::StatusKeys => ffi::SIM_HOTSTART_STATUS_KEYS,
     };
     unsafe { ffi::MSK_putintparam(task, ffi::IPAR_SIM_HOTSTART, sim_hs_code) };
-    let lu_code = if opts.sim_hotstart_lu { ffi::MSK_ON } else { ffi::MSK_OFF };
+    let lu_code = if opts.sim_hotstart_lu {
+        ffi::MSK_ON
+    } else {
+        ffi::MSK_OFF
+    };
     unsafe { ffi::MSK_putintparam(task, ffi::IPAR_SIM_HOTSTART_LU, lu_code) };
-    unsafe { ffi::MSK_putintparam(task, ffi::IPAR_INTPNT_HOTSTART, ffi::INTPNT_HOTSTART_PRIMAL_DUAL) };
+    unsafe {
+        ffi::MSK_putintparam(
+            task,
+            ffi::IPAR_INTPNT_HOTSTART,
+            ffi::INTPNT_HOTSTART_PRIMAL_DUAL,
+        )
+    };
 
     task
 }

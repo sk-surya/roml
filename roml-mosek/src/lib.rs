@@ -19,9 +19,9 @@
 //! A valid MOSEK license (`mosek.lic`) must be available; MOSEK searches
 //! `~/mosek/mosek.lic` by default, or the path set in `MOSEKLM_LICENSE_FILE`.
 
+pub mod adapter;
 mod ffi;
 mod index_map;
-pub mod adapter;
 
 pub use adapter::{MosekAdapter, MosekOptimizer, MosekOptions, MosekSimHotstart};
 pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};

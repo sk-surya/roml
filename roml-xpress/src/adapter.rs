@@ -60,18 +60,22 @@ fn xprs_row(lb: f64, ub: f64) -> (u8, f64, f64) {
     let ub_fin = ub.is_finite();
     match (lb_fin, ub_fin) {
         (false, false) => (b'N', 0.0, 0.0),
-        (false, true)  => (b'L', ub,  0.0),
-        (true,  false) => (b'G', lb,  0.0),
-        (true,  true) if (lb - ub).abs() < f64::EPSILON => (b'E', lb, 0.0),
-        (true,  true)  => (b'R', ub,  ub - lb),
+        (false, true) => (b'L', ub, 0.0),
+        (true, false) => (b'G', lb, 0.0),
+        (true, true) if (lb - ub).abs() < f64::EPSILON => (b'E', lb, 0.0),
+        (true, true) => (b'R', ub, ub - lb),
     }
 }
 
 /// Clamp Rust ±infinity to Xpress ±1e20.
 fn xprs_bound(v: f64) -> f64 {
-    if v == f64::INFINITY      { ffi::XPRS_PLUSINFINITY  }
-    else if v == f64::NEG_INFINITY { ffi::XPRS_MINUSINFINITY }
-    else { v }
+    if v == f64::INFINITY {
+        ffi::XPRS_PLUSINFINITY
+    } else if v == f64::NEG_INFINITY {
+        ffi::XPRS_MINUSINFINITY
+    } else {
+        v
+    }
 }
 
 // ── Options ────────────────────────────────────────────────────────────────
@@ -79,10 +83,10 @@ fn xprs_bound(v: f64) -> f64 {
 /// Configuration forwarded to Xpress at adapter creation time.
 #[derive(Debug, Clone)]
 pub struct XpressOptions {
-    threads:        Option<i32>,
-    log_level:      i32,
-    max_time:       Option<f64>,
-    presolve:       bool,
+    threads: Option<i32>,
+    log_level: i32,
+    max_time: Option<f64>,
+    presolve: bool,
     console_output: bool,
 }
 
@@ -141,15 +145,15 @@ pub struct XpressAdapter {
     integer_vars: HashSet<VarId>,
     semicontinuous_vars: HashSet<VarId>,
 
-    obj_costs:  HashMap<ObjId, HashMap<VarId, f64>>,
+    obj_costs: HashMap<ObjId, HashMap<VarId, f64>>,
     obj_senses: HashMap<ObjId, Sense>,
     active_obj: Option<ObjId>,
 
-    status:          SolverStatus,
-    solution:        Option<HashMap<VarId, f64>>,
+    status: SolverStatus,
+    solution: Option<HashMap<VarId, f64>>,
     objective_value: Option<f64>,
-    duals:           Option<HashMap<ConId, f64>>,
-    reduced_costs:   Option<HashMap<VarId, f64>>,
+    duals: Option<HashMap<ConId, f64>>,
+    reduced_costs: Option<HashMap<VarId, f64>>,
 
     /// LP algorithm override for the next solve. Cleared after each solve.
     next_lp_algorithm: Option<LpAlgorithm>,
@@ -163,9 +167,16 @@ unsafe impl Send for XpressAdapter {}
 fn make_prob(opts: &XpressOptions) -> ffi::XPRSprob {
     let mut prob: ffi::XPRSprob = std::ptr::null_mut();
     let ret = unsafe { ffi::XPRScreateprob(&mut prob) };
-    assert!(ret == 0 && !prob.is_null(), "XPRScreateprob failed (code {ret})");
+    assert!(
+        ret == 0 && !prob.is_null(),
+        "XPRScreateprob failed (code {ret})"
+    );
 
-    let output_level: i32 = if opts.console_output { 1 } else { opts.log_level };
+    let output_level: i32 = if opts.console_output {
+        1
+    } else {
+        opts.log_level
+    };
     set_int_control(prob, ffi::XPRS_OUTPUTLOG, output_level, "OUTPUTLOG");
     // Keep presolve configurable because disabling it allows incremental
     // LP reoptimization to retain and extend the existing basis.
@@ -200,13 +211,15 @@ fn set_double_control(prob: ffi::XPRSprob, control: i32, value: f64, name: &str)
 
 /// C-callable message callback — forwards Xpress output to stdout.
 unsafe extern "C" fn xpress_msg_cb(
-    _prob:   ffi::XPRSprob,
-    _data:   *mut std::ffi::c_void,
-    msg:     *const std::ffi::c_char,
-    msglen:  std::ffi::c_int,
+    _prob: ffi::XPRSprob,
+    _data: *mut std::ffi::c_void,
+    msg: *const std::ffi::c_char,
+    msglen: std::ffi::c_int,
     _msgtype: std::ffi::c_int,
 ) {
-    if msg.is_null() || msglen <= 0 { return; }
+    if msg.is_null() || msglen <= 0 {
+        return;
+    }
     let bytes = unsafe { std::slice::from_raw_parts(msg as *const u8, msglen as usize) };
     if let Ok(s) = std::str::from_utf8(bytes) {
         use std::io::Write;
@@ -224,7 +237,11 @@ fn xprs_err(msg: impl Into<String>) -> SolverError {
 }
 
 fn check(ret: ffi::XprsRes, op: &str) -> Result<(), SolverError> {
-    if ret == 0 { Ok(()) } else { Err(xprs_err(format!("{op} returned {ret}"))) }
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(xprs_err(format!("{op} returned {ret}")))
+    }
 }
 
 // ── impl XpressAdapter ─────────────────────────────────────────────────────
@@ -240,20 +257,20 @@ impl XpressAdapter {
         Self {
             prob,
             opts,
-            col_map:         IndexMap::new(),
-            row_map:         IndexMap::new(),
-            var_bounds:      HashMap::new(),
-            con_bounds:      HashMap::new(),
-            integer_vars:    HashSet::new(),
+            col_map: IndexMap::new(),
+            row_map: IndexMap::new(),
+            var_bounds: HashMap::new(),
+            con_bounds: HashMap::new(),
+            integer_vars: HashSet::new(),
             semicontinuous_vars: HashSet::new(),
-            obj_costs:       HashMap::new(),
-            obj_senses:      HashMap::new(),
-            active_obj:      None,
-            status:          SolverStatus::NotSolved,
-            solution:        None,
+            obj_costs: HashMap::new(),
+            obj_senses: HashMap::new(),
+            active_obj: None,
+            status: SolverStatus::NotSolved,
+            solution: None,
             objective_value: None,
-            duals:           None,
-            reduced_costs:   None,
+            duals: None,
+            reduced_costs: None,
             next_lp_algorithm: None,
         }
     }
@@ -288,17 +305,15 @@ impl XpressAdapter {
         let costs = self.active_obj.and_then(|obj| self.obj_costs.get(&obj));
         for (var, col) in self.col_map.iter() {
             cols.push(col);
-            values.push(costs.and_then(|entries| entries.get(&var)).copied().unwrap_or(0.0));
+            values.push(
+                costs
+                    .and_then(|entries| entries.get(&var))
+                    .copied()
+                    .unwrap_or(0.0),
+            );
         }
         check(
-            unsafe {
-                ffi::XPRSchgobj(
-                    self.prob,
-                    ncols as i32,
-                    cols.as_ptr(),
-                    values.as_ptr(),
-                )
-            },
+            unsafe { ffi::XPRSchgobj(self.prob, ncols as i32, cols.as_ptr(), values.as_ptr()) },
             "XPRSchgobj (bulk objective reload)",
         )?;
 
@@ -321,7 +336,11 @@ impl XpressAdapter {
 
         for change in changes {
             match change {
-                Change::VariableAdded { var, bounds, var_type } => {
+                Change::VariableAdded {
+                    var,
+                    bounds,
+                    var_type,
+                } => {
                     new_vars.push(*var);
                     new_var_state.insert(*var, (*bounds, *var_type));
                 }
@@ -470,7 +489,9 @@ impl XpressAdapter {
                 | Change::VariableTypeChanged { var, .. }
                     if new_var_set.contains(var) => {}
                 Change::ConstraintBoundsChanged { con, .. } if new_con_set.contains(con) => {}
-                Change::CoefficientAdded { var, target, value, .. } => match target {
+                Change::CoefficientAdded {
+                    var, target, value, ..
+                } => match target {
                     CoefficientTarget::Constraint(con) => {
                         let row = self
                             .row_map
@@ -528,7 +549,10 @@ impl XpressAdapter {
                 "XPRSchgrowtype",
             )?;
             check(ffi::XPRSchgrhs(self.prob, 1, &row_i, &rhs), "XPRSchgrhs")?;
-            check(ffi::XPRSchgrhsrange(self.prob, 1, &row_i, &rng), "XPRSchgrhsrange")?;
+            check(
+                ffi::XPRSchgrhsrange(self.prob, 1, &row_i, &rng),
+                "XPRSchgrhsrange",
+            )?;
         }
         Ok(())
     }
@@ -538,7 +562,11 @@ impl XpressAdapter {
     fn apply_one(&mut self, change: &Change) -> Result<(), SolverError> {
         match change {
             // ── Variable Added ────────────────────────────────────────────
-            Change::VariableAdded { var, bounds, var_type } => {
+            Change::VariableAdded {
+                var,
+                bounds,
+                var_type,
+            } => {
                 let lb = xprs_bound(bounds.lower);
                 let ub = xprs_bound(bounds.upper);
                 let objc = [0.0f64];
@@ -552,12 +580,14 @@ impl XpressAdapter {
                     unsafe {
                         ffi::XPRSaddcols(
                             self.prob,
-                            1, 0,
+                            1,
+                            0,
                             objc.as_ptr(),
                             start.as_ptr(),
                             std::ptr::null(),
                             std::ptr::null(),
-                            &lb, &ub,
+                            &lb,
+                            &ub,
                         )
                     },
                     "XPRSaddcols",
@@ -566,7 +596,11 @@ impl XpressAdapter {
                 self.var_bounds.insert(*var, (bounds.lower, bounds.upper));
 
                 if matches!(var_type, VarType::Integer | VarType::Binary) {
-                    let ct = if *var_type == VarType::Binary { b'B' as i8 } else { b'I' as i8 };
+                    let ct = if *var_type == VarType::Binary {
+                        b'B' as i8
+                    } else {
+                        b'I' as i8
+                    };
                     check(
                         unsafe { ffi::XPRSchgcoltype(self.prob, 1, &col_idx, &ct) },
                         "XPRSchgcoltype",
@@ -579,7 +613,7 @@ impl XpressAdapter {
             Change::VariableRemoved { var } => {
                 let col = match self.col_map.remove(*var) {
                     Some(c) => c,
-                    None    => return Ok(()),
+                    None => return Ok(()),
                 };
                 self.var_bounds.remove(var);
                 self.integer_vars.remove(var);
@@ -598,11 +632,19 @@ impl XpressAdapter {
                 if let Some(col) = self.col_map.get(*var) {
                     let lb = xprs_bound(new.lower);
                     let ub = xprs_bound(new.upper);
-                    let cols  = [col, col];
+                    let cols = [col, col];
                     let types = [b'L' as i8, b'U' as i8];
-                    let vals  = [lb, ub];
+                    let vals = [lb, ub];
                     check(
-                        unsafe { ffi::XPRSchgbounds(self.prob, 2, cols.as_ptr(), types.as_ptr(), vals.as_ptr()) },
+                        unsafe {
+                            ffi::XPRSchgbounds(
+                                self.prob,
+                                2,
+                                cols.as_ptr(),
+                                types.as_ptr(),
+                                vals.as_ptr(),
+                            )
+                        },
                         "XPRSchgbounds (var bounds)",
                     )?;
                     self.var_bounds.insert(*var, (new.lower, new.upper));
@@ -615,15 +657,28 @@ impl XpressAdapter {
                     let ct = if self.semicontinuous_vars.contains(var) {
                         // Semi-continuous + integer → 'R'
                         match new {
-                            VarType::Continuous => { self.integer_vars.remove(var); }
-                            _ => { self.integer_vars.insert(*var); }
+                            VarType::Continuous => {
+                                self.integer_vars.remove(var);
+                            }
+                            _ => {
+                                self.integer_vars.insert(*var);
+                            }
                         }
                         b'R' as i8
                     } else {
                         match new {
-                            VarType::Continuous => { self.integer_vars.remove(var); b'C' as i8 }
-                            VarType::Integer    => { self.integer_vars.insert(*var); b'I' as i8 }
-                            VarType::Binary     => { self.integer_vars.insert(*var); b'B' as i8 }
+                            VarType::Continuous => {
+                                self.integer_vars.remove(var);
+                                b'C' as i8
+                            }
+                            VarType::Integer => {
+                                self.integer_vars.insert(*var);
+                                b'I' as i8
+                            }
+                            VarType::Binary => {
+                                self.integer_vars.insert(*var);
+                                b'B' as i8
+                            }
                         }
                     };
                     check(
@@ -638,9 +693,9 @@ impl XpressAdapter {
                 if let Some(col) = self.col_map.get(*var) {
                     self.semicontinuous_vars.insert(*var);
                     let ct = if self.integer_vars.contains(var) {
-                        b'R' as i8  // SC + integer
+                        b'R' as i8 // SC + integer
                     } else {
-                        b'S' as i8  // SC + continuous
+                        b'S' as i8 // SC + continuous
                     };
                     check(
                         unsafe { ffi::XPRSchgcoltype(self.prob, 1, &col, &ct) },
@@ -653,16 +708,28 @@ impl XpressAdapter {
             Change::VariableActivityChanged { var, active } => {
                 if let Some(col) = self.col_map.get(*var) {
                     let (lb, ub) = if *active {
-                        let (orig_lb, orig_ub) = self.var_bounds.get(var).copied().unwrap_or((0.0, ffi::XPRS_PLUSINFINITY));
+                        let (orig_lb, orig_ub) = self
+                            .var_bounds
+                            .get(var)
+                            .copied()
+                            .unwrap_or((0.0, ffi::XPRS_PLUSINFINITY));
                         (xprs_bound(orig_lb), xprs_bound(orig_ub))
                     } else {
                         (0.0, 0.0)
                     };
-                    let cols  = [col, col];
+                    let cols = [col, col];
                     let types = [b'L' as i8, b'U' as i8];
-                    let vals  = [lb, ub];
+                    let vals = [lb, ub];
                     check(
-                        unsafe { ffi::XPRSchgbounds(self.prob, 2, cols.as_ptr(), types.as_ptr(), vals.as_ptr()) },
+                        unsafe {
+                            ffi::XPRSchgbounds(
+                                self.prob,
+                                2,
+                                cols.as_ptr(),
+                                types.as_ptr(),
+                                vals.as_ptr(),
+                            )
+                        },
                         "XPRSchgbounds (activity)",
                     )?;
                 }
@@ -681,9 +748,11 @@ impl XpressAdapter {
                     unsafe {
                         ffi::XPRSaddrows(
                             self.prob,
-                            1, 0,
+                            1,
+                            0,
                             &(rt as i8),
-                            &rhs, &rng,
+                            &rhs,
+                            &rng,
                             start.as_ptr(),
                             std::ptr::null(),
                             std::ptr::null(),
@@ -699,7 +768,7 @@ impl XpressAdapter {
             Change::ConstraintRemoved { con } => {
                 let row = match self.row_map.remove(*con) {
                     Some(r) => r,
-                    None    => return Ok(()),
+                    None => return Ok(()),
                 };
                 self.con_bounds.remove(con);
                 check(
@@ -721,7 +790,8 @@ impl XpressAdapter {
             Change::ConstraintActivityChanged { con, active } => {
                 if let Some(row) = self.row_map.get(*con) {
                     if *active {
-                        let (orig_lb, orig_ub) = self.con_bounds
+                        let (orig_lb, orig_ub) = self
+                            .con_bounds
                             .get(con)
                             .copied()
                             .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
@@ -736,90 +806,85 @@ impl XpressAdapter {
             }
 
             // ── Coefficient Added ──────────────────────────────────────────
-            Change::CoefficientAdded { var, target, value, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
+            Change::CoefficientAdded {
+                var, target, value, ..
+            } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        check(
+                            unsafe { ffi::XPRSchgcoef(self.prob, row, col, *value) },
+                            "XPRSchgcoef (add)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    self.obj_costs.entry(*obj).or_default().insert(*var, *value);
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
                             check(
-                                unsafe { ffi::XPRSchgcoef(self.prob, row, col, *value) },
-                                "XPRSchgcoef (add)",
+                                unsafe { ffi::XPRSchgobj(self.prob, 1, &col, value) },
+                                "XPRSchgobj (coeff add)",
                             )?;
                         }
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        self.obj_costs.entry(*obj).or_default().insert(*var, *value);
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                check(
-                                    unsafe { ffi::XPRSchgobj(self.prob, 1, &col, value) },
-                                    "XPRSchgobj (coeff add)",
-                                )?;
-                            }
-                        }
-                    }
                 }
-            }
+            },
 
             // ── Coefficient Removed ────────────────────────────────────────
-            Change::CoefficientRemoved { var, target, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
+            Change::CoefficientRemoved { var, target, .. } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        check(
+                            unsafe { ffi::XPRSchgcoef(self.prob, row, col, 0.0) },
+                            "XPRSchgcoef (remove)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if let Some(costs) = self.obj_costs.get_mut(obj) {
+                        costs.remove(var);
+                    }
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
+                            let zero = 0.0f64;
                             check(
-                                unsafe { ffi::XPRSchgcoef(self.prob, row, col, 0.0) },
-                                "XPRSchgcoef (remove)",
+                                unsafe { ffi::XPRSchgobj(self.prob, 1, &col, &zero) },
+                                "XPRSchgobj (coeff remove)",
                             )?;
                         }
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        if let Some(costs) = self.obj_costs.get_mut(obj) {
-                            costs.remove(var);
-                        }
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                let zero = 0.0f64;
-                                check(
-                                    unsafe { ffi::XPRSchgobj(self.prob, 1, &col, &zero) },
-                                    "XPRSchgobj (coeff remove)",
-                                )?;
-                            }
-                        }
-                    }
                 }
-            }
+            },
 
             // ── Coefficient Value Changed ──────────────────────────────────
-            Change::CoefficientValueChanged { var, target, new, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
+            Change::CoefficientValueChanged {
+                var, target, new, ..
+            } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        check(
+                            unsafe { ffi::XPRSchgcoef(self.prob, row, col, *new) },
+                            "XPRSchgcoef (update)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if let Some(costs) = self.obj_costs.get_mut(obj) {
+                        costs.insert(*var, *new);
+                    }
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
                             check(
-                                unsafe { ffi::XPRSchgcoef(self.prob, row, col, *new) },
-                                "XPRSchgcoef (update)",
+                                unsafe { ffi::XPRSchgobj(self.prob, 1, &col, new) },
+                                "XPRSchgobj (coeff update)",
                             )?;
                         }
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        if let Some(costs) = self.obj_costs.get_mut(obj) {
-                            costs.insert(*var, *new);
-                        }
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                check(
-                                    unsafe { ffi::XPRSchgobj(self.prob, 1, &col, new) },
-                                    "XPRSchgobj (coeff update)",
-                                )?;
-                            }
-                        }
-                    }
                 }
-            }
+            },
 
             // ── Objective Added ────────────────────────────────────────────
             Change::ObjectiveAdded { obj, sense } => {
@@ -856,8 +921,8 @@ impl XpressAdapter {
                     n
                 };
                 if ncols > 0 {
-                    let cols:   Vec<i32> = (0..ncols).collect();
-                    let zeros:  Vec<f64> = vec![0.0; ncols as usize];
+                    let cols: Vec<i32> = (0..ncols).collect();
+                    let zeros: Vec<f64> = vec![0.0; ncols as usize];
                     check(
                         unsafe { ffi::XPRSchgobj(self.prob, ncols, cols.as_ptr(), zeros.as_ptr()) },
                         "XPRSchgobj (zero for obj switch)",
@@ -957,23 +1022,30 @@ impl SolverAdapter for XpressAdapter {
                 };
 
                 let ncoefs = cols.len() as i32;
-                let start  = [0i32];
+                let start = [0i32];
                 let ret = if cols.is_empty() {
                     unsafe {
                         ffi::XPRSaddrows(
                             self.prob,
-                            1, 0,
-                            &(rt as i8), &rhs, &rng,
+                            1,
+                            0,
+                            &(rt as i8),
+                            &rhs,
+                            &rng,
                             start.as_ptr(),
-                            std::ptr::null(), std::ptr::null(),
+                            std::ptr::null(),
+                            std::ptr::null(),
                         )
                     }
                 } else {
                     unsafe {
                         ffi::XPRSaddrows(
                             self.prob,
-                            1, ncoefs,
-                            &(rt as i8), &rhs, &rng,
+                            1,
+                            ncoefs,
+                            &(rt as i8),
+                            &rhs,
+                            &rng,
                             start.as_ptr(),
                             cols.as_ptr(),
                             vals.as_ptr(),
@@ -1002,10 +1074,10 @@ impl SolverAdapter for XpressAdapter {
     fn solve(&mut self) -> Result<SolverStatus, SolverError> {
         // Xpress can preserve and extend the basis between sequential LP solves
         // when callers explicitly disable presolve.
-        self.solution        = None;
+        self.solution = None;
         self.objective_value = None;
-        self.duals           = None;
-        self.reduced_costs   = None;
+        self.duals = None;
+        self.reduced_costs = None;
 
         self.next_lp_algorithm = None;
         let flags = CString::new("").unwrap();
@@ -1024,8 +1096,8 @@ impl SolverAdapter for XpressAdapter {
             let mut mip_status = 0i32;
             unsafe { ffi::XPRSgetintattrib(self.prob, ffi::XPRS_MIPSTATUS, &mut mip_status) };
             match mip_status {
-                ffi::MIP_OPTIMAL  => SolverStatus::Optimal,
-                ffi::MIP_INFEAS   => SolverStatus::Infeasible,
+                ffi::MIP_OPTIMAL => SolverStatus::Optimal,
+                ffi::MIP_INFEAS => SolverStatus::Infeasible,
                 ffi::MIP_UNBOUNDED => SolverStatus::Unbounded,
                 _ => SolverStatus::Error,
             }
@@ -1033,8 +1105,8 @@ impl SolverAdapter for XpressAdapter {
             let mut lp_status = 0i32;
             unsafe { ffi::XPRSgetintattrib(self.prob, ffi::XPRS_LPSTATUS, &mut lp_status) };
             match lp_status {
-                ffi::LP_OPTIMAL   => SolverStatus::Optimal,
-                ffi::LP_INFEAS    => SolverStatus::Infeasible,
+                ffi::LP_OPTIMAL => SolverStatus::Optimal,
+                ffi::LP_INFEAS => SolverStatus::Infeasible,
                 ffi::LP_UNBOUNDED => SolverStatus::Unbounded,
                 _ => SolverStatus::Error,
             }
@@ -1053,18 +1125,12 @@ impl SolverAdapter for XpressAdapter {
                 n as usize
             };
 
-            let mut x     = vec![0.0f64; ncols];
+            let mut x = vec![0.0f64; ncols];
             let mut duals = vec![0.0f64; nrows];
-            let mut djs   = vec![0.0f64; ncols];
+            let mut djs = vec![0.0f64; ncols];
 
             if self.is_mip() {
-                unsafe {
-                    ffi::XPRSgetmipsol(
-                        self.prob,
-                        x.as_mut_ptr(),
-                        std::ptr::null_mut(),
-                    )
-                };
+                unsafe { ffi::XPRSgetmipsol(self.prob, x.as_mut_ptr(), std::ptr::null_mut()) };
 
                 let mut obj_val = 0.0f64;
                 unsafe { ffi::XPRSgetdblattrib(self.prob, ffi::XPRS_MIPOBJVAL, &mut obj_val) };
@@ -1136,25 +1202,27 @@ impl SolverAdapter for XpressAdapter {
         }
         self.prob = make_prob(&self.opts);
 
-        self.col_map         = IndexMap::new();
-        self.row_map         = IndexMap::new();
-        self.var_bounds      = HashMap::new();
-        self.con_bounds      = HashMap::new();
-        self.integer_vars    = HashSet::new();
-        self.obj_costs       = HashMap::new();
-        self.obj_senses      = HashMap::new();
-        self.active_obj      = None;
-        self.status          = SolverStatus::NotSolved;
-        self.solution        = None;
+        self.col_map = IndexMap::new();
+        self.row_map = IndexMap::new();
+        self.var_bounds = HashMap::new();
+        self.con_bounds = HashMap::new();
+        self.integer_vars = HashSet::new();
+        self.obj_costs = HashMap::new();
+        self.obj_senses = HashMap::new();
+        self.active_obj = None;
+        self.status = SolverStatus::NotSolved;
+        self.solution = None;
         self.objective_value = None;
-        self.duals           = None;
-        self.reduced_costs   = None;
+        self.duals = None;
+        self.reduced_costs = None;
     }
 
     fn set_console_output(&mut self, enabled: bool) -> Result<(), SolverError> {
         self.opts.console_output = enabled;
         let level: i32 = if enabled { 1 } else { 0 };
-        unsafe { ffi::XPRSsetintcontrol(self.prob, ffi::XPRS_OUTPUTLOG, level); }
+        unsafe {
+            ffi::XPRSsetintcontrol(self.prob, ffi::XPRS_OUTPUTLOG, level);
+        }
         Ok(())
     }
 

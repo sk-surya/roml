@@ -7,30 +7,36 @@
 //! - Change tracking for incremental solver updates
 //! - Transaction-based parameter batching
 
-pub mod variable;
+pub mod changelog;
+pub mod coefficient;
 pub mod constraint;
 pub mod objective;
 pub mod parameter;
-pub mod coefficient;
-pub mod changelog;
 pub mod transaction;
+pub mod validation;
+pub mod variable;
 
-pub use variable::{Bounds, VarType, VariableData, VariableStore};
-pub use constraint::{ConstraintBounds, ConstraintData, ConstraintStore};
-pub use objective::{ObjectiveData, ObjectiveStore, Sense};
-pub use parameter::{ParameterData, ParameterStore};
-pub use coefficient::{CoefficientData, CoefficientIndex, CoefficientTarget};
-pub use changelog::{Change, ChangeLog};
-pub use transaction::Transaction;
+pub use changelog::Change;
+pub(crate) use changelog::ChangeLog;
+pub(crate) use coefficient::CoefficientData;
+pub(crate) use coefficient::CoefficientIndex;
+pub use coefficient::CoefficientTarget;
+pub use constraint::ConstraintBounds;
+pub(crate) use constraint::ConstraintStore;
+pub(crate) use objective::ObjectiveStore;
+pub use objective::Sense;
+pub(crate) use parameter::ParameterStore;
+pub(crate) use transaction::Transaction;
+pub(crate) use variable::VariableStore;
+pub use variable::{Bounds, VarType};
 
+use crate::expr::{LinExpr, TermCoeff};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
+use crate::solution::Solution;
 use crate::solver::SolveOptions;
 use crate::value_expr::ValueExpr;
-use crate::expr::{LinExpr, TermCoeff};
-use crate::solution::Solution;
 
 use log::warn;
-
 
 /// Error type for model operations.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,6 +53,10 @@ pub enum ModelError {
     CoefficientNotFound(CoeffId),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
+    /// A numeric value was not finite (NaN or infinite).
+    NonFiniteValue(&'static str),
+    /// A value was NaN.
+    NaNValue(&'static str),
 }
 
 impl std::fmt::Display for ModelError {
@@ -58,6 +68,8 @@ impl std::fmt::Display for ModelError {
             Self::ParameterNotFound(id) => write!(f, "Parameter not found: {:?}", id),
             Self::CoefficientNotFound(id) => write!(f, "Coefficient not found: {:?}", id),
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
+            Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
+            Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
         }
     }
 }
@@ -121,7 +133,9 @@ pub struct ModelConstants {
 impl Default for ModelConstants {
     fn default() -> Self {
         // default tolerance is a small epsilon used in slack/violation checks.
-        Self { feasibility_tolerance: 1e-9 }
+        Self {
+            feasibility_tolerance: 1e-9,
+        }
     }
 }
 
@@ -132,14 +146,9 @@ impl ModelConstants {
 
     /// Helper to build a constants struct with a custom tolerance.
     pub fn set_feas_tol(feasibility_tolerance: f64) -> Self {
-        Self { feasibility_tolerance }
-    }
-
-    // NOTE: we keep the inherent `default` method for backward compatibility,
-    // but the `Default` trait impl above is the one used when models are
-    // constructed via `Model::default()`.
-    pub fn default() -> Self {
-        Self::default()
+        Self {
+            feasibility_tolerance,
+        }
     }
 }
 
@@ -209,25 +218,32 @@ impl Model {
 
     /// Set variable bounds.
     pub fn set_variable_bounds(&mut self, var: VarId, bounds: Bounds) -> Result<(), ModelError> {
-        let data = self.variables.get_mut(var).ok_or(ModelError::VariableNotFound(var))?;
+        let data = self
+            .variables
+            .get_mut(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
         let old = data.bounds;
         if old != bounds {
             data.bounds = bounds;
-            self.changelog.push(
-                Change::VariableBoundsChanged { var, old, new: bounds }
-            );
+            self.changelog.push(Change::VariableBoundsChanged {
+                var,
+                old,
+                new: bounds,
+            });
         }
         Ok(())
     }
 
     /// Set variable activity.
     pub fn set_variable_active(&mut self, var: VarId, active: bool) -> Result<(), ModelError> {
-        let data = self.variables.get_mut(var).ok_or(ModelError::VariableNotFound(var))?;
+        let data = self
+            .variables
+            .get_mut(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
         if data.active != active {
             data.active = active;
-            self.changelog.push(
-                Change::VariableActivityChanged { var, active }
-            );
+            self.changelog
+                .push(Change::VariableActivityChanged { var, active });
         }
         Ok(())
     }
@@ -244,13 +260,16 @@ impl Model {
         let old = data.var_type;
         if old != var_type {
             data.var_type = var_type;
-            self.changelog
-                .push(Change::VariableTypeChanged { var, old, new: var_type });
+            self.changelog.push(Change::VariableTypeChanged {
+                var,
+                old,
+                new: var_type,
+            });
         }
         Ok(())
     }
 
-    /// Convenience: set variable to binary [0,1].
+    /// Convenience: set variable to binary `[0,1]`.
     pub fn set_binary(&mut self, var: VarId) -> Result<(), ModelError> {
         self.set_variable_type(var, VarType::Binary)?;
         self.set_variable_bounds(var, Bounds::new(0.0, 1.0))?;
@@ -295,11 +314,12 @@ impl Model {
     }
 
     // ========== Constraint Operations ==========
-    
+
     /// Add a new constraint with the given bounds.
     pub fn add_constraint(&mut self, bounds: ConstraintBounds) -> ConId {
         let id = self.constraints.add(bounds);
-        self.changelog.push(Change::ConstraintAdded { con: id, bounds });
+        self.changelog
+            .push(Change::ConstraintAdded { con: id, bounds });
         id
     }
 
@@ -321,25 +341,38 @@ impl Model {
     }
 
     /// Set constraint bounds.
-    pub fn set_constraint_bounds(&mut self, con: ConId, bounds: ConstraintBounds) -> Result<(), ModelError> {
-        let data = self.constraints.get_mut(con).ok_or(ModelError::ConstraintNotFound(con))?;
+    pub fn set_constraint_bounds(
+        &mut self,
+        con: ConId,
+        bounds: ConstraintBounds,
+    ) -> Result<(), ModelError> {
+        let data = self
+            .constraints
+            .get_mut(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?;
         let old = data.bounds;
         if old != bounds {
             data.bounds = bounds;
-            self.changelog.push(Change::ConstraintBoundsChanged { con, old, new: bounds });
+            self.changelog.push(Change::ConstraintBoundsChanged {
+                con,
+                old,
+                new: bounds,
+            });
         }
         Ok(())
     }
 
     /// Set constraint activity.
     pub fn set_constraint_active(&mut self, con: ConId, active: bool) -> Result<(), ModelError> {
-        let data = self.constraints.get_mut(con).ok_or(ModelError::ConstraintNotFound(con))?;
+        let data = self
+            .constraints
+            .get_mut(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?;
         let old = data.active;
         if old != active {
             data.active = active;
-            self.changelog.push(
-                Change::ConstraintActivityChanged { con, active }
-            );
+            self.changelog
+                .push(Change::ConstraintActivityChanged { con, active });
         }
         Ok(())
     }
@@ -354,7 +387,8 @@ impl Model {
     /// Add a new objective with the given sense.
     pub fn add_objective(&mut self, sense: Sense) -> ObjId {
         let id = self.objectives.add(sense);
-        self.changelog.push(Change::ObjectiveAdded { obj: id, sense });
+        self.changelog
+            .push(Change::ObjectiveAdded { obj: id, sense });
         id
     }
 
@@ -383,7 +417,10 @@ impl Model {
         let old = self.objectives.active();
         if old != Some(obj) {
             self.objectives.set_active(obj);
-            self.changelog.push(Change::ActiveObjectiveChanged { old, new: Some(obj) });
+            self.changelog.push(Change::ActiveObjectiveChanged {
+                old,
+                new: Some(obj),
+            });
         }
         Ok(())
     }
@@ -393,7 +430,8 @@ impl Model {
         let old = self.objectives.active();
         if old.is_some() {
             self.objectives.clear_active();
-            self.changelog.push(Change::ActiveObjectiveChanged { old, new: None });
+            self.changelog
+                .push(Change::ActiveObjectiveChanged { old, new: None });
         }
     }
 
@@ -409,7 +447,8 @@ impl Model {
 
     /// Get the constant offset for the active objective.
     pub fn active_objective_constant(&self) -> Option<f64> {
-        self.active_objective().and_then(|obj| self.objective_constant(obj))
+        self.active_objective()
+            .and_then(|obj| self.objective_constant(obj))
     }
 
     /// Get the number of objectives.
@@ -420,7 +459,15 @@ impl Model {
     // ========== Parameter Operations ==========
 
     /// Add a new parameter with the given initial value.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `value` is not finite.
     pub fn add_parameter(&mut self, value: f64) -> ParamId {
+        debug_assert!(
+            value.is_finite(),
+            "parameter value must be finite, got {value}"
+        );
         self.parameters.add(value)
     }
 
@@ -432,7 +479,15 @@ impl Model {
     /// Queue a parameter change in the current transaction.
     ///
     /// The change is not applied until `commit()` is called.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `value` is not finite.
     pub fn set_parameter(&mut self, param: ParamId, value: f64) {
+        debug_assert!(
+            value.is_finite(),
+            "parameter value must be finite, got {value}"
+        );
         self.transaction.set_param(param, value);
     }
 
@@ -507,6 +562,10 @@ impl Model {
     // ========== Coefficient Operations ==========
 
     /// Add a coefficient to a constraint.
+    ///
+    /// If a coefficient already exists for this (constraint, variable) pair,
+    /// the expressions are algebraically combined and the existing coefficient
+    /// is updated in place. The returned `CoeffId` will be the existing ID.
     pub fn add_constraint_coefficient<E>(
         &mut self,
         con: ConId,
@@ -526,19 +585,51 @@ impl Model {
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Constraint(con);
         let initial_value = value_expr.eval(self.parameters.as_lookup());
-        let id = self.coefficients.add(var, target, value_expr, initial_value);
 
-        self.changelog.push(Change::CoefficientAdded {
-            coeff: id,
-            var,
-            target,
-            value: initial_value,
-        });
+        // Check if this cell already exists (for correct changelog event)
+        let existing = self.coefficients.for_cell(target, var);
+        let old_value = existing
+            .and_then(|id| self.coefficients.get(id))
+            .map(|d| d.cached_value);
+
+        let id = self
+            .coefficients
+            .add(var, target, value_expr, initial_value);
+
+        if let Some(old) = old_value {
+            // Combined with existing cell — emit value change
+            let new_value = self
+                .coefficients
+                .get(id)
+                .map(|d| d.cached_value)
+                .unwrap_or(initial_value);
+            if (old - new_value).abs() >= f64::EPSILON {
+                self.changelog.push(Change::CoefficientValueChanged {
+                    coeff: id,
+                    var,
+                    target,
+                    old,
+                    new: new_value,
+                });
+            }
+        } else {
+            // New cell
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value: initial_value,
+            });
+        }
 
         Ok(id)
     }
 
     /// Add a coefficient to an objective.
+    ///
+    /// If a coefficient already exists for this (objective, variable) pair,
+    /// the expressions are algebraically combined and the existing coefficient
+    /// is updated in place.
     pub fn add_objective_coefficient<E>(
         &mut self,
         obj: ObjId,
@@ -558,14 +649,40 @@ impl Model {
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Objective(obj);
         let initial_value = value_expr.eval(self.parameters.as_lookup());
-        let id = self.coefficients.add(var, target, value_expr, initial_value);
 
-        self.changelog.push(Change::CoefficientAdded {
-            coeff: id,
-            var,
-            target,
-            value: initial_value,
-        });
+        // Check if this cell already exists
+        let existing = self.coefficients.for_cell(target, var);
+        let old_value = existing
+            .and_then(|id| self.coefficients.get(id))
+            .map(|d| d.cached_value);
+
+        let id = self
+            .coefficients
+            .add(var, target, value_expr, initial_value);
+
+        if let Some(old) = old_value {
+            let new_value = self
+                .coefficients
+                .get(id)
+                .map(|d| d.cached_value)
+                .unwrap_or(initial_value);
+            if (old - new_value).abs() >= f64::EPSILON {
+                self.changelog.push(Change::CoefficientValueChanged {
+                    coeff: id,
+                    var,
+                    target,
+                    old,
+                    new: new_value,
+                });
+            }
+        } else {
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value: initial_value,
+            });
+        }
 
         Ok(id)
     }
@@ -576,7 +693,12 @@ impl Model {
     }
 
     /// Add a constant coefficient to an objective.
-    pub fn add_objective_coeff(&mut self, obj: ObjId, var: VarId, value: f64) -> Result<CoeffId, ModelError> {
+    pub fn add_objective_coeff(
+        &mut self,
+        obj: ObjId,
+        var: VarId,
+        value: f64,
+    ) -> Result<CoeffId, ModelError> {
         self.add_objective_coefficient(obj, var, value)
     }
 
@@ -611,7 +733,7 @@ impl Model {
     }
 
     // ========== Changelog Operations ==========
-    
+
     /// Check if there are pending changes for the solver.
     pub fn has_pending_changes(&self) -> bool {
         !self.changelog.is_empty()
@@ -633,6 +755,130 @@ impl Model {
     /// Get the changelog sequence number.
     pub fn changelog_sequence(&self) -> u64 {
         self.changelog.sequence()
+    }
+
+    /// Validate all model invariants. Returns a list of violations.
+    ///
+    /// This is a debug/test helper. It checks:
+    /// - Every coefficient cell references live variables, constraints, objectives
+    /// - Every reverse index (by_var, by_constraint, by_objective, by_param) is
+    ///   consistent with forward storage
+    /// - No more than one objective is active
+    /// - Cached coefficient values match fresh expression evaluation
+    /// - No duplicate cell keys
+    ///
+    /// Returns `Ok(())` if all invariants hold, or `Err(violations)` with
+    /// human-readable descriptions of each violated invariant.
+    pub fn validate_invariants(&self) -> Result<(), Vec<String>> {
+        let mut violations: Vec<String> = Vec::new();
+        let lookup = self.parameters.as_lookup();
+
+        // 1. At most one active objective
+        let active_count = self.objectives.active_count();
+        if active_count > 1 {
+            violations.push(format!("multiple active objectives: {active_count}"));
+        }
+
+        // 2. Every coefficient references live entities
+        for (coeff_id, data) in self.coefficients.iter() {
+            if !self.variables.contains(data.var) {
+                violations.push(format!(
+                    "coefficient {coeff_id:?} references dead variable {:?}",
+                    data.var
+                ));
+            }
+            match data.target {
+                CoefficientTarget::Constraint(con) => {
+                    if !self.constraints.contains(con) {
+                        violations.push(format!(
+                            "coefficient {coeff_id:?} references dead constraint {con:?}"
+                        ));
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if !self.objectives.contains(obj) {
+                        violations.push(format!(
+                            "coefficient {coeff_id:?} references dead objective {obj:?}"
+                        ));
+                    }
+                }
+            }
+
+            // 3. Cached value matches fresh evaluation
+            let fresh = data.value_expr.eval(&lookup);
+            if (data.cached_value - fresh).abs() > self.constants.feasibility_tolerance {
+                violations.push(format!(
+                    "coefficient {coeff_id:?} cached value {} != fresh eval {fresh}",
+                    data.cached_value
+                ));
+            }
+        }
+
+        // 4. by_var index consistency
+        for (var_id, coeff_set) in self.coefficients.by_var_iter() {
+            if !self.variables.contains(*var_id) {
+                violations.push(format!("by_var index references dead variable {var_id:?}"));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!(
+                        "by_var index has dead coefficient {coeff_id:?} for var {var_id:?}"
+                    ));
+                }
+            }
+        }
+
+        // 5. by_constraint index consistency
+        for (con_id, coeff_set) in self.coefficients.by_constraint_iter() {
+            if !self.constraints.contains(*con_id) {
+                violations.push(format!(
+                    "by_constraint index references dead constraint {con_id:?}"
+                ));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!(
+                        "by_constraint index has dead coefficient {coeff_id:?}"
+                    ));
+                }
+            }
+        }
+
+        // 6. by_objective index consistency
+        for (obj_id, coeff_set) in self.coefficients.by_objective_iter() {
+            if !self.objectives.contains(*obj_id) {
+                violations.push(format!(
+                    "by_objective index references dead objective {obj_id:?}"
+                ));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!(
+                        "by_objective index has dead coefficient {coeff_id:?}"
+                    ));
+                }
+            }
+        }
+
+        // 7. by_param index consistency
+        for (param_id, coeff_set) in self.coefficients.by_param_iter() {
+            if !self.parameters.contains(*param_id) {
+                violations.push(format!(
+                    "by_param index references dead parameter {param_id:?}"
+                ));
+            }
+            for &coeff_id in coeff_set {
+                if !self.coefficients.contains(coeff_id) {
+                    violations.push(format!("by_param index has dead coefficient {coeff_id:?}"));
+                }
+            }
+        }
+
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations)
+        }
     }
 }
 
@@ -700,7 +946,11 @@ fn format_lin_expr(expr: &LinExpr) -> String {
         }
     }
 
-    if out.is_empty() { "0".to_string() } else { out }
+    if out.is_empty() {
+        "0".to_string()
+    } else {
+        out
+    }
 }
 
 // ── Model introspection methods ─────────────────────────────────────────────
@@ -730,7 +980,12 @@ impl Model {
                 VarType::Binary => "Binary",
             };
             let inactive = if !data.active { " [inactive]" } else { "" };
-            writeln!(out, "    x[{}]: [{lb}, {ub}] {type_s}{inactive}", id.index()).unwrap();
+            writeln!(
+                out,
+                "    x[{}]: [{lb}, {ub}] {type_s}{inactive}",
+                id.index()
+            )
+            .unwrap();
         }
 
         // Parameters
@@ -753,7 +1008,12 @@ impl Model {
                 .constraint_expression(*id)
                 .map(|e| format_lin_expr(&e))
                 .unwrap_or_else(|_| "?".to_string());
-            writeln!(out, "    c[{}]: {lb} <= {expr_s} <= {ub}{inactive}", id.index()).unwrap();
+            writeln!(
+                out,
+                "    c[{}]: {lb} <= {expr_s} <= {ub}{inactive}",
+                id.index()
+            )
+            .unwrap();
         }
 
         // Objectives
@@ -806,7 +1066,9 @@ impl Model {
     ) -> impl Iterator<Item = (ConId, f64, f64)> + 'a {
         self.constraints.iter_active().filter_map(move |(con, _)| {
             let (lower_slack, upper_slack) = self.constraint_slack(con, solution).ok()?;
-            if lower_slack < -self.constants.feasibility_tolerance || upper_slack < -self.constants.feasibility_tolerance {
+            if lower_slack < -self.constants.feasibility_tolerance
+                || upper_slack < -self.constants.feasibility_tolerance
+            {
                 Some((con, lower_slack, upper_slack))
             } else {
                 None
@@ -845,16 +1107,9 @@ mod tests {
     // helper to initialize logging once per test run. we ignore the result in
     // case the user hasn't provided a config file; most unit tests don't care
     // about logs but they should compile/link when the function exists.
-    fn init_test_logging() {
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            let _ = crate::init_logging();
-        });
-    }
 
     #[test]
     fn basic_model_operations() {
-        init_test_logging();
         let mut model = Model::new();
 
         // Add variables
@@ -868,7 +1123,9 @@ mod tests {
         // model.add_coeff(c, x, 2.0).unwrap();
         // model.add_coeff(c, y, 3.0).unwrap();
 
-        let _c = model.add_constraint_expr(2.0 * x + 3.0 * y, ConstraintBounds::le(100.0)).unwrap();
+        let _c = model
+            .add_constraint_expr(2.0 * x + 3.0 * y, ConstraintBounds::le(100.0))
+            .unwrap();
 
         assert_eq!(model.num_variables(), 2);
         assert_eq!(model.num_constraints(), 1);
@@ -877,7 +1134,6 @@ mod tests {
 
     #[test]
     fn parameter_propagation() {
-        init_test_logging();
         let mut model = Model::new();
 
         let p = model.add_parameter(10.0);
@@ -906,7 +1162,6 @@ mod tests {
 
     #[test]
     fn coefficient_api_accepts_constants_and_parameters_symmetrically() {
-        init_test_logging();
         let mut model = Model::new();
 
         let p = model.add_parameter(2.5);
@@ -919,14 +1174,22 @@ mod tests {
         let objective_coeff = model.add_objective_coefficient(obj, x, 1.5).unwrap();
         let objective_shorthand = model.add_objective_coeff(obj, y, 3.0).unwrap();
 
-        assert_eq!(model.coefficient(constraint_coeff).unwrap().cached_value, 2.5);
-        assert_eq!(model.coefficient(objective_coeff).unwrap().cached_value, 1.5);
-        assert_eq!(model.coefficient(objective_shorthand).unwrap().cached_value, 3.0);
+        assert_eq!(
+            model.coefficient(constraint_coeff).unwrap().cached_value,
+            2.5
+        );
+        assert_eq!(
+            model.coefficient(objective_coeff).unwrap().cached_value,
+            1.5
+        );
+        assert_eq!(
+            model.coefficient(objective_shorthand).unwrap().cached_value,
+            3.0
+        );
     }
 
     #[test]
     fn transaction_batching() {
-        init_test_logging();
         let mut model = Model::new();
 
         let p1 = model.add_parameter(1.0);
@@ -960,7 +1223,6 @@ mod tests {
 
     #[test]
     fn changelog_tracking() {
-        init_test_logging();
         let mut model = Model::new();
 
         let x = model.add_var();
@@ -973,7 +1235,6 @@ mod tests {
 
     #[test]
     fn remove_cascades() {
-        init_test_logging();
         let mut model = Model::new();
 
         let x = model.add_var();
@@ -990,7 +1251,6 @@ mod tests {
 
     #[test]
     fn complex_model_flow() {
-        init_test_logging();
         // build a model with variables, parameters, constraints, objective
         let mut model = Model::new();
         let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
@@ -1077,7 +1337,6 @@ mod tests {
     /// of the printed output is the primary check.
     #[test]
     fn pprint_medium_model() {
-        init_test_logging();
         let mut model = Model::with_name("production_lp");
 
         let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
@@ -1088,22 +1347,25 @@ mod tests {
         let b = model.add_parameter(5.0);
 
         // c1: a*x + y <= 10
-        let c1 = model.add_constraint_expr(
-            LinExpr::new().term(a, x).add_term_with(1.0, y),
-            ConstraintBounds::le(10.0),
-        ).unwrap();
+        let c1 = model
+            .add_constraint_expr(
+                LinExpr::new().term(a, x).add_term_with(1.0, y),
+                ConstraintBounds::le(10.0),
+            )
+            .unwrap();
 
         // c2: x + b*z >= 1
-        let _c2 = model.add_constraint_expr(
-            LinExpr::new().add_term_with(1.0, x).term(b, z),
-            ConstraintBounds::ge(1.0),
-        ).unwrap();
+        let _c2 = model
+            .add_constraint_expr(
+                LinExpr::new().add_term_with(1.0, x).term(b, z),
+                ConstraintBounds::ge(1.0),
+            )
+            .unwrap();
 
         // objective: minimize 3x + 2y + 4z
-        let (obj, _) = model.add_objective_expr(
-            3.0 * x + 2.0 * y + 4.0 * z,
-            Sense::Minimize,
-        ).unwrap();
+        let (obj, _) = model
+            .add_objective_expr(3.0 * x + 2.0 * y + 4.0 * z, Sense::Minimize)
+            .unwrap();
         model.set_active_objective(obj).unwrap();
 
         // Deactivate c1 to exercise [inactive] marker
@@ -1113,13 +1375,25 @@ mod tests {
         println!("{output}");
 
         // Structural checks
-        assert!(output.contains("Model: production_lp"), "missing model header");
+        assert!(
+            output.contains("Model: production_lp"),
+            "missing model header"
+        );
         assert!(output.contains("Variables (3):"), "wrong variable count");
         assert!(output.contains("Parameters (2):"), "wrong parameter count");
-        assert!(output.contains("Constraints (2):"), "wrong constraint count");
+        assert!(
+            output.contains("Constraints (2):"),
+            "wrong constraint count"
+        );
         assert!(output.contains("Objectives (1):"), "wrong objective count");
-        assert!(output.contains("[inactive]"), "missing inactive marker on c1");
-        assert!(output.contains("[active]"), "missing active marker on objective");
+        assert!(
+            output.contains("[inactive]"),
+            "missing inactive marker on c1"
+        );
+        assert!(
+            output.contains("[active]"),
+            "missing active marker on objective"
+        );
         assert!(output.contains("Binary"), "missing Binary type for z");
         assert!(output.contains("Minimize"), "missing Minimize sense");
         assert!(output.contains("p["), "missing parameter display");
@@ -1131,16 +1405,14 @@ mod tests {
 
     #[test]
     fn constraint_slack_feasible() {
-        init_test_logging();
         let mut model = Model::new();
         let x = model.add_var();
         let y = model.add_var();
 
         // 2x + 3y <= 12  →  with x=1, y=2: lhs = 2+6 = 8
-        let c = model.add_constraint_expr(
-            2.0 * x + 3.0 * y,
-            ConstraintBounds::le(12.0),
-        ).unwrap();
+        let c = model
+            .add_constraint_expr(2.0 * x + 3.0 * y, ConstraintBounds::le(12.0))
+            .unwrap();
 
         use crate::solution::SolutionBuilder;
         use crate::solver::SolverStatus;
@@ -1152,33 +1424,37 @@ mod tests {
 
         let (lower_slack, upper_slack) = model.constraint_slack(c, &sol).unwrap();
         // lower bound is -inf → lower_slack = lhs - (-inf) = +inf
-        assert!(lower_slack.is_infinite() && lower_slack > 0.0,
-            "expected +inf lower slack, got {lower_slack}");
+        assert!(
+            lower_slack.is_infinite() && lower_slack > 0.0,
+            "expected +inf lower slack, got {lower_slack}"
+        );
         // upper_slack = 12 - 8 = 4
-        assert!((upper_slack - 4.0).abs() < model.constants.feasibility_tolerance,
-            "expected upper slack = 4, got {upper_slack}");
+        assert!(
+            (upper_slack - 4.0).abs() < model.constants.feasibility_tolerance,
+            "expected upper slack = 4, got {upper_slack}"
+        );
     }
 
     #[test]
     fn default_tolerance_is_small_nonzero() {
         // ensure the default value is not zero; it should match the constant
         let m = Model::new();
-        assert!(m.constants.feasibility_tolerance > 0.0,
-            "default tolerance should be positive");
+        assert!(
+            m.constants.feasibility_tolerance > 0.0,
+            "default tolerance should be positive"
+        );
         assert_eq!(m.constants.feasibility_tolerance, 1e-9);
     }
 
     #[test]
     fn constraint_slack_violated() {
-        init_test_logging();
         let mut model = Model::new();
         let x = model.add_var();
 
         // x >= 5  → with x=2: lhs=2, lower_slack = 2-5 = -3 (violated)
-        let c = model.add_constraint_expr(
-            LinExpr::from(x),
-            ConstraintBounds::ge(5.0),
-        ).unwrap();
+        let c = model
+            .add_constraint_expr(LinExpr::from(x), ConstraintBounds::ge(5.0))
+            .unwrap();
 
         use crate::solution::SolutionBuilder;
         use crate::solver::SolverStatus;
@@ -1189,33 +1465,34 @@ mod tests {
 
         let (lower_slack, upper_slack) = model.constraint_slack(c, &sol).unwrap();
         // lower_slack = 2 - 5 = -3
-        assert!((lower_slack - (-3.0)).abs() < model.constants.feasibility_tolerance,
-            "expected lower slack = -3, got {lower_slack}");
+        assert!(
+            (lower_slack - (-3.0)).abs() < model.constants.feasibility_tolerance,
+            "expected lower slack = -3, got {lower_slack}"
+        );
         // upper bound is +inf → upper_slack = inf - 2 = +inf
-        assert!(upper_slack.is_infinite() && upper_slack > 0.0,
-            "expected +inf upper slack, got {upper_slack}");
+        assert!(
+            upper_slack.is_infinite() && upper_slack > 0.0,
+            "expected +inf upper slack, got {upper_slack}"
+        );
     }
 
     // ── violated_constraints ─────────────────────────────────────────────
 
     #[test]
     fn violated_constraints_finds_violations() {
-        init_test_logging();
         let mut model = Model::new();
         let x = model.add_var();
         let y = model.add_var();
 
         // c1: x <= 3  → satisfied with x=2
-        let c1 = model.add_constraint_expr(
-            LinExpr::from(x),
-            ConstraintBounds::le(3.0),
-        ).unwrap();
+        let c1 = model
+            .add_constraint_expr(LinExpr::from(x), ConstraintBounds::le(3.0))
+            .unwrap();
 
         // c2: y >= 5  → violated with y=1
-        let c2 = model.add_constraint_expr(
-            LinExpr::from(y),
-            ConstraintBounds::ge(5.0),
-        ).unwrap();
+        let c2 = model
+            .add_constraint_expr(LinExpr::from(y), ConstraintBounds::ge(5.0))
+            .unwrap();
 
         use crate::solution::SolutionBuilder;
         use crate::solver::SolverStatus;
@@ -1226,11 +1503,17 @@ mod tests {
             .build();
 
         let violations: Vec<_> = model.violated_constraints(&sol).collect();
-        assert_eq!(violations.len(), 1, "expected exactly 1 violated constraint");
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly 1 violated constraint"
+        );
         let (con, lower_slack, _upper_slack) = violations[0];
         assert_eq!(con, c2, "violated constraint should be c2");
-        assert!((lower_slack - (-4.0)).abs() < 1e-9,
-            "expected lower_slack = -4, got {lower_slack}");
+        assert!(
+            (lower_slack - (-4.0)).abs() < 1e-9,
+            "expected lower_slack = -4, got {lower_slack}"
+        );
 
         // c1 should not appear
         assert!(!violations.iter().any(|(c, _, _)| *c == c1));
@@ -1240,7 +1523,6 @@ mod tests {
 
     #[test]
     fn bound_violations_detects_out_of_bounds() {
-        init_test_logging();
         let mut model = Model::new();
 
         // x in [0, 10]  → solution x=12 violates upper bound
@@ -1257,8 +1539,8 @@ mod tests {
         let sol = SolutionBuilder::new()
             .status(SolverStatus::Optimal)
             .value(x, 12.0) // above ub
-            .value(y, 1.0)  // below lb
-            .value(z, 3.0)  // feasible
+            .value(y, 1.0) // below lb
+            .value(z, 3.0) // feasible
             .build();
 
         let violations: Vec<_> = model.bound_violations(&sol).collect();
@@ -1267,13 +1549,98 @@ mod tests {
         let viol_x = violations.iter().find(|(v, _)| *v == x).map(|(_, d)| *d);
         let viol_y = violations.iter().find(|(v, _)| *v == y).map(|(_, d)| *d);
         assert!(viol_x.is_some(), "x should have a bound violation");
-        assert!((viol_x.unwrap() - 2.0).abs() < 1e-9,
-            "x violation = 12-10 = 2, got {:?}", viol_x);
+        assert!(
+            (viol_x.unwrap() - 2.0).abs() < 1e-9,
+            "x violation = 12-10 = 2, got {:?}",
+            viol_x
+        );
         assert!(viol_y.is_some(), "y should have a bound violation");
-        assert!((viol_y.unwrap() - 1.0).abs() < 1e-9,
-            "y violation = 2-1 = 1, got {:?}", viol_y);
+        assert!(
+            (viol_y.unwrap() - 1.0).abs() < 1e-9,
+            "y violation = 2-1 = 1, got {:?}",
+            viol_y
+        );
 
         let z_violation = violations.iter().find(|(v, _)| *v == z);
         assert!(z_violation.is_none(), "z should have no bound violation");
+    }
+
+    // ── Invariant checker tests ──────────────────────────────────────────
+
+    #[test]
+    fn empty_model_passes_invariants() {
+        let model = Model::new();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn simple_model_passes_invariants() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        model.add_coeff(con, x, 1.0).unwrap();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn objective_model_passes_invariants() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let obj = model.add_objective(Sense::Maximize);
+        model.set_active_objective(obj).unwrap();
+        model
+            .add_objective_coefficient(obj, x, ValueExpr::constant(1.0))
+            .unwrap();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn parameter_model_passes_invariants() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let p = model.add_parameter(5.0);
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        model
+            .add_constraint_coefficient(con, x, ValueExpr::param(p))
+            .unwrap();
+        model.set_parameter(p, 3.0);
+        model.commit();
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn invariants_after_remove() {
+        let mut model = Model::new();
+        let x = model.add_var();
+        let y = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        model.add_coeff(con, x, 1.0).unwrap();
+        model.add_coeff(con, y, 2.0).unwrap();
+
+        assert!(model.validate_invariants().is_ok());
+
+        model.remove_variable(x).unwrap();
+        // x is removed; its coefficients are cascaded. Invariants should still hold.
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    #[test]
+    fn canonical_cell_invariants() {
+        // Verify that canonical cell combining doesn't violate invariants
+        let mut model = Model::new();
+        let x = model.add_var();
+        let con = model.add_constraint(ConstraintBounds::le(10.0));
+
+        let id1 = model.add_coeff(con, x, 2.0).unwrap();
+        // Adding another term for the same cell should combine
+        let id2 = model
+            .add_constraint_coefficient(con, x, ValueExpr::constant(3.0))
+            .unwrap();
+
+        assert_eq!(id1, id2, "canonical cell: same ID returned on combine");
+        assert!(model.validate_invariants().is_ok());
+
+        // combined value: 2.0 + 3.0 = 5.0
+        assert!((model.coefficient(id1).unwrap().cached_value - 5.0).abs() < 1e-9);
     }
 }

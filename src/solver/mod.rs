@@ -10,18 +10,14 @@
 //!
 //! Solver concepts must NOT leak into the model layer.
 
+pub mod backend;
 pub mod callback;
+pub mod reference;
+pub mod request;
 
 use std::collections::HashMap;
 
-use crate::{
-    ConId,
-    Model,
-    Solution,
-    SolutionBuilder,
-    VarId,
-    model::changelog::Change,
-};
+use crate::{model::changelog::Change, ConId, Model, Solution, SolutionBuilder, VarId};
 
 /// Solver status after an optimization attempt.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -94,13 +90,13 @@ pub struct SolveOptions {
 /// live in separate crates (e.g., roml-highs).
 pub trait SolverAdapter {
     /// Apply a batch of changes from the model to solver.
-    /// 
+    ///
     /// Changes should be applied in order. The solver may batch or optimize
     /// the application as appropriate.
     fn apply_changes(&mut self, changes: &[Change]) -> Result<(), SolverError>;
 
     /// Solve the current model state
-    /// 
+    ///
     /// Returns the solver status after the attempt.
     fn solve(&mut self) -> Result<SolverStatus, SolverError>;
 
@@ -205,8 +201,8 @@ pub trait SolverModelExt: SolverAdapter {
         if let Some(objective_id) = model.active_objective() {
             builder = builder.objective_id(objective_id);
             if let Some(objective_value) = self.objective_value_raw() {
-                let objective_value = objective_value
-                    + model.objective_constant(objective_id).unwrap_or(0.0);
+                let objective_value =
+                    objective_value + model.objective_constant(objective_id).unwrap_or(0.0);
                 builder = builder.objective_value(objective_value);
             }
         } else if let Some(objective_value) = self.objective_value_raw() {

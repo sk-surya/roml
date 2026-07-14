@@ -13,8 +13,7 @@
 //! - When a column/row is deleted, `reindex_after_delete` keeps maps in sync
 //!   with HiGHS's dense integer addressing.
 
-use std::collections::HashMap;
-use std::ffi::{c_char, c_double, c_int, c_void};
+use log::{info, warn};
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
@@ -22,7 +21,8 @@ use roml::model::objective::Sense;
 use roml::model::variable::VarType;
 use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
 use roml::solver::{SolverAdapter, SolverError, SolverStatus};
-use log::{info, warn};
+use std::collections::HashMap;
+use std::ffi::{c_char, c_double, c_int, c_void};
 
 use crate::ffi;
 use crate::ffi::HighsInt;
@@ -111,11 +111,31 @@ pub enum HighsOption {
     String(String),
 }
 
-impl From<bool>   for HighsOption { fn from(v: bool)   -> Self { Self::Bool(v) } }
-impl From<i32>    for HighsOption { fn from(v: i32)    -> Self { Self::Int(v) } }
-impl From<f64>    for HighsOption { fn from(v: f64)    -> Self { Self::Double(v) } }
-impl From<&str>   for HighsOption { fn from(v: &str)   -> Self { Self::String(v.into()) } }
-impl From<String> for HighsOption { fn from(v: String) -> Self { Self::String(v) } }
+impl From<bool> for HighsOption {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
+impl From<i32> for HighsOption {
+    fn from(v: i32) -> Self {
+        Self::Int(v)
+    }
+}
+impl From<f64> for HighsOption {
+    fn from(v: f64) -> Self {
+        Self::Double(v)
+    }
+}
+impl From<&str> for HighsOption {
+    fn from(v: &str) -> Self {
+        Self::String(v.into())
+    }
+}
+impl From<String> for HighsOption {
+    fn from(v: String) -> Self {
+        Self::String(v)
+    }
+}
 
 /// Options forwarded to HiGHS at adapter creation time.
 ///
@@ -171,7 +191,9 @@ impl HighsAdapter {
 
         if let Some(threads) = opts.threads {
             let key = c"threads";
-            unsafe { ffi::Highs_setIntOptionValue(ptr, key.as_ptr(), threads); }
+            unsafe {
+                ffi::Highs_setIntOptionValue(ptr, key.as_ptr(), threads);
+            }
         }
 
         for (key, value) in &opts.extra {
@@ -188,7 +210,9 @@ impl HighsAdapter {
                 },
                 HighsOption::String(v) => {
                     let val = std::ffi::CString::new(v.as_str()).unwrap();
-                    unsafe { ffi::Highs_setStringOptionValue(ptr, key.as_ptr(), val.as_ptr()); }
+                    unsafe {
+                        ffi::Highs_setStringOptionValue(ptr, key.as_ptr(), val.as_ptr());
+                    }
                 }
             }
         }
@@ -245,7 +269,11 @@ impl HighsAdapter {
     }
 
     fn highs_bounds(&self, lb: f64, ub: f64) -> (f64, f64) {
-        let lb = if lb == f64::NEG_INFINITY { -self.inf } else { lb };
+        let lb = if lb == f64::NEG_INFINITY {
+            -self.inf
+        } else {
+            lb
+        };
         let ub = if ub == f64::INFINITY { self.inf } else { ub };
         (lb, ub)
     }
@@ -254,7 +282,11 @@ impl HighsAdapter {
     fn apply_one(&mut self, change: &Change) -> Result<(), SolverError> {
         match change {
             // ── Variable Added ────────────────────────────────────────────
-            Change::VariableAdded { var, bounds, var_type } => {
+            Change::VariableAdded {
+                var,
+                bounds,
+                var_type,
+            } => {
                 let (lb, ub) = self.highs_bounds(bounds.lower, bounds.upper);
 
                 // Capture the next column index *before* calling addVar.
@@ -291,8 +323,7 @@ impl HighsAdapter {
                 for costs in self.obj_costs.values_mut() {
                     costs.remove(var);
                 }
-                let ret =
-                    unsafe { ffi::Highs_deleteColsByRange(self.ptr, col, col) };
+                let ret = unsafe { ffi::Highs_deleteColsByRange(self.ptr, col, col) };
                 check_status(ret, "Highs_deleteColsByRange")?;
                 self.col_map.reindex_after_delete(col);
             }
@@ -325,7 +356,8 @@ impl HighsAdapter {
             Change::VariableActivityChanged { var, active } => {
                 if let Some(col) = self.col_map.get(*var) {
                     let (lb, ub) = if *active {
-                        let (orig_lb, orig_ub) = self.var_bounds.get(var).copied().unwrap_or((0.0, self.inf));
+                        let (orig_lb, orig_ub) =
+                            self.var_bounds.get(var).copied().unwrap_or((0.0, self.inf));
                         self.highs_bounds(orig_lb, orig_ub)
                     } else {
                         (0.0, 0.0)
@@ -360,8 +392,7 @@ impl HighsAdapter {
                     None => return Ok(()),
                 };
                 self.con_bounds.remove(con);
-                let ret =
-                    unsafe { ffi::Highs_deleteRowsByRange(self.ptr, row, row) };
+                let ret = unsafe { ffi::Highs_deleteRowsByRange(self.ptr, row, row) };
                 check_status(ret, "Highs_deleteRowsByRange")?;
                 self.row_map.reindex_after_delete(row);
             }
@@ -380,7 +411,11 @@ impl HighsAdapter {
             Change::ConstraintActivityChanged { con, active } => {
                 if let Some(row) = self.row_map.get(*con) {
                     let (lb, ub) = if *active {
-                        let (orig_lb, orig_ub) = self.con_bounds.get(con).copied().unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                        let (orig_lb, orig_ub) = self
+                            .con_bounds
+                            .get(con)
+                            .copied()
+                            .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
                         self.highs_bounds(orig_lb, orig_ub)
                     } else {
                         (-self.inf, self.inf)
@@ -391,84 +426,72 @@ impl HighsAdapter {
             }
 
             // ── Coefficient Added ──────────────────────────────────────────
-            Change::CoefficientAdded { var, target, value, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
-                            let ret = unsafe {
-                                ffi::Highs_changeCoeff(self.ptr, row, col, *value)
-                            };
-                            check_status(ret, "Highs_changeCoeff (add)")?;
-                        }
+            Change::CoefficientAdded {
+                var, target, value, ..
+            } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        let ret = unsafe { ffi::Highs_changeCoeff(self.ptr, row, col, *value) };
+                        check_status(ret, "Highs_changeCoeff (add)")?;
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        self.obj_costs.entry(*obj).or_default().insert(*var, *value);
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                let ret =
-                                    unsafe { ffi::Highs_changeColCost(self.ptr, col, *value) };
-                                check_status(ret, "Highs_changeColCost (add)")?;
-                            }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    self.obj_costs.entry(*obj).or_default().insert(*var, *value);
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
+                            let ret = unsafe { ffi::Highs_changeColCost(self.ptr, col, *value) };
+                            check_status(ret, "Highs_changeColCost (add)")?;
                         }
                     }
                 }
-            }
+            },
 
             // ── Coefficient Removed ────────────────────────────────────────
-            Change::CoefficientRemoved { var, target, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
-                            let ret =
-                                unsafe { ffi::Highs_changeCoeff(self.ptr, row, col, 0.0) };
-                            check_status(ret, "Highs_changeCoeff (remove)")?;
-                        }
+            Change::CoefficientRemoved { var, target, .. } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        let ret = unsafe { ffi::Highs_changeCoeff(self.ptr, row, col, 0.0) };
+                        check_status(ret, "Highs_changeCoeff (remove)")?;
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        if let Some(costs) = self.obj_costs.get_mut(obj) {
-                            costs.remove(var);
-                        }
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                let ret =
-                                    unsafe { ffi::Highs_changeColCost(self.ptr, col, 0.0) };
-                                check_status(ret, "Highs_changeColCost (remove)")?;
-                            }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if let Some(costs) = self.obj_costs.get_mut(obj) {
+                        costs.remove(var);
+                    }
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
+                            let ret = unsafe { ffi::Highs_changeColCost(self.ptr, col, 0.0) };
+                            check_status(ret, "Highs_changeColCost (remove)")?;
                         }
                     }
                 }
-            }
+            },
 
             // ── Coefficient Value Changed ──────────────────────────────────
-            Change::CoefficientValueChanged { var, target, new, .. } => {
-                match target {
-                    CoefficientTarget::Constraint(con) => {
-                        if let (Some(row), Some(col)) =
-                            (self.row_map.get(*con), self.col_map.get(*var))
-                        {
-                            let ret =
-                                unsafe { ffi::Highs_changeCoeff(self.ptr, row, col, *new) };
-                            check_status(ret, "Highs_changeCoeff (update)")?;
-                        }
+            Change::CoefficientValueChanged {
+                var, target, new, ..
+            } => match target {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(*con), self.col_map.get(*var))
+                    {
+                        let ret = unsafe { ffi::Highs_changeCoeff(self.ptr, row, col, *new) };
+                        check_status(ret, "Highs_changeCoeff (update)")?;
                     }
-                    CoefficientTarget::Objective(obj) => {
-                        if let Some(costs) = self.obj_costs.get_mut(obj) {
-                            costs.insert(*var, *new);
-                        }
-                        if Some(*obj) == self.active_obj {
-                            if let Some(col) = self.col_map.get(*var) {
-                                let ret =
-                                    unsafe { ffi::Highs_changeColCost(self.ptr, col, *new) };
-                                check_status(ret, "Highs_changeColCost (update)")?;
-                            }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    if let Some(costs) = self.obj_costs.get_mut(obj) {
+                        costs.insert(*var, *new);
+                    }
+                    if Some(*obj) == self.active_obj {
+                        if let Some(col) = self.col_map.get(*var) {
+                            let ret = unsafe { ffi::Highs_changeColCost(self.ptr, col, *new) };
+                            check_status(ret, "Highs_changeColCost (update)")?;
                         }
                     }
                 }
-            }
+            },
 
             // ── Objective Added ────────────────────────────────────────────
             Change::ObjectiveAdded { obj, sense } => {
@@ -490,10 +513,7 @@ impl HighsAdapter {
                 self.obj_senses.insert(*obj, *new);
                 if Some(*obj) == self.active_obj {
                     let ret = unsafe {
-                        ffi::Highs_changeObjectiveSense(
-                            self.ptr,
-                            Self::sense_to_highs(*new),
-                        )
+                        ffi::Highs_changeObjectiveSense(self.ptr, Self::sense_to_highs(*new))
                     };
                     check_status(ret, "Highs_changeObjectiveSense")?;
                 }
@@ -505,19 +525,17 @@ impl HighsAdapter {
                 let num_cols = unsafe { ffi::Highs_getNumCol(self.ptr) };
                 let zero_costs = vec![0.0f64; num_cols as usize];
                 let ret = unsafe {
-                    ffi::Highs_changeColsCostByRange(
-                        self.ptr,
-                        0,
-                        num_cols - 1,
-                        zero_costs.as_ptr(),
-                    ) 
+                    ffi::Highs_changeColsCostByRange(self.ptr, 0, num_cols - 1, zero_costs.as_ptr())
                 };
                 check_status(ret, "Highs_changeColsCostByRange (zero for obj switch)")?;
 
                 if let Some(new_obj) = new {
                     // Load costs for the new objective.
                     if let Some(costs) = self.obj_costs.get(new_obj).cloned() {
-                        let cols = costs.keys().filter_map(|var| self.col_map.get(*var)).collect::<Vec<_>>();
+                        let cols = costs
+                            .keys()
+                            .filter_map(|var| self.col_map.get(*var))
+                            .collect::<Vec<_>>();
                         let costs = costs.values().copied().collect::<Vec<_>>();
                         assert!(cols.len() == costs.len());
                         let ret = unsafe {
@@ -533,10 +551,7 @@ impl HighsAdapter {
                     // Apply the new objective's sense.
                     if let Some(&sense) = self.obj_senses.get(new_obj) {
                         let ret = unsafe {
-                            ffi::Highs_changeObjectiveSense(
-                                self.ptr,
-                                Self::sense_to_highs(sense),
-                            )
+                            ffi::Highs_changeObjectiveSense(self.ptr, Self::sense_to_highs(sense))
                         };
                         check_status(ret, "Highs_changeObjectiveSense (obj switch)")?;
                     }
@@ -724,7 +739,11 @@ impl SolverAdapter for HighsAdapter {
     }
 
     fn solve(&mut self) -> Result<SolverStatus, SolverError> {
-        info!("Starting solve with {} variables and {} constraints", self.col_map.len(), self.row_map.len());
+        info!(
+            "Starting solve with {} variables and {} constraints",
+            self.col_map.len(),
+            self.row_map.len()
+        );
         // check if objective is empty; if so log a warning
         if let Some(obj) = self.active_obj {
             if let Some(costs) = self.obj_costs.get(&obj) {
@@ -741,7 +760,8 @@ impl SolverAdapter for HighsAdapter {
         // ── Optional callback registration ──
         let mut _state_ptr: *mut CallbackState = std::ptr::null_mut();
         if let Some(handler) = self.callback_handler.take() {
-            let var_to_col: HashMap<VarId, HighsInt> = self.col_map.iter().map(|(v, c)| (v, c)).collect();
+            let var_to_col: HashMap<VarId, HighsInt> =
+                self.col_map.iter().map(|(v, c)| (v, c)).collect();
             let col_to_var: HashMap<HighsInt, VarId> = self.col_map.reverse_map();
 
             let cb_state = Box::new(CallbackState {
@@ -754,7 +774,11 @@ impl SolverAdapter for HighsAdapter {
             _state_ptr = Box::into_raw(cb_state);
 
             unsafe {
-                ffi::Highs_setCallback(self.ptr, Some(callback_trampoline), _state_ptr as *mut c_void);
+                ffi::Highs_setCallback(
+                    self.ptr,
+                    Some(callback_trampoline),
+                    _state_ptr as *mut c_void,
+                );
                 ffi::Highs_startCallback(self.ptr, ffi::CALLBACK_MIP_DEFINE_LAZY_CONSTRAINTS);
             }
         }
@@ -854,7 +878,11 @@ impl SolverAdapter for HighsAdapter {
         // Re-apply output setting after clear (clearModel resets options).
         let output_flag = c"output_flag";
         unsafe {
-            ffi::Highs_setBoolOptionValue(self.ptr, output_flag.as_ptr(), self.console_output as i32);
+            ffi::Highs_setBoolOptionValue(
+                self.ptr,
+                output_flag.as_ptr(),
+                self.console_output as i32,
+            );
         }
         self.col_map = IndexMap::new();
         self.row_map = IndexMap::new();

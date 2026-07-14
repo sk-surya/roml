@@ -2,21 +2,55 @@
 members = [".", "roml-highs", "roml-mosek", "roml-xpress"]
 resolver = "2"
 
-[package]
-name = "roml"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "A production-grade, incremental MILP modeling library"
+rust-version = "1.85"
+authors = ["Surya Krishnan"]
+repository = "https://github.com/sk-surya/roml"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[workspace.dependencies]
+log = "0.4"
+
+[package]
+name = "roml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+readme.workspace = true
+description = "A pre-release, incremental MILP modeling library"
+exclude = [
+    ".claude/",
+    "AGENTS.md",
+    ".gitignore",
+    "docs/release/evidence/",
+    "docs/superpowers/",
+    ".github/",
+]
+
+[lints]
+# Core crate is solver-free; no unsafe allowed
+rust.unsafe_code = "deny"
+# missing_docs will be deny after P5 documentation debt is closed
 
 [dependencies]
-log = "0.4"
-log4rs = "1.4.0"
-rand = "0.9"
-serde_yaml = "0.9"
+log = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+rand = "0.9"
 
+[[example]]
+name = "simple_lp"
+path = "examples/simple_lp.rs"
+
+[[example]]
+name = "parameter_update"
+path = "examples/parameter_update.rs"
 
 [profile.dev]
 opt-level = 0

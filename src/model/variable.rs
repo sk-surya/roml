@@ -3,8 +3,7 @@
 use crate::id::{IdArena, VarId};
 
 /// Variable type (continuous, integer, or binary).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum VarType {
     /// Continuous variable (can take any value in bounds).
     #[default]
@@ -14,7 +13,6 @@ pub enum VarType {
     /// Binary variable (0 or 1).
     Binary,
 }
-
 
 /// Variable bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,7 +79,8 @@ impl Default for Bounds {
 
 /// Internal data for a variable.
 #[derive(Clone, Debug)]
-pub struct VariableData {
+#[allow(dead_code)]
+pub(crate) struct VariableData {
     /// Variable bounds.
     pub bounds: Bounds,
     /// Variable type.
@@ -106,10 +105,12 @@ impl VariableData {
 
 /// Storage for all variables in the model.
 #[derive(Clone, Debug, Default)]
-pub struct VariableStore {
+pub(crate) struct VariableStore {
     arena: IdArena<VariableData>,
 }
 
+/// Methods used by Model.
+#[allow(dead_code)]
 impl VariableStore {
     /// Create an empty variable store.
     pub fn new() -> Self {
@@ -192,11 +193,11 @@ mod tests {
         assert!(Bounds::new(0.0, 10.0).is_valid());
         assert!(Bounds::new(5.0, 5.0).is_valid());
         assert!(!Bounds::new(10.0, 0.0).is_valid());
-        assert!( ! Bounds::new(10.0, 0.0).is_valid() );
+        assert!(!Bounds::new(10.0, 0.0).is_valid());
         assert!(Bounds::fixed(3.0, None).is_fixed(None));
         assert!(Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.00001)));
-        assert!( ! Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.000001)) );
-        assert!(Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.0001)) );
+        assert!(!Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.000001)));
+        assert!(Bounds::fixed(3.0, Some(0.00001)).is_fixed(Some(0.0001)));
     }
 
     #[test]
@@ -219,7 +220,7 @@ mod tests {
         assert!(store.arena.capacity_used() == 1);
         let removed = store.remove(id);
         assert!(removed.is_some());
-        assert!(store.arena.len() == 0);
+        assert!(store.arena.is_empty());
         assert!(store.arena.capacity_used() == 1);
         assert!(store.get(id).is_none());
         assert!(!store.contains(id));

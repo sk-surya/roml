@@ -1,0 +1,6 @@
+[repo_checks]
+# ROML repository checks — no steward configured in this repo
+
+[repo_checks.steward]
+# Steward knowledge freshness — ROML uses docs/knowledge/
+enabled = false

@@ -1,0 +1,62 @@
+name: CI - Policy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly advisory check (Wednesday 09:00 UTC)
+    - cron: '0 9 * * 3'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
+
+  deny:
+    name: License and dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo deny check
+        run: cargo deny check
+
+  unused-deps:
+    name: Unused dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+      - name: Run cargo machete
+        run: cargo machete
+
+  # Advisory: run after a release baseline exists
+  # semver:
+  #   name: Semver check (advisory)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - name: Install cargo-semver-checks
+  #       run: cargo install cargo-semver-checks --locked
+  #     - name: Run semver checks
+  #       run: cargo semver-checks -p roml

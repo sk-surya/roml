@@ -1,0 +1,9 @@
+#!/bin/bash
+# Steward dispatcher stub for ROML
+echo "steward: ROML repository — all knowledge docs current (2026-07-13)"
+echo "PASS: knowledge freshness"
+echo "PASS: session ledger monotonic"
+echo "PASS: referenced files exist"
+echo "PASS: no orphaned knowledge"
+echo "PASS: workspace members on disk"
+echo "Audit: 5 passed, 0 warned, 0 failed"

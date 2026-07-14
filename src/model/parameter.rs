@@ -4,7 +4,8 @@ use crate::id::{IdArena, ParamId};
 
 /// Internal data for a parameter.
 #[derive(Clone, Debug)]
-pub struct ParameterData {
+#[allow(dead_code)]
+pub(crate) struct ParameterData {
     /// Current parameter value.
     pub value: f64,
     /// Optional name for the debugging/printing.
@@ -23,10 +24,12 @@ impl ParameterData {
 /// Parameters are coefficient value sources that can be modified at runtime.
 /// When a parameter changes, all dependent coefficients must be updated.
 #[derive(Clone, Debug, Default)]
-pub struct ParameterStore {
+pub(crate) struct ParameterStore {
     arena: IdArena<ParameterData>,
 }
 
+/// Methods used by Model.
+#[allow(dead_code)]
 impl ParameterStore {
     /// Create an empty parameter store.
     pub fn new() -> Self {
@@ -58,11 +61,11 @@ impl ParameterStore {
     }
 
     /// Remove a parameter. Returns the data if it existed.
-    /// 
-    /// Just keeping signature like other entity stores (I may want to codegen?). 
+    ///
+    /// Just keeping signature like other entity stores (I may want to codegen?).
     /// Parameters are rarely removed and I don't expect this to be used - What happens to dependencies?
     // pub fn remove(&mut self, id: ParamId) -> Option<ParameterData> {
-        // self.arena.remove(id.index(), id.generation())
+    // self.arena.remove(id.index(), id.generation())
     // }
     #[allow(unused)]
     pub fn remove(&mut self, id: ParamId) {
@@ -107,7 +110,7 @@ impl ParameterStore {
     pub fn len(&self) -> usize {
         self.arena.len()
     }
-    
+
     /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.arena.is_empty()
@@ -121,7 +124,7 @@ impl ParameterStore {
     }
 
     /// Lookup function for ValueExpr evaluation.
-    /// 
+    ///
     /// Returns a closure that can be passed to `ValueExpr::eval()`.
     pub fn as_lookup(&self) -> impl Fn(ParamId) -> f64 + '_ {
         move |id| self.get_value(id).unwrap_or(0.0)

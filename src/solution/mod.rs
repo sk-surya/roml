@@ -5,7 +5,7 @@
 //! - Objective value(s)
 //! - Solver status
 //! - Optional duals and reduced costs
-//! //!
+//!
 //! # Design
 //!
 //! Solutions are stored separately from the model. Multiple solutions can
@@ -38,7 +38,7 @@ pub struct Solution {
 }
 
 impl Solution {
-     /// Create a new solution with the given status.
+    /// Create a new solution with the given status.
     pub fn new(status: SolverStatus) -> Self {
         Self {
             values: HashMap::new(),
@@ -189,7 +189,9 @@ impl SolutionBuilder {
 
     /// Set a dual value for a constraint.
     pub fn dual(mut self, con: ConId, value: f64) -> Self {
-        self.duals.get_or_insert_with(HashMap::new).insert(con, value);
+        self.duals
+            .get_or_insert_with(HashMap::new)
+            .insert(con, value);
         self
     }
 
@@ -201,7 +203,9 @@ impl SolutionBuilder {
 
     /// Set a reduced cost for a variable.
     pub fn reduced_cost(mut self, var: VarId, value: f64) -> Self {
-        self.reduced_costs.get_or_insert_with(HashMap::new).insert(var, value);
+        self.reduced_costs
+            .get_or_insert_with(HashMap::new)
+            .insert(var, value);
         self
     }
 
