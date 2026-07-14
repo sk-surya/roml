@@ -1,13 +1,18 @@
 [package]
 name = "roml-mosek"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
 description = "MOSEK solver adapter for roml"
+publish = false
 
 [dependencies]
-log = "0.4.29"
-log4rs = "1.4.0"
-roml = { path = ".." }
-serde_yaml = "0.9"
+log = { workspace = true }
+roml = { version = "0.1.0", path = ".." }
 
 [build-dependencies]
+
+[dev-dependencies]

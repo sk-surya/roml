@@ -3,20 +3,12 @@
 //! Each test builds a roml Model, drains changes to the adapter, solves,
 //! and verifies results.
 
-use roml::{Bounds, ConstraintBounds, Model, Sense, VarType};
 use roml::solver::{SolverAdapter, SolverStatus};
+use roml::{Bounds, ConstraintBounds, Model, Sense, VarType};
 use roml_highs::HighsAdapter;
 
 // helper to initialise logging once for the integration test binary
 // prints to stderr if setup fails so tests run in subdirectories can notice.
-fn init_test_logging() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        if let Err(e) = roml::init_logging() {
-            eprintln!("warning: failed to initialise logging: {}", e);
-        }
-    });
-}
 
 fn approx_eq(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6
@@ -41,7 +33,6 @@ fn sync(model: &mut Model, adapter: &mut HighsAdapter) {
 /// Optimal: x=1, y=3 or x=3, y=1 (obj=4)
 #[test]
 fn simple_lp_solve() {
-    init_test_logging();
     let mut model = Model::new();
 
     let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
@@ -64,8 +55,12 @@ fn simple_lp_solve() {
     use roml::value_expr::ValueExpr;
     let obj = model.add_objective(Sense::Maximize);
     model.set_active_objective(obj).unwrap();
-    model.add_objective_coefficient(obj, x, ValueExpr::constant(1.0)).unwrap();
-    model.add_objective_coefficient(obj, y, ValueExpr::constant(1.0)).unwrap();
+    model
+        .add_objective_coefficient(obj, x, ValueExpr::constant(1.0))
+        .unwrap();
+    model
+        .add_objective_coefficient(obj, y, ValueExpr::constant(1.0))
+        .unwrap();
 
     let mut adapter = HighsAdapter::new();
     sync(&mut model, &mut adapter);
@@ -78,7 +73,11 @@ fn simple_lp_solve() {
     let yv = sol[&y];
 
     // objective value should be 4
-    assert!(approx_eq(xv + yv, 4.0), "objective = {} (expected 4)", xv + yv);
+    assert!(
+        approx_eq(xv + yv, 4.0),
+        "objective = {} (expected 4)",
+        xv + yv
+    );
     assert!(xv >= -1e-6);
     assert!(yv >= -1e-6);
 }
@@ -89,7 +88,6 @@ fn simple_lp_solve() {
 /// First solve with lb=1, then tighten to lb=5, re-solve.
 #[test]
 fn incremental_bound_change() {
-    init_test_logging();
     let mut model = Model::new();
 
     let x = model.add_variable(Bounds::new(1.0, f64::INFINITY), VarType::Continuous);
@@ -97,7 +95,9 @@ fn incremental_bound_change() {
     let obj = model.add_objective(Sense::Minimize);
     model.set_active_objective(obj).unwrap();
     use roml::value_expr::ValueExpr;
-    model.add_objective_coefficient(obj, x, ValueExpr::constant(1.0)).unwrap();
+    model
+        .add_objective_coefficient(obj, x, ValueExpr::constant(1.0))
+        .unwrap();
 
     let mut adapter = HighsAdapter::new();
     sync(&mut model, &mut adapter);
@@ -108,7 +108,9 @@ fn incremental_bound_change() {
     assert!(approx_eq(sol[&x], 1.0), "expected x=1, got {}", sol[&x]);
 
     // Tighten lower bound to 5.
-    model.set_variable_bounds(x, Bounds::new(5.0, f64::INFINITY)).unwrap();
+    model
+        .set_variable_bounds(x, Bounds::new(5.0, f64::INFINITY))
+        .unwrap();
     sync(&mut model, &mut adapter);
 
     let status = adapter.solve().unwrap();
@@ -122,7 +124,6 @@ fn incremental_bound_change() {
 /// maximize x  s.t. x <= 10 (then add x <= 3, then remove it)
 #[test]
 fn constraint_add_remove() {
-    init_test_logging();
     let mut model = Model::new();
 
     let x = model.add_variable(Bounds::new(0.0, f64::INFINITY), VarType::Continuous);
@@ -165,7 +166,11 @@ fn constraint_add_remove() {
     let status = adapter.solve().unwrap();
     assert_eq!(status, SolverStatus::Optimal);
     let sol = adapter.solution_values().unwrap();
-    assert!(approx_eq(sol[&x], 10.0), "expected x=10 again, got {}", sol[&x]);
+    assert!(
+        approx_eq(sol[&x], 10.0),
+        "expected x=10 again, got {}",
+        sol[&x]
+    );
 }
 
 // ── Test 4: parameter-based coefficient update ────────────────────────────
@@ -174,7 +179,6 @@ fn constraint_add_remove() {
 /// First p=1 (optimal x=1, obj=1), then p=3 (optimal x=1, obj=3).
 #[test]
 fn parameter_coefficient_update() {
-    init_test_logging();
     let mut model = Model::new();
 
     let x = model.add_variable(Bounds::new(1.0, f64::INFINITY), VarType::Continuous);
@@ -232,9 +236,15 @@ fn binary_mip() {
     use roml::value_expr::ValueExpr;
     let obj = model.add_objective(Sense::Maximize);
     model.set_active_objective(obj).unwrap();
-    model.add_objective_coefficient(obj, x, ValueExpr::constant(5.0)).unwrap();
-    model.add_objective_coefficient(obj, y, ValueExpr::constant(4.0)).unwrap();
-    model.add_objective_coefficient(obj, z, ValueExpr::constant(3.0)).unwrap();
+    model
+        .add_objective_coefficient(obj, x, ValueExpr::constant(5.0))
+        .unwrap();
+    model
+        .add_objective_coefficient(obj, y, ValueExpr::constant(4.0))
+        .unwrap();
+    model
+        .add_objective_coefficient(obj, z, ValueExpr::constant(3.0))
+        .unwrap();
 
     let mut adapter = HighsAdapter::new();
     sync(&mut model, &mut adapter);
@@ -266,10 +276,14 @@ fn objective_switch() {
     use roml::value_expr::ValueExpr;
 
     let obj_min = model.add_objective(Sense::Minimize);
-    model.add_objective_coefficient(obj_min, x, ValueExpr::constant(1.0)).unwrap();
+    model
+        .add_objective_coefficient(obj_min, x, ValueExpr::constant(1.0))
+        .unwrap();
 
     let obj_max = model.add_objective(Sense::Maximize);
-    model.add_objective_coefficient(obj_max, x, ValueExpr::constant(1.0)).unwrap();
+    model
+        .add_objective_coefficient(obj_max, x, ValueExpr::constant(1.0))
+        .unwrap();
 
     // Start with minimize
     model.set_active_objective(obj_min).unwrap();
@@ -280,7 +294,11 @@ fn objective_switch() {
     let status = adapter.solve().unwrap();
     assert_eq!(status, SolverStatus::Optimal);
     let sol = adapter.solution_values().unwrap();
-    assert!(approx_eq(sol[&x], 0.0), "expected x=0 (minimize), got {}", sol[&x]);
+    assert!(
+        approx_eq(sol[&x], 0.0),
+        "expected x=0 (minimize), got {}",
+        sol[&x]
+    );
 
     // Switch to maximize
     model.set_active_objective(obj_max).unwrap();
@@ -289,7 +307,11 @@ fn objective_switch() {
     let status = adapter.solve().unwrap();
     assert_eq!(status, SolverStatus::Optimal);
     let sol = adapter.solution_values().unwrap();
-    assert!(approx_eq(sol[&x], 5.0), "expected x=5 (maximize), got {}", sol[&x]);
+    assert!(
+        approx_eq(sol[&x], 5.0),
+        "expected x=5 (maximize), got {}",
+        sol[&x]
+    );
 }
 
 // ── Test 7: infeasible model ──────────────────────────────────────────────
@@ -307,7 +329,9 @@ fn infeasible_model() {
     let obj = model.add_objective(Sense::Minimize);
     model.set_active_objective(obj).unwrap();
     use roml::value_expr::ValueExpr;
-    model.add_objective_coefficient(obj, x, ValueExpr::constant(1.0)).unwrap();
+    model
+        .add_objective_coefficient(obj, x, ValueExpr::constant(1.0))
+        .unwrap();
 
     let mut adapter = HighsAdapter::new();
     sync(&mut model, &mut adapter);
@@ -328,7 +352,6 @@ fn infeasible_model() {
 /// Dual on constraint (shadow price) should be non-zero.
 #[test]
 fn solution_enrichment_lp() {
-    init_test_logging();
     let mut model = Model::new();
 
     let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
@@ -343,8 +366,12 @@ fn solution_enrichment_lp() {
     use roml::value_expr::ValueExpr;
     let obj = model.add_objective(Sense::Minimize);
     model.set_active_objective(obj).unwrap();
-    model.add_objective_coefficient(obj, x, ValueExpr::constant(3.0)).unwrap();
-    model.add_objective_coefficient(obj, y, ValueExpr::constant(2.0)).unwrap();
+    model
+        .add_objective_coefficient(obj, x, ValueExpr::constant(3.0))
+        .unwrap();
+    model
+        .add_objective_coefficient(obj, y, ValueExpr::constant(2.0))
+        .unwrap();
 
     let mut adapter = HighsAdapter::new();
     sync(&mut model, &mut adapter);
@@ -353,15 +380,27 @@ fn solution_enrichment_lp() {
     assert_eq!(status, SolverStatus::Optimal);
 
     // Objective value: optimal is x=0,y=4 → obj=8
-    let obj_val = adapter.objective_value_raw().expect("objective_value_raw should be Some after optimal solve");
+    let obj_val = adapter
+        .objective_value_raw()
+        .expect("objective_value_raw should be Some after optimal solve");
     assert!(approx_eq(obj_val, 8.0), "expected obj=8, got {obj_val}");
 
     // Dual values: should have one entry for c1
-    let duals = adapter.dual_values().expect("dual_values should be Some after LP solve");
+    let duals = adapter
+        .dual_values()
+        .expect("dual_values should be Some after LP solve");
     assert!(duals.contains_key(&c1), "duals should contain entry for c1");
 
     // Reduced costs: should have entries for x and y
-    let rc = adapter.reduced_costs_raw().expect("reduced_costs_raw should be Some after LP solve");
-    assert!(rc.contains_key(&x), "reduced costs should contain entry for x");
-    assert!(rc.contains_key(&y), "reduced costs should contain entry for y");
+    let rc = adapter
+        .reduced_costs_raw()
+        .expect("reduced_costs_raw should be Some after LP solve");
+    assert!(
+        rc.contains_key(&x),
+        "reduced costs should contain entry for x"
+    );
+    assert!(
+        rc.contains_key(&y),
+        "reduced costs should contain entry for y"
+    );
 }

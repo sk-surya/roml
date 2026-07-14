@@ -18,7 +18,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
-    let config = resolve_link_config().map_err(|msg| format!("roml-highs build configuration error: {msg}"))?;
+    let config = resolve_link_config()
+        .map_err(|msg| format!("roml-highs build configuration error: {msg}"))?;
 
     for dir in config.lib_dirs {
         println!("cargo:rustc-link-search=native={}", dir.display());
@@ -82,7 +83,10 @@ fn link_from_lib_dir(lib_dir: &Path) -> Result<LinkConfig, String> {
 
 fn link_from_root(root: &Path) -> Result<LinkConfig, String> {
     if !root.exists() {
-        return Err(format!("HIGHS_ROOT path does not exist: {}", root.display()));
+        return Err(format!(
+            "HIGHS_ROOT path does not exist: {}",
+            root.display()
+        ));
     }
 
     let candidates = [root.to_path_buf(), root.join("lib"), root.join("lib64")];

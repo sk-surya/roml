@@ -4,8 +4,7 @@ use crate::id::{IdArena, ObjId};
 
 /// Optimization sense (minimize or maximize).
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Sense {
     /// Minimize the objective.
     #[default]
@@ -16,7 +15,8 @@ pub enum Sense {
 
 /// internal data for an objective.
 #[derive(Clone, Debug)]
-pub struct ObjectiveData {
+#[allow(dead_code)]
+pub(crate) struct ObjectiveData {
     /// Optimization sense.
     pub sense: Sense,
     /// Constant offset added to the objective expression.
@@ -33,25 +33,27 @@ impl ObjectiveData {
         Self {
             sense,
             constant: 0.0,
-            active: false,  // Inactive by default, user must activate explicitly.
+            active: false, // Inactive by default, user must activate explicitly.
             name: None,
         }
     }
 }
 
 /// Storage for all objectives in the model.
-/// 
+///
 /// # Invariant
-/// 
+///
 /// Only one objective can be active at time. The store enforces this
 /// by deactivating the current active objective when a new one is activated.
 #[derive(Clone, Debug, Default)]
-pub struct ObjectiveStore {
+pub(crate) struct ObjectiveStore {
     arena: IdArena<ObjectiveData>,
     /// Currently active objective, if any.
     active_objective: Option<ObjId>,
 }
 
+/// Methods used by Model.
+#[allow(dead_code)]
 impl ObjectiveStore {
     /// Create a new empty objective store.
     pub fn new() -> Self {
@@ -62,7 +64,7 @@ impl ObjectiveStore {
     }
 
     /// Add a new objective and return its ID.
-    /// 
+    ///
     /// The new objective is inactive by default.
     pub fn add(&mut self, sense: Sense) -> ObjId {
         let data = ObjectiveData::new(sense);
@@ -79,7 +81,7 @@ impl ObjectiveStore {
     }
 
     /// Remove an objective by its ID. Returns the data if it existed.
-    /// 
+    ///
     /// If this was the active objective, then no objective will be active.
     pub fn remove(&mut self, id: ObjId) -> Option<ObjectiveData> {
         if self.active_objective == Some(id) {
@@ -103,13 +105,22 @@ impl ObjectiveStore {
         self.active_objective
     }
 
+    /// Return the number of active objectives (0 or 1).
+    pub fn active_count(&self) -> usize {
+        if self.active_objective.is_some() {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Set the given objective as active.
-    /// 
+    ///
     /// Deactivates the previous objective and activates the new one.
     /// Returns the previously active objective (if any).
     pub fn set_active(&mut self, id: ObjId) -> Option<ObjId> {
         let previous = self.clear_active();
-        
+
         if let Some(data) = self.get_mut(id) {
             data.active = true;
             self.active_objective = Some(id);

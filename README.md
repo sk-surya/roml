@@ -1,90 +1,54 @@
 # ROML
 
-A production‑grade, incremental MILP modeling library implemented in Rust.
+A pre-release Rust MILP modeling library with incremental parameter-dependent
+coefficients and projection into long-lived solver sessions.
 
-For a detailed, agent-oriented modeling guide, see [MODELING_API.md](MODELING_API.md).
+**Status:** pre-1.0 hardening. The workspace compiles and passes core tests on
+macOS; cross-platform CI and solver-boundary safety are being established during
+the current release-qualification program. Not yet published to crates.io.
 
-## Logging
+For a detailed modeling guide, see [MODELING_API.md](MODELING_API.md).
 
-The crate uses the `log` facade for all logging calls.  At runtime you can
-configure the logger using [log4rs](https://docs.rs/log4rs) and a YAML file.
-A sample configuration file (`log4rs.yaml`) is included at the project root
-which writes messages to both `stdout` and a file named `roml.log`.
+## Usage
 
-Two environment variables are supported:
+ROML exposes three complementary modeling layers:
 
-* `LOG4RS_CONFIG` – if set, the given path is used as the configuration file
-  instead of searching upwards for `log4rs.yaml`.
-* `ROML_LOG_FILE` – used by the example configuration to determine where the
-  `logfile` appender writes.  If unset `init_logging()` will attempt to locate
-  the Cargo workspace root (a `Cargo.toml` containing `[workspace]`) and set
-  this variable to `<root>/roml.log` automatically.  This makes it easy to run
-  tests from any crate directory and still end up with a single log in the
-  workspace root.
+- Explicit low-level APIs: `add_constraint`, `add_coeff`, `add_objective_coefficient`
+- Fluent builder APIs: `.le(...)`, `.between(...)`, `.maximize()`, `Model::constrain(...)`
+- Optional macros: `constraint!(x + y <= 4.0)`, `constrain!(model, x + y <= 4.0)`
 
-Call `roml::init_logging()` early in your application (e.g. from `main`) to
-load the configuration; the function handles the environment logic above and
-returns an error if the configuration itself cannot be parsed.
-
-Example:
+Typical usage with the HiGHS adapter:
 
 ```rust
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // initialise logger before doing anything else; will set ROML_LOG_FILE
-    // automatically if you're inside a workspace.
-    roml::init_logging()?;
+use roml::prelude::*;
+use roml::{constrain, set_objective};
+use roml_highs::HighsAdapter;
 
-    let mut model = roml::Model::new();
-    // ...
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = Model::new();
+
+    let x = model.add_var();
+    let y = model.add_var();
+    let price = model.add_parameter(1.0);
+
+    constrain!(model, x + y <= 4.0)?;
+    constrain!(model, x <= 3.0)?;
+    constrain!(model, between: 0.0, y, 3.0)?;
+
+    let obj = set_objective!(model, maximize: price * x + y + 2.0)?;
+
+    model.set_parameter(price, 3.0);
+    model.commit();
+
+    let mut adapter = HighsAdapter::new();
+    let solution = adapter.solve_model(&mut model)?;
+
+    assert!(solution.is_optimal());
     Ok(())
 }
 ```
 
-If the configuration file cannot be found or parsed, `init_logging` returns an
-error which your application can handle according to its policy (tests may
-ignore it).
-
-## Usage
-
-ROML now exposes three complementary modeling layers:
-
-- Explicit low-level APIs such as `add_constraint`, `add_coeff`, and `add_objective_coefficient`
-- Fluent builder APIs such as `.le(...)`, `.between(...)`, `.maximize()` and `Model::constrain(...)`
-- Optional macros for math-like call sites such as `constraint!(x + y <= 4.0)` and effectful wrappers such as `constrain!(model, x + y <= 4.0)`
-
-Typical end-to-end usage with the HiGHS adapter looks like this:
-
-```rust
-use roml::prelude::*;
-use roml::{constrain, constraint, objective, set_objective};
-use roml_highs::HighsAdapter;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let mut model = Model::new();
-
-  let x = model.add_var();
-  let y = model.add_var();
-  let price = model.add_parameter(1.0);
-
-  constrain!(model, x + y <= 4.0)?;
-  constrain!(model, x <= 3.0)?;
-  constrain!(model, between: 0.0, y, 3.0)?;
-
-  let obj = set_objective!(model, maximize: price * x + y + 2.0)?;
-
-  model.set_parameter(price, 3.0);
-  model.commit();
-
-  let mut adapter = HighsAdapter::new();
-  let solution = adapter.solve_model(&mut model)?;
-
-  assert_eq!(model.objective_constant(obj), Some(2.0));
-  assert!(solution.is_optimal());
-  Ok(())
-}
-```
-
-If you prefer the method-based API, the same constraint and objective setup can be written without macros:
+If you prefer the method-based API without macros:
 
 ```rust
 use roml::prelude::*;
@@ -99,41 +63,67 @@ assert_eq!(model.objective_constant(obj), Some(5.0));
 # Ok::<(), roml::ModelError>(())
 ```
 
-## Parameters And Transactions
+## Parameters and Transactions
 
-Parameter updates are intentionally queued.
+Parameter updates are intentionally queued:
 
 - `set_parameter` records pending changes in the current transaction.
-- `commit` applies the queued parameter values and propagates them to dependent coefficients as one batch.
-- `drain_changes` will auto-commit pending parameter updates and emit a warning if you forgot to commit explicitly.
+- `commit` applies the queued parameter values and propagates them to dependent
+  coefficients as one batch.
+- `drain_changes` will auto-commit pending parameter updates and emit a warning
+  if you forgot to commit explicitly.
 
-That behavior is deliberate: it keeps bulk parameter updates explicit today and leaves room for future transaction-level optimization work.
+## Logging
 
-## HiGHS Setup
+The core crate emits log events via the `log` facade. Applications choose their
+own logger implementation (e.g., `env_logger`, `log4rs`). ROML no longer
+initializes a global logger, writes files, or reads configuration — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for development logging setup.
 
-The `roml-highs` crate no longer hardcodes a machine-specific library path. You must choose one of these setup modes when building the HiGHS adapter:
+## Backend Setup
 
-1. Link an existing HiGHS install by setting one of:
-  - `HIGHS_ROOT=/path/to/highs/install/prefix`
-  - `HIGHS_LIB_DIR=/path/to/directory/containing/libhighs`
-2. Build HiGHS from source by setting:
-  - `HIGHS_SOURCE_DIR=/path/to/highs/source/tree`
+### HiGHS
 
-Optional knobs:
+The `roml-highs` crate supports two build modes:
 
-- `HIGHS_EXTRA_LIB_DIRS` for additional library search directories. Use your platform path separator, for example `dir1:dir2` on macOS/Linux.
-- `HIGHS_EXTRA_LIBS` for extra link libraries such as `openblas,z,pthread,dl,m` when your HiGHS build needs them.
-- `HIGHS_BUILD_SHARED=ON|OFF` when building from source. The build script defaults this to `ON`.
-
-Examples:
+1. **Link an existing install** — set `HIGHS_ROOT` or `HIGHS_LIB_DIR`.
+2. **Build from source** — set `HIGHS_SOURCE_DIR=/path/to/HiGHS`.
 
 ```bash
 # Link an existing install
 HIGHS_ROOT=/opt/homebrew/opt/highs cargo test -p roml-highs
 
-# Link a specific library directory and add extra libs
-HIGHS_LIB_DIR=/custom/highs/lib HIGHS_EXTRA_LIBS=openblas,z cargo test -p roml-highs
-
-# Build from source with cmake
+# Build from source
 HIGHS_SOURCE_DIR=$HOME/src/HiGHS cargo test -p roml-highs
 ```
+
+Optional environment variables: `HIGHS_EXTRA_LIB_DIRS`, `HIGHS_EXTRA_LIBS`,
+`HIGHS_BUILD_SHARED`.
+
+### MOSEK and Xpress
+
+MOSEK and Xpress adapters require separately licensed solver installations and
+are not yet qualified for publication. They remain `publish = false` and
+experimental during the current release program.
+
+## Building
+
+```bash
+# Core (no solver required)
+cargo build -p roml
+cargo test -p roml --all-targets
+
+# With HiGHS (requires native library)
+cargo build -p roml-highs
+cargo test -p roml-highs
+```
+
+## License
+
+License decision pending owner confirmation. The recommended license is
+`MIT OR Apache-2.0`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and workflow.
+Security issues: see [SECURITY.md](SECURITY.md).
