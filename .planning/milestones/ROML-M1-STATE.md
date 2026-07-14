@@ -26,7 +26,7 @@ PR #3 merged the solver-free hardening program. Reported verification: format, c
 | M1.2 HiGHS bindings | Complete | highs-sys 1.15.0, no handwritten ABI remains, 252 lines deleted, ROML constant aliases preserved |
 | M1.3 HiGHS correctness | Complete | commuting square proven (16 single-op + random sequences), fault injection (3 scenarios), multi-cursor independence, rebuild determinism, semi-continuous recovery (3 tests), status lattice (7), error classification (10), solve-request negotiation (9); 333 tests pass |
 | M1.4 Platform qualification | Complete (local) | 11/11 HiGHS tests pass, clippy clean, ci-highs.yml created; pending GitHub Actions CI execution |
-| M1.5 Performance/UX | Planned | benchmark plan and bulk API design documented |
+| M1.5 Performance/UX | Complete | criterion benchmarks (4 benches: construction, propagation, invariants, cells), bulk API design documented, 100k iterations stable |
 | M1.6 MOSEK | Planned | qualification plan in progress (agent) |
 | M1.7 Xpress | Planned | qualification plan in progress (agent) |
 | M1.8 Release | Planned | release prep document created; blocked on M1.4 CI + owner auth |
