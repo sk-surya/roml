@@ -21,7 +21,7 @@ PR #3 merged the solver-free hardening program. Reported verification: format, c
 
 | Phase | Status | Blocking gate |
 |---|---|---|
-| M1.0 Admission | Ready | license/name owner decisions |
+| M1.0 Admission | Complete | licenses committed, support labels corrected, ignored tests reconciled, SDK inventory done; name ownership pending crates.io access |
 | M1.1 Contract freeze | Not started | none after admission |
 | M1.2 HiGHS bindings | Not started | M1.1 |
 | M1.3 HiGHS correctness | Not started | M1.2 |
