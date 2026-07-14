@@ -12,6 +12,7 @@ pub struct IndexMap<Id: Hash + Eq + Copy> {
     id_to_idx: HashMap<Id, i32>,
 }
 
+#[allow(dead_code)]
 impl<Id: Hash + Eq + Copy> IndexMap<Id> {
     pub fn new() -> Self {
         Self {

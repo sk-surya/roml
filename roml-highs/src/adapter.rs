@@ -22,7 +22,7 @@ use roml::model::variable::VarType;
 use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
 use roml::solver::{SolverAdapter, SolverError, SolverStatus};
 use std::collections::HashMap;
-use std::ffi::{c_char, c_double, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void};
 
 use crate::ffi;
 use crate::ffi::HighsInt;
@@ -156,6 +156,12 @@ impl HighsOptions {
     pub fn set(mut self, key: &str, value: impl Into<HighsOption>) -> Self {
         self.extra.push((key.into(), value.into()));
         self
+    }
+}
+
+impl Default for HighsAdapter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -761,7 +767,7 @@ impl SolverAdapter for HighsAdapter {
         let mut _state_ptr: *mut CallbackState = std::ptr::null_mut();
         if let Some(handler) = self.callback_handler.take() {
             let var_to_col: HashMap<VarId, HighsInt> =
-                self.col_map.iter().map(|(v, c)| (v, c)).collect();
+                self.col_map.iter().collect();
             let col_to_var: HashMap<HighsInt, VarId> = self.col_map.reverse_map();
 
             let cb_state = Box::new(CallbackState {

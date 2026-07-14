@@ -1,3 +1,4 @@
+#![allow(non_snake_case, dead_code)]
 //! HiGHS C API bindings — re-exported from the maintained `highs-sys` crate.
 //!
 //! Prior to M1.2, this file contained handwritten ABI declarations (252 lines
@@ -8,8 +9,6 @@
 //! ROML-specific constant aliases use the known numerical values from the
 //! HiGHS 1.14 C API, verified against both the old handwritten declarations
 //! and the `highs-sys` 1.15.0 generated bindings.
-
-#![allow(non_snake_case)]
 
 // Re-export the authoritative types and functions from highs-sys.
 // This includes: Highs_create, Highs_destroy, Highs_run, Highs_addVar,

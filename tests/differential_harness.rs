@@ -1,4 +1,4 @@
-#![allow(clippy::type_complexity, clippy::approx_constant)]
+#![allow(clippy::type_complexity, clippy::approx_constant, clippy::needless_range_loop)]
 //! Differential test harness — proves the commuting square property
 //! using the `ReferenceBackend` as the reference implementation.
 //!
