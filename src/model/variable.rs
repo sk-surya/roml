@@ -79,6 +79,7 @@ impl Default for Bounds {
 
 /// Internal data for a variable.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct VariableData {
     /// Variable bounds.
     pub bounds: Bounds,
@@ -108,6 +109,8 @@ pub(crate) struct VariableStore {
     arena: IdArena<VariableData>,
 }
 
+/// Methods used by Model.
+#[allow(dead_code)]
 impl VariableStore {
     /// Create an empty variable store.
     pub fn new() -> Self {

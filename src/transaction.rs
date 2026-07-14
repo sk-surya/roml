@@ -42,6 +42,7 @@ use crate::sync::SyncCoordinator;
 /// * `RevisionOverflow` — the revision counter would overflow `u64::MAX`.
 /// * `RevisionError` — an error from the revision/journal subsystem.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub enum TransactionError {
     /// The transaction has no staged operations.
     EmptyTransaction,
@@ -96,6 +97,7 @@ impl From<RevisionError> for TransactionError {
 /// * `rollback()` drops the operations without side effects (the same as
 ///   dropping the transaction).
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct StagingTransaction {
     /// The revision at which this transaction was created.
     from_revision: ModelRevision,
@@ -103,6 +105,7 @@ pub struct StagingTransaction {
     ops: Vec<ModelOp>,
 }
 
+#[allow(dead_code)]
 impl StagingTransaction {
     /// Create a new staging transaction at the given revision.
     ///
@@ -139,6 +142,7 @@ impl StagingTransaction {
     }
 
     /// The revision at which this transaction was created.
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_revision(&self) -> ModelRevision {
         self.from_revision
     }
@@ -218,11 +222,13 @@ impl StagingTransaction {
 /// }
 /// ```
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ModelTransaction {
     staging: StagingTransaction,
     coordinator: SyncCoordinator,
 }
 
+#[allow(dead_code)]
 impl ModelTransaction {
     /// Create a new model transaction at the current coordinator revision.
     pub fn new(coordinator: SyncCoordinator) -> Self {
@@ -265,6 +271,7 @@ impl ModelTransaction {
     }
 
     /// The revision at which this transaction was created.
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_revision(&self) -> ModelRevision {
         self.staging.from_revision()
     }

@@ -22,6 +22,9 @@ pub(crate) struct Transaction {
     pending: HashMap<ParamId, f64>,
 }
 
+/// Methods used by Model.
+/// Methods used by Model.
+#[allow(dead_code)]
 impl Transaction {
     /// Create a new empty transaction.
     pub fn new() -> Self {

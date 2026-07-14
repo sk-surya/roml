@@ -89,6 +89,8 @@ pub(crate) struct CoefficientIndex {
     by_cell: HashMap<CellKey, CoeffId>,
 }
 
+/// Methods used by Model and backend adapters.
+#[allow(dead_code)]
 impl CoefficientIndex {
     /// Create an empty coefficient index.
     pub fn new() -> Self {

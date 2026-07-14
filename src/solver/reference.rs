@@ -58,6 +58,8 @@ pub struct ReferenceBackend {
     pub objective_cells: HashMap<CellKey, (ValueExpr, f64, f64)>,
 }
 
+/// Methods used by backend contract tests and adapters.
+#[allow(dead_code)]
 impl ReferenceBackend {
     /// Create an empty backend.
     pub fn new() -> Self {

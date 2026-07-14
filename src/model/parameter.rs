@@ -4,6 +4,7 @@ use crate::id::{IdArena, ParamId};
 
 /// Internal data for a parameter.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct ParameterData {
     /// Current parameter value.
     pub value: f64,
@@ -27,6 +28,8 @@ pub(crate) struct ParameterStore {
     arena: IdArena<ParameterData>,
 }
 
+/// Methods used by Model.
+#[allow(dead_code)]
 impl ParameterStore {
     /// Create an empty parameter store.
     pub fn new() -> Self {

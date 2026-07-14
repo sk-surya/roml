@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Backend contract tests — shared test suite that every backend adapter must pass.
 //!
 //! These tests use the `ReferenceBackend` as the reference implementation and

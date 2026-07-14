@@ -165,6 +165,8 @@ pub(crate) struct ChangeLog {
     sequence: u64,
 }
 
+/// Methods used by Model and backend adapters.
+#[allow(dead_code)]
 impl ChangeLog {
     /// Create an empty changelog.
     pub fn new() -> Self {

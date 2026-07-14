@@ -15,6 +15,7 @@ pub enum Sense {
 
 /// internal data for an objective.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct ObjectiveData {
     /// Optimization sense.
     pub sense: Sense,
@@ -51,6 +52,8 @@ pub(crate) struct ObjectiveStore {
     active_objective: Option<ObjId>,
 }
 
+/// Methods used by Model.
+#[allow(dead_code)]
 impl ObjectiveStore {
     /// Create a new empty objective store.
     pub fn new() -> Self {

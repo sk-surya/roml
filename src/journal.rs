@@ -29,6 +29,8 @@ pub struct Journal {
     latest_revision: ModelRevision,
 }
 
+/// Methods used by sync coordinator and tests.
+#[allow(dead_code)]
 impl Journal {
     /// Create an empty journal.
     pub fn new() -> Self {
