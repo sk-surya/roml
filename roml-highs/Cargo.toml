@@ -9,6 +9,7 @@ license.workspace = true
 description = "HiGHS solver adapter for roml"
 
 [dependencies]
+highs-sys = "1.15"
 log = { workspace = true }
 roml = { version = "0.1.0", path = ".." }
 
