@@ -17,15 +17,9 @@ fn main() {
     // without requiring DYLD_LIBRARY_PATH.
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "macos" {
-        println!(
-            "cargo:rustc-link-arg=-Wl,-rpath,{}",
-            lib_dir.display()
-        );
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
     } else if target_os == "linux" {
-        println!(
-            "cargo:rustc-link-arg=-Wl,-rpath,{}",
-            lib_dir.display()
-        );
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
     }
 
     println!("cargo:rerun-if-env-changed=XPRESS_DIR");

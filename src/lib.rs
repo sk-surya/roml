@@ -1,29 +1,35 @@
 //! ROML - Rust Optimization Modeling Library
 //!
-//! A production-grade, incremental MILP modeling library that:
+//! A pre-release, incremental MILP modeling library that:
 //! - Supports efficient model mutation
 //! - Cleanly separates model and solver concerns
-//! - Supports multiple solvers (first target: HiGHS)
+//! - Supports multiple solver backends
 //! - Stores and reasons about solutions
 //! - Allows algebraic introspection (slack, infeasibility, evaluation)
 
-pub mod id;
-pub mod model;
-pub mod value_expr;
+pub mod delta;
 pub mod expr;
+pub mod id;
+pub(crate) mod journal;
+pub mod model;
+pub mod revision;
+pub mod snapshot;
 pub mod solution;
 pub mod solver;
-
-mod logging;
+pub mod sync;
+pub(crate) mod transaction;
+pub mod value_expr;
 
 // Re-export commonly used types for public API
-pub use id::{VarId, ConId, ParamId, ObjId, CoeffId};
-pub use model::{Model, Bounds, VarType, ConstraintBounds, Sense, ModelError};
-pub use model::changelog::Change;
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
-pub use value_expr::ValueExpr;
+pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
+pub use model::changelog::Change;
+pub use model::{Bounds, ConstraintBounds, Model, ModelError, Sense, VarType};
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
-pub use solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverModelExt, SolverStatus};
+pub use solver::{
+    LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverModelExt, SolverStatus,
+};
+pub use value_expr::ValueExpr;
 
 /// Build a [`ConstraintSpec`] from math-like tokens.
 ///
@@ -93,15 +99,15 @@ macro_rules! constraint {
 /// ```
 #[macro_export]
 macro_rules! objective {
-	(minimize: $expr:expr) => {
-		$crate::ObjectiveSpec::new($crate::Sense::Minimize, $expr)
-	};
-	(maximize: $expr:expr) => {
-		$crate::ObjectiveSpec::new($crate::Sense::Maximize, $expr)
-	};
-	($($tokens:tt)*) => {
-		compile_error!("objective! expects `minimize: expr` or `maximize: expr`")
-	};
+    (minimize: $expr:expr) => {
+        $crate::ObjectiveSpec::new($crate::Sense::Minimize, $expr)
+    };
+    (maximize: $expr:expr) => {
+        $crate::ObjectiveSpec::new($crate::Sense::Maximize, $expr)
+    };
+    ($($tokens:tt)*) => {
+        compile_error!("objective! expects `minimize: expr` or `maximize: expr`")
+    };
 }
 
 /// Add a constraint to a model from math-like tokens.
@@ -153,41 +159,10 @@ macro_rules! set_objective {
 
 /// Common imports for the fluent modeling API.
 pub mod prelude {
-	pub use crate::{
-		Bounds,
-		Change,
-		CoeffId,
-		ConId,
-		ConstraintBounds,
-		ConstraintExprExt,
-		ConstraintSpec,
-		constrain,
-		LinExpr,
-		Model,
-		ModelError,
-		ObjId,
-		ObjectiveExprExt,
-		ObjectiveSpec,
-		ParamId,
-		Sense,
-		Solution,
-		SolverAdapter,
-		SolverError,
-		SolverModelExt,
-		SolverStatus,
-		set_objective,
-		ValueExpr,
-		VarId,
-		VarType,
-	};
+    pub use crate::{
+        constrain, set_objective, Bounds, Change, CoeffId, ConId, ConstraintBounds,
+        ConstraintExprExt, ConstraintSpec, LinExpr, Model, ModelError, ObjId, ObjectiveExprExt,
+        ObjectiveSpec, ParamId, Sense, Solution, SolverAdapter, SolverError, SolverModelExt,
+        SolverStatus, ValueExpr, VarId, VarType,
+    };
 }
-
-// Logging initialization helper re-exported at crate root for consumers that
-// want to configure logging via a `log4rs.yaml` file.  This function will
-// attempt to load the configuration from the path given by the
-// `LOG4RS_CONFIG` environment variable, falling back to `log4rs.yaml` in the
-// current working directory.  It returns a `log4rs::Handle` on success so the
-// caller can optionally hold it or ignore it.
-
-pub use logging::init_logging;
-

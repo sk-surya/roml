@@ -17,11 +17,14 @@ use crate::id::ParamId;
 ///
 /// Collects parameter changes and applies them atomically on commit.
 #[derive(Clone, Debug, Default)]
-pub struct Transaction {
+pub(crate) struct Transaction {
     /// Pending parameter changes: ParamId -> new value.
     pending: HashMap<ParamId, f64>,
 }
 
+/// Methods used by Model.
+/// Methods used by Model.
+#[allow(dead_code)]
 impl Transaction {
     /// Create a new empty transaction.
     pub fn new() -> Self {

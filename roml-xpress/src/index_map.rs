@@ -13,7 +13,9 @@ pub struct IndexMap<Id: Hash + Eq + Copy> {
 
 impl<Id: Hash + Eq + Copy> IndexMap<Id> {
     pub fn new() -> Self {
-        Self { id_to_idx: HashMap::new() }
+        Self {
+            id_to_idx: HashMap::new(),
+        }
     }
 
     pub fn insert(&mut self, id: Id, idx: i32) {

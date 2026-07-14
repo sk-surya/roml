@@ -61,13 +61,13 @@ extern "C" {
         highs: *mut c_void,
         from_col: HighsInt,
         to_col: HighsInt,
-        cost: *const c_double
+        cost: *const c_double,
     ) -> HighsInt;
     pub fn Highs_changeColsCostBySet(
         highs: *mut c_void,
         num_set_entries: HighsInt,
         set: *const HighsInt,
-        cost: *const c_double
+        cost: *const c_double,
     ) -> HighsInt;
     pub fn Highs_changeColIntegrality(
         highs: *mut c_void,
@@ -163,32 +163,32 @@ pub type HighsCCallback = unsafe extern "C" fn(
 #[repr(C)]
 #[derive(Debug)]
 pub struct HighsCallbackDataOut {
-    pub cbdata: *mut c_void,                    // offset   0, size  8
-    pub log_type: c_int,                         // offset   8, size  4
+    pub cbdata: *mut c_void, // offset   0, size  8
+    pub log_type: c_int,     // offset   8, size  4
     //                                            // padding          4
-    pub running_time: c_double,                  // offset  16, size  8
-    pub simplex_iteration_count: HighsInt,        // offset  24, size  4
-    pub ipm_iteration_count: HighsInt,            // offset  28, size  4
-    pub pdlp_iteration_count: HighsInt,           // offset  32, size  4
+    pub running_time: c_double,            // offset  16, size  8
+    pub simplex_iteration_count: HighsInt, // offset  24, size  4
+    pub ipm_iteration_count: HighsInt,     // offset  28, size  4
+    pub pdlp_iteration_count: HighsInt,    // offset  32, size  4
     //                                            // padding          4
-    pub objective_function_value: c_double,       // offset  40, size  8
-    pub mip_node_count: i64,                      // offset  48, size  8
-    pub mip_total_lp_iterations: i64,             // offset  56, size  8
-    pub mip_primal_bound: c_double,               // offset  64, size  8
-    pub mip_dual_bound: c_double,                 // offset  72, size  8
-    pub mip_gap: c_double,                        // offset  80, size  8
-    pub mip_solution: *mut c_double,              // offset  88, size  8
-    pub mip_solution_size: HighsInt,              // offset  96, size  4
-    pub cutpool_num_col: HighsInt,                // offset 100, size  4
-    pub cutpool_num_cut: HighsInt,                // offset 104, size  4
-    pub cutpool_num_nz: HighsInt,                 // offset 108, size  4
-    pub cutpool_start: *mut HighsInt,             // offset 112, size  8
-    pub cutpool_index: *mut HighsInt,             // offset 120, size  8
-    pub cutpool_value: *mut c_double,             // offset 128, size  8
-    pub cutpool_lower: *mut c_double,             // offset 136, size  8
-    pub cutpool_upper: *mut c_double,             // offset 144, size  8
+    pub objective_function_value: c_double, // offset  40, size  8
+    pub mip_node_count: i64,                // offset  48, size  8
+    pub mip_total_lp_iterations: i64,       // offset  56, size  8
+    pub mip_primal_bound: c_double,         // offset  64, size  8
+    pub mip_dual_bound: c_double,           // offset  72, size  8
+    pub mip_gap: c_double,                  // offset  80, size  8
+    pub mip_solution: *mut c_double,        // offset  88, size  8
+    pub mip_solution_size: HighsInt,        // offset  96, size  4
+    pub cutpool_num_col: HighsInt,          // offset 100, size  4
+    pub cutpool_num_cut: HighsInt,          // offset 104, size  4
+    pub cutpool_num_nz: HighsInt,           // offset 108, size  4
+    pub cutpool_start: *mut HighsInt,       // offset 112, size  8
+    pub cutpool_index: *mut HighsInt,       // offset 120, size  8
+    pub cutpool_value: *mut c_double,       // offset 128, size  8
+    pub cutpool_lower: *mut c_double,       // offset 136, size  8
+    pub cutpool_upper: *mut c_double,       // offset 144, size  8
     pub external_solution_query_origin: HighsInt, // offset 152, size  4
-    //                                            // padding          4
+                                            //                                            // padding          4
 } //                                                total:  160 bytes
 
 /// Compile-time assertion: verify the struct has the expected size on arm64
@@ -200,12 +200,12 @@ const _: () = assert!(core::mem::size_of::<HighsCallbackDataOut>() == 160);
 #[repr(C)]
 #[derive(Debug)]
 pub struct HighsCallbackDataIn {
-    pub user_interrupt: c_int,                // offset   0, size  4
+    pub user_interrupt: c_int, // offset   0, size  4
     //                                          // padding          4
-    pub user_solution: *mut c_double,          // offset   8, size  8
-    pub cbdata: *mut c_void,                   // offset  16, size  8
-    pub user_has_solution: c_int,             // offset  24, size  4
-    pub user_solution_size: HighsInt,          // offset  28, size  4
+    pub user_solution: *mut c_double, // offset   8, size  8
+    pub cbdata: *mut c_void,          // offset  16, size  8
+    pub user_has_solution: c_int,     // offset  24, size  4
+    pub user_solution_size: HighsInt, // offset  28, size  4
 } //                                              total:   32 bytes
 
 const _: () = assert!(core::mem::size_of::<HighsCallbackDataIn>() == 32);

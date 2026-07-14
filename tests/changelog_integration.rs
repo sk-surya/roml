@@ -1,6 +1,6 @@
+use roml::expr::LinExpr;
 use roml::model::{Change, CoefficientTarget};
 use roml::{Bounds, ConstraintBounds, Model, Sense, ValueExpr, VarType};
-use roml::expr::LinExpr;
 
 #[test]
 fn changelog_captures_mutations() {
@@ -23,7 +23,9 @@ fn changelog_captures_mutations() {
     model.set_constraint_active(con, false).unwrap();
 
     let param = model.add_parameter(3.0);
-    let coeff_param = model
+    // Adding param-dependent term for same (con, x) cell combines with
+    // existing coefficient rather than creating a new one.
+    let _ = model
         .add_constraint_coefficient(con, x, ValueExpr::param(param))
         .unwrap();
 
@@ -85,13 +87,16 @@ fn changelog_captures_mutations() {
         Change::ConstraintActivityChanged { con: id, active }
             if id == con && !active
     ));
+    // After canonical cell combining, adding param-dependent term for same
+    // (con, x) combines with the existing coeff: 2.0 + 3.0 = 5.0
     assert!(matches!(
         changes[9],
-        Change::CoefficientAdded { coeff: id, var, target, value }
-            if id == coeff_param
+        Change::CoefficientValueChanged { coeff: id, var, target, old, new }
+            if id == coeff  // same ID as original coefficient
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
-                && (value - 3.0).abs() < f64::EPSILON
+                && (old - 2.0).abs() < f64::EPSILON
+                && (new - 5.0).abs() < f64::EPSILON
     ));
     assert!(matches!(
         changes[10],
@@ -100,14 +105,15 @@ fn changelog_captures_mutations() {
                 && (old - 3.0).abs() < f64::EPSILON
                 && (new - 4.0).abs() < f64::EPSILON
     ));
+    // After parameter change 3→4, cell changes 5.0→6.0
     assert!(matches!(
         changes[11],
         Change::CoefficientValueChanged { coeff: id, var, target, old, new }
-            if id == coeff_param
+            if id == coeff
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
-                && (old - 3.0).abs() < f64::EPSILON
-                && (new - 4.0).abs() < f64::EPSILON
+                && (old - 5.0).abs() < f64::EPSILON
+                && (new - 6.0).abs() < f64::EPSILON
     ));
 }
 
@@ -162,17 +168,14 @@ fn drain_changes_auto_commits_parameters() {
     ));
 }
 
-
 #[test]
 fn indexed_model_with_parameter_arrays() {
     let mut model = Model::new();
 
     // lets call add_variable in a loop to simulate indexed variables
     // and store the ids in a vector
-    let plan_mw: Vec<_> = (0..5)
-        .map(|_| model.add_var())
-        .collect();
-    
+    let plan_mw: Vec<_> = (0..5).map(|_| model.add_var()).collect();
+
     // similarly, create a parameter array for energy prices (generate random numbers)
     let rt_energy_price: Vec<_> = (0..5)
         .map(|_| model.add_parameter(rand::random::<f64>() * 100.0))
@@ -183,10 +186,10 @@ fn indexed_model_with_parameter_arrays() {
         .collect();
 
     // lets create an objective expression that uses these parameters
-    let mut obj_expr = LinExpr::new()
-        .constant(0.0);
+    let mut obj_expr = LinExpr::new().constant(0.0);
     for i in 0..5 {
-        let coeff = ValueExpr::param(rt_energy_price[i]) * ValueExpr::param(rt_energy_price_scaler[i]);
+        let coeff =
+            ValueExpr::param(rt_energy_price[i]) * ValueExpr::param(rt_energy_price_scaler[i]);
         obj_expr = obj_expr.add_term_with(coeff, plan_mw[i]);
     }
 

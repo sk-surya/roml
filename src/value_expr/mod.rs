@@ -1,11 +1,11 @@
 //! Coefficient value expressions.
-//! 
+//!
 //! This module provides an AST for representing coefficient values that can depend
 //! on parameters. When parameters change, all coefficients using these expressions
 //! can be re-evaluated without rebuilding the model.
-//! 
+//!
 //! # Example
-//! 
+//!
 //! // A coefficient that is 2 * param_a * param_b
 //! let expr = ValueExpr::mul(
 //!    ValueExpr::constant(2.0),
@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use crate::id::ParamId;
 
 /// A value expression for coefficient computation.
-/// 
+///
 /// Expression forms an AST that can be evaluated against a parameter store.
 /// They track which parameters they depend on for efficient propagation.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,11 +95,11 @@ impl ValueExpr {
     // ========== Evaluation ==========
 
     /// Evaluate this expression against a parameter lookup function.
-    /// 
+    ///
     /// The `get_param` function should return the current value of a parameter by its ID.
     /// If a parameter is missing, expected behavior is panic!
     pub fn eval<F>(&self, get_param: F) -> f64
-    where 
+    where
         F: Fn(ParamId) -> f64,
     {
         self.eval_recursive(&get_param)
@@ -123,7 +123,7 @@ impl ValueExpr {
     // ========== Dependency Extraction ==========
 
     /// Extract all parameter IDs this expression depends on.
-    /// 
+    ///
     /// Used to build the reverse dependency index for parameter propagation.
     pub fn dependencies(&self) -> HashSet<ParamId> {
         let mut deps = HashSet::new();
@@ -138,7 +138,7 @@ impl ValueExpr {
                 deps.insert(*id);
             }
             Self::Add(l, r) | Self::Sub(l, r) | Self::Mul(l, r) | Self::Div(l, r) => {
-                l.collect_dependencies(deps); 
+                l.collect_dependencies(deps);
                 r.collect_dependencies(deps);
             }
             Self::Neg(inner) => {
@@ -159,9 +159,9 @@ impl ValueExpr {
         match self {
             Self::Constant(_) => false,
             Self::Param(_) => true,
-            Self::Add(l,r) | Self::Sub(l,r) | Self::Mul(l,r) | Self::Div(l,r) => {
+            Self::Add(l, r) | Self::Sub(l, r) | Self::Mul(l, r) | Self::Div(l, r) => {
                 l.has_dependencies() || r.has_dependencies()
-            },
+            }
             Self::Neg(inner) => inner.has_dependencies(),
         }
     }
@@ -493,9 +493,9 @@ mod tests {
             }
         };
 
-        let result1 = expr1.eval(&get_param);
-        let result2 = expr2.eval(&get_param);
-        let result3 = expr3.eval(&get_param);
+        let result1 = expr1.eval(get_param);
+        let result2 = expr2.eval(get_param);
+        let result3 = expr3.eval(get_param);
 
         assert_eq!(result1, 2.0 * 3.0 + 5.0); // 11.0
         assert_eq!(result1, result2);

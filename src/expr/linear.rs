@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use crate::id::{VarId, ConId, ObjId, ParamId};
-use crate::value_expr::ValueExpr;
+use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::model::{ConstraintBounds, Model, ModelError, Sense};
+use crate::value_expr::ValueExpr;
 
 /// Coefficient type in a linear expression term.
-/// 
+///
 /// Can be a constant, a parameter, or a more complex expression.
 #[derive(Clone, Debug)]
 pub enum TermCoeff {
@@ -33,7 +33,6 @@ impl TermCoeff {
             Self::Expr(e) => e.as_constant(),
         }
     }
-    
 }
 
 impl From<f64> for TermCoeff {
@@ -74,16 +73,16 @@ impl Term {
 }
 
 /// A linear expression: sum of terms + constant.
-/// 
+///
 /// Represents: Σ(coeff_i * var_i) + constant
-/// 
+///
 /// # Design
-/// 
+///
 /// LinExpr is a temporary builder. It collects terms and can be compiled
 /// into model coefficients. After compilation, the expression is typically
-/// discarded (not stored in the model), but the user can store them outside 
+/// discarded (not stored in the model), but the user can store them outside
 /// if they want to.
-/// 
+///
 /// Terms with the same variable are automatically combined when compiled.
 #[derive(Clone, Debug, Default)]
 pub struct LinExpr {
@@ -125,7 +124,7 @@ impl LinExpr {
         self
     }
 
-    /// Add a term with any coefficient type that implements Into<TermCoeff>.
+    /// Add a term with any coefficient type that implements `Into<TermCoeff>`.
     pub fn add_term_with(mut self, coeff: impl Into<TermCoeff>, var: VarId) -> Self {
         self.terms.push(Term::new(coeff, var));
         self
@@ -196,11 +195,7 @@ impl LinExpr {
     ///
     /// Creates coefficient entries in the model and returns the constant term
     /// (which should be subtracted from the constraint bounds).
-    pub fn compile_for_constraint(
-        self,
-        model: &mut Model,
-        con: ConId,
-    ) -> Result<f64, ModelError> {
+    pub fn compile_for_constraint(self, model: &mut Model, con: ConId) -> Result<f64, ModelError> {
         let simplified = self.simplify();
 
         for term in simplified.terms {
@@ -214,11 +209,7 @@ impl LinExpr {
     /// Compile this expression into coefficients for an objective.
     ///
     /// Creates coefficient entries in the model and returns the constant offset.
-    pub fn compile_for_objective(
-        self,
-        model: &mut Model,
-        obj: ObjId,
-    ) -> Result<f64, ModelError> {
+    pub fn compile_for_objective(self, model: &mut Model, obj: ObjId) -> Result<f64, ModelError> {
         let simplified = self.simplify();
 
         for term in simplified.terms {
@@ -233,7 +224,7 @@ impl LinExpr {
     ///
     /// Used for solution evaluation and feasibility checking.
     pub fn evaluate<F, G>(&self, get_var: F, get_param: G) -> f64
-    where 
+    where
         F: Fn(VarId) -> f64,
         G: Fn(ParamId) -> f64,
     {
@@ -575,7 +566,11 @@ impl Model {
     /// Add a constraint from a linear expression.
     ///
     /// The expression's constant term is automatically incorporated into the bounds.
-    pub fn add_constraint_expr<E>(&mut self, expr: E, bounds: crate::model::ConstraintBounds) -> Result<ConId, ModelError>
+    pub fn add_constraint_expr<E>(
+        &mut self,
+        expr: E,
+        bounds: crate::model::ConstraintBounds,
+    ) -> Result<ConId, ModelError>
     where
         E: Into<LinExpr>,
     {
@@ -618,7 +613,11 @@ impl Model {
     ///
     /// Returns the objective ID and the constant offset (which should be added
     /// to the objective value when reporting).
-    pub fn add_objective_expr<E>(&mut self, expr: E, sense: crate::model::Sense) -> Result<(ObjId, f64), ModelError>
+    pub fn add_objective_expr<E>(
+        &mut self,
+        expr: E,
+        sense: crate::model::Sense,
+    ) -> Result<(ObjId, f64), ModelError>
     where
         E: Into<LinExpr>,
     {
@@ -724,7 +723,7 @@ mod tests {
         //     .term(3.0, y)
         //     .constant(5.0);
 
-        let expr = LinExpr::from(LinExpr::from_constant(5.0) + x + y);
+        let expr = LinExpr::from_constant(5.0) + x + y;
 
         assert_eq!(expr.num_terms(), 2);
         assert_eq!(expr.get_constant(), 5.0);
@@ -734,10 +733,7 @@ mod tests {
     fn simplify_combines_terms() {
         let x = make_var(0);
 
-        let expr = LinExpr::new()
-            .term(2.0, x)
-            .term(3.0, x)
-            .constant(1.0);
+        let expr = LinExpr::new().term(2.0, x).term(3.0, x).constant(1.0);
 
         let simplified = expr.simplify();
         assert_eq!(simplified.num_terms(), 1);
@@ -749,16 +745,10 @@ mod tests {
         let x = make_var(0);
         let y = make_var(1);
 
-        let expr = LinExpr::new()
-            .term(2.0, x)
-            .term(3.0, y)
-            .constant(1.0);
+        let expr = LinExpr::new().term(2.0, x).term(3.0, y).constant(1.0);
 
         // 2*10 + 3*5 + 1 = 36
-        let result = expr.evaluate(
-            |id| if id == x { 10.0 } else { 5.0 },
-            |_| 0.0,
-        );
+        let result = expr.evaluate(|id| if id == x { 10.0 } else { 5.0 }, |_| 0.0);
 
         assert_eq!(result, 36.0);
     }
@@ -915,7 +905,7 @@ mod tests {
             TermCoeff::Constant(v) => assert_eq!(*v, 1.0),
             TermCoeff::Expr(e) => {
                 // evaluate with arbitrary parameter value
-                let val = e.eval(&|id| if id == p { 5.0 } else { 0.0 });
+                let val = e.eval(|id| if id == p { 5.0 } else { 0.0 });
                 assert_eq!(val, 1.0);
             }
         }
@@ -927,11 +917,11 @@ mod tests {
         let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
         let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
 
-        let expr = LinExpr::new()
-            .term(2.0, x)
-            .term(3.0, y);
+        let expr = LinExpr::new().term(2.0, x).term(3.0, y);
 
-        let con = model.add_constraint_expr(expr, ConstraintBounds::le(10.0)).unwrap();
+        let con = model
+            .add_constraint_expr(expr, ConstraintBounds::le(10.0))
+            .unwrap();
 
         // Should have 2 coefficients
         let coeff_count = model.coefficients.for_constraint(con).count();
@@ -944,11 +934,11 @@ mod tests {
         let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
         let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
 
-        let expr = LinExpr::new()
-            .term(2.0, x)
-            .term(3.0, y);
+        let expr = LinExpr::new().term(2.0, x).term(3.0, y);
 
-        let con = model.add_constraint_expr(expr, ConstraintBounds::le(10.0)).unwrap();
+        let con = model
+            .add_constraint_expr(expr, ConstraintBounds::le(10.0))
+            .unwrap();
 
         let reconstructed = model.constraint_expression(con).unwrap();
         assert_eq!(reconstructed.num_terms(), 2);
@@ -963,7 +953,9 @@ mod tests {
         // Expression: p * x
         let expr = LinExpr::new().term(p, x);
 
-        let con = model.add_constraint_expr(expr, ConstraintBounds::le(100.0)).unwrap();
+        let con = model
+            .add_constraint_expr(expr, ConstraintBounds::le(100.0))
+            .unwrap();
 
         // Coefficient should have value 5.0 (current param value)
         let coeff_id = model.coefficients.for_constraint(con).next().unwrap();

@@ -18,9 +18,9 @@
 //! calls `XPRSinit` with `$XPRESS_DIR/bin` at startup. Alternatively, set
 //! the standard `XPAUTH_PATH` environment variable.
 
+pub mod adapter;
 mod ffi;
 mod index_map;
-pub mod adapter;
 
 pub use adapter::{XpressAdapter, XpressOptions};
 pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};

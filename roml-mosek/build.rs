@@ -27,9 +27,7 @@ fn find_mosek_bindir() -> Result<PathBuf, String> {
         if contains_mosek_library(&path) {
             return Ok(path);
         }
-        return Err(format!(
-            "MOSEK_BINDIR={dir} does not contain libmosek64"
-        ));
+        return Err(format!("MOSEK_BINDIR={dir} does not contain libmosek64"));
     }
 
     if let Some(root) = non_empty_env("MOSEK_ROOT") {
