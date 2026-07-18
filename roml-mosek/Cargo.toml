@@ -3,6 +3,7 @@ name = "roml-mosek"
 version = "0.1.0"
 edition = "2021"
 description = "MOSEK solver adapter for roml"
+publish = false
 
 [dependencies]
 log = "0.4.29"
