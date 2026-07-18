@@ -370,7 +370,7 @@ Plans:
 
 Plans:
 
-- [ ] 10-01-PLAN.md -- Protocol type foundation (import worktree types, create BackendSession traits)
+- [x] 10-01-PLAN.md -- Protocol type foundation (import worktree types, create BackendSession traits)
 - [ ] 10-02-PLAN.md -- Model integration + contract tests (wire SyncCoordinator, remove solve-policy, write contract tests)
 - [ ] 10-03-PLAN.md -- Legacy removal + contract freeze (remove SolverAdapter/SolverModelExt, migrate Solution, write ADR-001)
 
