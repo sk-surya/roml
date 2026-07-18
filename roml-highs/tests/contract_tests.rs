@@ -199,6 +199,7 @@ fn c2_full_rebuild() {
 ///
 /// The operations are ordered so that entities exist before they are
 /// removed or modified. Revision chain: r0 (empty) -> r1 through r18.
+#[allow(unused_assignments)]
 #[test]
 fn c3_incremental_delta() {
     let mut session = create_session();

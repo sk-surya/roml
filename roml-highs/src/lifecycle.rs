@@ -78,12 +78,15 @@ pub struct HighsSession {
     pub(crate) version_string: String,
 
     /// HiGHS major version.
+    #[allow(dead_code)]
     pub(crate) version_major: i32,
 
     /// HiGHS minor version.
+    #[allow(dead_code)]
     pub(crate) version_minor: i32,
 
     /// HiGHS patch version.
+    #[allow(dead_code)]
     pub(crate) version_patch: i32,
 }
 
@@ -198,12 +201,14 @@ impl HighsSession {
     ///
     /// This is a `pub(crate)` accessor used by projection, session,
     /// and solution modules to call HiGHS C API functions.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn raw_ptr(&self) -> *mut c_void {
         self.raw
     }
 
     /// The cached infinity value from `Highs_getInfinity`.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn infinity(&self) -> f64 {
         self.inf

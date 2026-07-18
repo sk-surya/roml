@@ -133,13 +133,6 @@ impl ModelConstants {
     pub fn set_feas_tol(feasibility_tolerance: f64) -> Self {
         Self { feasibility_tolerance }
     }
-
-    // NOTE: we keep the inherent `default` method for backward compatibility,
-    // but the `Default` trait impl above is the one used when models are
-    // constructed via `Model::default()`.
-    pub fn default() -> Self {
-        Self::default()
-    }
 }
 
 impl Model {

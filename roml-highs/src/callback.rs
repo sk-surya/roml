@@ -44,10 +44,12 @@ pub(crate) struct CallbackState {
     /// Pointer to the session's `col_map` (VarId → HiGHS column index).
     pub col_map: *const IndexMap<VarId>,
     /// Pointer to the session's `row_map` (ConId → HiGHS row index).
+    #[allow(dead_code)]
     pub row_map: *const IndexMap<ConId>,
     /// The HiGHS instance handle.
     pub highs_ptr: *mut c_void,
     /// Number of columns in the current model (for solution mapping).
+    #[allow(dead_code)]
     pub num_cols: i32,
     /// Flag set when user requests interruption.
     pub user_interrupt: bool,
@@ -336,15 +338,24 @@ unsafe fn inject_lazy_constraints(
             continue;
         }
 
+        // Validate all VarIds exist in col_map before building the arrays.
+        let mut valid = true;
         let indices: Vec<HighsInt> = cut
             .terms
             .iter()
-            .map(|(var_id, _)| {
-                col_map_ref
-                    .get(*var_id)
-                    .unwrap_or_else(|| panic!("VarId {:?} not found in col_map for lazy constraint", var_id))
+            .map(|(var_id, _)| match col_map_ref.get(*var_id) {
+                Some(idx) => idx,
+                None => {
+                    warn!("VarId {:?} not found in col_map for lazy constraint — skipping cut", var_id);
+                    valid = false;
+                    0 // placeholder, skipped via valid flag
+                }
             })
             .collect();
+
+        if !valid {
+            continue;
+        }
 
         let values: Vec<f64> = cut.terms.iter().map(|(_, val)| *val).collect();
 
@@ -381,6 +392,7 @@ mod tests {
     }
 
     /// A handler that always adds a dummy cut.
+    #[allow(dead_code)]
     struct CutHandler;
 
     impl CallbackHandler for CutHandler {

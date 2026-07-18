@@ -18,6 +18,8 @@
 //! - [`check_semicontinuous`]: Rejection guard for unsupported domains
 //!   (M1R-H7 compliance). Called before any HiGHS state modification.
 
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashMap;
 use std::ffi::c_void;
 
@@ -321,13 +323,10 @@ pub(crate) fn apply_delta_batch(
     // variant carries semi-continuous data, but this loop exists for
     // future-proofing (M1R-H7).
     for op in &batch.operations {
-        match op {
-            ModelOp::AddVariable { .. } => {
-                // ModelOp::AddVariable does not carry semicontinuous_lower.
-                // If a future extension adds semi-continuous data to a
-                // ModelOp, reject it here before any HiGHS state change.
-            }
-            _ => {}
+        if let ModelOp::AddVariable { .. } = op {
+            // ModelOp::AddVariable does not carry semicontinuous_lower.
+            // If a future extension adds semi-continuous data to a
+            // ModelOp, reject it here before any HiGHS state change.
         }
     }
 
