@@ -24,7 +24,7 @@ use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
 use crate::solver::request::{SolveRequest, SolveResult};
-use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, SyncReceipt, Synchronization};
+use crate::solver::session::{BackendFixture, BackendMetadata, BackendSession, SessionHealth, SyncReceipt, Synchronization};
 use crate::sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 use crate::value_expr::ValueExpr;
 
@@ -452,6 +452,23 @@ impl BackendMetadata for ReferenceBackend {
             duals: false,
             reduced_costs: false,
         }
+    }
+}
+
+// ── BackendFixture ────────────────────────────────────────────────────────────
+
+/// Creates fresh [`ReferenceBackend`] sessions for parameterized tests.
+pub struct RefBackendFixture;
+
+impl BackendFixture for RefBackendFixture {
+    type Session = ReferenceBackend;
+
+    fn new_session(&self) -> Result<Self::Session, BackendError> {
+        Ok(ReferenceBackend::new())
+    }
+
+    fn backend_name(&self) -> &str {
+        "ReferenceBackend"
     }
 }
 

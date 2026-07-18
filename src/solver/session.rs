@@ -103,6 +103,23 @@ pub trait CallbackSession {
     fn clear_callback_handler(&mut self) -> Result<(), BackendError>;
 }
 
+/// Factory trait for creating backend sessions in parameterized tests.
+///
+/// Each backend provides a fixture implementation that creates fresh
+/// sessions via [`new_session`] and reports its name via [`backend_name`].
+/// The associated [`Session`](Self::Session) type must implement
+/// [`BackendSession`].
+pub trait BackendFixture {
+    /// The session type this fixture creates.
+    type Session: BackendSession;
+
+    /// Create a new backend session.
+    fn new_session(&self) -> Result<Self::Session, BackendError>;
+
+    /// Human-readable backend name (for diagnostics).
+    fn backend_name(&self) -> &str;
+}
+
 /// Optional trait — backends that expose identity and capability metadata.
 pub trait BackendMetadata {
     /// Human-readable backend name (e.g., "HiGHS 1.9.0").
