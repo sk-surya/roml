@@ -1,357 +1,446 @@
-# ROML Mega Roadmap — Production-Grade Public Release
+# ROML Program Roadmap v2
 
-**Authoritative program base:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
-**Historical audit base:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
-**Current delta audit:** `docs/release/CURRENT_MAIN_DELTA_AUDIT.md`  
-**Execution model:** GSD milestone/phase control + Superpowers TDD, debugging, verification, and review.  
-**Release rule:** no crate publication until Phase 6 has passed and the owner explicitly authorizes the exact release SHA and crate list.
+**Planning date:** 2026-07-17  
+**Canonical planning branch:** `planning/roml-ultra-mega-roadmap-v2`  
+**Main baseline:** `main@ef37c88a6d80775ea69d2ccb986655edeb5789ec`  
+**Inherited M1 candidate:** `planning/roml-M1-native-backends-release`, 20 commits ahead of main when this packet was created  
+**Design authority:** `docs/superpowers/specs/2026-07-17-roml-ultra-mega-program-design.md`
 
-## Dependency graph
+## Program objective
 
-```text
-P0 Baseline and hygiene
- ├──> P1 Core semantic correctness
- │     └──> P2 Revisioned synchronization
- │            └──> P3 Solver boundary and FFI hardening
- │                   └──> P4 Cross-platform CI and backend qualification
- │                          └──> P5 Public API, documentation, packaging
- │                                 └──> P6 Release qualification and staged publication
- └──────────────────────────────────────────────────────────────┘
+Turn ROML from a verified solver-free incremental modeling kernel into a released, cross-platform optimization modeling system with one production-qualified open-source backend, independently gated commercial adapters, industrial modeling completeness, persistent incremental sessions, language boundaries, and an evidence-backed path to 1.0.
 
-P7 Foreign-language ABI foundation begins only after P6 and is not part of v0.1.
-```
+## Truth rule
 
-P1 and selected P4 infrastructure tasks may proceed in parallel after P0, but P3 adapter rewrites must target the P2 synchronization contract rather than preserving the current destructive changelog API. Current Xpress bulk synchronization is useful implementation evidence, not a contract to preserve through accidental event ordering.
+Phase state is accepted only when code, tests, external environment, CI, package artifacts, and independent review all support the claim. A document saying “complete” is not evidence by itself. Ignored, skipped, unavailable, or workspace-only checks are not passing gates.
 
-## Release slices
-
-### Slice A — Trustworthy core
-
-Phases P0–P2. Outcome: a solver-independent crate whose canonical model/domain semantics, solve-request boundary, and revision protocol are correct, portable, and testable without native libraries.
-
-### Slice B — Reference backend
-
-Phases P3–P4, initially HiGHS only. Outcome: generated/maintained bindings, safe lifecycle, portable native build, and incremental-vs-rebuild equivalence on Linux/macOS/Windows.
-
-### Slice C — Public package
-
-Phases P5–P6. Outcome: curated API, complete documentation, reproducible package contents, release evidence, and staged crates.io publication.
-
-### Slice D — Commercial adapters
-
-MOSEK and Xpress graduate independently. They must not block the core/HiGHS release, and they must not inherit a “supported” label merely because they compile on one licensed macOS machine.
-
-## Phase 0 — Baseline, repository hygiene, and release controls
-
-**Goal:** establish a reproducible baseline, remove accidental artifacts, define package ownership, and install fast feedback before semantic refactoring.
-
-**Primary requirements:** R0, R1, R7.2–R7.3, R9.5–R9.6.
-
-**Deliverables:**
-
-- Baseline evidence report for formatting, clippy, tests, docs, package contents, dependency tree, unsafe inventory, public API inventory, and current backend build behavior.
-- Repository cleanup: placeholder Python scaffold, all tracked solver logs, obsolete logging/configuration artifacts, generated/machine-local files, and review of `.claude/settings.json` for public-repository/package appropriateness.
-- Review `MODELING_API.md` for correctness against the planned API; its previous missing-file defect is closed.
-- Dual-license files and manifest metadata recommendation implemented after owner confirmation.
-- Workspace-level package metadata, dependencies, lints, and release profiles.
-- Initial solver-free CI on Linux/macOS/Windows.
-- `cargo deny`, `cargo machete` or equivalent unused-dependency check, `cargo audit`, rustdoc warnings, and package-list checks.
-- Explicit crate publication map: `roml` and `roml-highs` candidate; commercial adapters gated.
-
-**Gate P0:** core builds/tests/docs/packages on all three operating systems without any solver installation; package lists are reviewed; no generated log or placeholder scaffold remains; repository guidance no longer overclaims production readiness.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-00-release-baseline.md`
-
-## Phase 1 — Canonical model and domain semantics
-
-**Goal:** eliminate model-level correctness ambiguity and solver-policy leakage before changing synchronization or adapters.
-
-**Primary requirements:** R2, R4.1–R4.2, R8.3.
-
-**Critical work:**
-
-- Introduce validated numeric/domain types or centralized validation for bounds, coefficients, parameters, tolerances, and expressions.
-- Replace silent invalid-ID behavior with typed failures.
-- Define a unique canonical coefficient cell for each `(CoefficientTarget, VarId)` and algebraically combine all terms into one `ValueExpr`.
-- Replace fragmented semi-continuous state (`VarType` + bounds + side map) with a coherent validated variable-domain representation covering continuous, integer, binary, semi-continuous, and semi-integer semantics.
-- Define duplicate-term, zero-term, parameter dependency, deletion cascade, objective constant, activity, and domain-transition semantics.
-- Move transient solver options out of canonical `Model` state into a solve request/session boundary.
-- Replace “unsupported options are silently ignored” with explicit capability validation and effective-configuration reporting.
-- Remove recursive/default and API inconsistencies.
-- Add an internal `Model::validate()`/invariant checker used by tests and debug paths.
-- Add property tests for random legal model mutations and invalid-input rejection.
-
-**Gate P1:** generated model sequences preserve all invariants; duplicate parametric terms produce the mathematically correct coefficient; variable domains are coherent; no public mutation silently fails; canonical model state contains no transient solver policy.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-01-core-correctness.md`
-
-## Phase 2 — Revisioned snapshots, journals, solve attempts, and recoverable synchronization
-
-**Goal:** replace the single-consumer destructive changelog with a protocol that supports failure recovery, multiple adapters, and immutable solve attempts.
-
-**Primary requirements:** R3, R4.1, R8.1.
-
-**Target protocol:**
+## Program milestone graph
 
 ```text
-ModelRevision r
-CanonicalSnapshot(r)
-DeltaBatch { from: r0, to: r1, operations: [...] }
-AdapterCursor { applied_revision, health }
-SolveRequest { policy, capabilities_required }
-apply(batch) -> Acknowledgement | RequiresRebuild | RecoverableFailure | DirtyFailure
-solve(request) -> SolveResult { effective_configuration, termination, solution }
-rebuild(snapshot) -> Acknowledgement
+Merged predecessor: v0.1 solver-free core hardening (PR #3)
+                  |
+                  v
+ROML-M1R Truth Reset + HiGHS Qualification + v0.1 Release
+                  |
+                  v
+ROML-M2 Industrial Modeling Completeness
+                  |
+                  v
+ROML-M3 Persistent Incremental Runtime
+                  |
+                  v
+ROML-M4 Language and Ecosystem Boundary
+                  |
+                  v
+ROML-M5 1.0 Stability and Governance
 ```
 
-**Critical work:**
+Commercial adapters are independent side trains:
 
-- Define revisions and typed delta batches with explicit ordering guarantees.
-- Keep journal entries replayable until retention policy permits compaction.
-- Give each attached adapter an independent cursor.
-- On apply failure, preserve the model delta and mark adapter state; rebuild from snapshot when needed.
-- Make transactions atomic at the model revision boundary.
-- Make solve requests immutable for one attempt; a failed option/application/solve path cannot consume requested policy or model changes ambiguously.
-- Build a reference in-memory backend to test synchronization independent of native solvers.
-- Establish the core theorem by executable testing: applying all deltas to revision `r` is observationally equivalent to projecting snapshot `r`.
-- Add the current semi-continuous/HiGHS sequence as a mandatory partial-apply regression: ordinary bound application followed by unsupported domain operation must retain replayability and classify adapter health correctly.
+```text
+M1R contract freeze -> MOSEK qualification -> optional commercial release
+                    -> Xpress qualification -> optional commercial release
+```
 
-**Gate P2:** two adapters can independently lag/catch up; injected failures lose no model changes or solve policy; randomized incremental projection equals snapshot rebuild; the semi-continuous partial-apply counterexample is closed.
+Neither commercial train blocks `roml` + `roml-highs`.
 
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-02-revisioned-sync.md`
+# Milestone ROML-M1R — Truth Reset, Native HiGHS Qualification, and v0.1 Release
 
-## Phase 3 — Binding topology, native discovery, and unsafe boundary hardening
+## Mission
 
-**Goal:** isolate all ABI risk, replace handwritten declarations where authoritative bindings exist, and redesign callbacks/lifecycles around official contracts.
+Audit the current unmerged M1 candidate, repair the gap between the new revisioned protocol and the still-public legacy solver path, qualify HiGHS against the actual protocol on supported platforms, and publish only after exact-SHA evidence and owner authorization.
 
-**Primary requirements:** R4, R5, R6.
+## M1R phase graph
 
-**Binding decisions:**
+```text
+M1R-00 Truth reset and candidate admission
+  -> M1R-01 Backend contract migration closure
+       -> M1R-02 HiGHS projection/session rewrite
+            -> M1R-03 Native differential and fault qualification
+                 -> M1R-04 Cross-platform and package qualification
+                      -> M1R-05 Performance and ergonomics acceptance
+                           -> M1R-08 Release candidate and publication
+                                -> M1R-09 Post-release operations
 
-- **HiGHS:** adopt `rust-or/highs-sys` if its generated official-header surface covers required APIs. Upstream missing callback symbols or pin a narrow fork before creating a new ROML sys crate.
-- **MOSEK:** use the official `mosek` crate/API. Remove handwritten enum/function/parameter constants. The current callback implementation is invalid because it mutates the task from inside a callback; redesign as collect/terminate/apply-outside/re-optimize or expose only supported callback capabilities.
-- **Xpress:** create a dedicated binding boundary only after verifying header redistribution and package licensing. Prefer generated bindings plus runtime loading for commercial-library availability, or a link-time sys crate with strict target discovery if runtime loading is unsuitable.
-- Characterize the current Xpress bulk-additive path and migrate its proven optimizations onto typed P2 operations. Require bulk-vs-scalar and incremental-vs-rebuild equivalence plus failure-injection coverage.
-- Add a small internal adapter-support crate/module only for genuinely solver-neutral mechanics such as dense index bookkeeping and revision application scaffolding; do not force solver semantics into false uniformity.
+M1R-01 -> M1R-06 MOSEK independent track [non-blocking]
+M1R-01 -> M1R-07 Xpress independent track [non-blocking]
+```
 
-**Unsafe rules:**
+## Phase M1R-00 — Truth reset and candidate admission
 
-- no panic crossing C;
-- no unchecked null/length assumptions;
-- no ignored return codes;
-- no undocumented `Send`/`Sync`;
-- callback cleanup is RAII and unwind-safe;
-- backend versions and capabilities are queryable;
-- constructors return errors, not asserts/panics;
-- copied SDK enum/control values are forbidden when authoritative generated/official bindings are available.
-
-**Gate P3:** core contains no raw FFI; HiGHS and MOSEK contain no handwritten ABI declarations; callback and lifecycle invariants have dedicated tests and safety comments; Xpress has an approved binding/licensing decision; current batching behavior is either migrated with equivalence evidence or intentionally replaced.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-03-solver-boundaries.md`
-
-## Phase 4 — Cross-platform CI and backend qualification
-
-**Goal:** turn portability from an assumption into an executable support matrix.
-
-**Primary requirements:** R6, R7, R8.
-
-**Matrix:**
-
-| Layer | Linux | macOS | Windows | License |
-|---|---:|---:|---:|---|
-| Core | required | required | required | none |
-| HiGHS build/load/solve | required | required | required | MIT |
-| MOSEK compile/load | required where supported | required where supported | required where supported | install + protected license for solve |
-| Xpress compile/load | required where supported | required where supported | required where supported | install + protected license for solve |
-| MSRV | Linux required | optional smoke | optional smoke | none |
-| Miri/fuzz/sanitizer | scheduled Linux | sanitizer where useful | optional | none |
+**Goal:** establish the exact candidate state and prevent stale completion claims from driving implementation.
 
 **Critical work:**
 
-- Build reusable CI workflows with a fast core lane and backend lanes.
-- Validate both clean-host failure diagnostics and successful native discovery.
-- Test HiGHS bundled/static and optional system discovery modes.
-- Test runtime library resolution without embedding developer-machine rpaths.
-- Separate compile, native load, license acquisition, solve-policy validation, and solve failures.
-- Add randomized differential tests and benchmark smoke thresholds.
-- Add protected self-hosted runner design for commercial solvers without leaking binaries/licenses.
+- inventory every commit/file in the inherited M1 candidate;
+- reconcile its M1.0-M1.5 completion claims against source and executable evidence;
+- classify all 11 ignored tests by current behavior and requirement;
+- verify license file authorization and crates.io name status separately;
+- identify planning/implementation branch contamination and define replay/split strategy;
+- produce requirement-level disposition: accepted, partially satisfied, failed, external-blocked, or superseded;
+- freeze the M1R base SHA and evidence manifest.
 
-**Gate P4:** all required matrix cells are green; unsupported cells are explicitly documented; a clean user environment receives actionable diagnostics rather than linker/runtime mysteries.
+**Gate:** no contradiction remains between `.planning` state, source, tests, CI, and known skipped checks. Candidate work is admitted task-by-task, not wholesale.
 
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-04-cross-platform-ci.md`
+**Packet:** `.planning/phases/00-truth-reset-and-candidate-admission/phase.md`
 
-## Phase 5 — Public API curation, documentation, and package engineering
+## Phase M1R-01 — Backend contract migration closure
 
-**Goal:** make ROML understandable, semver-manageable, and installable by users without repository knowledge.
-
-**Primary requirements:** R0, R1, R9.
+**Goal:** make the revisioned snapshot/delta/session contract the supported public execution path and retire destructive legacy behavior.
 
 **Critical work:**
 
-- Audit every public module/type/field and narrow visibility.
-- Define prelude intentionally; remove implementation stores from stable surface where possible.
-- Add `#![deny(missing_docs)]` when documentation debt is closed.
-- Rewrite/revalidate `MODELING_API.md` against the released canonical-domain, revision, and solve-request contracts.
-- Write architecture, incremental protocol, native backend, migration, troubleshooting, and performance guides.
-- Provide solver-free, HiGHS, incremental-parameter, transactions, solve-request, capability-negotiation, and failure-recovery examples.
-- Establish semver policy and run `cargo-semver-checks` against the release baseline.
-- Add changelog, contributing, security, support, and release documents.
-- Verify docs.rs behavior and package contents for each crate.
+- define the final public `BackendAdapter`/`BackendSession` surface;
+- migrate synchronization from `Change` drain to `DeltaBatch` + cursor acknowledgement;
+- remove model-owned transient solve options;
+- replace best-effort silent option handling with explicit negotiation;
+- unify status/error/solution types; preserve a compatibility shim only if its semantics are safe and loudly deprecated;
+- parameterize the conformance harness for real adapters;
+- remove or close every ignored P1/P2 characterization test;
+- review public docs/examples against the new path.
 
-**Gate P5:** a new Rust user can discover, install, model, synchronize, solve with HiGHS, update parameters, request supported solve policy, and diagnose failures from public documentation alone; public API review has no unintentional exposures.
+**Gate:** supported solve calls cannot lose deltas or policy; no supported API silently ignores options; all required contract tests execute, not ignore.
 
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-05-public-api-packaging.md`
+**Packet:** `.planning/phases/01-backend-contract-migration-closure/phase.md`
 
-## Phase 6 — Release qualification and staged publication
+## Phase M1R-02 — HiGHS projection/session rewrite
 
-**Goal:** produce a defensible release candidate and publish in dependency order only after explicit authorization.
-
-**Primary requirements:** all R0–R9 requirements applicable to the selected release crates.
+**Goal:** make `roml-highs` a safe implementation of the frozen backend contract using authoritative bindings.
 
 **Critical work:**
 
-- Freeze versions and generate a release-candidate evidence bundle.
-- Test crates from packed `.crate` archives in fresh projects/containers, not from workspace paths.
-- Verify dependency publication order and exact versions.
-- Run semver, license, provenance, checksum, docs, examples, benchmark, and compatibility checks.
-- Conduct independent principal-engineer review and unsafe/FFI review.
-- Publish canary/pre-release where appropriate; validate crates.io/docs.rs; then publish stable crates under owner authorization.
-- Tag only the exact verified commit and archive evidence.
+- use pinned `highs-sys` as the ABI owner;
+- replace panic constructors with typed fallible construction;
+- implement snapshot rebuild, typed delta apply, cursor/health transitions, request negotiation, solve, and solution views;
+- check every native return code and pointer/length assumption;
+- define `Send`/`Sync` precisely and remove unjustified unsafe implementations;
+- implement correct statuses including infeasible-or-unbounded ambiguity;
+- expose HiGHS version/build/configuration metadata;
+- support callbacks only through official interfaces for the pinned version.
 
-**Gate P6:** signed checklist, zero unresolved P0/P1 issues, all mandatory CI green, package-consumer smoke tests green, owner authorization recorded.
+**Gate:** no handwritten ABI, no panic-based normal construction, no legacy-only adapter implementation, and unsafe review has no unresolved blocker.
 
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-06-release-qualification.md`
+**Packet:** `.planning/phases/02-highs-projection-session-rewrite/phase.md`
 
-## Phase 7 — Foreign-language ABI foundation (post-v0.1)
+## Phase M1R-03 — Native differential and fault qualification
 
-**Goal:** establish a stable C-facing contract suitable for Python, Java, and .NET wrappers without exporting Rust ABI or arena internals.
+**Goal:** prove that HiGHS incremental behavior equals rebuild behavior and that native failures preserve recovery.
 
-**Primary requirements:** R10.
+**Critical work:**
 
-**Proposed form:**
+- run the shared contract suite against ReferenceBackend and HiGHS;
+- generate seeded legal mutation traces over all admitted operations;
+- compare normalized native model state where queryable and solve observables otherwise;
+- inject failures at each multi-call apply boundary;
+- verify multi-cursor lag/catch-up;
+- close semi-continuous partial-apply recovery;
+- validate statuses, requested/effective options, objective offsets, primal/dual/reduced-cost extraction, and basis lifecycle;
+- archive every failing seed before fixing it.
 
-- `roml-c-api` crate producing `cdylib`/`staticlib`.
-- opaque handles with generation-safe registries;
-- explicit ownership and destroy functions;
-- versioned function table or ABI version negotiation;
-- error objects/status codes with thread-local or caller-owned messages;
-- no unwinding across ABI;
-- bulk array APIs for model construction and updates;
-- stable external IDs independent of Rust slot indices;
-- generated C header and ABI compatibility tests;
-- wrappers layered over the C API rather than directly over internal Rust types.
+**Gate:** commuting-square and deterministic rebuild laws pass for HiGHS; no fault loses replayability; unsupported capabilities reject before ambiguous partial application.
 
-**Start condition:** P6 complete and at least one released Rust/HiGHS version has real-world usage feedback.
+**Packet:** `.planning/phases/03-native-differential-fault-qualification/phase.md`
 
-## Parallel execution map
+## Phase M1R-04 — Cross-platform and package qualification
 
-After P0:
+**Goal:** prove that supported users can build, load, package, and consume ROML + HiGHS without maintainer-machine assumptions.
 
-- **Track A:** P1 core/domain semantics and solve-request boundary.
-- **Track B:** CI scaffolding portions of P4 that do not encode old APIs.
-- **Track C:** external binding/legal research and upstream probes for P3.
-- **Track D:** documentation inventory and examples research for P5, without freezing unstable APIs.
+**Critical work:**
 
-After P1:
+- Linux x86_64, macOS arm64 and x86_64 where runners exist, Windows x86_64, MSRV;
+- bundled/static default and explicit discovered-system mode;
+- target-aware build scripts and clean diagnostics;
+- packed `.crate` consumer projects, locked dependencies, examples, docs, semver, audit, deny, machete;
+- docs.rs-compatible feature topology;
+- scheduled property/fuzz/sanitizer checks;
+- artifact and provenance capture.
 
-- P2 is the critical path.
-- HiGHS binding integration spikes may run in parallel, but adapter implementation waits for the P2 delta contract.
+**Gate:** required matrix is green on clean runners; package consumers use archives rather than workspace paths; support matrix matches evidence.
 
-After P2:
+**Packet:** `.planning/phases/04-cross-platform-package-qualification/phase.md`
 
-- HiGHS, MOSEK, and Xpress adapter work can run as independent worktrees/agents with a frozen backend contract.
-- A separate verifier owns cross-backend equivalence and does not author adapter code.
+## Phase M1R-05 — Performance and ergonomics acceptance
 
-## Program-level stop conditions
+**Goal:** establish a correct, reproducible baseline and remove release-blocking API friction without expanding scope.
 
-Stop and escalate when:
+**Critical work:**
 
-- an official solver contract contradicts the intended generic abstraction;
-- a proprietary license forbids distributing generated bindings or package metadata;
-- an unsafe invariant cannot be expressed and tested;
-- a semantic change would silently alter existing model results;
-- a requested solve policy cannot be represented without silent degradation;
-- a performance optimization requires weakening recoverability or correctness;
-- crates.io name ownership or dependency publication order is unresolved;
-- the implementation agent proposes publishing before P6.
+- separate model construction, parameter propagation, delta compile, native apply, rebuild, solve, and extraction benchmarks;
+- benchmark repeated reoptimization and basis reuse;
+- measure bulk vs scalar projection with equivalence tests;
+- record machine, solver, compiler, dataset, seed, and statistical method;
+- profile allocation/memory for sparse models;
+- run user journeys from public docs and packed crates;
+- document pre-M1 migration and explicit unsupported features.
 
-## Definition of done
+**Gate:** no performance change weakens correctness or recovery; claims are workload-scoped and reproducible; release examples use supported APIs only.
 
-The roadmap is complete when the selected release crates satisfy all mapped requirements, all phase gates have evidence, public claims match tested support, and a fresh consumer can use ROML without relying on the maintainer's macOS paths, solver installations, or implicit knowledge.
+**Packet:** `.planning/phases/05-performance-ergonomics-acceptance/phase.md`
 
-### Phase 1: Baseline, repository hygiene, and release controls
+## Phase M1R-06 — MOSEK independent qualification
 
-**Goal:** [To be planned]
-**Requirements**: TBD
+**Goal:** migrate MOSEK to the official Rust API and honest backend semantics without blocking the open-source release.
+
+**Critical work:**
+
+- official `mosek` crate/API; remove handwritten FFI/build duplication;
+- fallible environment/task/license lifecycle;
+- no task mutation inside callbacks;
+- declare lazy constraints/user cuts unsupported unless official semantics prove otherwise;
+- full contract/differential/fault suite;
+- protected licensed CI separating compile/load/license/solve;
+- independent publish decision.
+
+**Gate:** all M1R requirements for a supported commercial backend pass. Otherwise remain `publish = false` and experimental.
+
+**Packet:** `.planning/phases/06-mosek-independent-qualification/phase.md`
+
+## Phase M1R-07 — Xpress independent qualification
+
+**Goal:** resolve binding redistribution and qualify Xpress without contaminating the main release path.
+
+**Critical work:**
+
+- obtain and record the binding/header redistribution decision;
+- select generated sys crate, runtime loader, official binding, or local-only policy;
+- process-safe init/free and license discovery;
+- migrate legacy `Change` path and bulk adjacency assumptions to typed deltas;
+- prove bulk/scalar and incremental/rebuild equivalence;
+- protected licensed CI;
+- independent publish decision.
+
+**Gate:** legal, binding, semantic, lifecycle, and CI gates all pass. Otherwise remain unpublished.
+
+**Packet:** `.planning/phases/07-xpress-independent-qualification/phase.md`
+
+## Phase M1R-08 — Release candidate and publication
+
+**Goal:** produce and, only with owner authorization, publish a defensible v0.1 release.
+
+**Critical work:**
+
+- freeze exact versions/features/MSRV/support matrix;
+- verify packed consumers in dependency order;
+- run independent correctness, API, unsafe/FFI, security, documentation, and release-operations reviews;
+- generate checksums, SBOM, changelog, migration guide, release notes, and evidence index;
+- publish `roml`, verify crates.io/docs.rs, then publish `roml-highs` against the exact released core version;
+- tag only the exact published commit.
+
+**Gate:** all mandatory checks green, no unresolved P0/P1 finding, exact-SHA owner authorization recorded.
+
+**Packet:** `.planning/phases/08-release-candidate-publication/phase.md`
+
+## Phase M1R-09 — Post-release operations
+
+**Goal:** make the release maintainable rather than a one-time event.
+
+**Critical work:**
+
+- compatibility matrix against supported HiGHS versions;
+- patch/backport/deprecation/security policies;
+- issue templates that capture OS, target, ROML/solver versions, features, build mode, and diagnostics;
+- release rollback/yank procedure;
+- scheduled dependency and native-version probes;
+- first patch-cycle retrospective feeding M2 admission.
+
+**Gate:** operational owners and recurring checks exist; M2 admission decision is evidence-based.
+
+**Packet:** `.planning/phases/09-post-release-operations/phase.md`
+
+# Milestone ROML-M2 — Industrial Modeling Completeness
+
+**Admission:** M1R release and at least one patch-cycle retrospective.
+
+## M2 phases
+
+- **M2-00 Usage-driven requirements reset:** collect real user/maintainer friction; freeze scope.
+- **M2-01 Names, metadata, and stable external identity:** names/tags/metadata without coupling serialized identity to arena slots.
+- **M2-02 Sparse bulk construction and matrix views:** CSR/CSC/triplet ingestion, bulk bounds/types, deterministic inspection.
+- **M2-03 LP/MPS interchange:** import/export round trips, names, objective sense/offset, integer/domain semantics, diagnostics.
+- **M2-04 Advanced linear/MIP constructs:** SOS1/SOS2, indicator constraints, semi-integer, capability fallback policy; no silent reformulation.
+- **M2-05 Basis, warm starts, and solution starts:** solver-neutral request/result contracts with backend-specific capability evidence.
+- **M2-06 Diagnostics and infeasibility:** activity/slack, bound violations, IIS/conflict capability, model explain reports.
+- **M2-07 Model transformation layer:** explicit, inspectable transformations with source mapping and reversible diagnostics.
+- **M2-08 v0.2 qualification:** semver/migration/package/backend evidence.
+
+**Exit:** industrial LP/MILP models can be built/imported, inspected, diagnosed, incrementally solved, and round-tripped without hidden transformations.
+
+# Milestone ROML-M3 — Persistent Incremental Runtime
+
+**Admission:** M2 stable identity and interchange contracts.
+
+## M3 phases
+
+- **M3-00 Session architecture freeze**
+- **M3-01 Journal retention, checkpoints, and compaction**
+- **M3-02 Crash-safe session persistence and replay**
+- **M3-03 Structured cancellation, progress, and event streams**
+- **M3-04 Shadow backend verification and divergence reports**
+- **M3-05 Parallel solve portfolios without canonical-state races**
+- **M3-06 Large-model memory and throughput engineering**
+- **M3-07 Service/process boundary feasibility**
+- **M3-08 v0.3 qualification**
+
+**Exit:** long-lived solve workflows can persist, recover, replay, compare backends, and operate under explicit resource/cancellation contracts.
+
+# Milestone ROML-M4 — Language and Ecosystem Boundary
+
+**Admission:** M3 stable session and serialization identity.
+
+## M4 phases
+
+- **M4-00 Versioned external model/session format**
+- **M4-01 C ABI design and threat model**
+- **M4-02 `roml-c-api` opaque handles and ownership**
+- **M4-03 Generated headers and ABI compatibility tests**
+- **M4-04 Python package and ergonomic modeling layer**
+- **M4-05 Java/.NET feasibility and FFI benchmarks**
+- **M4-06 Binary distribution and native dependency packaging**
+- **M4-07 Cross-language conformance corpus**
+- **M4-08 v0.4 qualification**
+
+**Exit:** Python and future wrappers consume a versioned boundary, not Rust internals.
+
+# Milestone ROML-M5 — 1.0 Stability and Governance
+
+**Admission:** multiple public releases and external usage evidence.
+
+## M5 phases
+
+- **M5-00 Stable-surface inventory and deprecation closure**
+- **M5-01 Semver and compatibility policy freeze**
+- **M5-02 Backend support-tier governance**
+- **M5-03 Performance regression budgets and benchmark lab**
+- **M5-04 Security, unsafe, and supply-chain audit**
+- **M5-05 Maintainer/reviewer ownership and release automation**
+- **M5-06 Documentation and migration consolidation**
+- **M5-07 1.0 release candidate and ecosystem validation**
+- **M5-08 1.0 publication and long-term support operations**
+
+**Exit:** ROML can make a precise, evidence-backed stable API and support promise.
+
+# Parallel execution policy
+
+## Before M1R-01 merge
+
+Only truth audit, test classification, external binding research, CI log inspection, and documentation inventory may run in parallel. No adapter implementation may define its own contract.
+
+## After M1R-01 contract merge
+
+- H: HiGHS implementation
+- D: differential/fault harness adaptation
+- C: CI/package qualification
+- P: benchmark infrastructure
+- M: MOSEK spike
+- X: Xpress legal/binding spike
+- V: independent verifier
+- I: coordinator/integrator
+
+Shared contract files have one owner. Backend workers rebase after contract changes.
+
+# Program stop conditions
+
+Stop and escalate when an official solver contract contradicts the generic abstraction; an ignored test is required for a gate; replayability can be lost; a callback requires unsupported mutation/reentrancy; binding redistribution is unresolved; a build embeds machine paths; a performance change weakens semantics; crate ownership or publication order is unresolved; or publication lacks exact-SHA owner authorization.
+
+# Program definition of done
+
+The program reaches ROML 1.0 only when each admitted milestone has requirement traceability, executable evidence, independent review, honest support labels, reproducible packages, and operational ownership. Future milestone text is not permission to bypass the current milestone gate.
+
+### Phase 9: Truth reset and candidate admission
+
+**Goal:** establish the exact candidate state and prevent stale completion claims from driving implementation
+**Requirements**: M1R-G1–G5
 **Depends on:** None
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 1 to break down)
+- [ ] TBD (run /gsd-plan-phase 9 to break down)
 
-### Phase 2: Canonical model and domain semantics
+### Phase 10: Backend contract migration closure
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 1
+**Goal:** make the revisioned snapshot/delta/session contract the supported public execution path and retire destructive legacy behavior
+**Requirements**: M1R-C1–C8
+**Depends on:** Phase 9
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 2 to break down)
+- [ ] TBD (run /gsd-plan-phase 10 to break down)
 
-### Phase 3: Revisioned snapshots, journals, solve attempts, and recoverable synchronization
+### Phase 11: HiGHS projection/session rewrite
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 2
+**Goal:** make roml-highs a safe implementation of the frozen backend contract using authoritative bindings
+**Requirements**: M1R-H1–H8
+**Depends on:** Phase 10
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 3 to break down)
+- [ ] TBD (run /gsd-plan-phase 11 to break down)
 
-### Phase 4: Binding topology, native discovery, and unsafe boundary hardening
+### Phase 12: Native differential and fault qualification
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 3
+**Goal:** prove that HiGHS incremental behavior equals rebuild behavior and that native failures preserve recovery
+**Requirements**: M1R-Q1–Q5
+**Depends on:** Phase 11
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 4 to break down)
+- [ ] TBD (run /gsd-plan-phase 12 to break down)
 
-### Phase 5: Cross-platform CI and backend qualification
+### Phase 13: Cross-platform and package qualification
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 4
+**Goal:** prove that supported users can build, load, package, and consume ROML + HiGHS without maintainer-machine assumptions
+**Requirements**: M1R-P1–P6
+**Depends on:** Phase 12 (infrastructure may prepare; gate blocked by M1R-03)
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 5 to break down)
+- [ ] TBD (run /gsd-plan-phase 13 to break down)
 
-### Phase 6: Public API curation, documentation, and package engineering
+### Phase 14: Performance and ergonomics acceptance
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 5
+**Goal:** make ROML understandable, measurable, and honest in performance, ergonomics, and support claims
+**Requirements**: M1R-E1–E5
+**Depends on:** Phase 12
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 6 to break down)
+- [ ] TBD (run /gsd-plan-phase 14 to break down)
 
-### Phase 7: Release qualification and staged publication
+### Phase 15: Commercial backend tracks (MOSEK + Xpress)
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 6
+**Goal:** qualify MOSEK and Xpress without contaminating or blocking the main release — non-blocking side track
+**Requirements**: M1R-M1–M2, M1R-X1–X2, M1R-MX3
+**Depends on:** Phase 10
 **Plans:** 0 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 7 to break down)
+- [ ] TBD (run /gsd-plan-phase 15 to break down)
+
+### Phase 16: Release candidate and publication
+
+**Goal:** produce and, only with owner authorization, publish a defensible v0.1 release
+**Requirements**: M1R-R1–R4
+**Depends on:** Phase 14, Phase 15
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 16 to break down)
+
+### Phase 17: Post-release operations
+
+**Goal:** make the release maintainable rather than a one-time event
+**Requirements**: M1R-R5
+**Depends on:** Phase 16
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 17 to break down)

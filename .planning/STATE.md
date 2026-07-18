@@ -1,91 +1,60 @@
-# ROML Release-Hardening State
+# ROML Program State v2
 
-## Current milestone
+**Canonical planning branch:** `planning/roml-ultra-mega-roadmap-v2`  
+**Merged implementation baseline:** `main@ef37c88a6d80775ea69d2ccb986655edeb5789ec`  
+**Inherited candidate:** `planning/roml-M1-native-backends-release`  
+**Current milestone:** ROML-M1R — Truth Reset, Native HiGHS Qualification, and v0.1 Release  
+**Current phase:** M1R-00 — Truth reset and candidate admission
 
-**Milestone:** crates.io production-readiness  
-**Status:** planned; implementation not started  
-**Current phase:** P0 — baseline, repository hygiene, and release controls  
-**Authoritative implementation base:** `82e2ed95545635b628187ba0081fe8c8b03eaafb`  
-**Historical audit base:** `f9ba1921e650b5057bbc4de090a78391f7932a53`
+## State vocabulary
+- **Merged:** present on `main`.
+- **Candidate:** implemented on an unmerged branch.
+- **Locally verified:** commands passed on a named machine/commit.
+- **CI verified:** required hosted/protected jobs passed for the exact commit.
+- **Accepted:** requirement evidence and independent review passed.
+- **Owner-blocked:** technically ready but awaiting an explicit owner decision.
+- **External-blocked:** legal/vendor/infrastructure condition is unresolved.
+- **Released:** published artifact and tag verified against exact evidence.
 
-## Planning branch
+## Established predecessor
+PR #3 merged solver-free hardening: canonical cells, validation/invariants, revision/snapshot/delta foundations, reference synchronization, contract characterization, solver-free CI, package hygiene, and release documentation. This does not establish native backend correctness.
 
-`docs/public-release-production-roadmap`
+## Candidate facts requiring admission
+The inherited candidate is 20 commits ahead of main and contains licenses, `highs-sys` migration, HiGHS CI, differential/recovery/status tests, benchmarks, and commercial qualification plans. Its M1 state ledger marks M1.0–M1.5 complete.
 
-Current `main` was reconciled into this branch through PR #2, merge commit `083cc6d890c59efab9da74c687031cb9ecf27d5b`. The branch contains current implementation source plus planning/governance documents. It is not an implementation branch and is not a release candidate.
+The candidate source still visibly exposes the legacy `SolverAdapter` path, destructive `drain_changes()` synchronization, best-effort silently ignored options, model-owned one-shot solve options, and a HiGHS implementation of the legacy trait with panic-based construction. These are M1R-00 truth-reset findings, not accepted completion.
 
-## Accepted planning assumptions
+## Phase ledger
+| Phase | State | Admission/exit evidence |
+|---|---|---|
+| M1R-00 Truth reset | In progress | candidate manifest, requirement disposition, ignored-test reconciliation, frozen base |
+| M1R-01 Contract closure | Blocked by M1R-00 | supported public path uses delta/cursor/request contract |
+| M1R-02 HiGHS rewrite | Blocked by M1R-01 | authoritative binding + safe session implementation |
+| M1R-03 Native qualification | Blocked by M1R-02 | common conformance, differential traces, fault recovery |
+| M1R-04 Platform/package | Infrastructure may prepare; gate blocked by M1R-03 | clean matrix and packed consumers |
+| M1R-05 Performance/UX | Harness may prepare; acceptance blocked by M1R-03 | reproducible evidence and user journeys |
+| M1R-06 MOSEK | Non-blocking, external/license gated | official API, legal callbacks, protected CI |
+| M1R-07 Xpress | Non-blocking, legal gated | binding decision, lifecycle, protected CI |
+| M1R-08 Release | Blocked | exact-SHA evidence and owner authorization |
+| M1R-09 Operations | Blocked by release | patch/security/compatibility machinery active |
 
-- First release train prioritizes `roml` and `roml-highs`.
-- `roml-mosek` and `roml-xpress` graduate independently and may remain unpublished/experimental.
-- Recommended project license is `MIT OR Apache-2.0`; implementation must obtain owner confirmation before adding license files or changing package metadata.
-- Core remains solver-free; transient `SolveOptions` move out of canonical `Model` state during P1/P2 API redesign.
-- HiGHS should use `rust-or/highs-sys` if required APIs are available or can be upstreamed.
-- MOSEK should use the official `mosek` Rust crate/API.
-- Xpress needs a separate binding/licensing investigation before selecting generated link-time bindings versus runtime loading.
-- The current changelog API is not a compatibility constraint; correctness and multi-adapter recoverability take precedence.
-- Existing Xpress bulk-update behavior should be characterized and migrated to typed delta batches, not preserved through accidental event ordering.
-- Language wrappers are post-v0.1.
+## Owner decisions
+1. Dual license appears committed in the candidate; record explicit owner authorization in M1R-00 evidence.
+2. Verify/control crates.io names `roml` and `roml-highs`.
+3. Approve publication only after M1R-08 evidence.
+4. Approve protected commercial-solver runners only if M1R-06/07 execution is desired.
 
-## Open owner decisions
+## Immediate sequence
+1. Audit every inherited candidate commit and changed file.
+2. Re-run and classify all required commands at the exact candidate head.
+3. Reconcile the 11 ignored tests individually.
+4. Produce requirement disposition and integration/replay plan.
+5. Freeze the public backend contract and remove legacy semantic contradictions.
+6. Only then admit HiGHS implementation work.
 
-These are explicit gates, not requests for immediate clarification:
-
-1. Confirm `MIT OR Apache-2.0` or choose another license before P0 metadata completion.
-2. Confirm whether crates.io names `roml`, `roml-highs`, `roml-mosek`, and `roml-xpress` are owned/available before P6.
-3. Select which commercial adapters, if any, are included in the first published release.
-4. Approve use of protected self-hosted CI runners for licensed solver tests.
-5. Approve publication only after P6 evidence review.
-
-## Immediate next actions
-
-1. Execute Phase 00 exactly as specified against current `main` or a reviewed descendant.
-2. Capture untouched baseline command outputs before cleanup.
-3. Open separate implementation PRs from isolated branches/worktrees.
-4. Keep this planning branch immutable except for reviewed roadmap/audit amendments.
-5. Treat `docs/release/CURRENT_MAIN_DELTA_AUDIT.md` as authoritative for the four commits after the historical audit.
-
-## Known P0/P1 findings already established
-
-- Missing license files and incomplete crates.io metadata.
-- No CI workflows.
-- Root and solver crates mix core/runtime dependencies with logging configuration.
-- Placeholder Python scaffold and generated solver logs are tracked at the root and in backend crates.
-- Handwritten HiGHS, MOSEK, and Xpress ABI declarations/constants.
-- macOS-centric and incomplete native discovery/build scripts.
-- Invalid MOSEK callback strategy mutates a task inside a callback contrary to official guidance.
-- Duplicate parametric terms can map to the same matrix cell with last-write-wins behavior.
-- Model changes are destructively drained before backend acknowledgement.
-- Multiple adapters cannot independently synchronize from one model.
-- Semi-continuous HiGHS application is a concrete partial-apply/lost-delta counterexample.
-- Semi-continuous domain semantics are fragmented across bounds, `VarType`, and a side map.
-- Canonical `Model` owns transient `SolveOptions`, leaking solver policy into the model layer.
-- Unsupported solve options are silently ignored, preventing reliable capability negotiation.
-- One-shot solve options and deltas can be consumed before a failed solve attempt is acknowledged.
-- Constructors and callback bridges contain panic/unchecked-FFI/ignored-return-code risks.
-- `ModelConstants::default()` remains recursively defined.
-- Repository guidance and support claims are stale relative to the current workspace.
-
-## Progress ledger
-
-| Phase | Status | Evidence | Blocking decision |
-|---|---|---|---|
-| P0 | Not started | none | license confirmation before metadata merge |
-| P1 | Not started | none | coherent variable-domain and solve-request API decisions |
-| P2 | Not started | none | journal retention policy can be decided during design |
-| P3 | Not started | none | Xpress binding/licensing decision |
-| P4 | Not started | none | commercial CI runner approval |
-| P5 | Not started | none | public support labels |
-| P6 | Not started | none | explicit publish authorization |
-| P7 | Deferred | none | post-v0.1 |
-
-## State update protocol
-
-After each phase:
-
-- set status and completion commit;
-- link the evidence report;
-- record requirement IDs closed;
-- record deviations and ADR amendments;
-- identify the next unblocked phase;
-- never mark a skipped mandatory check as passing.
+## Non-negotiables
+- Candidate completion labels are not inherited as facts.
+- No ignored test closes a requirement.
+- Commercial backends do not block core + HiGHS.
+- Planning state changes only with exact evidence.
+- No publication or tag without owner authorization.
