@@ -11,7 +11,7 @@
 //! invariants for each call are documented at the call site in the
 //! downstream modules (lifecycle, projection, solution, etc.).
 
-#![allow(non_snake_case)]
+#![allow(non_snake_case, non_upper_case_globals, dead_code)]
 
 pub use highs_sys::*;
 
