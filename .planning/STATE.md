@@ -4,14 +4,14 @@ milestone: v0.1
 milestone_name: milestone
 current_phase: M1R-02 — HiGHS projection/session rewrite
 status: in_progress
-stopped_at: Completed 11-03-PLAN.md
-last_updated: "2026-07-18T08:13:59.709Z"
+stopped_at: Completed 11-04-PLAN.md
+last_updated: "2026-07-18"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 12
-  completed_plans: 11
-  percent: 22
+  completed_plans: 12
+  percent: 25
 ---
 
 # ROML Program State v2
@@ -100,6 +100,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Phase 11 P01 | ~5 min | 3 tasks | 16 files |
 | Phase 11-highs-projection-session-rewrite P02 | 12m | 3 tasks | 2 files |
 | Phase 11-highs-projection-session-rewrite P03 | 45m | 3 tasks | 3 files |
+| Phase 11-highs-projection-session-rewrite P03 | 45m | 3 tasks | 3 files |
 
 ## M1R Base
 
@@ -111,3 +112,10 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 **Evidence:** docs/release/evidence/M1R/M1R-00-ADMISSION.md
 **Test fix branch:** fix/m1r-00-ignored-tests@629ccd3ba5ec06b1569f8320a2a803e6325223eb
 **Phase ledger for M1R-00:** evidence complete -- see M1R-00-ADMISSION.md for requirement disposition
+
+## Decisions
+
+- [Phase ?]: Highs_getRunStatus not available in highs-sys 1.15.0 — pass run_status parameter directly from Highs_run() return value
+- [Phase ?]: Highs_getSolution uses 5-param signature (col_value, col_dual, row_value, row_dual) not 3-param as originally planned
+- [Phase ?]: Version metadata uses Highs_version(), Highs_versionMajor/Minor/Patch instead of Highs_getHighsVersion* family
+- [Phase ?]: Callback handler consumed per solve; user must call set_callback_handler before each solve needing callbacks
