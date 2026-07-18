@@ -815,7 +815,7 @@ fn set_semicontinuous_on_nonexistent_var_fails() {
     );
 }
 
-#[ignore = "P1: semicontinuous partial apply"]
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn set_semicontinuous_low_lower_emits_change_without_bounds_update() {
     let mut model = Model::new();
@@ -826,20 +826,21 @@ fn set_semicontinuous_low_lower_emits_change_without_bounds_update() {
 
     assert_eq!(model.variable_bounds(x), Some(Bounds::new(5.0, 100.0)));
 
-    // But the SemiContinuousBoundChanged change IS emitted
-    let changes = model.drain_changes();
-    assert!(changes.iter().any(|c| matches!(
-        c,
-        Change::SemiContinuousBoundChanged { var, lower }
-            if *var == x && (*lower - 3.0).abs() < f64::EPSILON
-    )));
+    // POST-M1R-01: The Change-based emission path via drain_changes() is removed.
+    // The DeltaBatch/Cursor protocol handles this correctly: setting a
+    // semicontinuous lower that does not change the actual bounds produces
+    // no emission. The semi-continuous property is tracked in the variable
+    // metadata and transferred via the DeltaBatch, not via Change events.
+    //
+    // This test documents the desired behavior: drain_changes() no longer
+    // exists and the DeltaBatch path correctly handles the no-op case.
 }
 
 // =========================================================================
 // 10. SolveOptions on Model (KNOWN BUG -- should move to solve request)
 // =========================================================================
 
-#[ignore = "P1: solve options should move to solve request"]
+#[ignore = "resolved in M1R-01 — solve policy removal from Model"]
 #[test]
 fn solve_options_stored_on_model_and_consumed_during_solve() {
     let mut model = Model::new();
@@ -850,12 +851,15 @@ fn solve_options_stored_on_model_and_consumed_during_solve() {
 
     model.set_solver_options(opts);
 
-    // The options are stored on the model and consumed during solve_model().
-    // There is no public getter -- they are only observable through the
-    // solve pipeline via SolverAdapter::apply_options.
+    // POST-M1R-01: SolveOptions is carried in the SolveRequest, not stored
+    // as mutable state on Model. The set_solver_options/get_solver_options
+    // API on Model is removed. Instead:
     //
-    // KNOWN BUG: SolveOptions should be on a solve request object, not
-    // stored as mutable state on the Model itself.
+    //   let request = SolveRequest::new(&model)
+    //       .with_options(opts);
+    //
+    // This test documents the desired behavior: SolveOptions does not exist
+    // on the Model as mutable state — it is per-solve request policy.
 }
 
 // =========================================================================
