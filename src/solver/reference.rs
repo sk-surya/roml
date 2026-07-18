@@ -22,7 +22,10 @@ use crate::model::coefficient::{CellKey, CoefficientTarget};
 use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
-use crate::sync::{AdapterCursor, ApplyOutcome};
+use crate::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
+use crate::solver::request::{SolveRequest, SolveResult};
+use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, SyncReceipt, Synchronization};
+use crate::sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 use crate::value_expr::ValueExpr;
 
 /// A reference projection of model state (solver-neutral).
@@ -32,6 +35,9 @@ use crate::value_expr::ValueExpr;
 #[derive(Clone, Debug, Default)]
 pub struct ReferenceBackend {
     pub revision: ModelRevision,
+
+    /// Synchronization cursor tracking applied revision and health.
+    pub cursor: AdapterCursor,
 
     /// Variables: id → (bounds, var_type, active)
     pub variables: HashMap<VarId, (Bounds, VarType, bool)>,
@@ -332,6 +338,119 @@ impl ReferenceBackend {
             parameters: params,
             cells,
             objective_cells: obj_cells,
+        }
+    }
+}
+
+// ── BackendSession ──────────────────────────────────────────────────────────────
+
+impl BackendSession for ReferenceBackend {
+    /// Apply a [`Synchronization`] — either a full rebuild from snapshot or
+    /// an incremental delta batch.
+    fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
+        match sync {
+            Synchronization::DeltaBatch(batch) => {
+                // Take cursor out temporarily to avoid borrow conflict with self
+                let mut tmp_cursor = std::mem::take(&mut self.cursor);
+                let result = match self.apply_batch(&batch, &mut tmp_cursor) {
+                    Ok(ApplyOutcome::Applied { .. }) => {
+                        self.cursor = tmp_cursor;
+                        Ok(SyncReceipt {
+                            cursor: self.cursor.clone(),
+                            health: AdapterHealth::Ready,
+                        })
+                    }
+                    Ok(ApplyOutcome::RecoverableFailure { reason }) => {
+                        self.cursor = tmp_cursor;
+                        Err(BackendError::new(reason, ErrorCategory::InvalidInput, HealthEffect::Recoverable))
+                    }
+                    Ok(ApplyOutcome::RequiresRebuild { reason, .. }) => {
+                        self.cursor = tmp_cursor;
+                        Err(BackendError::new(reason, ErrorCategory::Unsupported, HealthEffect::RequiresRebuild))
+                    }
+                    Ok(ApplyOutcome::DirtyFailure { reason }) => {
+                        self.cursor = tmp_cursor;
+                        Err(BackendError::new(
+                            reason,
+                            ErrorCategory::Internal,
+                            HealthEffect::RequiresRebuild,
+                        ))
+                    }
+                    Err(e) => {
+                        self.cursor = tmp_cursor;
+                        Err(BackendError::new(
+                            e.to_string(),
+                            ErrorCategory::Internal,
+                            HealthEffect::Terminal,
+                        ))
+                    }
+                };
+                result
+            }
+            Synchronization::Rebuild(snapshot) => {
+                let mut tmp_cursor = std::mem::take(&mut self.cursor);
+                self.rebuild(&snapshot, &mut tmp_cursor);
+                self.cursor = tmp_cursor;
+                Ok(SyncReceipt {
+                    cursor: self.cursor.clone(),
+                    health: AdapterHealth::Ready,
+                })
+            }
+        }
+    }
+
+    /// ReferenceBackend does not support solve operations.
+    fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
+        Err(BackendError::new(
+            "ReferenceBackend does not support solve operations",
+            ErrorCategory::Unsupported,
+            HealthEffect::None,
+        ))
+    }
+
+    /// Close the session — no-op for the reference backend.
+    fn close(self) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
+// ── SessionHealth ───────────────────────────────────────────────────────────────
+
+impl SessionHealth for ReferenceBackend {
+    fn health(&self) -> AdapterHealth {
+        self.cursor.health
+    }
+
+    fn revision(&self) -> ModelRevision {
+        self.cursor.applied_revision
+    }
+}
+
+// ── BackendMetadata ─────────────────────────────────────────────────────────────
+
+impl BackendMetadata for ReferenceBackend {
+    fn name(&self) -> &str {
+        "ReferenceBackend"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            add_variable: true,
+            add_constraint: true,
+            set_coefficient: true,
+            set_bounds: true,
+            set_objective: true,
+            delete: true,
+            semicontinuous: true,
+            semiinteger: true,
+            parameter_update: true,
+            // All solve flags are false — ReferenceBackend does not solve.
+            lp: false,
+            mip: false,
+            callbacks: false,
+            solution: false,
+            duals: false,
+            reduced_costs: false,
         }
     }
 }
