@@ -393,11 +393,11 @@ Plans:
 **Goal:** prove that HiGHS incremental behavior equals rebuild behavior and that native failures preserve recovery
 **Requirements**: M1R-Q1–Q5
 **Depends on:** Phase 11
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 
-- [ ] 12-01-PLAN.md — BackendSession for ReferenceBackend + BackendFixture + parameterized conformance (Wave 1)
+- [x] 12-01-PLAN.md — BackendSession for ReferenceBackend + BackendFixture + parameterized conformance (Wave 1)
 - [ ] 12-02-PLAN.md — Port differential harness + FaultInjectingBackend + M1R-Q5 solve observables tests (Wave 2)
 - [ ] 12-03-PLAN.md — Independent verification pass (Wave 3)
 

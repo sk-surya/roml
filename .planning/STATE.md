@@ -5,7 +5,7 @@ milestone_name: milestone
 current_phase: M1R-02 — HiGHS projection/session rewrite
 status: in_progress
 stopped_at: Completed 11-04-PLAN.md
-last_updated: "2026-07-18"
+last_updated: "2026-07-18T14:39:52.229Z"
 progress:
   total_phases: 9
   completed_phases: 2
@@ -84,8 +84,8 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 
 ## Session
 
-**Last session:** 2026-07-18T08:13:59.701Z
-**Stopped at:** Completed 11-03-PLAN.md
+**Last session:** 2026-07-18T15:11:47.000Z
+**Stopped at:** Completed 12-01-PLAN.md
 **Resume file:** None
 
 ## Performance Metrics
@@ -100,7 +100,9 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Phase 11 P01 | ~5 min | 3 tasks | 16 files |
 | Phase 11-highs-projection-session-rewrite P02 | 12m | 3 tasks | 2 files |
 | Phase 11-highs-projection-session-rewrite P03 | 45m | 3 tasks | 3 files |
+| Phase 12 P01 | ~31 min | 3 tasks | 8 files |
 | Phase 11-highs-projection-session-rewrite P03 | 45m | 3 tasks | 3 files |
+| Phase 12 P01 | ~31 min | 3 tasks | 8 files |
 
 ## M1R Base
 
