@@ -44,3 +44,29 @@ pub use lifecycle::HighsSession;
 
 /// Re-export key types from `highs-sys` for caller convenience.
 pub use bindings::HighsInt;
+
+// ── BackendFixture ────────────────────────────────────────────────────────────
+
+/// Creates fresh [`HighsSession`] instances for parameterized tests.
+///
+/// Implements [`roml::solver::session::BackendFixture`] so that HiGHS can
+/// run the shared conformance suite alongside ReferenceBackend.
+pub struct HighsFixture;
+
+impl roml::solver::session::BackendFixture for HighsFixture {
+    type Session = HighsSession;
+
+    fn new_session(&self) -> Result<Self::Session, roml::solver::backend::BackendError> {
+        HighsSession::try_new().map_err(|e| {
+            roml::solver::backend::BackendError::new(
+                format!("HighsFixture: {}", e.message),
+                roml::solver::backend::ErrorCategory::LibraryNotFound,
+                roml::solver::backend::HealthEffect::Terminal,
+            )
+        })
+    }
+
+    fn backend_name(&self) -> &str {
+        "HiGHS"
+    }
+}
