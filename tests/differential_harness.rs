@@ -498,5 +498,1280 @@ fn dx_fault_injection_rebuild_recovery() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Section 1–3 and 5–6 will be inserted in Tasks 2 and 3
+// Section 1: Single operation round-trip — 16 tests, one per ModelOp variant
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// For each variant we prove:
+//     project(snapshot r1) == apply(project(snapshot r0), deltas r0→r1)
+// where r0 = empty, r1 = state after applying the single-op batch.
+
+/// Verify the commuting square for a single batch via
+/// `synchronize` instead of direct `rebuild`/`apply_batch` calls:
+///
+/// Path A: rebuild from snapshot at r1
+/// Path B: rebuild from snapshot at r0, then apply delta batch
+/// Both produce identical normalized views.
+fn assert_commuting_square(snap_r0: &ModelSnapshot, snap_r1: &ModelSnapshot, batch: &DeltaBatch) {
+    let mut backend_a = fresh();
+    backend_a
+        .synchronize(Synchronization::Rebuild(snap_r1.clone()))
+        .expect("Path A rebuild should succeed");
+    let view_a = backend_a.normalized_view();
+
+    let mut backend_b = fresh();
+    backend_b
+        .synchronize(Synchronization::Rebuild(snap_r0.clone()))
+        .expect("Path B rebuild should succeed");
+    let receipt = backend_b
+        .synchronize(Synchronization::DeltaBatch(batch.clone()))
+        .expect("Path B delta apply should succeed");
+    assert_eq!(
+        receipt.health,
+        AdapterHealth::Ready,
+        "Path B delta health must be Ready"
+    );
+    let view_b = backend_b.normalized_view();
+
+    assert_eq!(
+        view_a, view_b,
+        "commuting square violated: project(snapshot r{}) != apply(project(snapshot r{}), deltas r{}→r{})",
+        batch.to, batch.from, batch.from, batch.to
+    );
+}
+
+/// Verify the commuting square across multiple sequential batches.
+fn assert_commuting_square_multi(
+    snap_r0: &ModelSnapshot,
+    snap_end: &ModelSnapshot,
+    batches: &[&DeltaBatch],
+) {
+    // Path A: rebuild directly from snapshot at final revision
+    let mut backend_a = fresh();
+    backend_a
+        .synchronize(Synchronization::Rebuild(snap_end.clone()))
+        .expect("Path A final rebuild should succeed");
+    let view_a = backend_a.normalized_view();
+
+    // Path B: rebuild from r0, then apply all batches sequentially
+    let mut backend_b = fresh();
+    backend_b
+        .synchronize(Synchronization::Rebuild(snap_r0.clone()))
+        .expect("Path B initial rebuild should succeed");
+    for batch in batches {
+        backend_b
+            .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "batch r{}→r{} failed: {}",
+                    batch.from, batch.to, e
+                )
+            });
+    }
+    let view_b = backend_b.normalized_view();
+
+    assert_eq!(
+        view_a,
+        view_b,
+        "commuting square violated across {} batches (r{} → r{})",
+        batches.len(),
+        batches.first().map(|b| b.from).unwrap_or(snap_r0.revision),
+        batches.last().map(|b| b.to).unwrap_or(snap_end.revision),
+    );
+}
+
+#[test]
+fn dx_add_variable_round_trip() {
+    let v = var_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let ops = vec![ModelOp::AddVariable {
+        var: v,
+        bounds: Bounds::new(1.0, 10.0),
+        var_type: VarType::Integer,
+    }];
+    let batch = DeltaBatch::new(r0, r1, ops).unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![(v, Bounds::new(1.0, 10.0), VarType::Integer, true, None)],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_remove_variable_round_trip() {
+    let v = var_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: v,
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveVariable { var: v }]).unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r2 = make_snapshot(r2, vec![], vec![], vec![], vec![], vec![]);
+
+    assert_commuting_square_multi(&snap_r0, &snap_r2, &[&batch1, &batch2]);
+}
+
+#[test]
+fn dx_set_variable_bounds_round_trip() {
+    let v = var_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::SetVariableBounds {
+                var: v,
+                bounds: Bounds::new(5.0, 20.0),
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![(v, Bounds::new(5.0, 20.0), VarType::Continuous, true, None)],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_set_variable_active_round_trip() {
+    let v = var_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::SetVariableActive {
+                var: v,
+                active: false,
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![(v, Bounds::NON_NEGATIVE, VarType::Continuous, false, None)],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_set_variable_type_round_trip() {
+    let v = var_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::SetVariableType {
+                var: v,
+                var_type: VarType::Binary,
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![(v, Bounds::NON_NEGATIVE, VarType::Binary, true, None)],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_add_constraint_round_trip() {
+    let c = con_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddConstraint {
+            con: c,
+            bounds: ConstraintBounds::range(10.0, 50.0),
+        }],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![],
+        vec![(c, ConstraintBounds::range(10.0, 50.0), true)],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_remove_constraint_round_trip() {
+    let c = con_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddConstraint {
+            con: c,
+            bounds: ConstraintBounds::le(100.0),
+        }],
+    )
+    .unwrap();
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveConstraint { con: c }]).unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r2 = make_snapshot(r2, vec![], vec![], vec![], vec![], vec![]);
+
+    assert_commuting_square_multi(&snap_r0, &snap_r2, &[&batch1, &batch2]);
+}
+
+#[test]
+fn dx_set_constraint_bounds_round_trip() {
+    let c = con_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(100.0),
+            },
+            ModelOp::SetConstraintBounds {
+                con: c,
+                bounds: ConstraintBounds::ge(50.0),
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![],
+        vec![(c, ConstraintBounds::ge(50.0), true)],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_set_constraint_active_round_trip() {
+    let c = con_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(100.0),
+            },
+            ModelOp::SetConstraintActive {
+                con: c,
+                active: false,
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![],
+        vec![(c, ConstraintBounds::le(100.0), false)],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_set_cell_round_trip() {
+    let v = var_id(0);
+    let c = con_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(100.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c), v),
+                value_expr: ValueExpr::constant(7.5),
+                evaluated_value: 7.5,
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![(v, Bounds::NON_NEGATIVE, VarType::Continuous, true, None)],
+        vec![(c, ConstraintBounds::le(100.0), true)],
+        vec![],
+        vec![],
+        vec![(
+            (CoefficientTarget::Constraint(c), v),
+            ValueExpr::constant(7.5),
+            7.5,
+            vec![],
+        )],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_remove_cell_round_trip() {
+    let v = var_id(0);
+    let c = con_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(100.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c), v),
+                value_expr: ValueExpr::constant(3.0),
+                evaluated_value: 3.0,
+            },
+        ],
+    )
+    .unwrap();
+    let batch2 = DeltaBatch::new(
+        r1,
+        r2,
+        vec![ModelOp::RemoveCell {
+            cell_key: (CoefficientTarget::Constraint(c), v),
+        }],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r2 = make_snapshot(
+        r2,
+        vec![(v, Bounds::NON_NEGATIVE, VarType::Continuous, true, None)],
+        vec![(c, ConstraintBounds::le(100.0), true)],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square_multi(&snap_r0, &snap_r2, &[&batch1, &batch2]);
+}
+
+#[test]
+fn dx_add_objective_round_trip() {
+    let o = obj_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddObjective {
+            obj: o,
+            sense: Sense::Maximize,
+        }],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![],
+        vec![],
+        vec![(o, Sense::Maximize, false, 0.0)],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_remove_objective_round_trip() {
+    let v = var_id(0);
+    let o = obj_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddObjective {
+                obj: o,
+                sense: Sense::Minimize,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+                constant: 0.0,
+            },
+        ],
+    )
+    .unwrap();
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveObjective { obj: o }]).unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r2 = make_snapshot(
+        r2,
+        vec![(v, Bounds::NON_NEGATIVE, VarType::Continuous, true, None)],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square_multi(&snap_r0, &snap_r2, &[&batch1, &batch2]);
+}
+
+#[test]
+fn dx_set_active_objective_round_trip() {
+    let o = obj_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddObjective {
+                obj: o,
+                sense: Sense::Minimize,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o) },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![],
+        vec![],
+        vec![(o, Sense::Minimize, true, 0.0)],
+        vec![],
+        vec![],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_set_objective_cell_round_trip() {
+    let v = var_id(0);
+    let o = obj_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddObjective {
+                obj: o,
+                sense: Sense::Minimize,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(3.5),
+                evaluated_value: 3.5,
+                constant: 10.0,
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(
+        r1,
+        vec![(v, Bounds::NON_NEGATIVE, VarType::Continuous, true, None)],
+        vec![],
+        // constant = 10.0 must match the objective entry constant
+        vec![(o, Sense::Minimize, false, 10.0)],
+        vec![],
+        vec![(
+            (CoefficientTarget::Objective(o), v),
+            ValueExpr::constant(3.5),
+            3.5,
+            vec![],
+        )],
+    );
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+#[test]
+fn dx_set_parameter_round_trip() {
+    let p = param_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::SetParameter {
+            param: p,
+            value: 99.5,
+        }],
+    )
+    .unwrap();
+
+    let snap_r0 = ModelSnapshot::empty(r0);
+    let snap_r1 = make_snapshot(r1, vec![], vec![], vec![], vec![(p, 99.5)], vec![]);
+
+    assert_commuting_square(&snap_r0, &snap_r1, &batch);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 2: Random mutation sequences
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Generate random legal operation sequences with a fixed seed, distribute them
+// across multiple batches, and verify the commuting square at each boundary.
+// Uses `rand` (0.9) with `StdRng` seeded for deterministic reproducibility.
+
+/// Build a `ModelSnapshot` from a `NormalizedView`.
+/// Extracts objective constants directly from the view's `objective_cells`,
+/// using the first cell's constant for each objective.
+fn build_snapshot_from_view(rev: ModelRevision, view: &NormalizedView) -> ModelSnapshot {
+    let mut variables = HashMap::new();
+    for (id, bounds, var_type, active, semi) in &view.variables {
+        variables.insert(*id, (*bounds, *var_type, *active, *semi));
+    }
+
+    let mut constraints = HashMap::new();
+    for (id, bounds, active) in &view.constraints {
+        constraints.insert(*id, (*bounds, *active));
+    }
+
+    // Extract objective constants from the view's objective_cells
+    let mut obj_constants: HashMap<ObjId, f64> = HashMap::new();
+    for (ckey, _val, constant) in &view.objective_cells {
+        if let CoefficientTarget::Objective(oid) = ckey.0 {
+            obj_constants.entry(oid).or_insert(*constant);
+        }
+    }
+
+    let mut objectives = HashMap::new();
+    for (id, sense, active) in &view.objectives {
+        let constant = obj_constants.get(id).copied().unwrap_or(0.0);
+        objectives.insert(*id, (*sense, *active, constant));
+    }
+
+    let mut params = HashMap::new();
+    for (id, value) in &view.parameters {
+        params.insert(*id, *value);
+    }
+
+    // Constraint cells
+    let constraint_cells: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> = view
+        .cells
+        .iter()
+        .map(|(ck, val)| (*ck, ValueExpr::constant(*val), *val, vec![]))
+        .collect();
+
+    // Objective cells — must be included in the snapshot so they survive rebuild
+    let objective_cells_from_view: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> =
+        view.objective_cells
+            .iter()
+            .map(|(ck, val, _constant)| (*ck, ValueExpr::constant(*val), *val, vec![]))
+            .collect();
+
+    // Combine both into the cells parameter for take_snapshot
+    let mut all_cells = constraint_cells;
+    all_cells.extend(objective_cells_from_view);
+
+    take_snapshot(
+        rev,
+        &variables,
+        &constraints,
+        &objectives,
+        &params,
+        &all_cells,
+    )
+}
+
+#[test]
+fn dx_random_mutation_sequences() {
+    use rand::Rng;
+    use rand::SeedableRng;
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+    let r0 = ModelRevision::ZERO;
+
+    // ── Generate random ops across batches ────────────────────────────────
+    let num_batches = 5;
+    let ops_per_batch = 30;
+
+    // Track live entity indices for legal operation generation
+    let mut next_var: u32 = 0;
+    let mut next_con: u32 = 0;
+    let mut next_obj: u32 = 0;
+    let mut next_param: u32 = 0;
+    let mut live_vars: Vec<VarId> = Vec::new();
+    let mut live_cons: Vec<ConId> = Vec::new();
+    let mut live_objs: Vec<ObjId> = Vec::new();
+    let mut live_params: Vec<ParamId> = Vec::new();
+
+    // Generated batches
+    let mut batches: Vec<DeltaBatch> = Vec::new();
+    let mut current_rev = r0;
+
+    for _batch_idx in 0..num_batches {
+        let from = current_rev;
+        let to = current_rev.next().unwrap();
+        let mut ops: Vec<ModelOp> = Vec::new();
+
+        for _ in 0..ops_per_batch {
+            let n_vars = live_vars.len();
+            let n_cons = live_cons.len();
+            let n_objs = live_objs.len();
+            let n_total = n_vars + n_cons + n_objs;
+
+            let add_weight = if n_total < 8 { 50u32 } else { 20u32 };
+            let remove_weight = if n_total > 0 { 10u32 } else { 0u32 };
+            let _mutate_weight = 100u32 - add_weight - remove_weight;
+
+            let roll: u32 = rng.random_range(0..100);
+            let op = if roll < add_weight {
+                gen_add_op(
+                    &mut rng,
+                    &mut next_var,
+                    &mut next_con,
+                    &mut next_obj,
+                    &mut next_param,
+                    &mut live_vars,
+                    &mut live_cons,
+                    &mut live_objs,
+                    &mut live_params,
+                )
+            } else if roll < add_weight + remove_weight {
+                gen_remove_op(&mut rng, &mut live_vars, &mut live_cons, &mut live_objs)
+            } else {
+                gen_mutate_op(&mut rng, &live_vars, &live_cons, &live_objs, &live_params)
+            };
+
+            ops.push(op);
+        }
+
+        if let Some(batch) = DeltaBatch::new(from, to, ops) {
+            batches.push(batch);
+            current_rev = to;
+        }
+    }
+
+    // ── Apply all batches on a reference backend to generate snapshots ────
+    let snap_r0 = ModelSnapshot::empty(r0);
+
+    // For each batch boundary, verify the commuting square.
+    // We rebuild a fresh backend from scratch each time, apply batches
+    // up to boundary j, and compare with rebuilding from a snapshot
+    // at that boundary.
+    let mut tracker_backend = fresh();
+    tracker_backend
+        .synchronize(Synchronization::Rebuild(snap_r0.clone()))
+        .expect("initial tracker rebuild should succeed");
+
+    for (j, batch) in batches.iter().enumerate() {
+        // Apply the batch on the tracker backend
+        tracker_backend
+            .synchronize(Synchronization::DeltaBatch(batch.clone()))
+            .expect("tracker apply should succeed");
+
+        // Extract state from tracker to build a reference snapshot at this revision.
+        let target_rev = batch.to;
+        let tracker_view = tracker_backend.normalized_view();
+
+        // Build a reference snapshot from the tracker's state.
+        let snap_ref = build_snapshot_from_view(target_rev, &tracker_view);
+
+        // Verify: rebuild(rN) == rebuild(r0) + apply(batches[0..=j])
+        let mut snap_backend = fresh();
+        snap_backend
+            .synchronize(Synchronization::Rebuild(snap_ref))
+            .expect("snap path rebuild should succeed");
+        let snap_view = snap_backend.normalized_view();
+
+        let mut seq_backend = fresh();
+        seq_backend
+            .synchronize(Synchronization::Rebuild(snap_r0.clone()))
+            .expect("seq path initial rebuild should succeed");
+        for k in 0..=j {
+            seq_backend
+                .synchronize(Synchronization::DeltaBatch(batches[k].clone()))
+                .unwrap_or_else(|_| panic!("seq apply failed at batch {k}"));
+        }
+        let seq_view = seq_backend.normalized_view();
+
+        assert_eq!(
+            snap_view, seq_view,
+            "commuting square violated at batch boundary {j} (r{} → r{})",
+            batch.from, batch.to
+        );
+    }
+}
+
+/// Generate a random "add" operation.
+#[allow(clippy::too_many_arguments)]
+fn gen_add_op(
+    rng: &mut impl rand::Rng,
+    next_var: &mut u32,
+    next_con: &mut u32,
+    next_obj: &mut u32,
+    next_param: &mut u32,
+    live_vars: &mut Vec<VarId>,
+    live_cons: &mut Vec<ConId>,
+    live_objs: &mut Vec<ObjId>,
+    live_params: &mut Vec<ParamId>,
+) -> ModelOp {
+    let choice: u32 = rng.random_range(0..4);
+    match choice {
+        0 => {
+            let v = var_id(*next_var);
+            *next_var += 1;
+            live_vars.push(v);
+            let lb = rng.random_range(-10.0..10.0);
+            let ub = rng.random_range(lb..=lb + 100.0);
+            let vt = match rng.random_range(0u32..3) {
+                0 => VarType::Continuous,
+                1 => VarType::Integer,
+                _ => VarType::Binary,
+            };
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::new(lb, ub),
+                var_type: vt,
+            }
+        }
+        1 => {
+            let c = con_id(*next_con);
+            *next_con += 1;
+            live_cons.push(c);
+            let typ: u32 = rng.random_range(0..3);
+            match typ {
+                0 => ModelOp::AddConstraint {
+                    con: c,
+                    bounds: ConstraintBounds::le(rng.random_range(-100.0..100.0)),
+                },
+                1 => ModelOp::AddConstraint {
+                    con: c,
+                    bounds: ConstraintBounds::ge(rng.random_range(-100.0..100.0)),
+                },
+                _ => {
+                    let lb = rng.random_range(-50.0..0.0);
+                    let ub = rng.random_range(0.0..50.0);
+                    ModelOp::AddConstraint {
+                        con: c,
+                        bounds: ConstraintBounds::range(lb, ub),
+                    }
+                }
+            }
+        }
+        2 => {
+            let o = obj_id(*next_obj);
+            *next_obj += 1;
+            live_objs.push(o);
+            ModelOp::AddObjective {
+                obj: o,
+                sense: if rng.random_bool(0.5) {
+                    Sense::Minimize
+                } else {
+                    Sense::Maximize
+                },
+            }
+        }
+        _ => {
+            let p = param_id(*next_param);
+            *next_param += 1;
+            live_params.push(p);
+            ModelOp::SetParameter {
+                param: p,
+                value: rng.random_range(-100.0..100.0),
+            }
+        }
+    }
+}
+
+/// Generate a random "remove" operation.
+fn gen_remove_op(
+    rng: &mut impl rand::Rng,
+    live_vars: &mut Vec<VarId>,
+    live_cons: &mut Vec<ConId>,
+    live_objs: &mut Vec<ObjId>,
+) -> ModelOp {
+    let n_vars = live_vars.len();
+    let n_cons = live_cons.len();
+    let n_objs = live_objs.len();
+
+    // Weight toward removing the entity type with the most entries
+    let var_weight = if n_vars > 0 { n_vars as u32 * 2 } else { 0 };
+    let con_weight = if n_cons > 0 { n_cons as u32 } else { 0 };
+    let obj_weight = if n_objs > 0 { n_objs as u32 } else { 0 };
+    let total = var_weight + con_weight + obj_weight;
+
+    if total == 0 {
+        // Fallback: add a variable
+        let v = var_id(next_free_index(live_vars));
+        live_vars.push(v);
+        return ModelOp::AddVariable {
+            var: v,
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        };
+    }
+
+    let roll: u32 = rng.random_range(0..total);
+    if roll < var_weight {
+        let idx = rng.random_range(0..n_vars);
+        let v = live_vars.remove(idx);
+        ModelOp::RemoveVariable { var: v }
+    } else if roll < var_weight + con_weight {
+        let idx = rng.random_range(0..n_cons);
+        let c = live_cons.remove(idx);
+        ModelOp::RemoveConstraint { con: c }
+    } else {
+        let idx = rng.random_range(0..n_objs);
+        let o = live_objs.remove(idx);
+        ModelOp::RemoveObjective { obj: o }
+    }
+}
+
+/// Generate a random "mutate" operation.
+#[allow(clippy::too_many_arguments)]
+fn gen_mutate_op(
+    rng: &mut impl rand::Rng,
+    live_vars: &[VarId],
+    live_cons: &[ConId],
+    live_objs: &[ObjId],
+    live_params: &[ParamId],
+) -> ModelOp {
+    // Collect available mutation categories
+    let has_vars = !live_vars.is_empty();
+    let has_cons = !live_cons.is_empty();
+    let has_objs = !live_objs.is_empty();
+    let has_params = !live_params.is_empty();
+    let has_both = has_vars && has_cons;
+
+    // Build a list of possible mutation types
+    let mut choices: Vec<u32> = Vec::new();
+    if has_vars {
+        choices.push(0); // SetVariableBounds
+        choices.push(1); // SetVariableActive
+        choices.push(2); // SetVariableType
+    }
+    if has_cons {
+        choices.push(3); // SetConstraintBounds
+        choices.push(4); // SetConstraintActive
+    }
+    if has_both {
+        choices.push(5); // SetCell
+    }
+    if has_objs {
+        choices.push(6); // SetActiveObjective (also works without existing obj)
+        if has_vars {
+            choices.push(7); // SetObjectiveCell
+        }
+    }
+    if has_params {
+        choices.push(8); // SetParameter (update existing)
+    }
+
+    if choices.is_empty() {
+        // Fallback: add a parameter
+        let p = param_id(next_free_index_params(live_params));
+        return ModelOp::SetParameter {
+            param: p,
+            value: 0.0,
+        };
+    }
+
+    let pick = choices[rng.random_range(0..choices.len())];
+    match pick {
+        0 => {
+            let v = live_vars[rng.random_range(0..live_vars.len())];
+            let lb = rng.random_range(-10.0..10.0);
+            let ub = rng.random_range(lb..=lb + 100.0);
+            ModelOp::SetVariableBounds {
+                var: v,
+                bounds: Bounds::new(lb, ub),
+            }
+        }
+        1 => {
+            let v = live_vars[rng.random_range(0..live_vars.len())];
+            ModelOp::SetVariableActive {
+                var: v,
+                active: rng.random_bool(0.5),
+            }
+        }
+        2 => {
+            let v = live_vars[rng.random_range(0..live_vars.len())];
+            ModelOp::SetVariableType {
+                var: v,
+                var_type: match rng.random_range(0u32..3) {
+                    0 => VarType::Continuous,
+                    1 => VarType::Integer,
+                    _ => VarType::Binary,
+                },
+            }
+        }
+        3 => {
+            let c = live_cons[rng.random_range(0..live_cons.len())];
+            let typ: u32 = rng.random_range(0..3);
+            match typ {
+                0 => ModelOp::SetConstraintBounds {
+                    con: c,
+                    bounds: ConstraintBounds::le(rng.random_range(-100.0..100.0)),
+                },
+                1 => ModelOp::SetConstraintBounds {
+                    con: c,
+                    bounds: ConstraintBounds::ge(rng.random_range(-100.0..100.0)),
+                },
+                _ => {
+                    let lb = rng.random_range(-50.0..0.0);
+                    let ub = rng.random_range(0.0..50.0);
+                    ModelOp::SetConstraintBounds {
+                        con: c,
+                        bounds: ConstraintBounds::range(lb, ub),
+                    }
+                }
+            }
+        }
+        4 => {
+            let c = live_cons[rng.random_range(0..live_cons.len())];
+            ModelOp::SetConstraintActive {
+                con: c,
+                active: rng.random_bool(0.5),
+            }
+        }
+        5 => {
+            let c = live_cons[rng.random_range(0..live_cons.len())];
+            let v = live_vars[rng.random_range(0..live_vars.len())];
+            let val = rng.random_range(-10.0..10.0);
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c), v),
+                value_expr: ValueExpr::constant(val),
+                evaluated_value: val,
+            }
+        }
+        6 => {
+            let obj_pick: Option<ObjId> = if rng.random_bool(0.7) && !live_objs.is_empty() {
+                Some(live_objs[rng.random_range(0..live_objs.len())])
+            } else {
+                None
+            };
+            ModelOp::SetActiveObjective { obj: obj_pick }
+        }
+        7 => {
+            let o = live_objs[rng.random_range(0..live_objs.len())];
+            let v = live_vars[rng.random_range(0..live_vars.len())];
+            let val = rng.random_range(-10.0..10.0);
+            let constant = rng.random_range(-50.0..50.0);
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(val),
+                evaluated_value: val,
+                constant,
+            }
+        }
+        _ => {
+            let p = live_params[rng.random_range(0..live_params.len())];
+            ModelOp::SetParameter {
+                param: p,
+                value: rng.random_range(-100.0..100.0),
+            }
+        }
+    }
+}
+
+/// Find the next available index for a new entity (for fallback add).
+fn next_free_index(entities: &[VarId]) -> u32 {
+    entities.iter().map(|v| v.index()).max().unwrap_or(0) + 1
+}
+
+fn next_free_index_params(entities: &[ParamId]) -> u32 {
+    entities.iter().map(|p| p.index()).max().unwrap_or(0) + 1
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 3: Multi-adapter cursor independence
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Two ReferenceBackend instances share a SyncCoordinator journal.
+// Cursor A advances fully, cursor B lags.  After catching up, both
+// produce identical normalized views.
+
+#[test]
+fn dx_multi_adapter_cursor_independence() {
+    let v1 = var_id(0);
+    let v2 = var_id(1);
+    let c = con_id(0);
+    let p = param_id(0);
+    let o = obj_id(0);
+
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+    let r3 = r2.next().unwrap();
+
+    // ── Set up coordinator with three batches ────────────────────────────
+    let mut coordinator = SyncCoordinator::new();
+
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v1,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(100.0),
+            },
+            ModelOp::SetParameter {
+                param: p,
+                value: 42.0,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c), v1),
+                value_expr: ValueExpr::param(p),
+                evaluated_value: 42.0,
+            },
+        ],
+    )
+    .unwrap();
+    coordinator.commit_batch(batch1.clone()).unwrap();
+
+    let batch2 = DeltaBatch::new(
+        r1,
+        r2,
+        vec![
+            ModelOp::AddVariable {
+                var: v2,
+                bounds: Bounds::BINARY,
+                var_type: VarType::Binary,
+            },
+            ModelOp::AddObjective {
+                obj: o,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o), v1),
+                value_expr: ValueExpr::param(p),
+                evaluated_value: 42.0,
+                constant: 10.0,
+            },
+        ],
+    )
+    .unwrap();
+    coordinator.commit_batch(batch2.clone()).unwrap();
+
+    let batch3 = DeltaBatch::new(
+        r2,
+        r3,
+        vec![
+            ModelOp::SetActiveObjective { obj: Some(o) },
+            ModelOp::SetVariableBounds {
+                var: v2,
+                bounds: Bounds::new(0.0, 1.0),
+            },
+        ],
+    )
+    .unwrap();
+    coordinator.commit_batch(batch3.clone()).unwrap();
+
+    // ── Backend A: catch up to r3 ────────────────────────────────────────
+    let mut backend_a = fresh();
+    // Initial rebuild from r0
+    backend_a
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("initial rebuild should succeed");
+    let cursor_a = backend_a.cursor.clone();
+    let batches_a = coordinator.batches_for_cursor(&cursor_a).unwrap();
+    for batch in &batches_a {
+        backend_a
+            .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+            .expect("backend A delta should succeed");
+    }
+    assert_eq!(backend_a.cursor.applied_revision, r3);
+    let view_a = backend_a.normalized_view();
+
+    // ── Backend B: initially at r0 (lagging) ─────────────────────────────
+    // 1. Apply first batch only → cursor at r1
+    let mut backend_b = fresh();
+    backend_b
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("backend B initial rebuild should succeed");
+    let cursor_b = backend_b.cursor.clone();
+    let batches_b_at_r0 = coordinator.batches_for_cursor(&cursor_b).unwrap();
+
+    // Apply only batch1
+    backend_b
+        .synchronize(Synchronization::DeltaBatch(batches_b_at_r0[0].clone()))
+        .expect("backend B first delta should succeed");
+    assert_eq!(backend_b.cursor.applied_revision, r1);
+
+    // Verify B's state at r1 is correct by comparing with snapshot rebuild at r1
+    let mut vars_r1 = HashMap::new();
+    vars_r1.insert(v1, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+    let mut cons_r1 = HashMap::new();
+    cons_r1.insert(c, (ConstraintBounds::le(100.0), true));
+    let mut params_r1 = HashMap::new();
+    params_r1.insert(p, 42.0);
+    let objs_r1 = HashMap::new();
+    let cells_r1: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> = vec![(
+        (CoefficientTarget::Constraint(c), v1),
+        ValueExpr::param(p),
+        42.0,
+        vec![p],
+    )];
+    let snap_r1 = take_snapshot(r1, &vars_r1, &cons_r1, &objs_r1, &params_r1, &cells_r1);
+    let mut ref_backend = fresh();
+    ref_backend
+        .synchronize(Synchronization::Rebuild(snap_r1))
+        .expect("ref rebuild should succeed");
+    assert_eq!(
+        backend_b.normalized_view(),
+        ref_backend.normalized_view(),
+        "backend B at r1 should match snapshot rebuild at r1"
+    );
+
+    // 2. Catch up B to r3
+    let cursor_b_at_r1 = backend_b.cursor.clone();
+    let batches_b_at_r1 = coordinator.batches_for_cursor(&cursor_b_at_r1).unwrap();
+    assert_eq!(batches_b_at_r1.len(), 2); // r1→r2, r2→r3
+    for batch in &batches_b_at_r1 {
+        backend_b
+            .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+            .expect("backend B catch-up delta should succeed");
+    }
+    assert_eq!(backend_b.cursor.applied_revision, r3);
+
+    // ── Both backends should now produce identical views ─────────────────
+    assert_eq!(
+        view_a,
+        backend_b.normalized_view(),
+        "fully-caught-up backends must produce identical views"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Sections 5 and 6 will be added in Task 3
 // ═══════════════════════════════════════════════════════════════════════════════
