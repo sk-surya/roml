@@ -93,3 +93,87 @@ The RESEARCH.md `Overall M1 State Verdict` table reported the following dominant
 | M1.5 | Partially Satisfied | Partially Satisfied | No discrepancy |
 
 **Note on M1.2:** The RESEARCH.md verdict "Accepted" matches the fresh verification at the milestone level, but the fresh verification reveals that `ffi.rs` was NOT removed — it was repurposed as a re-export shim (65 lines vs ~252 lines originally). This is a textual detail: the migration DID replace handwritten FFI with highs-sys, but the file remains. The plan's acceptance criteria flagged this as "ffi.rs confirmed removed" which is technically incorrect; the evidence shows ffi.rs persists but with different content. This nuance is documented in task 002 — Legacy Source Patterns (legacy `Change` type still wired through `drain_changes()` which is the actual legacy path).
+
+## Legacy Source Patterns
+
+Each pattern was verified by running `git show` or `git grep` against the candidate
+branch (`planning/roml-M1-native-backends-release`). Line numbers reference the
+file content on that branch.
+
+### Pattern 1: `Model::drain_changes()` (destructive)
+
+- **Definition:** `pub fn drain_changes(&mut self) -> Vec<Change>` at `src/model/mod.rs:747`
+- **References:** 3 total (definition at `:747`, call sites at `:1232` and `src/solver/mod.rs:178`)
+- **Issue:** Destructive synchronization — consumes the changelog irreversibly. No replay
+  or retry possible after `drain_changes()` is called. If the adapter errors during apply
+  (P2-1, P2-2), changes are lost.
+- **Severity:** Critical
+- **M1R Phase:** M1R-01
+- **Note:** This is the destructive synchronization point that the revisioned protocol
+  (`DeltaBatch`, `Journal`, `AdapterCursor`) replaces.
+
+### Pattern 2: `SolverAdapter` trait (public, legacy path)
+
+- **Import:** `use roml::solver::SolverAdapter` at `roml-highs/src/adapter.rs:23`
+- **Implementation:** `impl SolverAdapter for HighsAdapter` at `roml-highs/src/adapter.rs:675`
+- **Exposed in lib.rs doc:** `roml-highs/src/lib.rs:4` references SolverAdapter in module docs
+- **Issue:** Legacy path is still the **public execution path** for HiGHS. The trait's
+  `apply_changes` method takes `&[Change]` — the legacy Change type, not a `DeltaBatch`.
+  All production HiGHS solves go through this path.
+- **Severity:** Critical
+- **M1R Phase:** M1R-01
+- **Note:** Legacy path is still the PUBLIC execution path for HiGHS. M1R-01 replaces
+  this with the revisioned `DeltaBatch`-based protocol.
+
+### Pattern 3: `Model.solver_options` (model-owned solve policy)
+
+- **Field:** `pub(crate) solver_options: Option<SolveOptions>` at `src/model/mod.rs:124`
+- **Setter:** `pub fn set_solver_options()` at `src/model/mod.rs:307-308`
+- **Issue:** Transient solve policy stored in canonical `Model` state alongside the model's
+  structural data. The `SolveRequest` type exists (per M1.1) but the old `solver_options`
+  field persists and is the default path for setting solve options.
+- **Severity:** High
+- **M1R Phase:** M1R-01
+- **Note:** Transient solve policy stored in canonical Model state. M1R-01 removes this
+  field, making `SolveRequest` the exclusive path.
+
+### Pattern 4: Panic-based HiGHS construction
+
+- **Constructor:** `pub fn new()` at `roml-highs/src/adapter.rs:175` (delegates to `with_options`)
+- **`with_options`:** at `roml-highs/src/adapter.rs:180`
+- **Panic paths:**
+  - `assert!(!ptr.is_null(), ...)` at `:182` — panics if `Highs_create()` returns null
+  - `assert_eq!(sz, 4, ...)` at `:186` — panics if HighsInt size is wrong
+  - `.unwrap()` at `:206` — panics if CString conversion fails for option keys
+  - `.unwrap()` at `:218` — panics if CString conversion fails for option values
+- **Doc comment:** Line 173 explicitly says "Panics if `Highs_create()` returns null"
+- **Issue:** Multiple panic paths during normal construction. Violates D-007 (fallible
+  construction). A missing library, wrong HighsInt size, or non-UTF-8 option value crashes
+  the process.
+- **Severity:** High
+- **M1R Phase:** M1R-02
+- **Note:** Violates D-007 (fallible construction). M1R-02 replaces these with typed errors.
+
+### Pattern 5: Legacy `Change` type still wired
+
+- **Definition:** `pub enum Change` at `src/model/changelog.rs:22`
+- **Return type:** `drain_changes()` returns `Vec<Change>` (model/mod.rs:747)
+- **Changelog storage:** `ChangeLog` stores `changes: Vec<Change>` (changelog.rs:163)
+- **Usage:** `pub use changelog::Change` re-exported at model/mod.rs:19
+- **Issue:** The `Change` type is the data type of the legacy destructive path. Every
+  `Change::*` variant corresponds to a model operation that the revisioned protocol
+  represents as a `DeltaBatch` with typed operations. The entire Change enum goes away
+  with M1R-01.
+- **Severity:** Critical
+- **M1R Phase:** M1R-01
+- **Note:** The Change-based path goes away with M1R-01 (`DeltaBatch` replacement).
+
+### Legacy Pattern Summary Table
+
+| Pattern | Location | Line | Severity | M1R Phase to Address |
+|---------|----------|------|----------|----------------------|
+| drain_changes | src/model/mod.rs | 747 | Critical | M1R-01 |
+| SolverAdapter trait | roml-highs/src/adapter.rs | 675 (impl) | Critical | M1R-01 |
+| Model.solver_options | src/model/mod.rs | 124 | High | M1R-01 |
+| Panic construction | roml-highs/src/adapter.rs | 182, 186, 206, 218 | High | M1R-02 |
+| Legacy Change type | src/model/changelog.rs | 22 | Critical | M1R-01 |
