@@ -2,15 +2,14 @@
 name = "roml-highs"
 version = "0.1.0"
 edition = "2021"
-description = "HiGHS solver adapter for roml"
+description = "HiGHS solver backend for roml"
 
 [dependencies]
-log = "0.4.29"
-log4rs = "1.4.0"
+highs-sys = "1.15"
+log = "0.4"
 roml = { path = ".." }
-serde_yaml = "0.9"
 
-[build-dependencies]
-cmake = "0.1"
-
-[dev-dependencies]
+[features]
+default = ["bundled"]
+bundled = []
+system = []
