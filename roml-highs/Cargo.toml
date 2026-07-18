@@ -7,7 +7,7 @@ description = "HiGHS solver backend for roml"
 [dependencies]
 highs-sys = "1.15"
 log = "0.4"
-roml = { path = ".." }
+roml = { path = "..", version = "0.1.0" }
 
 [features]
 default = ["bundled"]
