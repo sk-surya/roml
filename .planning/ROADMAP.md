@@ -379,25 +379,27 @@ Plans:
 **Goal:** make roml-highs a safe implementation of the frozen backend contract using authoritative bindings
 **Requirements**: M1R-H1–H8
 **Depends on:** Phase 10
-**Plans:** 4 plans
+**Plans:** 4/4 plans executed
 
 Plans:
 
-- [ ] 11-01-PLAN.md — Foundation: binding authority, fallible lifecycle, module structure (Wave 1)
-- [ ] 11-02-PLAN.md — Projection: snapshot rebuild, delta application, callback bridge (Wave 2)
-- [ ] 11-03-PLAN.md — Session: solution extraction, solve, synchronization (Wave 3)
-- [ ] 11-04-PLAN.md — Contract tests C1-C11, migration, final verification (Wave 4)
+- [x] 11-01-PLAN.md — Foundation: binding authority, fallible lifecycle, module structure (Wave 1)
+- [x] 11-02-PLAN.md — Projection: snapshot rebuild, delta application, callback bridge (Wave 2)
+- [x] 11-03-PLAN.md — Session: solution extraction, solve, synchronization (Wave 3)
+- [x] 11-04-PLAN.md — Contract tests C1-C11, migration, final verification (Wave 4)
 
 ### Phase 12: Native differential and fault qualification
 
 **Goal:** prove that HiGHS incremental behavior equals rebuild behavior and that native failures preserve recovery
 **Requirements**: M1R-Q1–Q5
 **Depends on:** Phase 11
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 12 to break down)
+- [ ] 12-01-PLAN.md — BackendSession for ReferenceBackend + BackendFixture + parameterized conformance (Wave 1)
+- [ ] 12-02-PLAN.md — Port differential harness + FaultInjectingBackend + M1R-Q5 solve observables tests (Wave 2)
+- [ ] 12-03-PLAN.md — Independent verification pass (Wave 3)
 
 ### Phase 13: Cross-platform and package qualification
 
