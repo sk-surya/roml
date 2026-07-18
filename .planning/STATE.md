@@ -4,7 +4,7 @@ milestone: v0.1
 milestone_name: milestone
 current_phase: M1R-01 — Backend contract migration closure
 status: complete
-stopped_at: Completed 10-01-PLAN.md
+stopped_at: Completed 10-02-PLAN.md
 last_updated: "2026-07-18T05:59:19.605Z"
 progress:
   total_phases: 9
@@ -48,7 +48,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Phase | State | Admission/exit evidence |
 |---|---|---|
 | M1R-00 Truth reset | Complete | M1R-00-ADMISSION.md produced, 5/5 M1R-G requirements dispositioned. Gate: PASS (G5 OWNER-BLOCKED deferred to M1R-08). All 11 ignored tests resolved. Base SHA frozen.
-| M1R-01 Contract closure | In progress (Plan 01/?? complete) | supported public path uses delta/cursor/request contract |
+| M1R-01 Contract closure | In progress (Plan 02/?? complete) | Model wired to SyncCoordinator, ReferenceBackend imported, contract tests written |
 | M1R-02 HiGHS rewrite | Blocked by M1R-01 | authoritative binding + safe session implementation |
 | M1R-03 Native qualification | Blocked by M1R-02 | common conformance, differential traces, fault recovery |
 | M1R-04 Platform/package | Infrastructure may prepare; gate blocked by M1R-03 | clean matrix and packed consumers |
@@ -84,9 +84,9 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 
 ## Session
 
-**Last session:** 2026-07-18T06:00:00.000Z
-**Stopped at:** Completed 10-01-PLAN.md
-**Resume file:** .planning/phases/10-backend-contract-migration-closure/10-01-SUMMARY.md
+**Last session:** 2026-07-18T06:30:00.000Z
+**Stopped at:** Completed 10-02-PLAN.md
+**Resume file:** .planning/phases/10-backend-contract-migration-closure/10-02-SUMMARY.md
 
 ## Performance Metrics
 
@@ -95,6 +95,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Phase 09 P04 | ~15 min | 4 tasks | 3 files |
 | Phase 09 P05 | ~5 min | 2 tasks | 2 files |
 | Phase 10 P01 | ~30 min | 2 tasks | 13 files |
+| Phase 10 P02 | ~4 min | 3 tasks | 7 files |
 
 ## M1R Base
 
