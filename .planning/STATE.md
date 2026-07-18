@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
-current_phase: M1R-02 — HiGHS projection/session rewrite
+current_phase: M1R-03 — Native differential and fault qualification
 status: in_progress
-stopped_at: Completed 11-04-PLAN.md
-last_updated: "2026-07-18T14:39:52.229Z"
+stopped_at: Completed 12-02-PLAN.md
+last_updated: "2026-07-18T15:11:47.000Z"
 progress:
   total_phases: 9
   completed_phases: 2
@@ -85,7 +85,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 ## Session
 
 **Last session:** 2026-07-18T15:11:47.000Z
-**Stopped at:** Completed 12-01-PLAN.md
+**Stopped at:** Completed 12-02-PLAN.md
 **Resume file:** None
 
 ## Performance Metrics
@@ -103,6 +103,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Phase 12 P01 | ~31 min | 3 tasks | 8 files |
 | Phase 11-highs-projection-session-rewrite P03 | 45m | 3 tasks | 3 files |
 | Phase 12 P01 | ~31 min | 3 tasks | 8 files |
+| Phase 12 P02 | ~16 min | 3 tasks | 2 files |
 
 ## M1R Base
 
