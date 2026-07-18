@@ -80,3 +80,110 @@ Three commits make milestone-completion claims that are not fully supported by c
 | `a94b75e` (~8) | "mark M1.2 complete" | M1.2 (highs-sys migration) is accurate — verified by dependency in `roml-highs/Cargo.toml`. Claim is factual but **stale** (no re-verification performed). |
 | `537a035` (~13) | "mark M1.3 complete" | Partially true — ReferenceBackend commuting square proven via contract tests, but HiGHS differential harness has never executed on CI. |
 | `85a6396` (~18) | "mark M1.4 complete" | Locally verified (commit 0fe295b message on local Mac). CI has never executed on GitHub runners. |
+
+---
+
+## License Evidence
+
+### Source Commands
+
+```bash
+git show c4db3e0:LICENSE-MIT | head -3
+git show c4db3e0:LICENSE-APACHE | head -3
+git show c4db3e0:Cargo.toml | grep 'license'
+```
+
+### File Existence
+
+Both license files are committed on the candidate branch at commit `c4db3e0`:
+
+| File | Commit SHA | Status | Notes |
+|------|------------|--------|-------|
+| `LICENSE-MIT` | `c4db3e0` | Present | MIT License, Copyright (c) 2026 Surya Krishnan. Header: "MIT License / Copyright (c) 2026 Surya Krishnan / Permission is hereby granted..." |
+| `LICENSE-APACHE` | `c4db3e0` | Present | Apache License 2.0, January 2004. Header: "Apache License / Version 2.0, January 2004 / http://www.apache.org/licenses/" |
+| `Cargo.toml` (workspace.package license) | `c4db3e0` | `"MIT OR Apache-2.0"` | Declared at line 11 of `Cargo.toml` at commit `c4db3e0`: `license = "MIT OR Apache-2.0"` in `[workspace.package]`. All four workspace members inherit via `license.workspace = true`. |
+
+### License Content Verification
+
+**LICENSE-MIT** excerpt (first 3 lines):
+```
+MIT License
+
+Copyright (c) 2026 Surya Krishnan
+```
+
+**LICENSE-APACHE** excerpt (first 3 lines):
+```
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+```
+
+### Determination
+
+**OWNER-BLOCKED** — License files exist on the candidate branch, demonstrating licensing intent. The dual-license declaration `"MIT OR Apache-2.0"` is configured in `Cargo.toml`. Explicit owner confirmation of the license choice is required before M1R-08 publication but does not block M1R-00 through M1R-07.
+
+> Per D4: "Record committed license files as evidence of intent. Report disposition as OWNER-BLOCKED. Defer explicit owner confirmation to the M1R-08 publication gate."
+
+---
+
+## Crates.io Verification
+
+### Source Commands
+
+```bash
+# Attempt 1: crates.io API v1 endpoint (requires authentication per data access policy)
+curl -s -o /dev/null -w "%{http_code}" https://crates.io/api/v1/crates/roml
+
+# Attempt 2: crates.io web page (no auth required)
+curl -sL -A "Mozilla/5.0" -o /dev/null -w "%{http_code}" https://crates.io/crates/roml
+
+# Full API response (v1 — auth required; returns 403)
+curl -s https://crates.io/api/v1/crates/roml
+
+# cargo owner --list (requires CARGO_REGISTRY_TOKEN)
+cargo owner --list roml 2>&1
+```
+
+### API Response
+
+| Crate | API Endpoint (v1) | Web Page | JSON Body |
+|-------|-------------------|----------|-----------|
+| `roml` | 403 Forbidden | 404 Not Found | `{"errors":[{"detail":"We are unable to process your request at this time. This usually means that you are in violation of our API data access policy..."}]}` |
+| `roml-highs` | 403 Forbidden | 404 Not Found | `{"errors":[{"detail":"We are unable to process your request at this time..."}]}` |
+
+**Note on API response codes:** The crates.io API v1 endpoint (`/api/v1/crates/{name}`) now requires authenticated access per their data access policy (https://crates.io/data-access). The unauthenticated API returns HTTP 403 with an error message. The web page endpoint (`/crates/{name}`) returns HTTP 404 for non-existent crates, which is the canonical indicator that a crate is not registered. Both `roml` and `roml-highs` return 404 on the web page, confirming neither crate is registered.
+
+### cargo owner --list
+
+| Crate | Command | Output | Status |
+|-------|---------|--------|--------|
+| `roml` | `cargo owner --list roml` | `error: no token found, please run \`cargo login\` or use environment variable CARGO_REGISTRY_TOKEN` | Auth not available |
+| `roml-highs` | `cargo owner --list roml-highs` | `error: no token found, please run \`cargo login\` or use environment variable CARGO_REGISTRY_TOKEN` | Auth not available |
+
+### Determination
+
+| Crate | Web Response | cargo owner --list | Determination |
+|-------|-------------|-------------------|---------------|
+| `roml` | 404 Not Found (not registered) | Failed (no auth) | **OWNER-BLOCKED** |
+| `roml-highs` | 404 Not Found (not registered) | Failed (no auth) | **OWNER-BLOCKED** |
+
+**Program stop condition check:** Neither crate is owned by a stranger — no EXTERNAL-BLOCKED condition detected. Both names are available (unregistered).
+
+> Per D5: "If available/unowned: OWNER-BLOCKED, note 'name available but reservation deferred pending D-011 authorization before M1R-08'."
+> D-011 forbids agents from publishing or reserving names. Read-only ownership verification is purely observational and violates nothing.
+
+---
+
+## Artifact Metadata
+
+| Field | Value |
+|-------|-------|
+| Candidate branch | `planning/roml-M1-native-backends-release` |
+| Candidate HEAD | `649c635` |
+| Planning branch | `docs/public-release-production-roadmap` |
+| Planning HEAD | `b38a5b25` |
+| Merge base (main) | `82e2ed95` |
+| Commit count | 20 |
+| License disposition | OWNER-BLOCKED |
+| Crates.io disposition | OWNER-BLOCKED |
