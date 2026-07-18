@@ -1,9 +1,9 @@
 //! Characterization tests for ROML model behavior pre-P1.
 //!
 //! This file captures the current behavior of the model layer before
-//! semantic refactoring (Phase 1). Tests marked with `#[ignore]` document
-//! known defects that P1 is expected to fix. Passing tests characterize
-//! existing behavior that P1 should preserve.
+//! semantic refactoring (M1R). Tests marked with an `ignore` attribute
+//! document known defects that M1R-01 is expected to fix. Passing tests
+//! characterize existing behavior that M1R should preserve.
 //!
 //! # Categories
 //!

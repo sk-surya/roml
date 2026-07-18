@@ -15,9 +15,9 @@
 //!    adapter state but there is no versioned check to determine whether a
 //!    rebuild would reproduce the current model state.
 //!
-//! All tests are marked `#[ignore = "P2: destructive changelog — fixed by revisioned sync"]`
-//! because they prove broken current behaviour that the revisioned sync
-//! architecture (P2) is designed to fix.
+//! All tests are marked with an `ignore` attribute referencing the M1R-01
+//! resolution because they document broken legacy behaviour that the
+//! revisioned sync architecture (M1R-01) resolves.
 
 use std::collections::HashMap;
 
@@ -176,13 +176,13 @@ impl SolverAdapter for FailingAfterAdapter {
 // Test 1: Drained changes disappear on error
 // =========================================================================
 
-/// Prove that when `drain_changes()` is called and the adapter returns an
-/// error, the changes are irrevocably lost — the model has no replayable
-/// batch and calling `drain_changes()` again returns an empty `Vec`.
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
 ///
-/// This is broken because a robust sync protocol should retain the batch
-/// (or the journal entry) so the caller can retry.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// In the revisioned protocol, the journal retains the batch after emission.
+/// A failed adapter can retry via the cursor without losing changes. The
+/// SyncCoordinator does not destructively consume changes — the caller can
+/// acknowledge a batch only after the adapter has successfully applied it.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn drained_changes_are_lost_on_adapter_error() {
     let mut model = Model::new();
@@ -211,16 +211,19 @@ fn drained_changes_are_lost_on_adapter_error() {
     // - They are gone from the model (drain_changes is destructive).
     // - No journal or revisioned batch exists to replay.
     // The test below proves this by using a FailingAfterAdapter.
+    //
+    // POST-M1R-01: In the revisioned protocol, changes survive adapter errors.
+    // The journal retains the batch. The SyncCoordinator uses cursor
+    // acknowledgement: the adapter acknowledges the batch only after
+    // successful apply. On error, the batch remains available for retry.
 }
 
-/// Prove the destructive drain + error scenario end-to-end.
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
 ///
-/// Setup: 3 changes exist. The adapter is configured to fail after 2 ops.
-/// `sync_model` calls `drain_changes` (gets 3 items), then calls
-/// `apply_changes(&[3 items])`. The adapter applies 2, then fails.
-/// After the error: no changes remain on the model, adapter is partially
-/// applied, and there is no way to determine which subset succeeded.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// In the revisioned protocol, changes survive apply errors. The journal is
+/// not consumed on emission; the SyncCoordinator tracks acknowledged revisions
+/// and the FailingAfterAdapter can retry from the cursor position.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn error_during_apply_loses_changes_from_model() {
     let mut model = Model::new();
@@ -266,19 +269,23 @@ fn error_during_apply_loses_changes_from_model() {
     // No way to retry: drain_changes returns empty.
     let retry_changes = model.drain_changes();
     assert!(retry_changes.is_empty(), "no changes remain to retry with");
+
+    // POST-M1R-01: In the revisioned protocol, changes survive apply errors.
+    // The journal retains the batch. SyncCoordinator uses cursor
+    // acknowledgement: failed adapters retry from their last acknowledged
+    // position without losing data.
 }
 
 // =========================================================================
 // Test 2: Second adapter cannot observe consumed changes
 // =========================================================================
 
-/// Prove that a second adapter trying to sync after the first has drained
-/// changes gets nothing — one destructive changelog cannot serve multiple
-/// sessions.
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
 ///
-/// This is broken because a proper sync protocol should maintain a
-/// persistent journal so that late-joining adapters can catch up.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// In the revisioned protocol, SyncCoordinator supports independent cursors.
+/// Both adapters can observe the same changes because the journal is not
+/// consumed on first read — each cursor tracks its own acknowledgement.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn two_adapters_cannot_both_sync_same_changes() {
     let mut model = Model::new();
@@ -306,11 +313,18 @@ fn two_adapters_cannot_both_sync_same_changes() {
     adapter_b.apply_changes(&changes_b).unwrap();
 
     assert_eq!(adapter_b.applied.len(), 0, "adapter B applied 0 changes");
+
+    // POST-M1R-01: SyncCoordinator supports independent cursors. Both
+    // adapters receive the same changes because each cursor tracks its
+    // own acknowledgement position in the journal.
 }
 
-/// Prove via the `sync_model` convenience method that two adapters cannot
-/// both observe the same mutations.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
+///
+/// In the revisioned protocol, sync_model does not destructively consume
+/// the journal. Both adapters observe the same mutations through their
+/// independent cursors.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn sync_model_leaves_nothing_for_second_adapter() {
     let mut model = Model::new();
@@ -336,24 +350,23 @@ fn sync_model_leaves_nothing_for_second_adapter() {
         0,
         "adapter B received 0 changes — changelog was already drained"
     );
+
+    // POST-M1R-01: sync_model uses cursor-based sync, not destructive drain.
+    // Both adapters observe the same mutations via independent cursors into
+    // the journal.
 }
 
 // =========================================================================
 // Test 3: Partial application leaves no recovery path
 // =========================================================================
 
-/// Prove that when an adapter fails mid-apply, there is no deterministic
-/// way to recover the lost changes.
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
 ///
-/// After a partial failure:
-/// - `drain_changes()` returns empty (changes were consumed before apply).
-/// - The adapter is partially mutated (some changes applied, some not).
-/// - `reset()` wipes the adapter state but there is no way to get the
-///   original changes back.
-/// - Rebuilding from `Model::new()` + replaying all operations manually
-///   is the only option, and there is no built-in mechanism to verify that
-///   the rebuild matches the original model.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// In the revisioned protocol, ApplyOutcome::RequiresRebuild provides a
+/// deterministic recovery path. The SyncCoordinator tracks the adapter's
+/// acknowledged revision and can replay unacknowledged changes from the
+/// journal after a reset.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn no_recovery_path_after_partial_apply() {
     let mut model = Model::new();
@@ -392,23 +405,22 @@ fn no_recovery_path_after_partial_apply() {
         retry_changes.is_empty(),
         "even after reset, model has no changes to offer"
     );
+
+    // POST-M1R-01: ApplyOutcome::RequiresRebuild provides recovery. The
+    // SyncCoordinator replays unacknowledged changes from the journal after
+    // reset, avoiding the manual full-rebuild approach required here.
 }
 
 // =========================================================================
 // Test 4: Reset/rebuild not tied to revision
 // =========================================================================
 
-/// Prove that `SolverAdapter::reset()` wipes adapter state but there is no
-/// built-in mechanism to verify that a rebuild would reproduce the current
-/// model state.
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
 ///
-/// After a reset:
-/// - The adapter is back to a clean state.
-/// - The model still has no journal or revision to replay changes from.
-/// - There is no `is_synchronized` / `is_equivalent` check to determine
-///   whether the adapter's state matches the model's state.
-/// - The caller must manually track whether a rebuild is needed.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// In the revisioned protocol, AdapterCursor tracks applied_revision. After
+/// reset, the SyncCoordinator can check whether the adapter's cursor revision
+/// matches the model's current revision and trigger a rebuild if needed.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn reset_has_no_revision_check() {
     let mut model = Model::new();
@@ -446,17 +458,20 @@ fn reset_has_no_revision_check() {
         empty_changes.is_empty(),
         "no changes remain — sync_model won't help reset adapter"
     );
+
+    // POST-M1R-01: AdapterCursor tracks applied_revision. SyncCoordinator
+    // compares the adapter's cursor revision against the model's current
+    // revision to detect staleness and trigger RequiresRebuild when needed.
 }
 
-/// Prove that after a model mutates, there is no way to determine whether
-/// an adapter's last sync matches the current model state.
+/// POST-M1R-01: This test documents the legacy drain_changes() behavior.
 ///
-/// Scenario:
-/// 1. Adapter syncs with model (2 changes).
-/// 2. Model mutates further (adds another variable, 1 change).
-/// 3. No adapter-aware mechanism signals staleness — the caller must
-///    re-sync manually.
-#[ignore = "P2: destructive changelog — fixed by revisioned sync"]
+/// In the revisioned protocol, cursor revision comparison detects staleness.
+/// After mutation, the model's current revision advances. The adapter's
+/// cursor revision is compared against the model's revision — if they
+/// diverge, the adapter is detected as stale and RequiresRebuild or
+/// IncrementalSync is triggered automatically.
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn no_staleness_detection_after_mutation() {
     let mut model = Model::new();
@@ -491,4 +506,9 @@ fn no_staleness_detection_after_mutation() {
         3,
         "adapter now has 3 changes after manual re-sync"
     );
+
+    // POST-M1R-01: Cursor revision comparison detects staleness. After
+    // mutation, the model's current revision advances. The adapter's cursor
+    // revision is compared against the model's revision. Divergence triggers
+    // auto-staleness detection, eliminating the fragile manual re-sync.
 }
