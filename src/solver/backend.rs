@@ -205,6 +205,8 @@ pub enum TerminationStatus {
     Unbounded,
     /// Feasible solution found (not proven optimal — MIP).
     Feasible,
+    /// Preserves ambiguity (HiGHS can return this instead of Infeasible/Unbounded).
+    InfeasibleOrUnbounded,
     /// Time limit reached.
     TimeLimit,
     /// Iteration limit reached.
