@@ -5,7 +5,7 @@
 //! - Objective value(s)
 //! - Solver status
 //! - Optional duals and reduced costs
-//! //!
+//!
 //! # Design
 //!
 //! Solutions are stored separately from the model. Multiple solutions can
