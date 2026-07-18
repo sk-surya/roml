@@ -394,7 +394,7 @@ Plans:
 
 **Goal:** prove that supported users can build, load, package, and consume ROML + HiGHS without maintainer-machine assumptions
 **Requirements**: M1R-P1–P6
-**Depends on:** Phase 12 (infrastructure may prepare; gate blocked by M1R-03)
+**Depends on:** Phase 12 *(infrastructure may prepare in parallel, but gate blocked by M1R-03)*
 **Plans:** 0 plans
 
 Plans:
