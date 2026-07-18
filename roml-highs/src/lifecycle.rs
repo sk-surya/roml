@@ -4,22 +4,26 @@
 //! (`*mut c_void` from `Highs_create`) and manages its lifecycle:
 //!
 //! - **Construction:** [`HighsSession::try_new`] creates the HiGHS instance,
-//!   validates the index width is 32-bit, caches the infinity value, and
-//!   returns `Result` — never panics.
-//! - **Destruction:** [`Drop`] calls `Highs_destroy` with a null-pointer guard.
+//!   validates the index width is 32-bit, caches the infinity value, queries
+//!   version metadata, and returns `Result` — never panics.
+//! - **Destruction:** [`Drop`] cleans up any registered callback state, then
+//!   calls `Highs_destroy` with a null-pointer guard.
 //! - **Thread-safety:** `Send` is implemented with documented safety invariants;
 //!   `Sync` is NOT implemented because HiGHS is not thread-safe.
 
 use std::collections::HashMap;
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 
 use log::info;
 
 use crate::bindings;
+use crate::callback::CallbackState;
 use crate::index_map::IndexMap;
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::objective::Sense;
-use roml::solver::backend::BackendError;
+use roml::solver::backend::{BackendError, TerminationStatus};
+use roml::solver::callback::CallbackHandler;
+use roml::solver::request::SolveSolution;
 use roml::sync::AdapterCursor;
 
 /// A HiGHS solver session.
@@ -29,34 +33,58 @@ use roml::sync::AdapterCursor;
 /// `Result`); the session destroys the handle in `Drop`.
 pub struct HighsSession {
     /// Opaque HiGHS instance handle from `Highs_create`.
-    raw: *mut c_void,
+    pub(crate) raw: *mut c_void,
 
     /// Revision tracking cursor for the sync coordinator.
-    cursor: AdapterCursor,
+    pub(crate) cursor: AdapterCursor,
 
     /// `VarId` → HiGHS column index.
-    col_map: IndexMap<VarId>,
+    pub(crate) col_map: IndexMap<VarId>,
 
     /// `ConId` → HiGHS row index.
-    row_map: IndexMap<ConId>,
+    pub(crate) row_map: IndexMap<ConId>,
 
     /// Cached infinity value from `Highs_getInfinity`.
-    inf: f64,
+    pub(crate) inf: f64,
 
     /// Cached variable bounds (lb, ub).
-    var_bounds: HashMap<VarId, (f64, f64)>,
+    pub(crate) var_bounds: HashMap<VarId, (f64, f64)>,
 
     /// Cached constraint bounds (lb, ub).
-    con_bounds: HashMap<ConId, (f64, f64)>,
+    pub(crate) con_bounds: HashMap<ConId, (f64, f64)>,
 
     /// Per-objective stored costs: `ObjId` → `VarId` → cost.
-    obj_costs: HashMap<ObjId, HashMap<VarId, f64>>,
+    pub(crate) obj_costs: HashMap<ObjId, HashMap<VarId, f64>>,
 
     /// Sense for each known objective.
-    obj_senses: HashMap<ObjId, Sense>,
+    pub(crate) obj_senses: HashMap<ObjId, Sense>,
 
     /// Currently active objective, if any.
-    active_obj: Option<ObjId>,
+    pub(crate) active_obj: Option<ObjId>,
+
+    /// Solution from the most recent solve, if available.
+    pub(crate) current_solution: Option<SolveSolution>,
+
+    /// Termination status from the most recent solve, if available.
+    pub(crate) last_status: Option<TerminationStatus>,
+
+    /// Raw pointer to the registered callback state, if any.
+    pub(crate) callback_state: Option<*mut CallbackState>,
+
+    /// Boxed callback handler for the next solve.
+    pub(crate) callback_handler: Option<Box<dyn CallbackHandler>>,
+
+    /// HiGHS version string (e.g., "1.15.0").
+    pub(crate) version_string: String,
+
+    /// HiGHS major version.
+    pub(crate) version_major: i32,
+
+    /// HiGHS minor version.
+    pub(crate) version_minor: i32,
+
+    /// HiGHS patch version.
+    pub(crate) version_patch: i32,
 }
 
 impl HighsSession {
@@ -109,18 +137,23 @@ impl HighsSession {
         // mutate HiGHS state.
         let inf = unsafe { bindings::Highs_getInfinity(raw) };
 
-        // Log the HiGHS version string for diagnostic purposes.
-        // `Highs_version()` is a static function that does not require
-        // an instance handle.
+        // Cache version metadata (M1R-H8).
         // SAFETY: `Highs_version()` returns a pointer to a static C string
-        // that is always valid and null-terminated.
-        let version_str = unsafe {
+        // that is always valid and null-terminated. No HiGHS instance is
+        // required — these are static query functions.
+        let version_string = unsafe {
             let c_str = bindings::Highs_version();
-            std::ffi::CStr::from_ptr(c_str)
+            CStr::from_ptr(c_str).to_string_lossy().into_owned()
         };
+        // SAFETY: `Highs_versionMajor/Minor/Patch` are static functions
+        // returning compile-time constants.
+        let version_major = unsafe { bindings::Highs_versionMajor() };
+        let version_minor = unsafe { bindings::Highs_versionMinor() };
+        let version_patch = unsafe { bindings::Highs_versionPatch() };
+
         info!(
-            "HiGHS session created: {}",
-            version_str.to_string_lossy()
+            "HiGHS session created: {} (v{}.{}.{})",
+            version_string, version_major, version_minor, version_patch
         );
 
         info!(
@@ -139,6 +172,14 @@ impl HighsSession {
             obj_costs: HashMap::new(),
             obj_senses: HashMap::new(),
             active_obj: None,
+            current_solution: None,
+            last_status: None,
+            callback_state: None,
+            callback_handler: None,
+            version_string,
+            version_major,
+            version_minor,
+            version_patch,
         })
     }
 
@@ -184,6 +225,20 @@ unsafe impl Send for HighsSession {}
 
 impl Drop for HighsSession {
     fn drop(&mut self) {
+        // Clean up any registered callback state before destroying the
+        // HiGHS handle. The callback state owns the boxed handler and
+        // must be freed while the handle is still valid.
+        if let Some(state) = self.callback_state.take() {
+            // SAFETY:
+            // - `state` was created by Box::into_raw in register_callback.
+            // - Reconstructing the Box drops the CallbackState and its handler.
+            // - self.raw is still valid for the Highs_setCallback unregister call.
+            unsafe {
+                let _ = Box::from_raw(state);
+                bindings::Highs_setCallback(self.raw, None, std::ptr::null_mut());
+            }
+        }
+
         if !self.raw.is_null() {
             // SAFETY:
             // - `self.raw` was created by `Highs_create` in `try_new()` and
