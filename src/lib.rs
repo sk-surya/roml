@@ -25,7 +25,6 @@ mod logging;
 // Re-export commonly used types for public API
 pub use id::{VarId, ConId, ParamId, ObjId, CoeffId};
 pub use model::{Model, Bounds, VarType, ConstraintBounds, Sense, ModelError};
-pub use model::changelog::Change;
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use value_expr::ValueExpr;
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
@@ -161,7 +160,6 @@ macro_rules! set_objective {
 pub mod prelude {
 	pub use crate::{
 		Bounds,
-		Change,
 		CoeffId,
 		ConId,
 		ConstraintBounds,

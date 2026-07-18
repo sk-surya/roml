@@ -12,6 +12,7 @@
 
 pub mod backend;
 pub mod callback;
+pub mod reference;
 pub mod request;
 pub mod session;
 
@@ -227,7 +228,7 @@ impl<T> SolverModelExt for T where T: SolverAdapter + ?Sized {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Change;
+    use crate::model::changelog::Change;
     use crate::ConstraintExprExt;
 
     #[derive(Default)]
