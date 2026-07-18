@@ -352,7 +352,7 @@ impl BackendSession for ReferenceBackend {
             Synchronization::DeltaBatch(batch) => {
                 // Take cursor out temporarily to avoid borrow conflict with self
                 let mut tmp_cursor = std::mem::take(&mut self.cursor);
-                let result = match self.apply_batch(&batch, &mut tmp_cursor) {
+                match self.apply_batch(&batch, &mut tmp_cursor) {
                     Ok(ApplyOutcome::Applied { .. }) => {
                         self.cursor = tmp_cursor;
                         Ok(SyncReceipt {
@@ -384,8 +384,7 @@ impl BackendSession for ReferenceBackend {
                             HealthEffect::Terminal,
                         ))
                     }
-                };
-                result
+                }
             }
             Synchronization::Rebuild(snapshot) => {
                 let mut tmp_cursor = std::mem::take(&mut self.cursor);
