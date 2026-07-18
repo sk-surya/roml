@@ -278,3 +278,80 @@ Stop and escalate when:
 ## Definition of done
 
 The roadmap is complete when the selected release crates satisfy all mapped requirements, all phase gates have evidence, public claims match tested support, and a fresh consumer can use ROML without relying on the maintainer's macOS paths, solver installations, or implicit knowledge.
+
+### Phase 1: Baseline, repository hygiene, and release controls
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** None
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 1 to break down)
+
+### Phase 2: Canonical model and domain semantics
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 1
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 2 to break down)
+
+### Phase 3: Revisioned snapshots, journals, solve attempts, and recoverable synchronization
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 2
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 3 to break down)
+
+### Phase 4: Binding topology, native discovery, and unsafe boundary hardening
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 4 to break down)
+
+### Phase 5: Cross-platform CI and backend qualification
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 4
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 5 to break down)
+
+### Phase 6: Public API curation, documentation, and package engineering
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 5
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 6 to break down)
+
+### Phase 7: Release qualification and staged publication
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 6
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 7 to break down)
