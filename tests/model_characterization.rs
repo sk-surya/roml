@@ -542,7 +542,6 @@ fn drain_changes_auto_commits_parameters() {
 // 5. Duplicate Terms (KNOWN BUG -- last-write-wins coefficient semantics)
 // =========================================================================
 
-#[ignore = "P1: last-write-wins coefficient semantics"]
 #[test]
 fn duplicate_coefficient_for_same_cell() {
     let mut model = Model::new();
@@ -553,17 +552,16 @@ fn duplicate_coefficient_for_same_cell() {
     let _c1 = model.add_coeff(con, x, 2.0).unwrap();
     let _c2 = model.add_coeff(con, x, 3.0).unwrap();
 
-    // Current behavior: both coefficients exist in the model index
-    assert_eq!(model.num_coefficients(), 2);
+    // Canonical cell behavior: duplicate coefficients combine algebraically
+    // into a single coefficient entry (2.0 + 3.0 = 5.0).
+    assert_eq!(model.num_coefficients(), 1);
 
-    // The expression reconstructs both as separate terms:
-    // 2.0*x + 3.0*x  (which evaluates correctly but the solver
-    // adapter sees two CoefficientAdded events and last-write-wins)
+    // The expression reconstructs as a single combined term:
+    // 5.0*x
     let expr = model.constraint_expression(con).unwrap();
-    assert_eq!(expr.num_terms(), 2);
+    assert_eq!(expr.num_terms(), 1);
 }
 
-#[ignore = "P1: last-write-wins coefficient semantics"]
 #[test]
 fn duplicate_coefficient_in_objective() {
     let mut model = Model::new();
@@ -573,10 +571,12 @@ fn duplicate_coefficient_in_objective() {
     let _c1 = model.add_objective_coeff(obj, x, 1.0).unwrap();
     let _c2 = model.add_objective_coeff(obj, x, 4.0).unwrap();
 
-    assert_eq!(model.num_coefficients(), 2);
+    // Canonical cell behavior: duplicate objective coefficients combine
+    // algebraically into a single coefficient entry (1.0 + 4.0 = 5.0).
+    assert_eq!(model.num_coefficients(), 1);
 
     let expr = model.objective_expression(obj).unwrap();
-    assert_eq!(expr.num_terms(), 2);
+    assert_eq!(expr.num_terms(), 1);
 }
 
 // =========================================================================
