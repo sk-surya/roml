@@ -9,6 +9,12 @@ use std::ffi::c_void;
 use crate::bindings::{HighsInt, STATUS_OK};
 use roml::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 
+/// Convenience alias for the frozen `BackendError` type.
+///
+/// Callers use `HighsError` to refer to HiGHS-specific errors without
+/// importing the full roml::solver::backend path.
+pub type HighsError = BackendError;
+
 /// Check a HiGHS return code and convert non-OK results to `BackendError`.
 ///
 /// Returns `Ok(())` if `ret == STATUS_OK`. Otherwise constructs a
@@ -36,6 +42,6 @@ pub fn from_native_status(ret: HighsInt, op: &str) -> BackendError {
         format!("HiGHS operation '{}' failed with status {}", op, ret),
         ErrorCategory::Internal,
         HealthEffect::Recoverable,
-        ret as i32,
+        ret,
     )
 }
