@@ -5,7 +5,7 @@ milestone_name: milestone
 current_phase: 09
 status: unknown
 stopped_at: Phase 9 context gathered
-last_updated: "2026-07-18T05:39:06.754Z"
+last_updated: "2026-07-18T22:00:00.000Z"
 progress:
   total_phases: 9
   completed_phases: 0
@@ -84,8 +84,8 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 
 ## Session
 
-**Last session:** 2026-07-18T05:40:00.000Z
-**Stopped at:** Phase 9 Plan 4: Test Fix Report — 11 ignored tests resolved
+**Last session:** 2026-07-18T22:00:00.000Z
+**Stopped at:** Phase 9 Plan 5: Admission Report — M1R-00-ADMISSION.md compiled, M1R base frozen
 **Resume file:** .planning/phases/09-truth-reset-and-candidate-admission/09-05-PLAN.md
 
 ## Performance Metrics
@@ -93,3 +93,15 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 09 P04 | ~15 min | 4 tasks | 3 files |
+| Phase 09 P05 | ~5 min | 2 tasks | 2 files |
+
+## M1R Base
+
+**Frozen at:** M1R-00 admission
+**Date:** 2026-07-18
+**Main SHA:** ef37c88a6d80775ea69d2ccb986655edeb5789ec
+**Candidate SHA:** 649c635974cae1d6716bbc19429833a0135df22f
+**Planning branch SHA:** a372df227d0e6988ea56f653808931696e86433c
+**Evidence:** docs/release/evidence/M1R/M1R-00-ADMISSION.md
+**Test fix branch:** fix/m1r-00-ignored-tests@629ccd3ba5ec06b1569f8320a2a803e6325223eb
+**Phase ledger for M1R-00:** evidence complete -- see M1R-00-ADMISSION.md for requirement disposition
