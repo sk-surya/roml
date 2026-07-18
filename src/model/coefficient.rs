@@ -15,13 +15,16 @@ use crate::id::{CoeffId, ConId, IdArena, ObjId, ParamId, VarId};
 use crate::{value_expr::ValueExpr};
 
 /// Target of a coefficient (constraint or objective).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CoefficientTarget {
     /// Coefficient belongs to a constraint.
     Constraint(ConId),
     /// Coefficient belongs to an objective.
     Objective(ObjId),
 }
+
+/// Canonical (target, variable) pair identifying a coefficient cell.
+pub type CellKey = (CoefficientTarget, VarId);
 
 /// Internal data for a coefficient.
 #[derive(Clone, Debug)]
