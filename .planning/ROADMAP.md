@@ -351,11 +351,15 @@ The program reaches ROML 1.0 only when each admitted milestone has requirement t
 **Goal:** establish the exact candidate state and prevent stale completion claims from driving implementation
 **Requirements**: M1R-G1–G5
 **Depends on:** None
-**Plans:** 0 plans
+**Plans:** 5 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 9 to break down)
+- [ ] 09-01-PLAN.md — Candidate State Evidence Foundation (commit inventory, license, crates.io)
+- [ ] 09-02-PLAN.md — M1 Claim Reconciliation and Source Audit (M1.0-M1.5 claims, legacy patterns)
+- [ ] 09-03-PLAN.md — Test Classification and Contamination Analysis (11 ignored tests, branch split)
+- [ ] 09-04-PLAN.md — Fix and Pin All 11 Ignored Tests (fix P1-1/P1-2, pin 9 for M1R-01)
+- [ ] 09-05-PLAN.md — Compile M1R-00-ADMISSION.md and Freeze Base SHA (admission report, state freeze)
 
 ### Phase 10: Backend contract migration closure
 
