@@ -4,8 +4,8 @@ milestone: v0.1
 milestone_name: milestone
 current_phase: M1R-03 — Native differential and fault qualification
 status: in_progress
-stopped_at: Completed 12-02-PLAN.md
-last_updated: "2026-07-18T15:11:47.000Z"
+stopped_at: Completed 12-03-PLAN.md (awaiting human sign-off)
+last_updated: "2026-07-18T16:30:00.000Z"
 progress:
   total_phases: 9
   completed_phases: 2
@@ -20,7 +20,7 @@ progress:
 **Merged implementation baseline:** `main@ef37c88a6d80775ea69d2ccb986655edeb5789ec`  
 **Inherited candidate:** `planning/roml-M1-native-backends-release`  
 **Current milestone:** ROML-M1R — Truth Reset, Native HiGHS Qualification, and v0.1 Release
-**Current phase:** M1R-02 — HiGHS projection/session rewrite
+**Current phase:** M1R-03 — Native differential and fault qualification (verification)
 
 ## State vocabulary
 
@@ -50,7 +50,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | M1R-00 Truth reset | Complete | M1R-00-ADMISSION.md produced, 5/5 M1R-G requirements dispositioned. Gate: PASS (G5 OWNER-BLOCKED deferred to M1R-08). All 11 ignored tests resolved. Base SHA frozen.
 | M1R-01 Contract closure | Complete | Gate: PASS. Freeze SHA: bf3ba70. ADR-001. |
 | M1R-02 HiGHS rewrite | In progress | 11-01 foundation complete: highs-sys bindings, fallible lifecycle, thread-safety audit, module scaffold |
-| M1R-03 Native qualification | Blocked by M1R-02 | common conformance, differential traces, fault recovery |
+| M1R-03 Native qualification | In progress | common conformance, differential traces, fault recovery. 12-03 verification complete (awaiting owner sign-off) |
 | M1R-04 Platform/package | Infrastructure may prepare; gate blocked by M1R-03 | clean matrix and packed consumers |
 | M1R-05 Performance/UX | Harness may prepare; acceptance blocked by M1R-03 | reproducible evidence and user journeys |
 | M1R-06 MOSEK | Non-blocking, external/license gated | official API, legal callbacks, protected CI |
@@ -84,8 +84,8 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 
 ## Session
 
-**Last session:** 2026-07-18T15:11:47.000Z
-**Stopped at:** Completed 12-02-PLAN.md
+**Last session:** 2026-07-18T16:30:00.000Z
+**Stopped at:** Completed 12-03-PLAN.md (awaiting human sign-off)
 **Resume file:** None
 
 ## Performance Metrics
@@ -104,6 +104,7 @@ The candidate source still visibly exposes the legacy `SolverAdapter` path, dest
 | Phase 11-highs-projection-session-rewrite P03 | 45m | 3 tasks | 3 files |
 | Phase 12 P01 | ~31 min | 3 tasks | 8 files |
 | Phase 12 P02 | ~16 min | 3 tasks | 2 files |
+| Phase 12 P03 | ~5 min | 1 task | 1 file |
 
 ## M1R Base
 
