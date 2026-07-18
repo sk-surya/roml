@@ -1773,5 +1773,288 @@ fn dx_multi_adapter_cursor_independence() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Sections 5 and 6 will be added in Task 3
+// Section 5: Rebuild determinism
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// Two backends rebuilt from the same snapshot must produce identical
+// normalized views.  This proves that the rebuild path is deterministic
+// across independent backend instances.
+
+#[test]
+fn dx_rebuild_determinism() {
+    let v = var_id(0);
+    let v2 = var_id(1);
+    let c = con_id(0);
+    let c2 = con_id(1);
+    let o = obj_id(0);
+    let p = param_id(0);
+
+    let rev = rev_from_u64(42);
+
+    // Build a moderately complex snapshot with multiple entities of each type
+    let mut variables = HashMap::new();
+    variables.insert(
+        v,
+        (
+            Bounds::new(0.0, 100.0),
+            VarType::Continuous,
+            true,
+            Some(5.0),
+        ),
+    );
+    variables.insert(v2, (Bounds::BINARY, VarType::Binary, false, None));
+
+    let mut constraints = HashMap::new();
+    constraints.insert(c, (ConstraintBounds::le(50.0), true));
+    constraints.insert(c2, (ConstraintBounds::ge(10.0), false));
+
+    let mut objectives = HashMap::new();
+    objectives.insert(o, (Sense::Maximize, true, 42.5));
+
+    let mut params = HashMap::new();
+    params.insert(p, 3.14);
+
+    let cells: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> = vec![
+        (
+            (CoefficientTarget::Constraint(c), v),
+            ValueExpr::constant(2.5),
+            2.5,
+            vec![],
+        ),
+        (
+            (CoefficientTarget::Constraint(c2), v2),
+            ValueExpr::constant(1.0),
+            1.0,
+            vec![],
+        ),
+        (
+            (CoefficientTarget::Objective(o), v),
+            ValueExpr::param(p),
+            3.14,
+            vec![p],
+        ),
+    ];
+
+    let snapshot = take_snapshot(rev, &variables, &constraints, &objectives, &params, &cells);
+
+    // Rebuild two independent backends from the same snapshot
+    let mut backend_a = fresh();
+    backend_a
+        .synchronize(Synchronization::Rebuild(snapshot.clone()))
+        .expect("backend A rebuild should succeed");
+
+    let mut backend_b = fresh();
+    backend_b
+        .synchronize(Synchronization::Rebuild(snapshot))
+        .expect("backend B rebuild should succeed");
+
+    // Both must produce identical views
+    let view_a = backend_a.normalized_view();
+    let view_b = backend_b.normalized_view();
+
+    assert_eq!(
+        view_a, view_b,
+        "two backends rebuilt from the same snapshot must produce identical views"
+    );
+
+    // Verify cursors match
+    assert_eq!(
+        backend_a.cursor.applied_revision,
+        backend_b.cursor.applied_revision
+    );
+    assert_eq!(backend_a.cursor.health, backend_b.cursor.health);
+    assert!(backend_a.cursor.is_ready());
+    assert!(backend_b.cursor.is_ready());
+
+    // Verify specific content
+    assert_eq!(view_a.variables.len(), 2);
+    assert_eq!(view_a.constraints.len(), 2);
+    assert_eq!(view_a.objectives.len(), 1);
+    assert_eq!(view_a.parameters.len(), 1);
+    assert_eq!(view_a.cells.len(), 2);
+    assert_eq!(view_a.objective_cells.len(), 1);
+    assert_eq!(view_a.active_objective, Some(o));
+    assert_eq!(view_a.revision, rev);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 6: Semi-continuous partial-apply scenario
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Models the sequence:
+//   1. Add a variable with ordinary bounds  (HiGHS applies this successfully)
+//   2. Semi-continuous domain change        (HiGHS rejects as unsupported)
+//
+// Verifies:
+//   - The delta batch is preserved in the journal
+//   - After rebuild from snapshot, the full state includes both the
+//     original bounds AND the semi-continuous lower bound
+//   - No delta is lost
+
+#[test]
+fn dx_semicontinuous_partial_apply() {
+    let v = var_id(0);
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    // ── Step 1: Variable with ordinary bounds ────────────────────────────
+    // This batch succeeds (no semi-continuous info).
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: v,
+            bounds: Bounds::new(0.0, 100.0),
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+
+    // Commit to coordinator (simulates the model journal)
+    let mut coordinator = SyncCoordinator::new();
+    coordinator.commit_batch(batch1.clone()).unwrap();
+    assert_eq!(coordinator.journal.len(), 1);
+
+    // Apply to a reference backend
+    let mut backend = fresh();
+    backend
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("initial rebuild should succeed");
+    backend
+        .synchronize(Synchronization::DeltaBatch(batch1.clone()))
+        .expect("batch1 apply should succeed");
+    assert_eq!(backend.cursor.applied_revision, r1);
+
+    // Verify normal state at r1
+    let view_r1 = backend.normalized_view();
+    assert_eq!(view_r1.variables.len(), 1);
+    assert_eq!(view_r1.variables[0].1, Bounds::new(0.0, 100.0));
+    assert_eq!(view_r1.variables[0].4, None); // No semi-continuous
+
+    // ── Step 2: Semi-continuous change via snapshot rebuild ──────────────
+    // In a real HiGHS scenario, the user requests a semi-continuous domain
+    // change.  The incremental adapter returns RequiresRebuild because
+    // semi-continuous is not incrementally supported.  The delta batch
+    // (which encodes the semi-continuous info) is committed to the journal.
+    //
+    // Here we simulate this by taking a snapshot at r2 that includes the
+    // semi-continuous lower bound.  The batch r1→r2 is stored in the journal
+    // even though incremental apply was not possible.
+
+    // Build snapshot at r2 with the variable's bounds AND semi-continuous
+    let mut vars_r2 = HashMap::new();
+    vars_r2.insert(
+        v,
+        (
+            Bounds::new(0.0, 100.0),
+            VarType::Continuous,
+            true,
+            Some(5.0), // semi-continuous lower bound
+        ),
+    );
+    let cons_r2: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();
+    let objs_r2: HashMap<ObjId, (Sense, bool, f64)> = HashMap::new();
+    let params_r2: HashMap<ParamId, f64> = HashMap::new();
+    let cells_r2: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> = Vec::new();
+    let snap_r2 = take_snapshot(r2, &vars_r2, &cons_r2, &objs_r2, &params_r2, &cells_r2);
+
+    // Simulate that a batch was also committed to the journal for the
+    // semi-continuous change (it encodes the "intent" even though the
+    // adapter returned RequiresRebuild).
+    let batch2 = DeltaBatch::new(
+        r1,
+        r2,
+        vec![], // empty batch — the semi-continuous info is only in the snapshot
+    )
+    .unwrap();
+    coordinator.commit_batch(batch2.clone()).unwrap();
+
+    // ── Verify journal preservation ──────────────────────────────────────
+    // Both batches must be in the journal.
+    let deltas = coordinator.journal.deltas_since(r0).unwrap();
+    assert_eq!(deltas.len(), 2, "journal must preserve both delta batches");
+
+    // The first batch (add variable) is preserved intact
+    assert_eq!(deltas[0].operations.len(), 1);
+    assert!(matches!(
+        deltas[0].operations[0],
+        ModelOp::AddVariable { .. }
+    ));
+
+    // ── Rebuild from snapshot — no delta loss ────────────────────────────
+    // After rebuild, the full state includes the ordinary bounds AND the
+    // semi-continuous lower bound that was set via the snapshot.
+    backend
+        .synchronize(Synchronization::Rebuild(snap_r2))
+        .expect("rebuild from r2 snapshot should succeed");
+
+    let rebuilt_view = backend.normalized_view();
+    assert_eq!(
+        rebuilt_view.variables.len(),
+        1,
+        "rebuilt state should have one variable"
+    );
+    assert_eq!(rebuilt_view.variables[0].0, v, "variable ID should match");
+    assert_eq!(
+        rebuilt_view.variables[0].1,
+        Bounds::new(0.0, 100.0),
+        "ordinary bounds must be preserved after rebuild"
+    );
+    assert_eq!(
+        rebuilt_view.variables[0].4,
+        Some(5.0),
+        "semi-continuous lower bound must be present after rebuild"
+    );
+
+    // ── Verify no delta is lost: journal still has both batches ──────────
+    let deltas_after = coordinator.journal.deltas_since(r0).unwrap();
+    assert_eq!(
+        deltas_after.len(),
+        2,
+        "journal must still contain all batches after rebuild"
+    );
+    assert_eq!(
+        deltas_after[0].operations.len(),
+        1,
+        "batch0 operations preserved"
+    );
+
+    // ── Direct verification: rebuild from snap_r2 equals applying ────────
+    // batch1 and then rebuilding from snap_r2.
+    let mut direct_backend = fresh();
+    direct_backend
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("direct path initial rebuild should succeed");
+    direct_backend
+        .synchronize(Synchronization::DeltaBatch(batch1))
+        .expect("direct path batch1 apply should succeed");
+    // Rebuild uses snap_r2 — but we consumed it above. Use the stored cursor
+    // revision marker. Actually rebuild from a copy: the snapshot is needed
+    // again for the second rebuild.  We already consumed snap_r2 — rebuild
+    // the same state.
+    let mut vars_r2b = HashMap::new();
+    vars_r2b.insert(
+        v,
+        (
+            Bounds::new(0.0, 100.0),
+            VarType::Continuous,
+            true,
+            Some(5.0),
+        ),
+    );
+    let cons_r2b: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();
+    let objs_r2b: HashMap<ObjId, (Sense, bool, f64)> = HashMap::new();
+    let params_r2b: HashMap<ParamId, f64> = HashMap::new();
+    let cells_r2b: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)> = Vec::new();
+    let snap_r2b = take_snapshot(r2, &vars_r2b, &cons_r2b, &objs_r2b, &params_r2b, &cells_r2b);
+    direct_backend
+        .synchronize(Synchronization::Rebuild(snap_r2b))
+        .expect("direct path rebuild from r2 should succeed");
+
+    assert_eq!(
+        backend.normalized_view(),
+        direct_backend.normalized_view(),
+        "rebuild path must be deterministic regardless of prior state"
+    );
+}
