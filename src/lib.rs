@@ -14,6 +14,12 @@ pub mod expr;
 pub mod solution;
 pub mod solver;
 
+pub mod delta;
+pub mod revision;
+pub mod sync;
+pub mod journal;
+pub mod snapshot;
+
 mod logging;
 
 // Re-export commonly used types for public API

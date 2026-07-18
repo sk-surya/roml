@@ -10,7 +10,10 @@
 //!
 //! Solver concepts must NOT leak into the model layer.
 
+pub mod backend;
 pub mod callback;
+pub mod request;
+pub mod session;
 
 use std::collections::HashMap;
 

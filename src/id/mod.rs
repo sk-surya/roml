@@ -19,7 +19,7 @@ pub use arena::IdArena;
 /// 
 /// When an entity is deleted, its slot's generation is incremented.
 /// Any ID with a mismatched generation is considered stale.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Generation(u32);
 
 impl Generation {
