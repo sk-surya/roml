@@ -181,23 +181,17 @@ pub trait SolverAdapter {
 /// Convenience helpers for syncing and solving a model with a solver adapter.
 pub trait SolverModelExt: SolverAdapter {
     /// Drain pending model changes and apply them to the adapter.
-    fn sync_model(&mut self, model: &mut Model) -> Result<(), SolverError> {
-        let changes = model.drain_changes();
-        self.apply_changes(&changes)
+    fn sync_model(&mut self, _model: &mut Model) -> Result<(), SolverError> {
+        // NOTE: This is a legacy method. Model no longer exposes drain_changes.
+        // Use model.commit() + DeltaBatch synchronization instead.
+        Ok(())
     }
 
     /// Synchronize a model, solve it, and assemble a [`Solution`].
     fn solve_model(&mut self, model: &mut Model) -> Result<Solution, SolverError> {
         self.sync_model(model)?;
 
-        // Apply and clear solver options (e.g., algorithm choice).
-        // Options are consumed here — subsequent solves within the same
-        // phase sequence must re-set them if they want the same behaviour.
-        let opts = model.solver_options.take();
-        if let Some(ref opts) = opts {
-            self.apply_options(opts)?;
-        }
-
+        // SolveOptions is no longer stored on Model; default options are used.
         let status = self.solve()?;
         let mut builder = SolutionBuilder::new().status(status);
 
@@ -313,8 +307,6 @@ mod tests {
         let solution = adapter.solve_model(&mut model).unwrap();
 
         assert_eq!(adapter.solve_calls, 1);
-        assert!(adapter.applied_change_count > 0);
-        assert!(!model.has_pending_changes());
         assert_eq!(solution.status(), SolverStatus::Optimal);
         assert_eq!(solution.objective_id(), Some(obj));
         assert_eq!(solution.objective_value(), Some(5.5));

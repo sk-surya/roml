@@ -20,16 +20,16 @@ pub use constraint::{ConstraintBounds, ConstraintData, ConstraintStore};
 pub use objective::{ObjectiveData, ObjectiveStore, Sense};
 pub use parameter::{ParameterData, ParameterStore};
 pub use coefficient::{CellKey, CoefficientData, CoefficientIndex, CoefficientTarget};
-pub use changelog::{Change, ChangeLog};
+pub(crate) use changelog::{Change, ChangeLog};
 pub use transaction::Transaction;
 
+use crate::delta::{DeltaBatch, ModelOp};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
-use crate::solver::SolveOptions;
+use crate::revision::ModelRevision;
+use crate::sync::SyncCoordinator;
 use crate::value_expr::ValueExpr;
 use crate::expr::{LinExpr, TermCoeff};
 use crate::solution::Solution;
-
-use log::warn;
 
 
 /// Error type for model operations.
@@ -107,9 +107,8 @@ pub struct Model {
     /// A variable with an entry in this map must be 0 or ≥ the stored value.
     pub(crate) semicontinuous_lower: std::collections::HashMap<VarId, f64>,
 
-    /// Solver options to apply before the next `solve()` call.
-    /// Cleared after each solve by `SolverModelExt::solve_model`.
-    pub(crate) solver_options: Option<SolveOptions>,
+    /// Synchronization coordinator for revisioned delta batch management.
+    pub(crate) coordinator: SyncCoordinator,
 }
 
 #[derive(Clone, Debug)]
@@ -281,14 +280,6 @@ impl Model {
         Ok(())
     }
 
-    /// Set solver options to apply before the next solve.
-    ///
-    /// Options are cleared automatically after each solve by the
-    /// `SolverModelExt::solve_model` implementation.
-    pub fn set_solver_options(&mut self, opts: SolveOptions) {
-        self.solver_options = Some(opts);
-    }
-
     /// Get the number of variables.
     pub fn num_variables(&self) -> usize {
         self.variables.len()
@@ -441,16 +432,43 @@ impl Model {
         self.transaction.has_pending()
     }
 
-    /// Commit all pending parameter changes.
+    /// Commit all pending parameter changes and compile model changes into a DeltaBatch.
     ///
     /// This:
     /// 1. Applies all queued parameter value changes
     /// 2. Propagates changes to dependent coefficients
     /// 3. Logs all changes to the changelog
+    /// 4. Drains the changelog, compiles each Change to a ModelOp
+    /// 5. Creates a DeltaBatch and commits it to the SyncCoordinator
+    ///
+    /// If there are no pending changes, this is a no-op.
     pub fn commit(&mut self) {
+        // Apply pending parameter changes (they push Change entries to the changelog)
         for (param, new_value) in self.transaction.take_pending() {
             self.apply_parameter_change(param, new_value);
         }
+
+        // Drain pending changes from changelog and compile to ModelOp
+        let pending = self.changelog.drain();
+        if pending.is_empty() {
+            return;
+        }
+
+        let ops: Vec<ModelOp> = pending.iter()
+            .filter_map(|change| self.compile_change(change))
+            .collect();
+
+        if ops.is_empty() {
+            return;
+        }
+
+        let from = self.coordinator.revision();
+        let to = from.next().expect("revision counter overflow");
+        let batch = DeltaBatch::new(from, to, ops)
+            .expect("invalid delta batch (from >= to)");
+
+        self.coordinator.commit_batch(batch)
+            .expect("coordinator commit failed");
     }
 
     /// Apply a single parameter change and propagate to coefficients.
@@ -610,29 +628,122 @@ impl Model {
         self.coefficients.len()
     }
 
-    // ========== Changelog Operations ==========
-    
-    /// Check if there are pending changes for the solver.
-    pub fn has_pending_changes(&self) -> bool {
-        !self.changelog.is_empty()
+    /// Get the current model revision from the coordinator.
+    pub fn current_revision(&self) -> ModelRevision {
+        self.coordinator.revision()
     }
 
-    /// Drain all pending changes.
-    ///
-    /// If there are uncommitted parameter changes, this will:
-    /// 1. Log a warning
-    /// 2. Auto-commit the changes
-    pub fn drain_changes(&mut self) -> Vec<Change> {
-        if self.has_uncommitted() {
-            warn!("Uncommitted parameter changes detected, auto-committing");
-            self.commit();
+    /// Take a full snapshot of the model's canonical state.
+    pub fn take_snapshot(&self) -> crate::snapshot::ModelSnapshot {
+        use std::collections::HashMap;
+
+        let mut variables: HashMap<VarId, (Bounds, VarType, bool, Option<f64>)> = HashMap::new();
+        for (id, data) in self.variables.iter() {
+            let sc_lower = self.semicontinuous_lower.get(&id).copied();
+            variables.insert(id, (data.bounds, data.var_type, data.active, sc_lower));
         }
-        self.changelog.drain()
+
+        let mut constraints: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();
+        for (id, data) in self.constraints.iter() {
+            constraints.insert(id, (data.bounds, data.active));
+        }
+
+        let mut objectives: HashMap<ObjId, (Sense, bool, f64)> = HashMap::new();
+        for (id, data) in self.objectives.iter() {
+            objectives.insert(id, (data.sense, data.active, data.constant));
+        }
+
+        let mut parameters: HashMap<ParamId, f64> = HashMap::new();
+        for (id, data) in self.parameters.iter() {
+            parameters.insert(id, data.value);
+        }
+
+        let cells: Vec<_> = self.coefficients.iter()
+            .map(|(_, data)| {
+                let cell_key: CellKey = (data.target, data.var);
+                let deps: Vec<ParamId> = data.value_expr.dependencies().into_iter().collect();
+                (cell_key, data.value_expr.clone(), data.cached_value, deps)
+            })
+            .collect();
+
+        crate::snapshot::take_snapshot(
+            self.coordinator.revision(),
+            &variables,
+            &constraints,
+            &objectives,
+            &parameters,
+            &cells,
+        )
     }
 
-    /// Get the changelog sequence number.
-    pub fn changelog_sequence(&self) -> u64 {
-        self.changelog.sequence()
+    /// Compile a single Change entry to its corresponding ModelOp variant.
+    fn compile_change(&self, change: &Change) -> Option<ModelOp> {
+        match change {
+            Change::VariableAdded { var, bounds, var_type } => {
+                Some(ModelOp::AddVariable { var: *var, bounds: *bounds, var_type: *var_type })
+            }
+            Change::VariableRemoved { var } => {
+                Some(ModelOp::RemoveVariable { var: *var })
+            }
+            Change::VariableBoundsChanged { var, old: _, new } => {
+                Some(ModelOp::SetVariableBounds { var: *var, bounds: *new })
+            }
+            Change::VariableTypeChanged { var, old: _, new } => {
+                Some(ModelOp::SetVariableType { var: *var, var_type: *new })
+            }
+            Change::VariableActivityChanged { var, active } => {
+                Some(ModelOp::SetVariableActive { var: *var, active: *active })
+            }
+            Change::SemiContinuousBoundChanged { .. } => {
+                // ModelOp has no semi-continuous variant; changes tracked separately
+                None
+            }
+            Change::ConstraintAdded { con, bounds } => {
+                Some(ModelOp::AddConstraint { con: *con, bounds: *bounds })
+            }
+            Change::ConstraintRemoved { con } => {
+                Some(ModelOp::RemoveConstraint { con: *con })
+            }
+            Change::ConstraintBoundsChanged { con, old: _, new } => {
+                Some(ModelOp::SetConstraintBounds { con: *con, bounds: *new })
+            }
+            Change::ConstraintActivityChanged { con, active } => {
+                Some(ModelOp::SetConstraintActive { con: *con, active: *active })
+            }
+            Change::CoefficientAdded { coeff: _, var, target, value } => {
+                Some(ModelOp::SetCell {
+                    cell_key: (*target, *var),
+                    value_expr: ValueExpr::constant(*value),
+                    evaluated_value: *value,
+                })
+            }
+            Change::CoefficientRemoved { coeff: _, var, target } => {
+                Some(ModelOp::RemoveCell { cell_key: (*target, *var) })
+            }
+            Change::CoefficientValueChanged { coeff: _, var, target, old: _, new } => {
+                Some(ModelOp::SetCell {
+                    cell_key: (*target, *var),
+                    value_expr: ValueExpr::constant(*new),
+                    evaluated_value: *new,
+                })
+            }
+            Change::ObjectiveAdded { obj, sense } => {
+                Some(ModelOp::AddObjective { obj: *obj, sense: *sense })
+            }
+            Change::ObjectiveRemoved { obj } => {
+                Some(ModelOp::RemoveObjective { obj: *obj })
+            }
+            Change::ObjectiveSenseChanged { .. } => {
+                // ModelOp does not have a SetObjectiveSense variant
+                None
+            }
+            Change::ActiveObjectiveChanged { old: _, new } => {
+                Some(ModelOp::SetActiveObjective { obj: *new })
+            }
+            Change::ParameterValueChanged { param, old: _, new } => {
+                Some(ModelOp::SetParameter { param: *param, value: *new })
+            }
+        }
     }
 }
 
@@ -967,8 +1078,12 @@ mod tests {
         let c = model.add_constraint(ConstraintBounds::le(100.0));
         model.add_coeff(c, x, 2.0).unwrap();
 
-        let changes = model.drain_changes();
-        assert_eq!(changes.len(), 3); // variable, constraint, coefficient
+        // Revision starts at ZERO before any commit
+        assert_eq!(model.current_revision(), crate::revision::ModelRevision::ZERO);
+
+        // Commit advances revision and compiles changes to DeltaBatch
+        model.commit();
+        assert!(!model.current_revision().is_zero());
     }
 
     #[test]
