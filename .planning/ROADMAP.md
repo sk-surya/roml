@@ -366,24 +366,27 @@ Plans:
 **Goal:** make the revisioned snapshot/delta/session contract the supported public execution path and retire destructive legacy behavior
 **Requirements**: M1R-C1–C8
 **Depends on:** Phase 9
-**Plans:** 3 plans
+**Plans:** 3/3 plans executed
 
 Plans:
 
 - [x] 10-01-PLAN.md -- Protocol type foundation (import worktree types, create BackendSession traits)
-- [ ] 10-02-PLAN.md -- Model integration + contract tests (wire SyncCoordinator, remove solve-policy, write contract tests)
-- [ ] 10-03-PLAN.md -- Legacy removal + contract freeze (remove SolverAdapter/SolverModelExt, migrate Solution, write ADR-001)
+- [x] 10-02-PLAN.md -- Model integration + contract tests (wire SyncCoordinator, remove solve-policy, write contract tests)
+- [x] 10-03-PLAN.md -- Legacy removal + contract freeze (remove SolverAdapter/SolverModelExt, migrate Solution, write ADR-001)
 
 ### Phase 11: HiGHS projection/session rewrite
 
 **Goal:** make roml-highs a safe implementation of the frozen backend contract using authoritative bindings
 **Requirements**: M1R-H1–H8
 **Depends on:** Phase 10
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 11 to break down)
+- [ ] 11-01-PLAN.md — Foundation: binding authority, fallible lifecycle, module structure (Wave 1)
+- [ ] 11-02-PLAN.md — Projection: snapshot rebuild, delta application, callback bridge (Wave 2)
+- [ ] 11-03-PLAN.md — Session: solution extraction, solve, synchronization (Wave 3)
+- [ ] 11-04-PLAN.md — Contract tests C1-C11, migration, final verification (Wave 4)
 
 ### Phase 12: Native differential and fault qualification
 
