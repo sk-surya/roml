@@ -28,7 +28,25 @@ pub use model::{Model, Bounds, VarType, ConstraintBounds, Sense, ModelError};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use value_expr::ValueExpr;
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
-pub use solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverModelExt, SolverStatus};
+pub use solver::SolverError;
+
+pub use delta::{DeltaBatch, ModelOp};
+pub use revision::ModelRevision;
+pub use snapshot::ModelSnapshot;
+pub use solver::backend::{
+    BackendCapabilities, BackendError,
+    ErrorCategory, HealthEffect, TerminationStatus,
+};
+pub use solver::request::{
+    ConfigAdjustment, ConfigRejection, EffectiveConfig,
+    SolveRequest, SolveResult, SolveSolution,
+};
+pub use solver::session::{
+    BackendMetadata, BackendSession, CallbackSession,
+    SessionHealth, SolutionView, SyncReceipt, Synchronization,
+};
+pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
+pub use solver::LpAlgorithm;
 
 /// Build a [`ConstraintSpec`] from math-like tokens.
 ///
@@ -175,15 +193,15 @@ pub mod prelude {
 		ParamId,
 		Sense,
 		Solution,
-		SolverAdapter,
 		SolverError,
-		SolverModelExt,
-		SolverStatus,
 		set_objective,
 		ValueExpr,
 		VarId,
 		VarType,
 	};
+	pub use crate::solver::backend::TerminationStatus;
+	pub use crate::solver::request::SolveRequest;
+	pub use crate::solver::session::BackendSession;
 }
 
 // Logging initialization helper re-exported at crate root for consumers that

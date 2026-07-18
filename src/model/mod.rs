@@ -1258,9 +1258,9 @@ mod tests {
         ).unwrap();
 
         use crate::solution::SolutionBuilder;
-        use crate::solver::SolverStatus;
+        use crate::solver::backend::TerminationStatus;
         let sol = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 1.0)
             .value(y, 2.0)
             .build();
@@ -1296,9 +1296,9 @@ mod tests {
         ).unwrap();
 
         use crate::solution::SolutionBuilder;
-        use crate::solver::SolverStatus;
+        use crate::solver::backend::TerminationStatus;
         let sol = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 2.0)
             .build();
 
@@ -1333,9 +1333,9 @@ mod tests {
         ).unwrap();
 
         use crate::solution::SolutionBuilder;
-        use crate::solver::SolverStatus;
+        use crate::solver::backend::TerminationStatus;
         let sol = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 2.0)
             .value(y, 1.0)
             .build();
@@ -1368,9 +1368,9 @@ mod tests {
         let z = model.add_variable(Bounds::new(0.0, 5.0), VarType::Continuous);
 
         use crate::solution::SolutionBuilder;
-        use crate::solver::SolverStatus;
+        use crate::solver::backend::TerminationStatus;
         let sol = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 12.0) // above ub
             .value(y, 1.0)  // below lb
             .value(z, 3.0)  // feasible

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use crate::id::{ConId, ObjId, VarId};
-use crate::solver::SolverStatus;
+use crate::solver::backend::TerminationStatus;
 
 /// A solution to the optimization problem.
 ///
@@ -30,7 +30,7 @@ pub struct Solution {
     /// Which objective this solution is solution for.
     objective_id: Option<ObjId>,
     /// Solver status
-    status: SolverStatus,
+    status: TerminationStatus,
     /// Dual values for constraints (if available).
     duals: Option<HashMap<ConId, f64>>,
     /// Reduced costs for variables (if available).
@@ -39,7 +39,7 @@ pub struct Solution {
 
 impl Solution {
      /// Create a new solution with the given status.
-    pub fn new(status: SolverStatus) -> Self {
+    pub fn new(status: TerminationStatus) -> Self {
         Self {
             values: HashMap::new(),
             objective_value: None,
@@ -51,7 +51,7 @@ impl Solution {
     }
 
     /// Create a solution from variable values.
-    pub fn from_values(values: HashMap<VarId, f64>, status: SolverStatus) -> Self {
+    pub fn from_values(values: HashMap<VarId, f64>, status: TerminationStatus) -> Self {
         Self {
             values,
             objective_value: None,
@@ -63,13 +63,13 @@ impl Solution {
     }
 
     /// Get the solver status.
-    pub fn status(&self) -> SolverStatus {
+    pub fn status(&self) -> TerminationStatus {
         self.status
     }
 
     /// Check if the solution is optimal.
     pub fn is_optimal(&self) -> bool {
-        self.status == SolverStatus::Optimal
+        self.status == TerminationStatus::Optimal
     }
 
     /// Check if the solution has variable values.
@@ -146,7 +146,7 @@ pub struct SolutionBuilder {
     values: HashMap<VarId, f64>,
     objective_value: Option<f64>,
     objective_id: Option<ObjId>,
-    status: SolverStatus,
+    status: TerminationStatus,
     duals: Option<HashMap<ConId, f64>>,
     reduced_costs: Option<HashMap<VarId, f64>>,
 }
@@ -158,7 +158,7 @@ impl SolutionBuilder {
     }
 
     /// Set the solver status.
-    pub fn status(mut self, status: SolverStatus) -> Self {
+    pub fn status(mut self, status: TerminationStatus) -> Self {
         self.status = status;
         self
     }
@@ -310,7 +310,7 @@ mod tests {
         let y = make_var(1);
 
         let solution = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 1.0)
             .value(y, 2.0)
             .objective_value(10.0)
@@ -329,7 +329,7 @@ mod tests {
         let mut store = SolutionStore::new();
 
         let sol1 = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 1.0)
             .build();
 
@@ -340,7 +340,7 @@ mod tests {
         assert!(store.get_named("first").is_some());
 
         let sol2 = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 2.0)
             .build();
 
@@ -356,7 +356,7 @@ mod tests {
         let z = make_var(2);
 
         let solution = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 1.0)
             .value(y, 2.0)
             .build();
@@ -373,7 +373,7 @@ mod tests {
         let c = make_con(0);
 
         let solution = SolutionBuilder::new()
-            .status(SolverStatus::Optimal)
+            .status(TerminationStatus::Optimal)
             .value(x, 1.0)
             .dual(c, 0.5)
             .reduced_cost(x, 0.0)
