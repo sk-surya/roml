@@ -1,7 +1,7 @@
-//! FICO Xpress solver adapter for roml.
+//! FICO Xpress solver backend for roml.
 //!
-//! Provides [`XpressAdapter`], a concrete implementation of roml's
-//! [`SolverAdapter`] trait backed by the FICO Xpress MILP solver.
+//! Provides [`XpressSession`], a concrete implementation of roml's
+//! [`BackendSession`] trait backed by the FICO Xpress MILP solver.
 //!
 //! # Build Configuration
 //!
@@ -22,5 +22,5 @@ mod ffi;
 mod index_map;
 pub mod adapter;
 
-pub use adapter::{XpressAdapter, XpressOptions};
-pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};
+pub use adapter::{XpressOptions, XpressSession};
+pub use roml::solver::SolverError;

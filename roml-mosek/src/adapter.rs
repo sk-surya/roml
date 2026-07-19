@@ -18,13 +18,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use roml::delta::ModelOp;
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::changelog::Change;
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
+use roml::revision::ModelRevision;
+use roml::snapshot::ModelSnapshot;
+use roml::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus};
 use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
-use roml::solver::{LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverStatus};
+use roml::solver::request::{ConfigAdjustment, ConfigRejection, EffectiveConfig, LpAlgorithm, SolveRequest, SolveResult, SolveSolution};
+use roml::solver::session::{BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt, Synchronization};
+use roml::sync::{AdapterCursor, AdapterHealth};
 use log::{info, warn};
 
 use crate::ffi::{self, MosekEnv, MosekTask};
@@ -32,11 +38,11 @@ use crate::index_map::IndexMap;
 
 // ── Error helpers ──────────────────────────────────────────────────────────
 
-fn mosek_err(msg: impl Into<String>) -> SolverError {
-    SolverError::InternalError(msg.into())
+fn mosek_err(msg: impl Into<String>) -> BackendError {
+    BackendError::new(msg, ErrorCategory::Internal, HealthEffect::Recoverable)
 }
 
-fn check(ret: ffi::MosekRes, op: &str) -> Result<(), SolverError> {
+fn check(ret: ffi::MosekRes, op: &str) -> Result<(), BackendError> {
     if ret == ffi::RES_OK {
         Ok(())
     } else {
@@ -158,16 +164,19 @@ pub struct MosekAdapter {
     obj_senses: HashMap<ObjId, Sense>,
     active_obj: Option<ObjId>,
 
-    status:          SolverStatus,
-    solution:        Option<HashMap<VarId, f64>>,
-    objective_value: Option<f64>,
-    duals:           Option<HashMap<ConId, f64>>,
-    reduced_costs:   Option<HashMap<VarId, f64>>,
+    /// Synchronization cursor tracking applied revision and health.
+    cursor: AdapterCursor,
+
+    /// Termination status from the most recent solve.
+    last_status: Option<TerminationStatus>,
+
+    /// Solution from the most recent solve, if available.
+    current_solution: Option<SolveSolution>,
 
     /// Optional callback handler for MIP lazy constraints / cutting planes.
     callback_handler: Option<Box<dyn CallbackHandler>>,
 
-    /// Per-solve optimizer override. Set via `apply_options`, consumed in `solve()`.
+    /// Per-solve optimizer override. Set via request, consumed in `solve()`.
     next_optimizer: Option<MosekOptimizer>,
 }
 
@@ -199,11 +208,9 @@ impl MosekAdapter {
             obj_costs: HashMap::new(),
             obj_senses: HashMap::new(),
             active_obj: None,
-            status: SolverStatus::NotSolved,
-            solution: None,
-            objective_value: None,
-            duals: None,
-            reduced_costs: None,
+            cursor: AdapterCursor::new(),
+            last_status: None,
+            current_solution: None,
             callback_handler: None,
             next_optimizer: None,
         }
@@ -245,26 +252,26 @@ impl MosekAdapter {
         n
     }
 
-    fn map_status(&self, prosta: ffi::MosekInt, solsta: ffi::MosekInt) -> SolverStatus {
+    fn map_termination_status(&self, prosta: ffi::MosekInt, solsta: ffi::MosekInt) -> TerminationStatus {
         // Optimality is in solution status.
         if solsta == ffi::SOL_STA_OPTIMAL || solsta == ffi::SOL_STA_INTEGER_OPTIMAL {
-            return SolverStatus::Optimal;
+            return TerminationStatus::Optimal;
         }
         // Infeasibility / unboundedness from problem status.
         match prosta {
             ffi::PRO_STA_PRIM_INFEAS
-            | ffi::PRO_STA_PRIM_AND_DUAL_INFEAS
-            | ffi::PRO_STA_PRIM_INFEAS_OR_UNBOUNDED => SolverStatus::Infeasible,
-            ffi::PRO_STA_DUAL_INFEAS => SolverStatus::Unbounded,
+            | ffi::PRO_STA_PRIM_AND_DUAL_INFEAS => TerminationStatus::Infeasible,
+            ffi::PRO_STA_PRIM_INFEAS_OR_UNBOUNDED => TerminationStatus::InfeasibleOrUnbounded,
+            ffi::PRO_STA_DUAL_INFEAS => TerminationStatus::Unbounded,
             _ => match solsta {
-                ffi::SOL_STA_PRIM_INFEAS_CER => SolverStatus::Infeasible,
-                ffi::SOL_STA_DUAL_INFEAS_CER => SolverStatus::Unbounded,
-                _ => SolverStatus::Error,
+                ffi::SOL_STA_PRIM_INFEAS_CER => TerminationStatus::Infeasible,
+                ffi::SOL_STA_DUAL_INFEAS_CER => TerminationStatus::Unbounded,
+                _ => TerminationStatus::Error,
             },
         }
     }
 
-    fn apply_one(&mut self, change: &Change) -> Result<(), SolverError> {
+    fn apply_one(&mut self, change: &Change) -> Result<(), BackendError> {
         match change {
             // ── Variable Added ────────────────────────────────────────────
             Change::VariableAdded { var, bounds, var_type } => {
@@ -757,22 +764,85 @@ unsafe extern "C" fn mosek_callback_trampoline(
     }
 }
 
-// ── SolverAdapter implementation ───────────────────────────────────────────
+// ── BackendSession implementation ─────────────────────────────────────────────
 
-impl SolverAdapter for MosekAdapter {
-    fn apply_changes(&mut self, changes: &[Change]) -> Result<(), SolverError> {
-        for change in changes {
-            self.apply_one(change)?;
+impl BackendSession for MosekAdapter {
+    /// Apply a [`Synchronization`] — either a full rebuild from snapshot or
+    /// an incremental delta batch.
+    ///
+    /// On success, invalidates any cached solution and returns the
+    /// updated cursor and health.
+    fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
+        match sync {
+            Synchronization::Rebuild(snapshot) => {
+                let revision = snapshot.revision;
+                info!(
+                    "Rebuilding MOSEK session from snapshot at revision {}",
+                    revision
+                );
+
+                let result = self.rebuild_from_snapshot(&snapshot);
+
+                match result {
+                    Ok(()) => {
+                        self.cursor.mark_ready(revision);
+                        // Invalidate stale solution after model mutation.
+                        self.current_solution = None;
+                        info!("Rebuild complete, cursor at revision {}", revision);
+                    }
+                    Err(e) => {
+                        match e.health_effect {
+                            HealthEffect::Terminal => self.cursor.mark_terminal(),
+                            _ => self.cursor.mark_rebuild(),
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+
+            Synchronization::DeltaBatch(batch) => {
+                info!(
+                    "Applying delta batch r{} -> r{} ({} ops)",
+                    batch.from,
+                    batch.to,
+                    batch.operations.len()
+                );
+
+                for op in &batch.operations {
+                    if let Err(e) = self.apply_model_op(op) {
+                        self.cursor.mark_rebuild();
+                        return Err(e);
+                    }
+                }
+
+                self.cursor.advance(&batch).map_err(|e| {
+                    BackendError::new(
+                        format!("cursor failed to advance after delta: {}", e),
+                        ErrorCategory::Internal,
+                        HealthEffect::Terminal,
+                    )
+                })?;
+                // Invalidate stale solution after model mutation.
+                self.current_solution = None;
+                info!("Delta batch applied, cursor at revision {}", batch.to);
+            }
         }
-        self.solution = None;
-        self.objective_value = None;
-        self.duals = None;
-        self.reduced_costs = None;
-        self.status = SolverStatus::NotSolved;
-        Ok(())
+
+        Ok(SyncReceipt {
+            cursor: self.cursor.clone(),
+            health: self.cursor.health,
+        })
     }
 
-    fn solve(&mut self) -> Result<SolverStatus, SolverError> {
+    /// Solve the current model with the given [`SolveRequest`].
+    ///
+    /// Flow:
+    /// 1. Apply solve options from the request (algorithm, time limit, etc.).
+    /// 2. Set up callback handler if one is registered.
+    /// 3. Call MOSEK optimize.
+    /// 4. Map termination status.
+    /// 5. Extract solution data if available.
+    fn solve(&mut self, request: &SolveRequest) -> Result<SolveResult, BackendError> {
         info!(
             "Starting MOSEK solve: {} vars, {} cons, mip={}",
             self.col_map.len(),
@@ -784,27 +854,8 @@ impl SolverAdapter for MosekAdapter {
             warn!("Solving with no active objective.");
         }
 
-        // ── Apply per-solve optimizer override ──
-        if let Some(opt) = self.next_optimizer.take() {
-            let code = match opt {
-                MosekOptimizer::Free          => ffi::OPTIMIZER_FREE,
-                MosekOptimizer::InteriorPoint => ffi::OPTIMIZER_INTPNT,
-                MosekOptimizer::DualSimplex   => ffi::OPTIMIZER_DUAL_SIMPLEX,
-                MosekOptimizer::NewDualSimplex => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
-                MosekOptimizer::FreeSimplex   => ffi::OPTIMIZER_FREE_SIMPLEX,
-            };
-            unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_OPTIMIZER, code) };
-            // Enable crossover (IPM → basis) when using barrier, so subsequent
-            // dual-simplex phases can hotstart from the basis.
-            if opt == MosekOptimizer::InteriorPoint {
-                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_INTPNT_BASIS, ffi::BI_IF_FEASIBLE) };
-            }
-            // Enable status-keys hotstart when using dual simplex.
-            if matches!(opt, MosekOptimizer::DualSimplex | MosekOptimizer::NewDualSimplex) {
-                unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_SIM_HOTSTART, ffi::SIM_HOTSTART_STATUS_KEYS) };
-            }
-            info!("MOSEK: applied optimizer override = {opt:?}");
-        }
+        // Step 1: Apply solve options from the request.
+        let effective_config = self.negotiate_options(request)?;
 
         // ── Optional callback loop ──
         if let Some(handler) = self.callback_handler.take() {
@@ -864,6 +915,7 @@ impl SolverAdapter for MosekAdapter {
             }
         }
 
+        // Step 4: Map status.
         let soltype = self.soltype();
 
         let mut solsta: ffi::MosekInt = ffi::SOL_STA_UNKNOWN;
@@ -878,103 +930,120 @@ impl SolverAdapter for MosekAdapter {
             "MSK_getprosta",
         )?;
 
-        let solver_status = self.map_status(prosta, solsta);
-        self.status = solver_status;
+        let termination = self.map_termination_status(prosta, solsta);
+        self.last_status = Some(termination);
+        info!("Solve completed with status: {:?}", termination);
 
-        if matches!(solver_status, SolverStatus::Optimal) {
-            let nv = self.num_vars() as usize;
-            let nc = self.num_cons() as usize;
+        // Step 5: Extract solution data.
+        let solution = self.extract_solution_data(&termination, soltype);
+        self.current_solution = solution.clone();
 
-            // Primal variable values.
-            let mut xx = vec![0.0f64; nv];
-            check(
-                unsafe { ffi::MSK_getxx(self.task, soltype, xx.as_mut_ptr()) },
-                "MSK_getxx",
-            )?;
+        Ok(SolveResult {
+            effective_configuration: effective_config,
+            termination,
+            solution,
+        })
+    }
 
-            // Primal objective value.
-            let mut pobj = 0.0f64;
-            check(
-                unsafe { ffi::MSK_getprimalobj(self.task, soltype, &mut pobj) },
-                "MSK_getprimalobj",
-            )?;
-            self.objective_value = Some(pobj);
+    /// Close the session, releasing native resources.
+    ///
+    /// Consumes `self` so that the [`Drop`] impl runs immediately, which
+    /// calls MOSEK delete functions on the handles.
+    fn close(self) -> Result<(), BackendError> {
+        // Drop handles all cleanup: task and env deletion.
+        info!("Closing MOSEK session");
+        Ok(())
+    }
+}
 
-            let mut sol: HashMap<VarId, f64> = HashMap::new();
-            for (var, col) in self.col_map.iter() {
-                if let Some(v) = xx.get(col as usize) {
-                    sol.insert(var, *v);
-                }
-            }
-            self.solution = Some(sol);
+// ── SessionHealth ───────────────────────────────────────────────────────────────
 
-            // Dual values and reduced costs — only available for LP (BAS solution).
-            if !self.is_mip() {
-                let mut y   = vec![0.0f64; nc];
-                let mut slx = vec![0.0f64; nv];
-                let mut sux = vec![0.0f64; nv];
+impl SessionHealth for MosekAdapter {
+    fn health(&self) -> AdapterHealth {
+        self.cursor.health
+    }
 
-                let y_ok = unsafe {
-                    ffi::MSK_gety(self.task, soltype, y.as_mut_ptr())
-                } == ffi::RES_OK;
-                let rc_ok = unsafe {
-                    ffi::MSK_getslx(self.task, soltype, slx.as_mut_ptr())
-                } == ffi::RES_OK
-                    && unsafe {
-                        ffi::MSK_getsux(self.task, soltype, sux.as_mut_ptr())
-                    } == ffi::RES_OK;
+    fn revision(&self) -> ModelRevision {
+        self.cursor.applied_revision
+    }
+}
 
-                if y_ok {
-                    let mut duals: HashMap<ConId, f64> = HashMap::new();
-                    for (con, row) in self.row_map.iter() {
-                        if let Some(v) = y.get(row as usize) {
-                            duals.insert(con, *v);
-                        }
-                    }
-                    self.duals = Some(duals);
-                }
+// ── BackendMetadata ─────────────────────────────────────────────────────────────
 
-                if rc_ok {
-                    let mut rc: HashMap<VarId, f64> = HashMap::new();
-                    for (var, col) in self.col_map.iter() {
-                        let c = col as usize;
-                        let v = slx.get(c).copied().unwrap_or(0.0)
-                            - sux.get(c).copied().unwrap_or(0.0);
-                        rc.insert(var, v);
-                    }
-                    self.reduced_costs = Some(rc);
-                }
-            }
-        } else {
-            self.solution = None;
-            self.objective_value = None;
-            self.duals = None;
-            self.reduced_costs = None;
+impl BackendMetadata for MosekAdapter {
+    fn name(&self) -> &str {
+        "MOSEK"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            lp: true,
+            mip: true,
+            solution: true,
+            duals: true,
+            reduced_costs: true,
+            callbacks: true,
+            delete: true,
+            add_variable: true,
+            add_constraint: true,
+            set_coefficient: true,
+            set_bounds: true,
+            set_objective: true,
+            semicontinuous: true,
+            semiinteger: true,
+            parameter_update: false,
         }
+    }
+}
 
-        Ok(solver_status)
+// ── CallbackSession ─────────────────────────────────────────────────────────────
+
+impl CallbackSession for MosekAdapter {
+    fn set_callback_handler(&mut self, handler: Box<dyn CallbackHandler>) -> Result<(), BackendError> {
+        self.callback_handler = Some(handler);
+        Ok(())
     }
 
-    fn status(&self) -> SolverStatus {
-        self.status
+    fn clear_callback_handler(&mut self) -> Result<(), BackendError> {
+        self.callback_handler = None;
+        Ok(())
+    }
+}
+
+// ── SolutionView ────────────────────────────────────────────────────────────────
+
+impl SolutionView for MosekAdapter {
+    fn value(&self, var: VarId) -> Option<f64> {
+        self.current_solution
+            .as_ref()
+            .and_then(|sol| sol.variable_values.iter().find(|(id, _)| *id == var).map(|(_, v)| *v))
     }
 
-    fn solution_values(&self) -> Option<HashMap<VarId, f64>> {
-        self.solution.clone()
+    fn dual(&self, con: ConId) -> Option<f64> {
+        self.current_solution.as_ref().and_then(|sol| {
+            sol.dual_values
+                .as_ref()
+                .and_then(|duals| duals.iter().find(|(id, _)| *id == con).map(|(_, v)| *v))
+        })
     }
 
-    fn objective_value_raw(&self) -> Option<f64> {
-        self.objective_value
+    fn reduced_cost(&self, var: VarId) -> Option<f64> {
+        self.current_solution.as_ref().and_then(|sol| {
+            sol.reduced_costs
+                .as_ref()
+                .and_then(|costs| costs.iter().find(|(id, _)| *id == var).map(|(_, v)| *v))
+        })
     }
 
-    fn dual_values(&self) -> Option<HashMap<ConId, f64>> {
-        self.duals.clone()
+    fn objective_value(&self) -> Option<f64> {
+        self.current_solution.as_ref().and_then(|sol| sol.objective_value)
     }
+}
 
-    fn reduced_costs_raw(&self) -> Option<HashMap<VarId, f64>> {
-        self.reduced_costs.clone()
-    }
+// ── MosekAdapter methods (delta application, rebuild, option negotiation) ───────
 
+impl MosekAdapter {
+    /// Reset the adapter — delete and recreate the MOSEK task, clear all caches.
     fn reset(&mut self) {
         unsafe { ffi::MSK_deletetask(&mut self.task) };
         self.task = make_task(self.env, &self.opts);
@@ -988,48 +1057,598 @@ impl SolverAdapter for MosekAdapter {
         self.obj_costs.clear();
         self.obj_senses.clear();
         self.active_obj = None;
-        self.status = SolverStatus::NotSolved;
-        self.solution = None;
-        self.objective_value = None;
-        self.duals = None;
-        self.reduced_costs = None;
+        self.cursor = AdapterCursor::new();
+        self.last_status = None;
+        self.current_solution = None;
         self.callback_handler = None;
     }
 
-    fn set_callback_handler(
-        &mut self,
-        handler: Box<dyn CallbackHandler>,
-    ) -> Result<(), SolverError> {
-        self.callback_handler = Some(handler);
-        Ok(())
-    }
+    /// Apply a single [`ModelOp`] to the MOSEK task.
+    fn apply_model_op(&mut self, op: &ModelOp) -> Result<(), BackendError> {
+        match op {
+            // ── Variable Added ──────────────────────────────────────────────
+            ModelOp::AddVariable { var, bounds, var_type } => {
+                let col_idx = self.num_vars();
+                check(unsafe { ffi::MSK_appendvars(self.task, 1) }, "MSK_appendvars")?;
 
-    fn apply_options(&mut self, opts: &SolveOptions) -> Result<(), SolverError> {
-        if let Some(algo) = opts.lp_algorithm {
-            let mosek_opt = match algo {
-                LpAlgorithm::Automatic     => MosekOptimizer::Free,
-                LpAlgorithm::PrimalSimplex => MosekOptimizer::DualSimplex, // no primal in MosekOptimizer
-                LpAlgorithm::DualSimplex   => MosekOptimizer::NewDualSimplex,
-                LpAlgorithm::Barrier       => MosekOptimizer::InteriorPoint,
-            };
-            self.next_optimizer = Some(mosek_opt);
+                let (bk, lb, ub) = mosek_bounds(bounds.lower, bounds.upper);
+                check(
+                    unsafe { ffi::MSK_putvarbound(self.task, col_idx, bk, lb, ub) },
+                    "MSK_putvarbound",
+                )?;
+
+                self.col_map.insert(*var, col_idx);
+                self.var_bounds.insert(*var, (bounds.lower, bounds.upper));
+
+                if matches!(var_type, VarType::Integer | VarType::Binary) {
+                    check(
+                        unsafe { ffi::MSK_putvartype(self.task, col_idx, Self::var_type_to_mosek(*var_type)) },
+                        "MSK_putvartype",
+                    )?;
+                    self.integer_vars.insert(*var);
+                }
+            }
+
+            // ── Variable Removed ────────────────────────────────────────────
+            ModelOp::RemoveVariable { var } => {
+                let col = match self.col_map.remove(*var) {
+                    Some(c) => c,
+                    None => return Ok(()),
+                };
+                self.var_bounds.remove(var);
+                self.integer_vars.remove(var);
+                for costs in self.obj_costs.values_mut() {
+                    costs.remove(var);
+                }
+                check(
+                    unsafe { ffi::MSK_removevars(self.task, 1, &col) },
+                    "MSK_removevars",
+                )?;
+                self.col_map.reindex_after_delete(col);
+            }
+
+            // ── Variable Bounds Changed ─────────────────────────────────────
+            ModelOp::SetVariableBounds { var, bounds } => {
+                if let Some(col) = self.col_map.get(*var) {
+                    let (bk, lb, ub) = mosek_bounds(bounds.lower, bounds.upper);
+                    check(
+                        unsafe { ffi::MSK_putvarbound(self.task, col, bk, lb, ub) },
+                        "MSK_putvarbound (bounds change)",
+                    )?;
+                    self.var_bounds.insert(*var, (bounds.lower, bounds.upper));
+                }
+            }
+
+            // ── Variable Type Changed ───────────────────────────────────────
+            ModelOp::SetVariableType { var, var_type } => {
+                if let Some(col) = self.col_map.get(*var) {
+                    let msk_type = if self.semicontinuous_vars.contains(var) {
+                        match var_type {
+                            VarType::Integer | VarType::Binary => {
+                                self.integer_vars.insert(*var);
+                                ffi::VAR_TYPE_SEMICONT_INT
+                            }
+                            VarType::Continuous => {
+                                self.integer_vars.remove(var);
+                                ffi::VAR_TYPE_SEMICONT
+                            }
+                        }
+                    } else {
+                        Self::var_type_to_mosek(*var_type)
+                    };
+                    check(
+                        unsafe { ffi::MSK_putvartype(self.task, col, msk_type) },
+                        "MSK_putvartype (type change)",
+                    )?;
+                    if matches!(var_type, VarType::Integer | VarType::Binary) {
+                        self.integer_vars.insert(*var);
+                    } else {
+                        self.integer_vars.remove(var);
+                    }
+                }
+            }
+
+            // ── Variable Activity Changed ───────────────────────────────────
+            ModelOp::SetVariableActive { var, active } => {
+                if let Some(col) = self.col_map.get(*var) {
+                    let (bk, lb, ub) = if *active {
+                        let (orig_lb, orig_ub) =
+                            self.var_bounds.get(var).copied().unwrap_or((0.0, f64::INFINITY));
+                        mosek_bounds(orig_lb, orig_ub)
+                    } else {
+                        (ffi::BK_FX, 0.0, 0.0)
+                    };
+                    check(
+                        unsafe { ffi::MSK_putvarbound(self.task, col, bk, lb, ub) },
+                        "MSK_putvarbound (activity)",
+                    )?;
+                }
+            }
+
+            // ── Constraint Added ────────────────────────────────────────────
+            ModelOp::AddConstraint { con, bounds } => {
+                let row_idx = self.num_cons();
+                check(unsafe { ffi::MSK_appendcons(self.task, 1) }, "MSK_appendcons")?;
+
+                let (bk, lb, ub) = mosek_bounds(bounds.lower, bounds.upper);
+                check(
+                    unsafe { ffi::MSK_putconbound(self.task, row_idx, bk, lb, ub) },
+                    "MSK_putconbound",
+                )?;
+
+                self.row_map.insert(*con, row_idx);
+                self.con_bounds.insert(*con, (bounds.lower, bounds.upper));
+            }
+
+            // ── Constraint Removed ──────────────────────────────────────────
+            ModelOp::RemoveConstraint { con } => {
+                let row = match self.row_map.remove(*con) {
+                    Some(r) => r,
+                    None => return Ok(()),
+                };
+                self.con_bounds.remove(con);
+                check(
+                    unsafe { ffi::MSK_removecons(self.task, 1, &row) },
+                    "MSK_removecons",
+                )?;
+                self.row_map.reindex_after_delete(row);
+            }
+
+            // ── Constraint Bounds Changed ───────────────────────────────────
+            ModelOp::SetConstraintBounds { con, bounds } => {
+                if let Some(row) = self.row_map.get(*con) {
+                    let (bk, lb, ub) = mosek_bounds(bounds.lower, bounds.upper);
+                    check(
+                        unsafe { ffi::MSK_putconbound(self.task, row, bk, lb, ub) },
+                        "MSK_putconbound (bounds change)",
+                    )?;
+                    self.con_bounds.insert(*con, (bounds.lower, bounds.upper));
+                }
+            }
+
+            // ── Constraint Activity Changed ─────────────────────────────────
+            ModelOp::SetConstraintActive { con, active } => {
+                if let Some(row) = self.row_map.get(*con) {
+                    let (bk, lb, ub) = if *active {
+                        let (orig_lb, orig_ub) = self
+                            .con_bounds
+                            .get(con)
+                            .copied()
+                            .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                        mosek_bounds(orig_lb, orig_ub)
+                    } else {
+                        (ffi::BK_FR, 0.0, 0.0)
+                    };
+                    check(
+                        unsafe { ffi::MSK_putconbound(self.task, row, bk, lb, ub) },
+                        "MSK_putconbound (activity)",
+                    )?;
+                }
+            }
+
+            // ── Set Coefficient Cell ────────────────────────────────────────
+            ModelOp::SetCell { cell_key, evaluated_value, .. } => {
+                let (target, var) = cell_key;
+                match target {
+                    CoefficientTarget::Constraint(con) => {
+                        if let (Some(row), Some(col)) =
+                            (self.row_map.get(*con), self.col_map.get(*var))
+                        {
+                            check(
+                                unsafe { ffi::MSK_putaij(self.task, row, col, *evaluated_value) },
+                                "MSK_putaij (set cell)",
+                            )?;
+                        }
+                    }
+                    CoefficientTarget::Objective(obj) => {
+                        self.obj_costs.entry(*obj).or_default().insert(*var, *evaluated_value);
+                        if Some(*obj) == self.active_obj {
+                            if let Some(col) = self.col_map.get(*var) {
+                                check(
+                                    unsafe { ffi::MSK_putcj(self.task, col, *evaluated_value) },
+                                    "MSK_putcj (set cell)",
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Remove Coefficient Cell ─────────────────────────────────────
+            ModelOp::RemoveCell { cell_key } => {
+                let (target, var) = cell_key;
+                match target {
+                    CoefficientTarget::Constraint(con) => {
+                        if let (Some(row), Some(col)) =
+                            (self.row_map.get(*con), self.col_map.get(*var))
+                        {
+                            check(
+                                unsafe { ffi::MSK_putaij(self.task, row, col, 0.0) },
+                                "MSK_putaij (remove cell)",
+                            )?;
+                        }
+                    }
+                    CoefficientTarget::Objective(obj) => {
+                        if let Some(costs) = self.obj_costs.get_mut(obj) {
+                            costs.remove(var);
+                        }
+                        if Some(*obj) == self.active_obj {
+                            if let Some(col) = self.col_map.get(*var) {
+                                check(
+                                    unsafe { ffi::MSK_putcj(self.task, col, 0.0) },
+                                    "MSK_putcj (remove cell)",
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Objective Added ─────────────────────────────────────────────
+            ModelOp::AddObjective { obj, sense } => {
+                self.obj_senses.insert(*obj, *sense);
+                self.obj_costs.entry(*obj).or_default();
+            }
+
+            // ── Objective Removed ───────────────────────────────────────────
+            ModelOp::RemoveObjective { obj } => {
+                self.obj_costs.remove(obj);
+                self.obj_senses.remove(obj);
+                if self.active_obj == Some(*obj) {
+                    self.active_obj = None;
+                }
+            }
+
+            // ── Active Objective Changed ─────────────────────────────────────
+            ModelOp::SetActiveObjective { obj } => {
+                // Zero out old objective coefficients.
+                if let Some(old_obj) = self.active_obj {
+                    if let Some(old_costs) = self.obj_costs.get(&old_obj).cloned() {
+                        for var in old_costs.keys() {
+                            if let Some(col) = self.col_map.get(*var) {
+                                unsafe { ffi::MSK_putcj(self.task, col, 0.0) };
+                            }
+                        }
+                    }
+                }
+
+                self.active_obj = *obj;
+
+                if let Some(new_obj) = obj {
+                    // Load new costs.
+                    if let Some(costs) = self.obj_costs.get(new_obj).cloned() {
+                        for (var, cost) in &costs {
+                            if let Some(col) = self.col_map.get(*var) {
+                                unsafe { ffi::MSK_putcj(self.task, col, *cost) };
+                            }
+                        }
+                    }
+                    // Apply new sense.
+                    if let Some(&sense) = self.obj_senses.get(new_obj) {
+                        unsafe {
+                            ffi::MSK_putobjsense(self.task, Self::sense_to_mosek(sense))
+                        };
+                    }
+                }
+            }
+
+            // ── Set Objective Cell ──────────────────────────────────────────
+            ModelOp::SetObjectiveCell { cell_key, evaluated_value, .. } => {
+                let (_target, var) = cell_key;
+                if let Some(col) = self.col_map.get(*var) {
+                    check(
+                        unsafe { ffi::MSK_putcj(self.task, col, *evaluated_value) },
+                        "MSK_putcj (obj cell)",
+                    )?;
+                }
+            }
+
+            // ── Set Parameter ───────────────────────────────────────────────
+            ModelOp::SetParameter { .. } => {
+                // MOSEK does not have a parameter concept in the same way;
+                // parameters are resolved to evaluated_values in cells.
+            }
         }
         Ok(())
     }
 
-    fn set_console_output(&mut self, enabled: bool) -> Result<(), SolverError> {
-        self.opts.console_output = enabled;
-        let level: i32 = if enabled { 3 } else { 0 };
-        unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_LOG, level); }
+    /// Rebuild the MOSEK task from a canonical [`ModelSnapshot`].
+    ///
+    /// Clears the MOSEK task, then adds all variables, constraints, cells,
+    /// and objectives from the snapshot. Handles inactive entities and
+    /// semi-continuous variables.
+    fn rebuild_from_snapshot(&mut self, snapshot: &ModelSnapshot) -> Result<(), BackendError> {
+        self.reset();
+
+        // Add variables
+        for var_entry in &snapshot.variables {
+            let col_idx = self.num_vars();
+            check(unsafe { ffi::MSK_appendvars(self.task, 1) }, "MSK_appendvars")?;
+
+            let (bk, lb, ub) = mosek_bounds(var_entry.bounds.lower, var_entry.bounds.upper);
+            check(
+                unsafe { ffi::MSK_putvarbound(self.task, col_idx, bk, lb, ub) },
+                "MSK_putvarbound",
+            )?;
+
+            self.col_map.insert(var_entry.id, col_idx);
+            self.var_bounds.insert(var_entry.id, (var_entry.bounds.lower, var_entry.bounds.upper));
+
+            if matches!(var_entry.var_type, VarType::Integer | VarType::Binary) {
+                check(
+                    unsafe { ffi::MSK_putvartype(self.task, col_idx, Self::var_type_to_mosek(var_entry.var_type)) },
+                    "MSK_putvartype",
+                )?;
+                self.integer_vars.insert(var_entry.id);
+            }
+
+            if let Some(_sc_lower) = var_entry.semicontinuous_lower {
+                self.semicontinuous_vars.insert(var_entry.id);
+                let msk_type = if matches!(var_entry.var_type, VarType::Integer | VarType::Binary) {
+                    ffi::VAR_TYPE_SEMICONT_INT
+                } else {
+                    ffi::VAR_TYPE_SEMICONT
+                };
+                check(
+                    unsafe { ffi::MSK_putvartype(self.task, col_idx, msk_type) },
+                    "MSK_putvartype (semi-continuous)",
+                )?;
+            }
+
+            // Handle inactive variables
+            if !var_entry.active {
+                if let Some(col) = self.col_map.get(var_entry.id) {
+                    check(
+                        unsafe { ffi::MSK_putvarbound(self.task, col, ffi::BK_FX, 0.0, 0.0) },
+                        "MSK_putvarbound (inactive)",
+                    )?;
+                }
+            }
+        }
+
+        // Add constraints
+        for con_entry in &snapshot.constraints {
+            let row_idx = self.num_cons();
+            check(unsafe { ffi::MSK_appendcons(self.task, 1) }, "MSK_appendcons")?;
+
+            let (bk, lb, ub) = mosek_bounds(con_entry.bounds.lower, con_entry.bounds.upper);
+            check(
+                unsafe { ffi::MSK_putconbound(self.task, row_idx, bk, lb, ub) },
+                "MSK_putconbound",
+            )?;
+
+            self.row_map.insert(con_entry.id, row_idx);
+            self.con_bounds.insert(con_entry.id, (con_entry.bounds.lower, con_entry.bounds.upper));
+
+            // Handle inactive constraints
+            if !con_entry.active {
+                if let Some(row) = self.row_map.get(con_entry.id) {
+                    check(
+                        unsafe { ffi::MSK_putconbound(self.task, row, ffi::BK_FR, 0.0, 0.0) },
+                        "MSK_putconbound (inactive)",
+                    )?;
+                }
+            }
+        }
+
+        // Add coefficient cells
+        for cell in &snapshot.cells {
+            match cell.cell_key.0 {
+                CoefficientTarget::Constraint(con) => {
+                    if let (Some(row), Some(col)) = (self.row_map.get(con), self.col_map.get(cell.cell_key.1)) {
+                        check(
+                            unsafe { ffi::MSK_putaij(self.task, row, col, cell.evaluated_value) },
+                            "MSK_putaij (rebuild)",
+                        )?;
+                    }
+                }
+                CoefficientTarget::Objective(obj) => {
+                    self.obj_costs.entry(obj).or_default().insert(cell.cell_key.1, cell.evaluated_value);
+                }
+            }
+        }
+
+        // Register objectives
+        for obj_entry in &snapshot.objectives {
+            self.obj_senses.insert(obj_entry.id, obj_entry.sense);
+            self.obj_costs.entry(obj_entry.id).or_default();
+            if obj_entry.active {
+                self.active_obj = Some(obj_entry.id);
+            }
+        }
+
+        // Set active objective
+        if let Some(obj) = self.active_obj {
+            // Apply sense
+            if let Some(&sense) = self.obj_senses.get(&obj) {
+                unsafe { ffi::MSK_putobjsense(self.task, Self::sense_to_mosek(sense)) };
+            }
+            // Apply costs
+            if let Some(costs) = self.obj_costs.get(&obj) {
+                for (var, cost) in costs {
+                    if let Some(col) = self.col_map.get(*var) {
+                        unsafe { ffi::MSK_putcj(self.task, col, *cost) };
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
-    fn supports_incremental(&self, _change: &Change) -> bool {
-        true
+    /// Map solve request options to MOSEK parameters, returning the effective
+    /// configuration. Each option is applied, adjusted, or rejected explicitly.
+    fn negotiate_options(&self, request: &SolveRequest) -> Result<EffectiveConfig, BackendError> {
+        let mut effective = EffectiveConfig::default();
+
+        // ── lp_algorithm ────────────────────────────────────────────────────
+        if let Some(algo) = &request.lp_algorithm {
+            let mosek_opt = match algo {
+                LpAlgorithm::Automatic     => ffi::OPTIMIZER_FREE,
+                LpAlgorithm::PrimalSimplex => ffi::OPTIMIZER_DUAL_SIMPLEX,
+                LpAlgorithm::DualSimplex   => ffi::OPTIMIZER_NEW_DUAL_SIMPLEX,
+                LpAlgorithm::Barrier       => ffi::OPTIMIZER_INTPNT,
+            };
+            unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_OPTIMIZER, mosek_opt) };
+            effective.lp_algorithm = Some(*algo);
+        }
+
+        // ── time_limit_secs ─────────────────────────────────────────────────
+        if let Some(t) = request.time_limit_secs {
+            unsafe { ffi::MSK_putdouparam(self.task, ffi::DPAR_MIO_MAX_TIME, t) };
+            effective.time_limit_secs = Some(t);
+        }
+
+        // ── mip_rel_gap ─────────────────────────────────────────────────────
+        if let Some(g) = request.mip_rel_gap {
+            unsafe { ffi::MSK_putdouparam(self.task, ffi::DPAR_MIO_TOL_REL_GAP, g) };
+            effective.mip_rel_gap = Some(g);
+        }
+
+        // ── mip_abs_gap ─────────────────────────────────────────────────────
+        if let Some(g) = request.mip_abs_gap {
+            unsafe { ffi::MSK_putdouparam(self.task, ffi::DPAR_MIO_TOL_ABS_GAP, g) };
+            effective.adjustments.push(ConfigAdjustment {
+                key: "mip_abs_gap".into(),
+                requested: g.to_string(),
+                applied: g.to_string(),
+                reason: "set via MSK_putdouparam".into(),
+            });
+        }
+
+        // ── threads ─────────────────────────────────────────────────────────
+        if let Some(n) = request.threads {
+            unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_NUM_THREADS, n) };
+            effective.threads = Some(n);
+        }
+
+        // ── enable_output ───────────────────────────────────────────────────
+        if let Some(enabled) = request.enable_output {
+            let level: i32 = if enabled { 3 } else { 0 };
+            unsafe { ffi::MSK_putintparam(self.task, ffi::IPAR_LOG, level) };
+            effective.enable_output = Some(enabled);
+        }
+
+        // ── random_seed ─────────────────────────────────────────────────────
+        if request.random_seed.is_some() {
+            effective.rejections.push(ConfigRejection {
+                key: "random_seed".into(),
+                reason: "MOSEK random seed not supported via current FFI bindings".into(),
+            });
+        }
+
+        // ── extra_options ───────────────────────────────────────────────────
+        for (key, _value) in &request.extra_options {
+            effective.rejections.push(ConfigRejection {
+                key: key.clone(),
+                reason: format!("MOSEK extra option '{}' not supported via current FFI bindings", key),
+            });
+        }
+
+        Ok(effective)
     }
 
-    fn supports_semi_continuous(&self) -> bool {
-        true
+    /// Extract solution data from MOSEK after a solve, building a
+    /// [`SolveSolution`]. Returns `None` if the termination status does not
+    /// indicate a solution is available or if the data cannot be retrieved.
+    fn extract_solution_data(&self, termination: &TerminationStatus, soltype: ffi::MosekInt) -> Option<SolveSolution> {
+        match termination {
+            TerminationStatus::Optimal | TerminationStatus::Feasible => {}
+            _ => return None,
+        }
+
+        let nv = self.num_vars() as usize;
+        let nc = self.num_cons() as usize;
+
+        if nv == 0 {
+            return None;
+        }
+
+        // Primal variable values.
+        let mut xx = vec![0.0f64; nv];
+        if unsafe { ffi::MSK_getxx(self.task, soltype, xx.as_mut_ptr()) } != ffi::RES_OK {
+            return None;
+        }
+
+        // Primal objective value.
+        let mut pobj = 0.0f64;
+        if unsafe { ffi::MSK_getprimalobj(self.task, soltype, &mut pobj) } != ffi::RES_OK {
+            pobj = f64::NAN;
+        }
+
+        let rev_col = self.col_map.reverse_map();
+        let rev_row = self.row_map.reverse_map();
+
+        // Map column values to variable_values.
+        let variable_values: Vec<(VarId, f64)> = (0..nv)
+            .filter_map(|hi_idx| {
+                let v = xx[hi_idx];
+                if v.is_nan() || v.is_infinite() {
+                    return None;
+                }
+                rev_col.get(&(hi_idx as i32)).copied().map(|var_id| (var_id, v))
+            })
+            .collect();
+
+        // Dual values and reduced costs — only available for LP (BAS solution).
+        let (dual_values, reduced_costs) = if !self.is_mip() {
+            let mut y = vec![0.0f64; nc];
+            let mut slx = vec![0.0f64; nv];
+            let mut sux = vec![0.0f64; nv];
+
+            let y_ok = unsafe {
+                ffi::MSK_gety(self.task, soltype, y.as_mut_ptr())
+            } == ffi::RES_OK;
+            let rc_ok = unsafe {
+                ffi::MSK_getslx(self.task, soltype, slx.as_mut_ptr())
+            } == ffi::RES_OK
+                && unsafe {
+                    ffi::MSK_getsux(self.task, soltype, sux.as_mut_ptr())
+                } == ffi::RES_OK;
+
+            let duals = if y_ok {
+                let d: Vec<(ConId, f64)> = (0..nc)
+                    .filter_map(|hi_idx| {
+                        let v = y[hi_idx];
+                        if v.is_nan() || v.is_infinite() {
+                            return None;
+                        }
+                        rev_row.get(&(hi_idx as i32)).copied().map(|con_id| (con_id, v))
+                    })
+                    .collect();
+                if d.is_empty() { None } else { Some(d) }
+            } else {
+                None
+            };
+
+            let rcs = if rc_ok {
+                let rc: Vec<(VarId, f64)> = (0..nv)
+                    .filter_map(|hi_idx| {
+                        let v = slx.get(hi_idx).copied().unwrap_or(0.0)
+                            - sux.get(hi_idx).copied().unwrap_or(0.0);
+                        rev_col.get(&(hi_idx as i32)).copied().map(|var_id| (var_id, v))
+                    })
+                    .collect();
+                if rc.is_empty() { None } else { Some(rc) }
+            } else {
+                None
+            };
+
+            (duals, rcs)
+        } else {
+            (None, None)
+        };
+
+        if variable_values.is_empty() {
+            return None;
+        }
+
+        Some(SolveSolution {
+            variable_values,
+            objective_value: if pobj.is_nan() { None } else { Some(pobj) },
+            dual_values,
+            reduced_costs,
+        })
     }
 }
 

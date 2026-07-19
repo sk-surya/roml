@@ -1,7 +1,7 @@
-//! MOSEK solver adapter for roml.
+//! MOSEK solver backend for roml.
 //!
 //! Provides [`MosekAdapter`], a concrete implementation of roml's
-//! [`SolverAdapter`] trait backed by the MOSEK mixed-integer linear
+//! [`BackendSession`] trait backed by the MOSEK mixed-integer linear
 //! programming solver.
 //!
 //! # Build Configuration
@@ -24,4 +24,23 @@ mod index_map;
 pub mod adapter;
 
 pub use adapter::{MosekAdapter, MosekOptimizer, MosekOptions, MosekSimHotstart};
-pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};
+
+// ── BackendFixture ────────────────────────────────────────────────────────────
+
+/// Creates fresh [`MosekAdapter`] instances for parameterized tests.
+///
+/// Implements [`roml::solver::session::BackendFixture`] so that MOSEK can
+/// run the shared conformance suite alongside ReferenceBackend and HiGHS.
+pub struct MosekFixture;
+
+impl roml::solver::session::BackendFixture for MosekFixture {
+    type Session = MosekAdapter;
+
+    fn new_session(&self) -> Result<Self::Session, roml::solver::backend::BackendError> {
+        Ok(MosekAdapter::new())
+    }
+
+    fn backend_name(&self) -> &str {
+        "MOSEK"
+    }
+}

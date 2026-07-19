@@ -75,6 +75,11 @@ pub const ALG_DUAL_SIMPLEX:   XprsInt = 2;
 pub const ALG_NETWORK_SIMPLEX:XprsInt = 3;
 pub const ALG_BARRIER:        XprsInt = 4;
 
+// ── Double controls (XPRSsetdblcontrol) ───────────────────────────────────
+
+pub const XPRS_MIPRELSTOP: XprsInt = 8086;
+pub const XPRS_MIPABSSTOP: XprsInt = 8087;
+
 // ── Extern C declarations ──────────────────────────────────────────────────
 
 extern "C" {

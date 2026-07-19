@@ -67,6 +67,8 @@ pub const STREAM_LOG: MosekInt = 0;
 
 // Double params (MSKdparame) — subset we use
 pub const DPAR_MIO_MAX_TIME: MosekInt = 42;
+pub const DPAR_MIO_TOL_REL_GAP: MosekInt = 43;
+pub const DPAR_MIO_TOL_ABS_GAP: MosekInt = 44;
 
 // Integer params (MSKiparame) — subset we use
 pub const IPAR_LOG:              MosekInt = 34;

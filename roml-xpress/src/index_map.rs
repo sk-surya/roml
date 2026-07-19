@@ -28,6 +28,7 @@ impl<Id: Hash + Eq + Copy> IndexMap<Id> {
         self.id_to_idx.remove(&id)
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.id_to_idx.len()
     }
