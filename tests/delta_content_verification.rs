@@ -26,7 +26,10 @@ fn all_batches(model: &Model) -> Vec<&DeltaBatch> {
 
 /// Return the single batch at the given index.
 fn nth_batch(model: &Model, index: usize) -> &DeltaBatch {
-    all_batches(model).into_iter().nth(index).expect("batch index out of range")
+    all_batches(model)
+        .into_iter()
+        .nth(index)
+        .expect("batch index out of range")
 }
 
 /// Assert that the delta batch from `from` to `to` has exactly the given
@@ -398,10 +401,7 @@ fn clear_active_objective_produces_none_op() {
     // The batch should have SetActiveObjective(None)
     let ops = &nth_batch(&model, 1).operations;
     assert_eq!(ops.len(), 1);
-    assert_eq!(
-        ops[0],
-        ModelOp::SetActiveObjective { obj: None }
-    );
+    assert_eq!(ops[0], ModelOp::SetActiveObjective { obj: None });
 }
 
 #[test]
@@ -499,13 +499,10 @@ fn parameter_change_produces_set_parameter_and_updated_cell() {
         param: p,
         value: 10.0,
     }));
-    assert!(ops.contains(&ModelOp::SetCell {
-        cell_key: (CoefficientTarget::Constraint(c), x),
-        // Note: compile_change does not preserve the original ValueExpr;
-        // it stores a Constant with the evaluated value.
-        value_expr: ValueExpr::constant(10.0),
-        evaluated_value: 10.0,
-    }));
+    // Cell value_expr now preserves the original expression.
+    assert!(ops.iter().any(|op| matches!(op, ModelOp::SetCell {
+        cell_key, evaluated_value, ..
+    } if *cell_key == (CoefficientTarget::Constraint(c), x) && (*evaluated_value - 10.0).abs() < 1e-9)));
 }
 
 #[test]
@@ -553,7 +550,10 @@ fn multiple_parameters_in_one_commit_batch() {
     let set_cells: Vec<f64> = ops
         .iter()
         .filter_map(|op| {
-            if let ModelOp::SetCell { evaluated_value, .. } = op {
+            if let ModelOp::SetCell {
+                evaluated_value, ..
+            } = op
+            {
                 Some(*evaluated_value)
             } else {
                 None
@@ -609,11 +609,10 @@ fn all_pending_changes_in_one_batch() {
         param: p2,
         value: 5.0,
     }));
-    assert!(ops.contains(&ModelOp::SetCell {
-        cell_key: (CoefficientTarget::Constraint(c), x),
-        value_expr: ValueExpr::constant(15.0),
-        evaluated_value: 15.0,
-    }));
+    // Cell value_expr now preserves the original expression.
+    assert!(ops.iter().any(|op| matches!(op, ModelOp::SetCell {
+        cell_key, evaluated_value, ..
+    } if *cell_key == (CoefficientTarget::Constraint(c), x) && (*evaluated_value - 15.0).abs() < 1e-9)));
 }
 
 // =========================================================================

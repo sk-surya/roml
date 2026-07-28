@@ -518,32 +518,33 @@ impl Model {
         // Step 1: Commit pending parameters (this produces Change entries)
         self.commit_parameters();
 
-        // Step 2: Drain changelog
-        let changes: Vec<Change> = self.changelog.drain();
-        if changes.is_empty() {
+        // Step 2: Snapshot changes before draining (atomicity: restore on failure)
+        let saved: Vec<Change> = self.changelog.changes().to_vec();
+        if saved.is_empty() {
             return Ok(self.coordinator.revision());
         }
 
-        // Step 3: Compile changes to ModelOps
-        let ops: Vec<ModelOp> = changes
-            .into_iter()
-            .map(compile_change)
+        // Step 3: Compute revision before fallible operations
+        let from = self.coordinator.revision();
+        let to = from.next().ok_or(ModelError::RevisionOverflow)?;
+
+        // Step 4: Compile changes to ModelOps (fallible -- pre-validate)
+        let ops: Vec<ModelOp> = saved
+            .iter()
+            .map(|c| compile_change(c.clone()))
             .collect::<Result<_, _>>()?;
 
-        // Step 4: Compute revision
-        let from = self.coordinator.revision();
-        let to = from
-            .next()
-            .ok_or(ModelError::RevisionOverflow)?;
-
         // Step 5: Create DeltaBatch (safe: from < to since to = from.next() succeeded)
-        let batch = DeltaBatch::new(from, to, ops)
-            .expect("DeltaBatch::new should succeed when from < to");
+        let batch =
+            DeltaBatch::new(from, to, ops).expect("DeltaBatch::new should succeed when from < to");
 
-        // Step 6: Record through coordinator
+        // Step 6: Record through coordinator (last fallible step)
         self.coordinator
             .commit_batch(batch)
             .map_err(|_| ModelError::RevisionOverflow)?;
+
+        // Step 7: All fallible operations succeeded -- safely drain
+        self.changelog.drain();
 
         Ok(to)
     }
@@ -581,6 +582,7 @@ impl Model {
                         coeff: coeff_id,
                         var: data.var,
                         target: data.target,
+                        value_expr: data.value_expr.clone(),
                         old: old_cached,
                         new: new_cached,
                     });
@@ -644,20 +646,32 @@ impl Model {
                 .map(|d| d.cached_value)
                 .unwrap_or(initial_value);
             if (old - new_value).abs() >= f64::EPSILON {
+                let value_expr = self
+                    .coefficients
+                    .get(id)
+                    .map(|d| d.value_expr.clone())
+                    .unwrap_or_else(|| ValueExpr::constant(new_value));
                 self.changelog.push(Change::CoefficientValueChanged {
                     coeff: id,
                     var,
                     target,
+                    value_expr,
                     old,
                     new: new_value,
                 });
             }
         } else {
             // New cell
+            let value_expr = self
+                .coefficients
+                .get(id)
+                .map(|d| d.value_expr.clone())
+                .unwrap_or_else(|| ValueExpr::constant(initial_value));
             self.changelog.push(Change::CoefficientAdded {
                 coeff: id,
                 var,
                 target,
+                value_expr,
                 value: initial_value,
             });
         }
@@ -700,19 +714,27 @@ impl Model {
             .coefficients
             .add(var, target, value_expr, initial_value);
 
+        // Look up the canonical expression from the combined cell.
+        let combined_expr = self
+            .coefficients
+            .get(id)
+            .map(|d| d.value_expr.clone())
+            .unwrap_or_else(|| ValueExpr::constant(initial_value));
+        let combined_value = self
+            .coefficients
+            .get(id)
+            .map(|d| d.cached_value)
+            .unwrap_or(initial_value);
+
         if let Some(old) = old_value {
-            let new_value = self
-                .coefficients
-                .get(id)
-                .map(|d| d.cached_value)
-                .unwrap_or(initial_value);
-            if (old - new_value).abs() >= f64::EPSILON {
+            if (old - combined_value).abs() >= f64::EPSILON {
                 self.changelog.push(Change::CoefficientValueChanged {
                     coeff: id,
                     var,
                     target,
+                    value_expr: combined_expr,
                     old,
-                    new: new_value,
+                    new: combined_value,
                 });
             }
         } else {
@@ -720,6 +742,7 @@ impl Model {
                 coeff: id,
                 var,
                 target,
+                value_expr: combined_expr,
                 value: initial_value,
             });
         }
@@ -793,7 +816,7 @@ impl Model {
             warn!("Uncommitted parameter changes detected, auto-committing");
             self.commit_parameters();
         }
-    #[allow(deprecated)]
+        #[allow(deprecated)]
         self.changelog.drain()
     }
 
@@ -1225,16 +1248,22 @@ impl Model {
 /// are silently dropped.
 fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
     match change {
-        Change::VariableAdded { var, bounds, var_type } => {
-            Ok(ModelOp::AddVariable { var, bounds, var_type })
-        }
+        Change::VariableAdded {
+            var,
+            bounds,
+            var_type,
+        } => Ok(ModelOp::AddVariable {
+            var,
+            bounds,
+            var_type,
+        }),
         Change::VariableRemoved { var } => Ok(ModelOp::RemoveVariable { var }),
-        Change::VariableBoundsChanged { var, new: bounds, .. } => {
-            Ok(ModelOp::SetVariableBounds { var, bounds })
-        }
-        Change::VariableTypeChanged { var, new: var_type, .. } => {
-            Ok(ModelOp::SetVariableType { var, var_type })
-        }
+        Change::VariableBoundsChanged {
+            var, new: bounds, ..
+        } => Ok(ModelOp::SetVariableBounds { var, bounds }),
+        Change::VariableTypeChanged {
+            var, new: var_type, ..
+        } => Ok(ModelOp::SetVariableType { var, var_type }),
         Change::VariableActivityChanged { var, active } => {
             Ok(ModelOp::SetVariableActive { var, active })
         }
@@ -1243,32 +1272,42 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         }
         Change::ConstraintAdded { con, bounds } => Ok(ModelOp::AddConstraint { con, bounds }),
         Change::ConstraintRemoved { con } => Ok(ModelOp::RemoveConstraint { con }),
-        Change::ConstraintBoundsChanged { con, new: bounds, .. } => {
-            Ok(ModelOp::SetConstraintBounds { con, bounds })
-        }
+        Change::ConstraintBoundsChanged {
+            con, new: bounds, ..
+        } => Ok(ModelOp::SetConstraintBounds { con, bounds }),
         Change::ConstraintActivityChanged { con, active } => {
             Ok(ModelOp::SetConstraintActive { con, active })
         }
-        Change::CoefficientAdded { var, target, value, .. } => Ok(ModelOp::SetCell {
+        Change::CoefficientAdded {
+            var,
+            target,
+            value,
+            value_expr: expr,
+            ..
+        } => Ok(ModelOp::SetCell {
             cell_key: (target, var),
-            value_expr: ValueExpr::constant(value),
+            value_expr: expr,
             evaluated_value: value,
         }),
-        Change::CoefficientRemoved { var, target, .. } => {
-            Ok(ModelOp::RemoveCell {
-                cell_key: (target, var),
-            })
-        }
-        Change::CoefficientValueChanged { var, target, new, .. } => Ok(ModelOp::SetCell {
+        Change::CoefficientRemoved { var, target, .. } => Ok(ModelOp::RemoveCell {
             cell_key: (target, var),
-            value_expr: ValueExpr::constant(new),
-            evaluated_value: new,
+        }),
+        Change::CoefficientValueChanged {
+            var,
+            target,
+            new: evaluated,
+            value_expr: expr,
+            ..
+        } => Ok(ModelOp::SetCell {
+            cell_key: (target, var),
+            value_expr: expr,
+            evaluated_value: evaluated,
         }),
         Change::ObjectiveAdded { obj, sense } => Ok(ModelOp::AddObjective { obj, sense }),
         Change::ObjectiveRemoved { obj } => Ok(ModelOp::RemoveObjective { obj }),
-        Change::ObjectiveSenseChanged { obj, new: sense, .. } => {
-            Ok(ModelOp::SetObjectiveSense { obj, sense })
-        }
+        Change::ObjectiveSenseChanged {
+            obj, new: sense, ..
+        } => Ok(ModelOp::SetObjectiveSense { obj, sense }),
         Change::ActiveObjectiveChanged { new, .. } => Ok(ModelOp::SetActiveObjective { obj: new }),
         Change::ParameterValueChanged { param, new, .. } => {
             Ok(ModelOp::SetParameter { param, value: new })

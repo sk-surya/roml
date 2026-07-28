@@ -848,8 +848,7 @@ fn solve_options_stored_on_model_and_consumed_during_solve() {
     // POST-M1R-01: SolveOptions is carried in the SolveRequest, not stored
     // as mutable state on Model. The set_solver_options/get_solver_options
     // API on Model is removed. Instead, policy is per-solve via SolveRequest.
-    let _request = SolveRequest::new()
-        .with_lp_algorithm(LpAlgorithm::DualSimplex);
+    let _request = SolveRequest::new().with_lp_algorithm(LpAlgorithm::DualSimplex);
 
     // This test documents the desired behavior: SolveOptions does not exist
     // on the Model as mutable state — it is per-solve request policy.

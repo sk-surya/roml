@@ -91,6 +91,8 @@ pub enum Change {
         coeff: CoeffId,
         var: VarId,
         target: CoefficientTarget,
+        /// The full expression (parameterized).
+        value_expr: crate::value_expr::ValueExpr,
         /// Resolved value at time of addition.
         value: f64,
     },
@@ -107,6 +109,8 @@ pub enum Change {
         coeff: CoeffId,
         var: VarId,
         target: CoefficientTarget,
+        /// The full expression (parameterized).
+        value_expr: crate::value_expr::ValueExpr,
         old: f64,
         new: f64,
     },

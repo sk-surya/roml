@@ -66,11 +66,8 @@ fn assert_commuting_square(
 }
 
 /// Run a single mutation, commit, and verify the commuting square holds.
-fn assert_commit_produces<F>(
-    model: &mut Model,
-    setup: F,
-    expected_ops: &[ModelOp],
-) where
+fn assert_commit_produces<F>(model: &mut Model, setup: F, expected_ops: &[ModelOp])
+where
     F: FnOnce(&mut Model) -> Result<(), ModelError>,
 {
     let rev_before = model.current_revision();
@@ -436,9 +433,7 @@ fn set_active_objective_produces_setobjectiveactive() {
     let obj2 = model.add_objective(Sense::Maximize);
     model.commit().unwrap();
 
-    let expected_ops = vec![ModelOp::SetActiveObjective {
-        obj: Some(obj2),
-    }];
+    let expected_ops = vec![ModelOp::SetActiveObjective { obj: Some(obj2) }];
     assert_commit_produces(
         &mut model,
         |m| {
@@ -589,13 +584,7 @@ fn multiple_coefficients_per_cell_combine_to_one_modelop() {
     assert_eq!(expr.num_terms(), 1);
     // The coefficient value should be 8.0 (3.0 + 5.0)
     assert!(
-        (expr.terms()[0]
-            .coeff
-            .as_constant()
-            .unwrap_or(f64::NAN)
-            - 8.0)
-            .abs()
-            < 1e-9,
+        (expr.terms()[0].coeff.as_constant().unwrap_or(f64::NAN) - 8.0).abs() < 1e-9,
         "expected combined coefficient 8.0"
     );
 
@@ -693,10 +682,7 @@ fn semicontinuous_bounds_produces_setsemicontinuousbound() {
 
     // Set semicontinuous lower to 5.0, which is <= the current lower bound of 10.0
     // This avoids an additional VariableBoundsChanged event.
-    let expected_ops = vec![ModelOp::SetSemiContinuousBound {
-        var: x,
-        lower: 5.0,
-    }];
+    let expected_ops = vec![ModelOp::SetSemiContinuousBound { var: x, lower: 5.0 }];
     assert_commit_produces(
         &mut model,
         |m| {
@@ -728,10 +714,7 @@ fn semicontinuous_with_bounds_update_produces_two_ops() {
     };
 
     // Final lower bound should be 15.0 (raised by set_semicontinuous)
-    assert_eq!(
-        model.variable_bounds(x),
-        Some(Bounds::new(15.0, 100.0))
-    );
+    assert_eq!(model.variable_bounds(x), Some(Bounds::new(15.0, 100.0)));
 
     // Two ModelOps: SetVariableBounds + SetSemiContinuousBound
     let expected_ops = vec![
@@ -810,10 +793,7 @@ fn objective_constants_in_snapshot() {
     model.commit().unwrap();
 
     let obj = model
-        .set_objective(roml::ObjectiveSpec::new(
-            Sense::Maximize,
-            x + 10.0,
-        ))
+        .set_objective(roml::ObjectiveSpec::new(Sense::Maximize, x + 10.0))
         .unwrap();
     model.commit().unwrap();
 
@@ -896,9 +876,7 @@ fn multi_objective_active_switching() {
             value_expr: ValueExpr::constant(1.0),
             evaluated_value: 1.0,
         },
-        ModelOp::SetActiveObjective {
-            obj: Some(obj1),
-        },
+        ModelOp::SetActiveObjective { obj: Some(obj1) },
         ModelOp::AddObjective {
             obj: obj2,
             sense: Sense::Minimize,
@@ -908,9 +886,7 @@ fn multi_objective_active_switching() {
             value_expr: ValueExpr::constant(1.0),
             evaluated_value: 1.0,
         },
-        ModelOp::SetActiveObjective {
-            obj: Some(obj2),
-        },
+        ModelOp::SetActiveObjective { obj: Some(obj2) },
     ];
     assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }

@@ -126,23 +126,21 @@ impl ReferenceBackend {
                 cell_key,
                 value_expr,
                 evaluated_value,
-            } => {
-                match cell_key.0 {
-                    CoefficientTarget::Constraint(_) => {
-                        self.constraint_cells
-                            .insert(*cell_key, (value_expr.clone(), *evaluated_value));
-                    }
-                    CoefficientTarget::Objective(obj_id) => {
-                        let constant = self
-                            .objective_constants
-                            .get(&obj_id)
-                            .copied()
-                            .unwrap_or(0.0);
-                        self.objective_cells
-                            .insert(*cell_key, (value_expr.clone(), *evaluated_value, constant));
-                    }
+            } => match cell_key.0 {
+                CoefficientTarget::Constraint(_) => {
+                    self.constraint_cells
+                        .insert(*cell_key, (value_expr.clone(), *evaluated_value));
                 }
-            }
+                CoefficientTarget::Objective(obj_id) => {
+                    let constant = self
+                        .objective_constants
+                        .get(&obj_id)
+                        .copied()
+                        .unwrap_or(0.0);
+                    self.objective_cells
+                        .insert(*cell_key, (value_expr.clone(), *evaluated_value, constant));
+                }
+            },
             ModelOp::RemoveCell { cell_key } => {
                 self.constraint_cells.remove(cell_key);
                 self.objective_cells.remove(cell_key);
