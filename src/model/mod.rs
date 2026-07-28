@@ -1201,6 +1201,21 @@ impl Model {
     }
 }
 
+// ── Test helpers ─────────────────────────────────────────────────────────
+
+impl Model {
+    /// Get all delta batches since the given revision for testing.
+    ///
+    /// Returns batches in order. An empty vec means no batches recorded
+    /// since the given revision. Errors if `since` is in the future.
+    pub fn deltas_since(
+        &self,
+        since: ModelRevision,
+    ) -> Result<Vec<&DeltaBatch>, crate::revision::RevisionError> {
+        self.coordinator.journal.deltas_since(since)
+    }
+}
+
 // ── Change compilation ─────────────────────────────────────────────────────
 
 /// Compile a `Change` into a self-contained `ModelOp` for DeltaBatch.

@@ -21,7 +21,7 @@ pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
-pub use delta::DeltaBatch;
+pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
 pub use model::changelog::Change;
