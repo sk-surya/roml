@@ -1,18 +1,15 @@
 [package]
 name = "roml-highs"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-authors.workspace = true
-repository.workspace = true
-license.workspace = true
-description = "HiGHS solver adapter for roml"
+version = "0.1.0"
+edition = "2021"
+description = "HiGHS solver backend for roml"
 
 [dependencies]
-log = { workspace = true }
-roml = { version = "0.1.0", path = ".." }
+highs-sys = { version = "1.15", default-features = false }
+log = "0.4"
+roml = { path = ".." }
 
-[build-dependencies]
-cmake = "0.1"
-
-[dev-dependencies]
+[features]
+default = ["bundled"]
+bundled = ["highs-sys/build", "highs-sys/highs_release"]
+system = ["highs-sys/discover"]
