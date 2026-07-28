@@ -1,0 +1,77 @@
+name: CI - HiGHS Backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (bundled, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake g++
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install cmake --no-progress
+
+      - name: Test roml-highs (bundled)
+        run: cargo test -p roml-highs --features bundled
+
+  system:
+    name: Test (system, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install HiGHS system library
+        run: sudo apt-get update && sudo apt-get install -y libhighs-dev
+      - name: Test roml-highs (system discovery)
+        run: cargo test -p roml-highs --no-default-features --features system
+
+  package:
+    name: Package verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++
+      - name: Verify roml packages
+        run: cargo package -p roml --locked
+      - name: Verify roml-highs packages
+        run: cargo package -p roml-highs --locked
