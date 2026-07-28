@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Semi-continuous recovery tests — protocol-level proof that the
 //! revisioned sync architecture closes the P1 partial-apply counterexample.
 //!

@@ -83,7 +83,7 @@ fn assert_commit_produces<F>(
 
     let snap_after = model.take_snapshot().expect("snapshot after commit");
 
-    assert_commuting_square(&snap_before, expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, expected_ops, &snap_after);
 }
 
 // =========================================================================
@@ -189,7 +189,7 @@ fn end_to_end_commuting_square() -> Result<(), ModelError> {
         },
     ];
 
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 
     // Verify model state directly
     assert_eq!(model.num_variables(), 2);
@@ -229,7 +229,7 @@ fn add_var_produces_addvariable() {
     }];
     let _snap_before = ModelSnapshot::empty(roml::revision::ModelRevision::ZERO);
     let snap_after = model.take_snapshot().unwrap();
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn add_constraint_produces_addconstraint() {
         con,
         bounds: ConstraintBounds::le(100.0),
     }];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn set_objective_produces_addobjective_and_cell_and_active() {
         },
         ModelOp::SetActiveObjective { obj: Some(obj) },
     ];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 #[test]
@@ -479,7 +479,7 @@ fn coefficient_mutation_produces_setcoefficient() {
         value_expr: ValueExpr::constant(7.5),
         evaluated_value: 7.5,
     }];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 #[test]
@@ -530,7 +530,7 @@ fn add_objective_coefficient_produces_setcoefficient() {
         value_expr: ValueExpr::constant(4.0),
         evaluated_value: 4.0,
     }];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 // ── Parameter mutations ─────────────────────────────────────────────────
@@ -617,7 +617,7 @@ fn multiple_coefficients_per_cell_combine_to_one_modelop() {
             evaluated_value: 8.0,
         },
     ];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 // =========================================================================
@@ -744,7 +744,7 @@ fn semicontinuous_with_bounds_update_produces_two_ops() {
             lower: 15.0,
         },
     ];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 // =========================================================================
@@ -796,7 +796,7 @@ fn objective_sense_in_add_objective() {
         },
         ModelOp::SetActiveObjective { obj: Some(obj) },
     ];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }
 
 // =========================================================================
@@ -912,5 +912,5 @@ fn multi_objective_active_switching() {
             obj: Some(obj2),
         },
     ];
-    assert_commuting_square(&snap_before, &expected_ops, &snap_after);
+    assert_commuting_square(&_snap_before, &expected_ops, &snap_after);
 }

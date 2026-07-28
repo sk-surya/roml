@@ -467,7 +467,7 @@ fn parameter_set_and_commit() {
     // Not committed yet -- value unchanged
     assert_eq!(model.parameter_value(p), Some(1.0));
 
-    model.commit();
+    let _ = model.commit();
     assert_eq!(model.parameter_value(p), Some(5.0));
 }
 
@@ -484,7 +484,7 @@ fn parameter_change_propagates_to_coefficients() {
     assert!((model.coefficient(coeff).unwrap().cached_value - 20.0).abs() < f64::EPSILON);
 
     model.set_parameter(p, 5.0);
-    model.commit();
+    let _ = model.commit();
     assert!((model.coefficient(coeff).unwrap().cached_value - 10.0).abs() < f64::EPSILON);
 }
 
@@ -507,7 +507,7 @@ fn parameter_transaction_batching() {
     // Not committed -- values unchanged
     assert!((model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
 
-    model.commit();
+    let _ = model.commit();
     assert!((model.coefficient(coeff).unwrap().cached_value - 12.0).abs() < f64::EPSILON);
     assert!(!model.has_uncommitted());
 }

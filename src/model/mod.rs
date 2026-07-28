@@ -793,6 +793,7 @@ impl Model {
             warn!("Uncommitted parameter changes detected, auto-committing");
             self.commit_parameters();
         }
+    #[allow(deprecated)]
         self.changelog.drain()
     }
 
@@ -1331,7 +1332,7 @@ mod tests {
 
         // Change parameter
         model.set_parameter(p, 5.0);
-        model.commit();
+        let _ = model.commit();
 
         // Value should now be 2 * 5 = 10
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 10.0);
@@ -1392,13 +1393,14 @@ mod tests {
         // Not committed yet - value unchanged
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 2.0);
 
-        model.commit();
+        let _ = model.commit();
 
         // Now it's 3 * 4 = 12
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 12.0);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn changelog_tracking() {
         let mut model = Model::new();
 
@@ -1473,7 +1475,7 @@ mod tests {
         // update parameters and commit
         model.set_parameter(p, 4.0);
         model.set_parameter(q, 6.0);
-        model.commit();
+        let _ = model.commit();
 
         // after update, cached values should change
         let mut map2 = std::collections::HashMap::new();
@@ -1781,7 +1783,7 @@ mod tests {
             .add_constraint_coefficient(con, x, ValueExpr::param(p))
             .unwrap();
         model.set_parameter(p, 3.0);
-        model.commit();
+        let _ = model.commit();
         assert!(model.validate_invariants().is_ok());
     }
 
