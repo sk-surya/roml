@@ -90,8 +90,14 @@ pub enum ModelOp {
         constant: f64,
     },
 
+    /// Set the optimization sense of an objective.
+    SetObjectiveSense { obj: ObjId, sense: Sense },
+
     /// Set a parameter value (for solvers that need to know parameters).
     SetParameter { param: ParamId, value: f64 },
+
+    /// Mark a variable as semi-continuous with the given lower bound.
+    SetSemiContinuousBound { var: VarId, lower: f64 },
 }
 
 /// An immutable batch of operations transforming from one revision to another.

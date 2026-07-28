@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use roml::expr::LinExpr;
 use roml::model::{Change, CoefficientTarget};
 use roml::{Bounds, ConstraintBounds, Model, Sense, ValueExpr, VarType};
@@ -30,7 +31,6 @@ fn changelog_captures_mutations() {
         .unwrap();
 
     model.set_parameter(param, 4.0);
-    model.commit();
 
     let changes = model.drain_changes();
     assert_eq!(changes.len(), 12);
@@ -196,7 +196,6 @@ fn indexed_model_with_parameter_arrays() {
     let obj = model.add_objective(Sense::Minimize);
     model.set_objective_expr(obj, obj_expr).unwrap();
     model.set_active_objective(obj).unwrap();
-    model.commit();
     let changes = model.drain_changes();
     assert_eq!(changes.len(), 5 + 1 + 5 + 1); // 5 for variables, 1 Obj Added, 5 coefficient adds in objective, 1 ActiveObjectiveChanged
 }

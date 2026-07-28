@@ -169,6 +169,14 @@ impl ReferenceBackend {
             ModelOp::SetParameter { param, value } => {
                 self.parameters.insert(*param, *value);
             }
+            ModelOp::SetObjectiveSense { obj, sense } => {
+                if let Some(entry) = self.objectives.get_mut(obj) {
+                    entry.0 = *sense;
+                }
+            }
+            ModelOp::SetSemiContinuousBound { var, lower } => {
+                self.semicontinuous.insert(*var, *lower);
+            }
         }
         Ok(())
     }
