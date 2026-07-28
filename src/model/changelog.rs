@@ -1,20 +1,21 @@
 //! Change tracking for incremental solver updates.
-//!
+//! 
 //! The model maintains an explicit ChangeLog capturing all mutations.
 //! Solver adapters consume this log to apply incremental updates.
-//!
+//! 
 //! # Invariant
-//!
+//! 
 //! The model never mutates solver state directly. All changes go through the ChangeLog.
 
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::CoefficientTarget;
-use crate::model::constraint::ConstraintBounds;
 use crate::model::objective::Sense;
 use crate::model::variable::{Bounds, VarType};
+use crate::model::constraint::ConstraintBounds;
+
 
 /// A single atomic change to the model.
-///
+/// 
 /// Changes store both old and new values where applicable, enabling:
 /// - Incremental updates to solver state (Smart solver delta computation)
 /// - Debugging and auditing
@@ -29,9 +30,7 @@ pub enum Change {
     },
 
     // Variable was removed.
-    VariableRemoved {
-        var: VarId,
-    },
+    VariableRemoved { var: VarId },
 
     // Variable bounds was changed.
     VariableBoundsChanged {
@@ -48,17 +47,11 @@ pub enum Change {
     },
 
     // Variable activity was toggled.
-    VariableActivityChanged {
-        var: VarId,
-        active: bool,
-    },
+    VariableActivityChanged { var: VarId, active: bool },
 
     // Variable was marked semi-continuous with a lower bound.
     // When the variable is nonzero, it must be ≥ lower; zero is also feasible.
-    SemiContinuousBoundChanged {
-        var: VarId,
-        lower: f64,
-    },
+    SemiContinuousBoundChanged { var: VarId, lower: f64 },
 
     // ========== Constraint Changes ==========
     /// Constraint was added.
@@ -68,9 +61,7 @@ pub enum Change {
     },
 
     /// Constraint was removed.
-    ConstraintRemoved {
-        con: ConId,
-    },
+    ConstraintRemoved { con: ConId },
 
     /// Constraint bounds were changed.
     ConstraintBoundsChanged {
@@ -80,10 +71,7 @@ pub enum Change {
     },
 
     /// Constraint activity was toggled.
-    ConstraintActivityChanged {
-        con: ConId,
-        active: bool,
-    },
+    ConstraintActivityChanged { con: ConId, active: bool },
 
     // ========== Coefficient Changes ==========
     /// A coefficient was added.
@@ -113,15 +101,10 @@ pub enum Change {
 
     // ========== Objective Changes ==========
     /// An objective was added.
-    ObjectiveAdded {
-        obj: ObjId,
-        sense: Sense,
-    },
+    ObjectiveAdded { obj: ObjId, sense: Sense },
 
     /// An objective was removed.
-    ObjectiveRemoved {
-        obj: ObjId,
-    },
+    ObjectiveRemoved { obj: ObjId },
 
     /// Objective sense was changed.
     ObjectiveSenseChanged {
@@ -131,8 +114,8 @@ pub enum Change {
     },
 
     /// The active objective was changed.
-    ActiveObjectiveChanged {
-        old: Option<ObjId>,
+    ActiveObjectiveChanged { 
+        old: Option<ObjId>, 
         new: Option<ObjId>,
     },
 
@@ -159,14 +142,12 @@ impl Change {
 
 /// Tracks all changes since last solver sync.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ChangeLog {
+pub struct ChangeLog {
     changes: Vec<Change>,
     /// Monotonically increasing sequence number.
     sequence: u64,
 }
 
-/// Methods used by Model and backend adapters.
-#[allow(dead_code)]
 impl ChangeLog {
     /// Create an empty changelog.
     pub fn new() -> Self {

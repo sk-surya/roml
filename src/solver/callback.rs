@@ -86,11 +86,13 @@ mod tests {
     struct CutHandler;
     impl CallbackHandler for CutHandler {
         fn on_candidate(&mut self, _data: &CallbackData) -> CallbackAction {
-            CallbackAction::AddCuts(vec![CallbackCut {
-                terms: vec![],
-                lower: f64::NEG_INFINITY,
-                upper: 0.0,
-            }])
+            CallbackAction::AddCuts(vec![
+                CallbackCut {
+                    terms: vec![],
+                    lower: f64::NEG_INFINITY,
+                    upper: 0.0,
+                }
+            ])
         }
     }
 

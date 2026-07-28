@@ -3,7 +3,7 @@
 use crate::id::{ConId, IdArena};
 
 /// Constraint bounds
-///
+/// 
 /// A constraint `lower <= expr <= upper` is represented by these bounds, where:
 /// - `lower = f64::NEG_INFINITY` means no lower bound (expr <= upper)
 /// - `upper = f64::INFINITY` means no upper bound (lower <= expr)
@@ -77,8 +77,7 @@ impl Default for ConstraintBounds {
 /// (which will be stored in ConstraintStore, handled by Arena, just like any other Entity Data).
 /// Intentionally non-copiable for move semantics.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub(crate) struct ConstraintData {
+pub struct ConstraintData {
     /// Constraint bounds.
     pub bounds: ConstraintBounds,
     /// Whether this constraint is active in the model.
@@ -100,12 +99,10 @@ impl ConstraintData {
 
 /// Storage for all constraints in the model.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ConstraintStore {
-    arena: IdArena<ConstraintData>,
+pub struct ConstraintStore {
+    arena: IdArena<ConstraintData>,                                    
 }
 
-/// Methods used by Model.
-#[allow(dead_code)]
 impl ConstraintStore {
     /// Create an empty constraint store.
     pub fn new() -> Self {

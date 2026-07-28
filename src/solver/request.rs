@@ -5,7 +5,23 @@
 //! adjusted, or rejected — never silently ignored.
 
 use crate::solver::backend::BackendCapabilities;
-use crate::solver::LpAlgorithm;
+
+/// Algorithm selection for LP optimization.
+///
+/// Each solver backend maps these to its own controls.
+/// Unsupported options are reported as rejections (not silently ignored).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LpAlgorithm {
+    /// Let the solver choose automatically (default).
+    #[default]
+    Automatic,
+    /// Primal simplex.
+    PrimalSimplex,
+    /// Dual simplex.
+    DualSimplex,
+    /// Barrier / interior point method.
+    Barrier,
+}
 
 /// A solve request — immutable solver policy for one solve attempt.
 ///

@@ -195,7 +195,7 @@ impl std::fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 /// Precise termination status from a solve.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TerminationStatus {
     /// Optimal solution found.
     Optimal,
@@ -205,6 +205,8 @@ pub enum TerminationStatus {
     Unbounded,
     /// Feasible solution found (not proven optimal — MIP).
     Feasible,
+    /// Preserves ambiguity (HiGHS can return this instead of Infeasible/Unbounded).
+    InfeasibleOrUnbounded,
     /// Time limit reached.
     TimeLimit,
     /// Iteration limit reached.
@@ -218,6 +220,7 @@ pub enum TerminationStatus {
     /// Solver error.
     Error,
     /// Unknown status.
+    #[default]
     Unknown,
 }
 
