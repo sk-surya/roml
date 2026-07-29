@@ -1,51 +1,81 @@
-//! HiGHS solver adapter for roml.
+//! HiGHS solver backend for roml.
 //!
-//! Provides [`HighsAdapter`], a concrete implementation of roml's
-//! [`SolverAdapter`] trait backed by the HiGHS mixed-integer linear
-//! programming solver.
+//! This crate provides a `BackendSession` implementation backed by the
+//! HiGHS mixed-integer linear programming solver, using authoritative
+//! `highs-sys` bindings for FFI.
+//!
+//! # Feature Mutual Exclusion
+//!
+//! `bundled` and `system` are mutually exclusive — activating both is a
+//! compile-time error.
+//!
+//! # Module Structure
+//!
+//! - `bindings`: Re-exports from `highs-sys` plus ROML constant aliases.
+//! - `error`: `BackendError` construction helpers for HiGHS failures.
+//! - `lifecycle`: [`HighsSession`] construction, ownership, and Drop.
+//! - `projection`: Snapshot-to-HiGHS rebuild and delta application.
+//! - `session`: `BackendSession` trait implementation (thin delegation).
+//! - `solution`: Status mapping and solution extraction.
+//! - `callback`: Callback bridge for MIP lazy constraints/interrupts.
+//! - `index_map`: Dense index bookkeeping (kept from original adapter).
+//!
+//! # Quick Start
+//!
+//! ```rust,ignore
+//! use roml_highs::HighsSession;
+//!
+//! let session = HighsSession::try_new().expect("Failed to create HiGHS session");
+//! ```
 //!
 //! # Build Configuration
 //!
-//! The adapter's build script supports two configuration modes:
+//! The crate supports two build modes via Cargo features:
 //!
-//! 1. Link an existing HiGHS install by setting `HIGHS_ROOT` or `HIGHS_LIB_DIR`.
-//! 2. Build HiGHS from source by setting `HIGHS_SOURCE_DIR`.
-//!
-//! Optional environment variables:
-//!
-//! - `HIGHS_EXTRA_LIB_DIRS` for additional library search directories.
-//! - `HIGHS_EXTRA_LIBS` for extra link libraries such as `openblas,z`.
-//! - `HIGHS_BUILD_SHARED=ON|OFF` when building from source.
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use roml::prelude::*;
-//! use roml::{constrain, set_objective};
-//! use roml_highs::HighsAdapter;
-//!
-//! fn solve_with_highs() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut model = Model::new();
-//!     let x = model.add_var();
-//!     let y = model.add_var();
-//!
-//!     constrain!(model, x + y <= 4.0)?;
-//!     constrain!(model, x <= 3.0)?;
-//!     constrain!(model, y <= 3.0)?;
-//!
-//!     let obj = set_objective!(model, maximize: x + y + 2.0)?;
-//!
-//!     let mut adapter = HighsAdapter::new();
-//!     let solution = adapter.solve_model(&mut model)?;
-//!     assert!(solution.is_optimal());
-//!     assert_eq!(model.objective_constant(obj), Some(2.0));
-//!     Ok(())
-//! }
-//! ```
+//! - `bundled` (default): Builds HiGHS from source via `highs-sys`'s cmake.
+//! - `system`: Discovers a system-installed HiGHS library.
 
-pub mod adapter;
-mod ffi;
+/// Ensure bundled and system features are mutually exclusive.
+#[cfg(all(feature = "bundled", feature = "system"))]
+compile_error!("features `bundled` and `system` are mutually exclusive; activate at most one");
+
+mod bindings;
+mod error;
 mod index_map;
+mod lifecycle;
+mod projection;
+mod session;
+mod solution;
+mod callback;
 
-pub use adapter::{HighsAdapter, HighsOptions};
-pub use roml::solver::{SolverError, SolverModelExt, SolverStatus};
+pub use error::HighsError;
+pub use lifecycle::HighsSession;
+
+/// Re-export key types from `highs-sys` for caller convenience.
+pub use bindings::HighsInt;
+
+// ── BackendFixture ────────────────────────────────────────────────────────────
+
+/// Creates fresh [`HighsSession`] instances for parameterized tests.
+///
+/// Implements [`roml::solver::session::BackendFixture`] so that HiGHS can
+/// run the shared conformance suite alongside ReferenceBackend.
+pub struct HighsFixture;
+
+impl roml::solver::session::BackendFixture for HighsFixture {
+    type Session = HighsSession;
+
+    fn new_session(&self) -> Result<Self::Session, roml::solver::backend::BackendError> {
+        HighsSession::try_new().map_err(|e| {
+            roml::solver::backend::BackendError::new(
+                format!("HighsFixture: {}", e.message),
+                roml::solver::backend::ErrorCategory::LibraryNotFound,
+                roml::solver::backend::HealthEffect::Terminal,
+            )
+        })
+    }
+
+    fn backend_name(&self) -> &str {
+        "HiGHS"
+    }
+}

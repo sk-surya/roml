@@ -201,6 +201,8 @@ pub enum TerminationStatus {
     Optimal,
     /// Proven infeasible.
     Infeasible,
+    /// Proven infeasible or unbounded (preserved ambiguity).
+    InfeasibleOrUnbounded,
     /// Proven unbounded.
     Unbounded,
     /// Feasible solution found (not proven optimal — MIP).
