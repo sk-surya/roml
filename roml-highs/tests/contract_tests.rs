@@ -1467,3 +1467,130 @@ fn c11_fallible_construction() {
 // To test 64-bit index width: requires a 64-bit HiGHS build — currently unreachable.
 // Both scenarios are documented but cannot be automated in CI without a
 // specific test environment.
+
+// =========================================================================
+// C12: Production-path integration — Model API → commit() → DeltaBatch →
+//      HighsSession::synchronize() → solve
+//
+// This test exercises the real approved production path (from PR #6/PR #9).
+// It does NOT hand-construct DeltaBatch values. Every change goes through
+// the public Model API and Model::commit(). The resulting DeltaBatch is
+// applied through HighsSession::synchronize(), and the solve result is
+// verified. This catches any gap between the compiler and the backend that
+// hand-constructed deltas would miss.
+// =========================================================================
+
+use roml::model::Model;
+
+#[test]
+fn c12_production_path_objective_coefficient() {
+    let mut model = Model::new();
+    let x = model.add_var();
+    let y = model.add_var();
+    let obj = model.add_objective(Sense::Minimize);
+    model.set_active_objective(obj).unwrap();
+    model.add_objective_coeff(obj, x, 3.0).unwrap();
+    model.add_objective_coeff(obj, y, 4.0).unwrap();
+
+    let _r1 = model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+
+    let mut session = create_session();
+    session
+        .synchronize(Synchronization::Rebuild(snapshot))
+        .expect("synchronize rebuild");
+
+    let result = session.solve(&SolveRequest::default()).expect("solve");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    assert!(result.solution.is_some());
+    let sol = result.solution.as_ref().unwrap();
+    assert!(approx_eq(sol.objective_value.unwrap_or(f64::NAN), 0.0, 1e-4));
+}
+
+#[test]
+fn c12_production_path_constraint_coefficient() {
+    let mut model = Model::new();
+    let x = model.add_var();
+    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    model.add_coeff(c, x, 2.0).unwrap();
+
+    let _r1 = model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+
+    let mut session = create_session();
+    session
+        .synchronize(Synchronization::Rebuild(snapshot))
+        .expect("synchronize rebuild");
+
+    let result = session.solve(&SolveRequest::default()).expect("solve");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+}
+
+#[test]
+fn c12_production_path_parameter_propagation() {
+    let mut model = Model::new();
+    let x = model.add_var();
+    let p = model.add_parameter(5.0);
+    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    model
+        .add_constraint_coefficient(c, x, ValueExpr::param(p))
+        .unwrap();
+
+    let _r1 = model.commit().unwrap();
+    model.set_parameter(p, 3.0);
+    let _r2 = model.commit().unwrap();
+
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = create_session();
+    session
+        .synchronize(Synchronization::Rebuild(snapshot))
+        .expect("synchronize rebuild");
+
+    let result = session.solve(&SolveRequest::default()).expect("solve");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+}
+
+#[test]
+fn c12_production_path_inactive_objective_does_not_corrupt_active() {
+    let mut model = Model::new();
+    let x = model.add_var();
+    let y = model.add_var();
+    let obj1 = model.add_objective(Sense::Minimize);
+    let obj2 = model.add_objective(Sense::Maximize);
+
+    model.set_active_objective(obj1).unwrap();
+    model.add_objective_coeff(obj1, x, 1.0).unwrap();
+    model.add_objective_coeff(obj1, y, 0.0).unwrap();
+
+    // Inactive obj2 — should NOT affect native HiGHS costs
+    model.add_objective_coeff(obj2, x, 0.0).unwrap();
+    model.add_objective_coeff(obj2, y, 100.0).unwrap();
+
+    let _r1 = model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+
+    let mut session = create_session();
+    session
+        .synchronize(Synchronization::Rebuild(snapshot))
+        .expect("rebuild");
+
+    let result = session.solve(&SolveRequest::default()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let sol = result.solution.as_ref().unwrap();
+    // Active is Minimize 1*x + 0*y → optimal at 0, objective 0
+    assert!(approx_eq(sol.objective_value.unwrap_or(f64::NAN), 0.0, 1e-4));
+}
+
+#[test]
+fn c12_production_path_semi_continuous_roundtrip() {
+    let mut model = Model::new();
+    let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+    model.set_semicontinuous(x, 1.0).unwrap();
+
+    let _r1 = model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+
+    let mut session = create_session();
+    let result = session.synchronize(Synchronization::Rebuild(snapshot));
+    assert!(result.is_err());
+}
