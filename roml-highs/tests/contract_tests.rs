@@ -1504,7 +1504,11 @@ fn c12_production_path_objective_coefficient() {
     assert_eq!(result.termination, TerminationStatus::Optimal);
     assert!(result.solution.is_some());
     let sol = result.solution.as_ref().unwrap();
-    assert!(approx_eq(sol.objective_value.unwrap_or(f64::NAN), 0.0, 1e-4));
+    assert!(approx_eq(
+        sol.objective_value.unwrap_or(f64::NAN),
+        0.0,
+        1e-4
+    ));
 }
 
 #[test]
@@ -1578,7 +1582,11 @@ fn c12_production_path_inactive_objective_does_not_corrupt_active() {
     assert_eq!(result.termination, TerminationStatus::Optimal);
     let sol = result.solution.as_ref().unwrap();
     // Active is Minimize 1*x + 0*y → optimal at 0, objective 0
-    assert!(approx_eq(sol.objective_value.unwrap_or(f64::NAN), 0.0, 1e-4));
+    assert!(approx_eq(
+        sol.objective_value.unwrap_or(f64::NAN),
+        0.0,
+        1e-4
+    ));
 }
 
 #[test]
