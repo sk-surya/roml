@@ -34,10 +34,12 @@ impl<Id: Hash + Eq + Copy> IndexMap<Id> {
         self.id_to_idx.remove(&id)
     }
 
+    #[allow(dead_code)]
     pub fn contains(&self, id: Id) -> bool {
         self.id_to_idx.contains_key(&id)
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.id_to_idx.len()
     }
