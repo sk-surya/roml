@@ -756,20 +756,22 @@ pub(crate) fn apply_delta_batch(
                     }
                 };
 
-                // Update obj_costs cache.
+                // Update obj_costs cache unconditionally.
                 obj_costs
                     .entry(obj_id)
                     .or_default()
                     .insert(var_id, *evaluated_value);
 
-                // Set cost in HiGHS.
-                if let Some(col) = col_map.get(var_id) {
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeColCost(raw, col, *evaluated_value),
-                            raw,
-                            "Highs_changeColCost",
-                        )?;
+                // Only touch native HiGHS if this objective is active.
+                if *active_obj == Some(obj_id) {
+                    if let Some(col) = col_map.get(var_id) {
+                        unsafe {
+                            check_highs_status(
+                                Highs_changeColCost(raw, col, *evaluated_value),
+                                raw,
+                                "Highs_changeColCost",
+                            )?;
+                        }
                     }
                 }
 
@@ -790,12 +792,22 @@ pub(crate) fn apply_delta_batch(
                 }
             }
 
-            ModelOp::SetObjectiveSense { obj: _, sense: _ } => {
-                // Objective sense change is handled during rebuild — no-op for delta.
+            ModelOp::SetObjectiveSense { obj, sense } => {
+                obj_senses.insert(*obj, *sense);
+                if *active_obj == Some(*obj) {
+                    unsafe {
+                        check_highs_status(
+                            Highs_changeObjectiveSense(raw, sense_to_highs(*sense)),
+                            raw,
+                            "Highs_changeObjectiveSense",
+                        )?;
+                    }
+                }
             }
-            ModelOp::SetSemiContinuousBound { var: _, lower: _ } => {
-                // Semi-continuous bounds deferred to post-M1R-02.
-                // The protocol preserves the delta for replay; projection is a no-op.
+            ModelOp::SetSemiContinuousBound { .. } => {
+                return Err(BackendError::unsupported(
+                    "SetSemiContinuousBound: HiGHS does not support semi-continuous domains",
+                ));
             }
             ModelOp::SetParameter { param, value } => {
                 // Map known parameters to HiGHS equivalents if applicable.

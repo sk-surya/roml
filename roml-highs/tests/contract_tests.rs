@@ -1602,3 +1602,237 @@ fn c12_production_path_semi_continuous_roundtrip() {
     let result = session.synchronize(Synchronization::Rebuild(snapshot));
     assert!(result.is_err());
 }
+
+// =========================================================================
+// C13: Targeted correctness tests (reviewer-requested)
+// =========================================================================
+
+#[test]
+fn c13_active_objective_sense_change() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let obj = obj_id(0);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![ObjectiveEntry {
+            id: obj,
+            sense: Sense::Minimize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![CellEntry {
+            cell_key: (CoefficientTarget::Objective(obj), v),
+            value_expr: ValueExpr::constant(1.0),
+            evaluated_value: 1.0,
+            dependencies: vec![],
+        }],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::SetObjectiveSense {
+            obj,
+            sense: Sense::Maximize,
+        }],
+    )
+    .unwrap();
+    session
+        .synchronize(Synchronization::DeltaBatch(batch))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    assert!(result.solution.is_some());
+}
+
+#[test]
+fn c13_inactive_objective_sense_change() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let obj1 = obj_id(0);
+    let obj2 = obj_id(1);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![
+            ObjectiveEntry {
+                id: obj1,
+                sense: Sense::Minimize,
+                active: true,
+                constant: 0.0,
+            },
+            ObjectiveEntry {
+                id: obj2,
+                sense: Sense::Minimize,
+                active: false,
+                constant: 0.0,
+            },
+        ],
+        parameters: vec![],
+        cells: vec![
+            CellEntry {
+                cell_key: (CoefficientTarget::Objective(obj1), v),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                dependencies: vec![],
+            },
+            CellEntry {
+                cell_key: (CoefficientTarget::Objective(obj2), v),
+                value_expr: ValueExpr::constant(100.0),
+                evaluated_value: 100.0,
+                dependencies: vec![],
+            },
+        ],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::SetObjectiveSense {
+            obj: obj2,
+            sense: Sense::Maximize,
+        }],
+    )
+    .unwrap();
+    session
+        .synchronize(Synchronization::DeltaBatch(batch))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let sol = result.solution.unwrap();
+    let o = sol.objective_value.unwrap_or(f64::NAN);
+    assert!(o < 10.0, "inactive objective sense leaked: obj={}", o);
+}
+
+#[test]
+fn c13_set_objective_cell_on_inactive_objective() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let obj1 = obj_id(0);
+    let obj2 = obj_id(1);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![
+            ObjectiveEntry {
+                id: obj1,
+                sense: Sense::Minimize,
+                active: true,
+                constant: 0.0,
+            },
+            ObjectiveEntry {
+                id: obj2,
+                sense: Sense::Minimize,
+                active: false,
+                constant: 0.0,
+            },
+        ],
+        parameters: vec![],
+        cells: vec![CellEntry {
+            cell_key: (CoefficientTarget::Objective(obj1), v),
+            value_expr: ValueExpr::constant(1.0),
+            evaluated_value: 1.0,
+            dependencies: vec![],
+        }],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::SetObjectiveCell {
+            cell_key: (CoefficientTarget::Objective(obj2), v),
+            value_expr: ValueExpr::constant(100.0),
+            evaluated_value: 100.0,
+            constant: 0.0,
+        }],
+    )
+    .unwrap();
+    session
+        .synchronize(Synchronization::DeltaBatch(batch))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let sol = result.solution.unwrap();
+    let o = sol.objective_value.unwrap_or(f64::NAN);
+    assert!(o < 10.0, "inactive SetObjectiveCell leaked: obj={}", o);
+}
+
+#[test]
+fn c13_semicontinuous_rejected_before_any_mutation() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![],
+        parameters: vec![],
+        cells: vec![],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::SetVariableBounds {
+                var: v,
+                bounds: Bounds::new(1.0, 10.0),
+            },
+            ModelOp::SetSemiContinuousBound { var: v, lower: 5.0 },
+        ],
+    )
+    .unwrap();
+    let result = session.synchronize(Synchronization::DeltaBatch(batch));
+    assert!(
+        result.is_err(),
+        "semi-continuous batch must be rejected before mutation"
+    );
+}
