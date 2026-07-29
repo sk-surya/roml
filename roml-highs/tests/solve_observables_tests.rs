@@ -8,7 +8,6 @@
 
 #![allow(clippy::approx_constant)]
 
-use roml_highs::HighsSession;
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::{Bounds, ConstraintBounds, Sense, VarType};
@@ -18,6 +17,7 @@ use roml::solver::backend::TerminationStatus;
 use roml::solver::request::SolveRequest;
 use roml::solver::session::{BackendSession, SolutionView, Synchronization};
 use roml::value_expr::ValueExpr;
+use roml_highs::HighsSession;
 
 // ── Test Helpers ───────────────────────────────────────────────────────────────
 
@@ -194,7 +194,9 @@ fn q5_dual_values() {
     );
 
     // Verify solution exists with objective = 5
-    let sol = result.solution.expect("Optimal solution should be available");
+    let sol = result
+        .solution
+        .expect("Optimal solution should be available");
     let obj = sol.objective_value.unwrap_or(0.0);
     assert!(
         approx_eq(obj, 5.0, 1e-4),
@@ -284,7 +286,9 @@ fn q5_reduced_costs() {
     assert_eq!(result.termination, TerminationStatus::Optimal);
 
     // Verify solution has dual values and reduced costs
-    let sol = result.solution.expect("Optimal solution should be available");
+    let sol = result
+        .solution
+        .expect("Optimal solution should be available");
 
     // Check reduced costs are available in the solve result
     assert!(
@@ -317,11 +321,7 @@ fn q5_option_negotiation_applied() {
         .expect("Empty rebuild should succeed");
 
     let result = session
-        .solve(
-            &SolveRequest::new()
-                .with_time_limit(60.0)
-                .with_threads(1),
-        )
+        .solve(&SolveRequest::new().with_time_limit(60.0).with_threads(1))
         .expect("Solve with options should succeed");
     assert_eq!(result.termination, TerminationStatus::Optimal);
 
@@ -338,10 +338,7 @@ fn q5_option_negotiation_applied() {
             tl
         );
     }
-    assert!(
-        config.threads.is_some(),
-        "threads should be applied"
-    );
+    assert!(config.threads.is_some(), "threads should be applied");
     if let Some(t) = config.threads {
         assert_eq!(t, 1, "Expected threads = 1, got {}", t);
     }
@@ -383,7 +380,10 @@ fn q5_option_negotiation_extra() {
     );
 
     // Verify the unknown option is in the rejections list
-    let has_unknown_rejection = config.rejections.iter().any(|r| r.key.contains("nonexistent"));
+    let has_unknown_rejection = config
+        .rejections
+        .iter()
+        .any(|r| r.key.contains("nonexistent"));
     assert!(
         has_unknown_rejection,
         "Rejections should include the unknown option: {:?}",

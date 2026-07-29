@@ -199,9 +199,7 @@ pub(crate) fn register_callback(
     // SAFETY: `state` is a valid pointer to a CallbackState we just created.
     // Highs_setCallback registers the trampoline; no allocation happens
     // on the HiGHS side that would invalidate the pointer.
-    let ret = unsafe {
-        Highs_setCallback(raw, Some(callback_trampoline), state as *mut c_void)
-    };
+    let ret = unsafe { Highs_setCallback(raw, Some(callback_trampoline), state as *mut c_void) };
     if ret != STATUS_OK {
         // If registration fails, free the state to avoid leaking.
         // SAFETY: state is the same pointer from Box::into_raw above.

@@ -42,7 +42,6 @@ use roml::id::{ConId, VarId};
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
 use roml::solver::callback::CallbackHandler;
-use roml::LpAlgorithm;
 use roml::solver::request::{
     ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult,
 };
@@ -50,6 +49,7 @@ use roml::solver::session::{
     BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt,
     Synchronization,
 };
+use roml::LpAlgorithm;
 
 // ── BackendSession ──────────────────────────────────────────────────────────────
 
@@ -258,9 +258,12 @@ impl SessionHealth for HighsSession {
 
 impl SolutionView for HighsSession {
     fn value(&self, var: VarId) -> Option<f64> {
-        self.current_solution
-            .as_ref()
-            .and_then(|sol| sol.variable_values.iter().find(|(id, _)| *id == var).map(|(_, v)| *v))
+        self.current_solution.as_ref().and_then(|sol| {
+            sol.variable_values
+                .iter()
+                .find(|(id, _)| *id == var)
+                .map(|(_, v)| *v)
+        })
     }
 
     fn dual(&self, con: ConId) -> Option<f64> {
@@ -280,7 +283,9 @@ impl SolutionView for HighsSession {
     }
 
     fn objective_value(&self) -> Option<f64> {
-        self.current_solution.as_ref().and_then(|sol| sol.objective_value)
+        self.current_solution
+            .as_ref()
+            .and_then(|sol| sol.objective_value)
     }
 }
 
@@ -316,7 +321,10 @@ impl BackendMetadata for HighsSession {
 // ── CallbackSession ─────────────────────────────────────────────────────────────
 
 impl CallbackSession for HighsSession {
-    fn set_callback_handler(&mut self, handler: Box<dyn CallbackHandler>) -> Result<(), BackendError> {
+    fn set_callback_handler(
+        &mut self,
+        handler: Box<dyn CallbackHandler>,
+    ) -> Result<(), BackendError> {
         self.callback_handler = Some(handler);
         Ok(())
     }
@@ -350,7 +358,10 @@ impl CallbackSession for HighsSession {
 /// All option keys and values are converted via [`CString::new`], which
 /// returns an error if the string contains interior null bytes. This
 /// prevents CString panics at the FFI boundary.
-fn negotiate_options(raw: *mut c_void, request: &SolveRequest) -> Result<EffectiveConfig, BackendError> {
+fn negotiate_options(
+    raw: *mut c_void,
+    request: &SolveRequest,
+) -> Result<EffectiveConfig, BackendError> {
     let mut effective = EffectiveConfig::default();
 
     // ── lp_algorithm ────────────────────────────────────────────────────────
@@ -456,7 +467,10 @@ fn negotiate_options(raw: *mut c_void, request: &SolveRequest) -> Result<Effecti
         let value_c = match CString::new(value.as_str()) {
             Ok(c) => c,
             Err(e) => {
-                warn!("extra_options value for '{}' contains null byte: {}", key, e);
+                warn!(
+                    "extra_options value for '{}' contains null byte: {}",
+                    key, e
+                );
                 effective.rejections.push(ConfigRejection {
                     key: key.clone(),
                     reason: format!("value contains null byte at position {}", e.nul_position()),
@@ -502,7 +516,11 @@ fn negotiate_options(raw: *mut c_void, request: &SolveRequest) -> Result<Effecti
 fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendError> {
     let key_c = CString::new(key).map_err(|e| {
         BackendError::new(
-            format!("option key '{}' contains null byte at position {}", key, e.nul_position()),
+            format!(
+                "option key '{}' contains null byte at position {}",
+                key,
+                e.nul_position()
+            ),
             ErrorCategory::InvalidInput,
             HealthEffect::Recoverable,
         )
@@ -510,7 +528,11 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 
     let value_c = CString::new(value).map_err(|e| {
         BackendError::new(
-            format!("option value for '{}' contains null byte at position {}", key, e.nul_position()),
+            format!(
+                "option value for '{}' contains null byte at position {}",
+                key,
+                e.nul_position()
+            ),
             ErrorCategory::InvalidInput,
             HealthEffect::Recoverable,
         )
