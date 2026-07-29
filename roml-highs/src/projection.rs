@@ -584,10 +584,22 @@ pub(crate) fn apply_delta_batch(
                                 }
                             }
                         }
-                        CoefficientTarget::Objective(_) => {
-                            return Err(BackendError::unsupported(
-                                "SetCell with Objective target — use SetObjectiveCell instead",
-                            ));
+                        CoefficientTarget::Objective(obj_id) => {
+                            // Update per-objective cache unconditionally.
+                            obj_costs
+                                .entry(obj_id)
+                                .or_default()
+                                .insert(var_id, *evaluated_value);
+                            // Only touch native HiGHS if active.
+                            if *active_obj == Some(obj_id) {
+                                unsafe {
+                                    check_highs_status(
+                                        Highs_changeColCost(raw, col, *evaluated_value),
+                                        raw,
+                                        "Highs_changeColCost (SetCell objective)",
+                                    )?;
+                                }
+                            }
                         }
                     }
                 }
@@ -611,13 +623,15 @@ pub(crate) fn apply_delta_batch(
                             }
                         }
                         CoefficientTarget::Objective(obj_id) => {
-                            // Zero the objective cost.
-                            unsafe {
-                                check_highs_status(
-                                    Highs_changeColCost(raw, col, 0.0),
-                                    raw,
-                                    "Highs_changeColCost (remove obj cell)",
-                                )?;
+                            // Only zero native cost if this objective is active.
+                            if *active_obj == Some(obj_id) {
+                                unsafe {
+                                    check_highs_status(
+                                        Highs_changeColCost(raw, col, 0.0),
+                                        raw,
+                                        "Highs_changeColCost (remove obj cell)",
+                                    )?;
+                                }
                             }
                             // Remove from obj_costs cache.
                             if let Some(costs) = obj_costs.get_mut(&obj_id) {
