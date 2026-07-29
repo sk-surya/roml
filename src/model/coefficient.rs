@@ -54,7 +54,7 @@ impl CoefficientData {
 }
 
 /// A unique cell key: one cell per (target, variable) pair.
-pub(crate) type CellKey = (CoefficientTarget, VarId);
+pub type CellKey = (CoefficientTarget, VarId);
 
 /// Multi-indexed coefficient storage.
 ///

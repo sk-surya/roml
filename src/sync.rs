@@ -15,7 +15,6 @@ use crate::revision::{ModelRevision, RevisionError};
 
 /// Health status of an adapter session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum AdapterHealth {
     /// Adapter is synchronized and ready to accept deltas.
     Ready,
@@ -39,7 +38,6 @@ pub struct AdapterCursor {
 }
 
 /// Methods used by sync coordinator and adapters.
-#[allow(dead_code)]
 impl AdapterCursor {
     /// Create a new cursor at the initial revision.
     pub fn new() -> Self {
@@ -100,7 +98,6 @@ impl Default for AdapterCursor {
 
 /// Outcome of applying a delta batch to an adapter.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
 pub enum ApplyOutcome {
     /// All operations applied successfully, cursor advanced.
     Applied {
@@ -166,7 +163,6 @@ pub struct SyncCoordinator {
 }
 
 /// Methods used by model and adapter sessions.
-#[allow(dead_code)]
 impl SyncCoordinator {
     /// Create a new coordinator.
     pub fn new() -> Self {

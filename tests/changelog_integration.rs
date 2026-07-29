@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use roml::expr::LinExpr;
 use roml::model::{Change, CoefficientTarget};
 use roml::{Bounds, ConstraintBounds, Model, Sense, ValueExpr, VarType};
@@ -30,7 +31,6 @@ fn changelog_captures_mutations() {
         .unwrap();
 
     model.set_parameter(param, 4.0);
-    model.commit();
 
     let changes = model.drain_changes();
     assert_eq!(changes.len(), 12);
@@ -57,7 +57,7 @@ fn changelog_captures_mutations() {
     ));
     assert!(matches!(
         changes[4],
-        Change::CoefficientAdded { coeff: id, var, target, value }
+        Change::CoefficientAdded { coeff: id, var, target, value, value_expr: _ }
             if id == coeff
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
@@ -91,7 +91,7 @@ fn changelog_captures_mutations() {
     // (con, x) combines with the existing coeff: 2.0 + 3.0 = 5.0
     assert!(matches!(
         changes[9],
-        Change::CoefficientValueChanged { coeff: id, var, target, old, new }
+        Change::CoefficientValueChanged { coeff: id, var, target, old, new, value_expr: _ }
             if id == coeff  // same ID as original coefficient
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
@@ -108,7 +108,7 @@ fn changelog_captures_mutations() {
     // After parameter change 3→4, cell changes 5.0→6.0
     assert!(matches!(
         changes[11],
-        Change::CoefficientValueChanged { coeff: id, var, target, old, new }
+        Change::CoefficientValueChanged { coeff: id, var, target, old, new, value_expr: _ }
             if id == coeff
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
@@ -144,7 +144,7 @@ fn drain_changes_auto_commits_parameters() {
     ));
     assert!(matches!(
         changes[2],
-        Change::CoefficientAdded { coeff: id, var, target, value }
+        Change::CoefficientAdded { coeff: id, var, target, value, value_expr: _ }
             if id == coeff
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
@@ -159,7 +159,7 @@ fn drain_changes_auto_commits_parameters() {
     ));
     assert!(matches!(
         changes[4],
-        Change::CoefficientValueChanged { coeff: id, var, target, old, new }
+        Change::CoefficientValueChanged { coeff: id, var, target, old, new, value_expr: _ }
             if id == coeff
                 && var == x
                 && target == CoefficientTarget::Constraint(con)
@@ -196,7 +196,6 @@ fn indexed_model_with_parameter_arrays() {
     let obj = model.add_objective(Sense::Minimize);
     model.set_objective_expr(obj, obj_expr).unwrap();
     model.set_active_objective(obj).unwrap();
-    model.commit();
     let changes = model.drain_changes();
     assert_eq!(changes.len(), 5 + 1 + 5 + 1); // 5 for variables, 1 Obj Added, 5 coefficient adds in objective, 1 ActiveObjectiveChanged
 }
