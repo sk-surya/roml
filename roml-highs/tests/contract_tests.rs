@@ -10,7 +10,6 @@
 //! Tests use a real HiGHS instance via the `bundled` feature (default). Each
 //! test creates its own [`HighsSession`] via [`HighsSession::try_new()`].
 
-use roml_highs::HighsSession;
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -19,9 +18,10 @@ use roml::revision::ModelRevision;
 use roml::snapshot::{CellEntry, ConstraintEntry, ModelSnapshot, ObjectiveEntry, VariableEntry};
 use roml::solver::backend::{ErrorCategory, HealthEffect, TerminationStatus};
 use roml::solver::request::SolveRequest;
-use roml::solver::session::{BackendSession, BackendMetadata, SessionHealth, Synchronization};
+use roml::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
 use roml::sync::AdapterHealth;
 use roml::value_expr::ValueExpr;
+use roml_highs::HighsSession;
 
 // ── Test Helpers ───────────────────────────────────────────────────────────────
 
@@ -176,7 +176,9 @@ fn c2_full_rebuild() {
         "Feasible LP should be Optimal"
     );
 
-    let sol = result.solution.expect("Optimal solution should be available");
+    let sol = result
+        .solution
+        .expect("Optimal solution should be available");
     let obj_val = sol.objective_value.unwrap_or(0.0);
     assert!(
         approx_eq(obj_val, 5.0, 1e-4),
@@ -223,11 +225,18 @@ fn c3_incremental_delta() {
             let next = rev
                 .next()
                 .expect("Revision should not overflow during test");
-            let batch =
-                DeltaBatch::new(rev, next, vec![$op]).expect("DeltaBatch construction should succeed");
+            let batch = DeltaBatch::new(rev, next, vec![$op])
+                .expect("DeltaBatch construction should succeed");
             session
                 .synchronize(Synchronization::DeltaBatch(batch))
-                .unwrap_or_else(|e| panic!("Delta sync r{}->r{} failed: {}", rev.as_u64(), next.as_u64(), e));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Delta sync r{}->r{} failed: {}",
+                        rev.as_u64(),
+                        next.as_u64(),
+                        e
+                    )
+                });
             assert_eq!(
                 session.revision(),
                 next,
@@ -320,9 +329,7 @@ fn c3_incremental_delta() {
     });
 
     // 14. SetActiveObjective (activate this objective)
-    apply_op!(ModelOp::SetActiveObjective {
-        obj: Some(o0),
-    });
+    apply_op!(ModelOp::SetActiveObjective { obj: Some(o0) });
 
     // 15. RemoveObjective
     apply_op!(ModelOp::RemoveObjective { obj: o0 });
@@ -389,14 +396,12 @@ fn c4_commuting_square() {
             constant: 0.0,
         }],
         parameters: vec![],
-        cells: vec![
-            CellEntry {
-                cell_key: (CoefficientTarget::Objective(o0), v0),
-                value_expr: ValueExpr::constant(1.0),
-                evaluated_value: 1.0,
-                dependencies: vec![],
-            },
-        ],
+        cells: vec![CellEntry {
+            cell_key: (CoefficientTarget::Objective(o0), v0),
+            value_expr: ValueExpr::constant(1.0),
+            evaluated_value: 1.0,
+            dependencies: vec![],
+        }],
     };
 
     // Session A: rebuild from r0, then apply delta r0->r1.
@@ -404,13 +409,15 @@ fn c4_commuting_square() {
         .synchronize(Synchronization::Rebuild(snap_r0.clone()))
         .expect("Session A: rebuild from r0 should succeed");
 
-    let delta = DeltaBatch::new(r0, r1, vec![
-        ModelOp::SetCell {
+    let delta = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::SetCell {
             cell_key: (CoefficientTarget::Constraint(c0), v0),
             value_expr: ValueExpr::constant(2.0),
             evaluated_value: 2.0,
-        },
-    ])
+        }],
+    )
     .expect("DeltaBatch r0->r1 should be valid");
 
     session_a
@@ -712,9 +719,7 @@ fn c6_objective_switch() {
                         evaluated_value: 1.0,
                         constant: 0.0,
                     },
-                    ModelOp::SetActiveObjective {
-                        obj: Some(o_max),
-                    },
+                    ModelOp::SetActiveObjective { obj: Some(o_max) },
                 ],
             )
             .unwrap(),
@@ -1429,10 +1434,7 @@ fn c10_metadata() {
         !caps.semicontinuous,
         "HiGHS should NOT support semi-continuous (H7)"
     );
-    assert!(
-        !caps.semiinteger,
-        "HiGHS should NOT support semi-integer"
-    );
+    assert!(!caps.semiinteger, "HiGHS should NOT support semi-integer");
 }
 
 // ── C11: Fallible Construction ─────────────────────────────────────────────────

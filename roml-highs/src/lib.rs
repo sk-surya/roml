@@ -40,13 +40,13 @@
 compile_error!("features `bundled` and `system` are mutually exclusive; activate at most one");
 
 mod bindings;
+mod callback;
 mod error;
 mod index_map;
 mod lifecycle;
 mod projection;
 mod session;
 mod solution;
-mod callback;
 
 pub use error::HighsError;
 pub use lifecycle::HighsSession;

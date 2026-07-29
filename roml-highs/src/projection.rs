@@ -30,9 +30,9 @@ use crate::error::{check_highs_status, from_native_status};
 use crate::index_map::IndexMap;
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, ObjId, VarId};
-use roml::model::coefficient::{CoefficientTarget};
+use roml::model::coefficient::CoefficientTarget;
 use roml::model::objective::Sense;
-use roml::model::variable::{VarType};
+use roml::model::variable::VarType;
 use roml::snapshot::ModelSnapshot;
 use roml::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 
@@ -134,11 +134,7 @@ pub(crate) fn rebuild_from_snapshot(
     // Step 2: Clear the HiGHS model.
     // SAFETY: `raw` is guaranteed valid by caller. `Highs_clear` resets
     // the model but preserves options and settings.
-    check_highs_status(
-        unsafe { Highs_clear(raw) },
-        raw,
-        "Highs_clear",
-    )?;
+    check_highs_status(unsafe { Highs_clear(raw) }, raw, "Highs_clear")?;
 
     // Step 3: Clear all caches.
     *col_map = IndexMap::new();
@@ -796,12 +792,10 @@ pub(crate) fn apply_delta_batch(
 
             ModelOp::SetObjectiveSense { obj: _, sense: _ } => {
                 // Objective sense change is handled during rebuild — no-op for delta.
-
             }
             ModelOp::SetSemiContinuousBound { var: _, lower: _ } => {
                 // Semi-continuous bounds deferred to post-M1R-02.
                 // The protocol preserves the delta for replay; projection is a no-op.
-
             }
             ModelOp::SetParameter { param, value } => {
                 // Map known parameters to HiGHS equivalents if applicable.

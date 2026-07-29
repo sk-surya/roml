@@ -156,9 +156,7 @@ fn has_feasible_solution(raw: *mut c_void) -> bool {
 
     // A feasible solution is present if at least one primal value is
     // a valid (non-NaN, non-infinite) number.
-    col_value
-        .iter()
-        .any(|v| !v.is_nan() && !v.is_infinite())
+    col_value.iter().any(|v| !v.is_nan() && !v.is_infinite())
 }
 
 // ── Solution Extraction ─────────────────────────────────────────────────────────
@@ -327,4 +325,3 @@ pub(crate) fn extract_solution(
 // ── Tests ───────────────────────────────────────────────────────────────────────
 
 // Unit tests removed — require HiGHS session for null-safety.
-
