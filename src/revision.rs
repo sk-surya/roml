@@ -20,8 +20,7 @@ impl ModelRevision {
     pub const ZERO: Self = ModelRevision(0);
 
     /// Create a revision from a raw number (for testing/internal use).
-    #[allow(dead_code)]
-    pub(crate) const fn from_u64(v: u64) -> Self {
+    pub const fn from_u64(v: u64) -> Self {
         ModelRevision(v)
     }
 

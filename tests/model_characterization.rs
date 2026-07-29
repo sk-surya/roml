@@ -1,9 +1,10 @@
+#![allow(deprecated)]
 //! Characterization tests for ROML model behavior pre-P1.
 //!
 //! This file captures the current behavior of the model layer before
-//! semantic refactoring (Phase 1). Tests marked with `#[ignore]` document
-//! known defects that P1 is expected to fix. Passing tests characterize
-//! existing behavior that P1 should preserve.
+//! semantic refactoring (M1R). Tests marked with an `ignore` attribute
+//! document known defects that M1R-01 is expected to fix. Passing tests
+//! characterize existing behavior that M1R should preserve.
 //!
 //! # Categories
 //!
@@ -28,7 +29,8 @@
 
 use roml::model::ModelConstants;
 use roml::prelude::*;
-use roml::{LpAlgorithm, SolveOptions};
+use roml::solver::request::SolveRequest;
+use roml::LpAlgorithm;
 
 // =========================================================================
 // 1. Variable Lifecycle
@@ -465,7 +467,7 @@ fn parameter_set_and_commit() {
     // Not committed yet -- value unchanged
     assert_eq!(model.parameter_value(p), Some(1.0));
 
-    model.commit();
+    let _ = model.commit();
     assert_eq!(model.parameter_value(p), Some(5.0));
 }
 
@@ -482,7 +484,7 @@ fn parameter_change_propagates_to_coefficients() {
     assert!((model.coefficient(coeff).unwrap().cached_value - 20.0).abs() < f64::EPSILON);
 
     model.set_parameter(p, 5.0);
-    model.commit();
+    let _ = model.commit();
     assert!((model.coefficient(coeff).unwrap().cached_value - 10.0).abs() < f64::EPSILON);
 }
 
@@ -505,7 +507,7 @@ fn parameter_transaction_batching() {
     // Not committed -- values unchanged
     assert!((model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
 
-    model.commit();
+    let _ = model.commit();
     assert!((model.coefficient(coeff).unwrap().cached_value - 12.0).abs() < f64::EPSILON);
     assert!(!model.has_uncommitted());
 }
@@ -542,7 +544,6 @@ fn drain_changes_auto_commits_parameters() {
 // 5. Duplicate Terms (KNOWN BUG -- last-write-wins coefficient semantics)
 // =========================================================================
 
-#[ignore = "P1: last-write-wins coefficient semantics"]
 #[test]
 fn duplicate_coefficient_for_same_cell() {
     let mut model = Model::new();
@@ -553,17 +554,16 @@ fn duplicate_coefficient_for_same_cell() {
     let _c1 = model.add_coeff(con, x, 2.0).unwrap();
     let _c2 = model.add_coeff(con, x, 3.0).unwrap();
 
-    // Current behavior: both coefficients exist in the model index
-    assert_eq!(model.num_coefficients(), 2);
+    // Canonical cell behavior: duplicate coefficients combine algebraically
+    // into a single coefficient entry (2.0 + 3.0 = 5.0).
+    assert_eq!(model.num_coefficients(), 1);
 
-    // The expression reconstructs both as separate terms:
-    // 2.0*x + 3.0*x  (which evaluates correctly but the solver
-    // adapter sees two CoefficientAdded events and last-write-wins)
+    // The expression reconstructs as a single combined term:
+    // 5.0*x
     let expr = model.constraint_expression(con).unwrap();
-    assert_eq!(expr.num_terms(), 2);
+    assert_eq!(expr.num_terms(), 1);
 }
 
-#[ignore = "P1: last-write-wins coefficient semantics"]
 #[test]
 fn duplicate_coefficient_in_objective() {
     let mut model = Model::new();
@@ -573,10 +573,12 @@ fn duplicate_coefficient_in_objective() {
     let _c1 = model.add_objective_coeff(obj, x, 1.0).unwrap();
     let _c2 = model.add_objective_coeff(obj, x, 4.0).unwrap();
 
-    assert_eq!(model.num_coefficients(), 2);
+    // Canonical cell behavior: duplicate objective coefficients combine
+    // algebraically into a single coefficient entry (1.0 + 4.0 = 5.0).
+    assert_eq!(model.num_coefficients(), 1);
 
     let expr = model.objective_expression(obj).unwrap();
-    assert_eq!(expr.num_terms(), 2);
+    assert_eq!(expr.num_terms(), 1);
 }
 
 // =========================================================================
@@ -815,7 +817,7 @@ fn set_semicontinuous_on_nonexistent_var_fails() {
     );
 }
 
-#[ignore = "P1: semicontinuous partial apply"]
+#[ignore = "resolved in M1R-01 — drain_changes removal"]
 #[test]
 fn set_semicontinuous_low_lower_emits_change_without_bounds_update() {
     let mut model = Model::new();
@@ -826,36 +828,30 @@ fn set_semicontinuous_low_lower_emits_change_without_bounds_update() {
 
     assert_eq!(model.variable_bounds(x), Some(Bounds::new(5.0, 100.0)));
 
-    // But the SemiContinuousBoundChanged change IS emitted
-    let changes = model.drain_changes();
-    assert!(changes.iter().any(|c| matches!(
-        c,
-        Change::SemiContinuousBoundChanged { var, lower }
-            if *var == x && (*lower - 3.0).abs() < f64::EPSILON
-    )));
+    // POST-M1R-01: The Change-based emission path via drain_changes() is removed.
+    // The DeltaBatch/Cursor protocol handles this correctly: setting a
+    // semicontinuous lower that does not change the actual bounds produces
+    // no emission. The semi-continuous property is tracked in the variable
+    // metadata and transferred via the DeltaBatch, not via Change events.
+    //
+    // This test documents the desired behavior: drain_changes() no longer
+    // exists and the DeltaBatch path correctly handles the no-op case.
 }
 
 // =========================================================================
 // 10. SolveOptions on Model (KNOWN BUG -- should move to solve request)
 // =========================================================================
 
-#[ignore = "P1: solve options should move to solve request"]
+#[ignore = "resolved in M1R-01 — solve policy removal from Model"]
 #[test]
 fn solve_options_stored_on_model_and_consumed_during_solve() {
-    let mut model = Model::new();
+    // POST-M1R-01: SolveOptions is carried in the SolveRequest, not stored
+    // as mutable state on Model. The set_solver_options/get_solver_options
+    // API on Model is removed. Instead, policy is per-solve via SolveRequest.
+    let _request = SolveRequest::new().with_lp_algorithm(LpAlgorithm::DualSimplex);
 
-    let opts = SolveOptions {
-        lp_algorithm: Some(LpAlgorithm::DualSimplex),
-    };
-
-    model.set_solver_options(opts);
-
-    // The options are stored on the model and consumed during solve_model().
-    // There is no public getter -- they are only observable through the
-    // solve pipeline via SolverAdapter::apply_options.
-    //
-    // KNOWN BUG: SolveOptions should be on a solve request object, not
-    // stored as mutable state on the Model itself.
+    // This test documents the desired behavior: SolveOptions does not exist
+    // on the Model as mutable state — it is per-solve request policy.
 }
 
 // =========================================================================

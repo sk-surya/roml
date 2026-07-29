@@ -963,7 +963,7 @@ mod tests {
 
         // Change parameter and commit
         model.set_parameter(p, 10.0);
-        model.commit();
+        let _ = model.commit();
 
         // Coefficient should now be 10.0
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 10.0);

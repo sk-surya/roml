@@ -21,14 +21,26 @@ pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
+pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
 pub use model::changelog::Change;
 pub use model::{Bounds, ConstraintBounds, Model, ModelError, Sense, VarType};
+pub use revision::ModelRevision;
+pub use snapshot::ModelSnapshot;
 pub use solution::{Solution, SolutionBuilder, SolutionStore};
-pub use solver::{
-    LpAlgorithm, SolveOptions, SolverAdapter, SolverError, SolverModelExt, SolverStatus,
+pub use solver::backend::{
+    BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
+pub use solver::request::{
+    ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult, SolveSolution,
+};
+pub use solver::session::{
+    BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt,
+    Synchronization,
+};
+pub use solver::{LpAlgorithm, SolverError};
+pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;
 
 /// Build a [`ConstraintSpec`] from math-like tokens.
@@ -162,7 +174,6 @@ pub mod prelude {
     pub use crate::{
         constrain, set_objective, Bounds, Change, CoeffId, ConId, ConstraintBounds,
         ConstraintExprExt, ConstraintSpec, LinExpr, Model, ModelError, ObjId, ObjectiveExprExt,
-        ObjectiveSpec, ParamId, Sense, Solution, SolverAdapter, SolverError, SolverModelExt,
-        SolverStatus, ValueExpr, VarId, VarType,
+        ObjectiveSpec, ParamId, Sense, Solution, SolverError, ValueExpr, VarId, VarType,
     };
 }

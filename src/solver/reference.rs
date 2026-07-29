@@ -56,6 +56,9 @@ pub struct ReferenceBackend {
 
     /// Objective cells: CellKey → (value_expr, evaluated_value, constant)
     pub objective_cells: HashMap<CellKey, (ValueExpr, f64, f64)>,
+
+    /// Objective constants: ObjId → constant (tracked for SetCell routing to objective_cells)
+    pub objective_constants: HashMap<ObjId, f64>,
 }
 
 /// Methods used by backend contract tests and adapters.
@@ -123,15 +126,28 @@ impl ReferenceBackend {
                 cell_key,
                 value_expr,
                 evaluated_value,
-            } => {
-                self.constraint_cells
-                    .insert(*cell_key, (value_expr.clone(), *evaluated_value));
-            }
+            } => match cell_key.0 {
+                CoefficientTarget::Constraint(_) => {
+                    self.constraint_cells
+                        .insert(*cell_key, (value_expr.clone(), *evaluated_value));
+                }
+                CoefficientTarget::Objective(obj_id) => {
+                    let constant = self
+                        .objective_constants
+                        .get(&obj_id)
+                        .copied()
+                        .unwrap_or(0.0);
+                    self.objective_cells
+                        .insert(*cell_key, (value_expr.clone(), *evaluated_value, constant));
+                }
+            },
             ModelOp::RemoveCell { cell_key } => {
                 self.constraint_cells.remove(cell_key);
+                self.objective_cells.remove(cell_key);
             }
             ModelOp::AddObjective { obj, sense } => {
                 self.objectives.insert(*obj, (*sense, false));
+                self.objective_constants.insert(*obj, 0.0);
             }
             ModelOp::RemoveObjective { obj } => {
                 self.objectives.remove(obj);
@@ -168,6 +184,14 @@ impl ReferenceBackend {
             }
             ModelOp::SetParameter { param, value } => {
                 self.parameters.insert(*param, *value);
+            }
+            ModelOp::SetObjectiveSense { obj, sense } => {
+                if let Some(entry) = self.objectives.get_mut(obj) {
+                    entry.0 = *sense;
+                }
+            }
+            ModelOp::SetSemiContinuousBound { var, lower } => {
+                self.semicontinuous.insert(*var, *lower);
             }
         }
         Ok(())
@@ -213,6 +237,7 @@ impl ReferenceBackend {
         self.objective_cells.clear();
         self.parameters.clear();
         self.semicontinuous.clear();
+        self.objective_constants.clear();
 
         for v in &snapshot.variables {
             self.variables
@@ -228,6 +253,7 @@ impl ReferenceBackend {
 
         for o in &snapshot.objectives {
             self.objectives.insert(o.id, (o.sense, o.active));
+            self.objective_constants.insert(o.id, o.constant);
             if o.active {
                 self.active_objective = Some(o.id);
             }

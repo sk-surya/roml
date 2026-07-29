@@ -30,7 +30,6 @@ pub struct Journal {
 }
 
 /// Methods used by sync coordinator and tests.
-#[allow(dead_code)]
 impl Journal {
     /// Create an empty journal.
     pub fn new() -> Self {
