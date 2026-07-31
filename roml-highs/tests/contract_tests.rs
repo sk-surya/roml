@@ -1071,11 +1071,10 @@ fn c9_optimal_lp_with_extraction() {
 
     let sol = result.solution.expect("Optimal LP should have solution");
     let obj = sol.objective_value.unwrap_or(0.0);
-    // Objective value is solver-dependent; verify the solve produced a
-    // result within an order of magnitude (platform FP differences).
+    // maximize 1.5*x + 3.0*y, x+y<=10, x>=0, y>=0 → x=0, y=10, obj=30.
     assert!(
-        obj > 0.0 && obj < 200.0,
-        "Expected objective in (0, 200), got {}",
+        approx_eq(obj, 30.0, 1e-4),
+        "Expected objective ≈ 30, got {}",
         obj
     );
 
