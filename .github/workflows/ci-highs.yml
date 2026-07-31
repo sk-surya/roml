@@ -108,4 +108,11 @@ jobs:
           toolchain: stable
       - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
       - run: cargo package -p roml --locked
+      - name: Packed consumer test (roml)
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          mkdir -p /tmp/packed-test && cd /tmp/packed-test
+          tar xzf "$GITHUB_WORKSPACE/target/package/roml-${VERSION}.crate"
+          cd "roml-${VERSION}"
+          cargo check
       - run: cargo check -p roml-highs --features bundled
