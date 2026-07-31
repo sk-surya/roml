@@ -372,15 +372,17 @@ pub(crate) fn apply_delta_batch(
     active_obj: &mut Option<ObjId>,
 ) -> Result<(), BackendError> {
     // ── Pre-validation phase ──────────────────────────────────────────────
-    // Scan all operations for unsupported domain data. Currently no ModelOp
-    // variant carries semi-continuous data, but this loop exists for
-    // future-proofing (M1R-H7).
-    for op in &batch.operations {
-        if let ModelOp::AddVariable { .. } = op {
-            // ModelOp::AddVariable does not carry semicontinuous_lower.
-            // If a future extension adds semi-continuous data to a
-            // ModelOp, reject it here before any HiGHS state change.
-        }
+    // Reject unsupported operations BEFORE any HiGHS state change.
+    // This ensures a batch with SetSemiContinuousBound cannot partially
+    // apply other operations and then fail (M1R-H7).
+    if batch
+        .operations
+        .iter()
+        .any(|op| matches!(op, ModelOp::SetSemiContinuousBound { .. }))
+    {
+        return Err(BackendError::unsupported(
+            "HiGHS does not support semi-continuous domains",
+        ));
     }
 
     // ── Apply phase ──────────────────────────────────────────────────────
