@@ -996,8 +996,8 @@ fn c8_unbounded_lp_status() {
 
 /// C9: Optimal LP with solution extraction.
 ///
-/// maximize 1.5*x + 3.0*y, x + y <= 10, x >= 0, y >= 0.
-/// Expected: Optimal, x=0, y=10, objective=30.
+/// maximize 1.0*x + 3.0*y, x + y <= 10, x >= 0, y >= 0.
+/// Expected: Optimal, x=0, y=10, objective=30 (unique optimum).
 #[test]
 fn c9_optimal_lp_with_extraction() {
     let mut session = create_session();
