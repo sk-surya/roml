@@ -1073,7 +1073,7 @@ fn c9_optimal_lp_with_extraction() {
     let obj = sol.objective_value.unwrap_or(0.0);
     // maximize 1.5*x + 3.0*y, x+y<=10, x>=0, y>=0 → x=0, y=10, obj=30.
     assert!(
-        approx_eq(obj, 30.0, 1e-3),
+        approx_eq(obj, 30.0, 1e-4),
         "Expected objective ≈ 30, got {}",
         obj
     );
