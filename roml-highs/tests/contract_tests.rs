@@ -1052,8 +1052,8 @@ fn c9_optimal_lp_with_extraction() {
             },
             CellEntry {
                 cell_key: (CoefficientTarget::Objective(o0), v0),
-                value_expr: ValueExpr::constant(1.5),
-                evaluated_value: 1.5,
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
                 dependencies: vec![],
             },
             CellEntry {
