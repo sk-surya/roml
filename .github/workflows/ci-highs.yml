@@ -1,0 +1,118 @@
+name: CI - HiGHS Backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-bundled:
+    name: Test (bundled, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install native deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: Install native deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja pkg-config
+      - name: Install native deps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install cmake ninja --no-progress
+      - name: Test roml-highs (bundled)
+        run: cargo test -p roml-highs --features bundled
+
+  lint:
+    name: Lint + doc (HiGHS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p roml-highs --all-targets --features bundled -- -D warnings
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc -p roml-highs --no-deps --features bundled
+
+  msrv:
+    name: MSRV (HiGHS, 1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.85"
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - run: cargo check -p roml-highs --features bundled
+
+  feature-exclusivity:
+    name: Feature exclusivity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - run: "! cargo check -p roml-highs --features bundled,system 2>&1"
+
+  system:
+    name: Test (system, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: Build HiGHS from source
+        run: |
+          HIGHS_VERSION=1.9.0
+          curl -fsSL "https://github.com/ERGO-Code/HiGHS/archive/refs/tags/v${HIGHS_VERSION}.tar.gz" -o highs.tar.gz
+          tar xzf highs.tar.gz
+          cd "HiGHS-${HIGHS_VERSION}"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -GNinja
+          ninja && sudo ninja install
+          sudo ldconfig || true
+      - name: Test roml-highs (system discovery)
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+        run: cargo test -p roml-highs --no-default-features --features system
+
+  package:
+    name: Package verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - run: cargo package -p roml --locked
+      - name: Packed consumer test (roml)
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          mkdir -p /tmp/packed-test && cd /tmp/packed-test
+          tar xzf "$GITHUB_WORKSPACE/target/package/roml-${VERSION}.crate"
+          cd "roml-${VERSION}"
+          cargo check
+      - run: cargo check -p roml-highs --features bundled
