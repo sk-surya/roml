@@ -129,18 +129,30 @@ This convention is not yet enforced; it is a recommended practice for contributo
 
 The project uses Rust's built-in `#[test]` mechanism. No external test frameworks are required.
 
+CI runs tests with [`cargo-nextest`](https://nexte.st) (faster parallel execution) and enforces a
+**line-coverage threshold (80%)** via `cargo-llvm-cov`. A self-hosted coverage badge
+(`badges/coverage.svg`) is regenerated on every `main` push.
+
+> **Note on workspace tests:** `roml-mosek` and `roml-xpress` are mid-migration to the
+> `BackendSession` contract and do not yet build on `main`. Use `-p roml` / `-p roml-highs`
+> (the buildable crates) until they land.
+
 ```bash
-# Run all tests across the workspace
+# Run all tests across the workspace (requires every crate to build)
 cargo test --workspace
 
-# Run tests for a specific package
+# Run tests for a buildable package (recommended on main today)
 cargo test -p roml
 cargo test -p roml-highs
-cargo test -p roml-mosek
-cargo test -p roml-xpress
+
+# Faster: same tests via nextest (what CI uses)
+cargo nextest run -p roml -p roml-highs
 
 # Run a specific test by name
 cargo test -p roml-highs simple_lp_solve
+
+# Coverage (line %) over the buildable crates
+cargo llvm-cov -p roml -p roml-highs --features roml-highs/bundled --ignore-filename-regex 'tests?/'
 
 # Run tests with logging output visible
 ROML_LOG_FILE=roml.log cargo test -- --nocapture
