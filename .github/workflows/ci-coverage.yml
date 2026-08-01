@@ -1,0 +1,94 @@
+name: CI - Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage report
+        run: |
+          cargo llvm-cov \
+            --no-report \
+            -p roml -p roml-highs \
+            --features roml-highs/bundled \
+            --ignore-filename-regex 'tests?/'
+          cargo llvm-cov report \
+            --summary-only --json \
+            --output-path coverage.json
+      - name: Parse coverage and enforce threshold
+        run: |
+          THRESHOLD="${COVERAGE_THRESHOLD:-80}"
+          python3 - "$THRESHOLD" <<'PY'
+          import json, sys
+          threshold = float(sys.argv[1])
+          with open("coverage.json") as f:
+              report = json.load(f)
+          lines = report["data"][0]["totals"]["lines"]
+          pct = lines["percent"]
+          print(f"Line coverage: {pct:.2f}% ({lines['covered']}/{lines['count']})")
+          if pct < threshold:
+              print(f"::error::Coverage {pct:.2f}% is below the {threshold:.0f}% threshold")
+              sys.exit(1)
+          PY
+      - name: Generate coverage badge
+        run: python3 scripts/coverage_badge.py coverage.json badges/coverage.svg
+      - name: Upload coverage badge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-badge
+          path: badges/coverage.svg
+          if-no-files-found: error
+
+  # Commit the self-hosted coverage badge to the repo on main so the
+  # README can reference it. Runs only on push to main (not on PRs).
+  badge:
+    name: Update coverage badge
+    needs: coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Download coverage badge
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-badge
+          path: badges
+      - name: Commit badge if changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add badges/coverage.svg
+          if git diff --cached --quiet; then
+            echo "Badge unchanged; nothing to commit."
+          else
+            git commit -m "chore(ci): update coverage badge"
+            git push origin main
+          fi

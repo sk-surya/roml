@@ -1,5 +1,7 @@
 # ROML
 
+![Coverage](badges/coverage.svg)
+
 A pre-release Rust MILP modeling library with incremental parameter-dependent
 coefficients and projection into long-lived solver sessions.
 
