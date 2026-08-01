@@ -1253,8 +1253,9 @@ fn c9_optimal_mip() {
 
 /// C9: Solution extraction — verify variable values in optimal LP.
 ///
-/// maximize x + y, x + y <= 5, x >= 0, y >= 0.
-/// Expected: x=5, y=0, objective=5.
+/// maximize x + 3y, x + y <= 5, x >= 0, y >= 0.
+/// Expected: x=0, y=5, objective=15 (unique optimum — avoids the
+/// line-of-optima ambiguity that made the non-zero count nondeterministic).
 #[test]
 fn c9_solution_extraction() {
     let mut session = create_session();
@@ -1315,8 +1316,8 @@ fn c9_solution_extraction() {
             },
             CellEntry {
                 cell_key: (CoefficientTarget::Objective(o0), v1),
-                value_expr: ValueExpr::constant(1.0),
-                evaluated_value: 1.0,
+                value_expr: ValueExpr::constant(3.0),
+                evaluated_value: 3.0,
                 dependencies: vec![],
             },
         ],
@@ -1331,16 +1332,29 @@ fn c9_solution_extraction() {
     // Objective value.
     let obj = sol.objective_value.unwrap_or(0.0);
     assert!(
-        approx_eq(obj, 5.0, 1e-4),
-        "Expected objective ≈ 5, got {}",
+        approx_eq(obj, 15.0, 1e-4),
+        "Expected objective ≈ 15, got {}",
         obj
     );
 
-    // Variable values should contain both x0 and x1.
+    // Variable values should contain BOTH x0 and x1 — extraction maps every
+    // HiGHS column back to a VarId (zeros are retained, only NaN/inf are
+    // filtered), so a 2-variable model yields 2 entries: x=0 and y=5.
     assert_eq!(
         sol.variable_values.len(),
-        1,
-        "Expected exactly 1 non-zero variable value (y=0 is excluded via NaN filter)"
+        2,
+        "Expected exactly 2 variable values (x=0, y=5), got {}",
+        sol.variable_values.len()
+    );
+    let y_val = sol
+        .variable_values
+        .iter()
+        .find(|(var, _)| *var == v1)
+        .map(|(_, v)| *v);
+    assert!(
+        approx_eq(y_val.unwrap_or(0.0), 5.0, 1e-4),
+        "Expected y ≈ 5, got {:?}",
+        y_val
     );
 }
 
