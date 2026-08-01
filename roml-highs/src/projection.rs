@@ -152,11 +152,13 @@ pub(crate) fn rebuild_from_snapshot(
             let lb = normalize_bound(var.bounds.lower, inf);
             let ub = normalize_bound(var.bounds.upper, inf);
 
-            // Highs_addVar returns the column index on success (>= 0)
-            // or -1 on failure.
-            let col = Highs_addVar(raw, lb, ub);
-            if col < 0 {
-                return Err(from_native_status(col, "Highs_addVar"));
+            // Highs_addVar returns a `kHighsStatus` constant (STATUS_OK on
+            // success), NOT the new column index. Query the current column
+            // count before adding to derive the new column's index.
+            let col = Highs_getNumCol(raw);
+            let status = Highs_addVar(raw, lb, ub);
+            if status != STATUS_OK {
+                return Err(from_native_status(status, "Highs_addVar"));
             }
             col_map.insert(var.id, col);
 
@@ -191,11 +193,13 @@ pub(crate) fn rebuild_from_snapshot(
             let lb = normalize_bound(con.bounds.lower, inf);
             let ub = normalize_bound(con.bounds.upper, inf);
 
-            // Highs_addRow returns the row index on success (>= 0)
-            // or -1 on failure.
-            let row = Highs_addRow(raw, lb, ub, 0, std::ptr::null(), std::ptr::null());
-            if row < 0 {
-                return Err(from_native_status(row, "Highs_addRow"));
+            // Highs_addRow returns a `kHighsStatus` constant (STATUS_OK on
+            // success), NOT the new row index. Query the current row count
+            // before adding to derive the new row's index.
+            let row = Highs_getNumRow(raw);
+            let status = Highs_addRow(raw, lb, ub, 0, std::ptr::null(), std::ptr::null());
+            if status != STATUS_OK {
+                return Err(from_native_status(status, "Highs_addRow"));
             }
             row_map.insert(con.id, row);
             con_bounds.insert(con.id, (lb, ub));
@@ -397,9 +401,12 @@ pub(crate) fn apply_delta_batch(
                 let ub = normalize_bound(bounds.upper, inf);
 
                 unsafe {
-                    let col = Highs_addVar(raw, lb, ub);
-                    if col < 0 {
-                        return Err(from_native_status(col, "Highs_addVar"));
+                    // Highs_addVar returns a `kHighsStatus` constant, NOT the
+                    // new column index. Derive the index from the column count.
+                    let col = Highs_getNumCol(raw);
+                    let status = Highs_addVar(raw, lb, ub);
+                    if status != STATUS_OK {
+                        return Err(from_native_status(status, "Highs_addVar"));
                     }
                     col_map.insert(*var, col);
 
@@ -498,9 +505,12 @@ pub(crate) fn apply_delta_batch(
                 let ub = normalize_bound(bounds.upper, inf);
 
                 unsafe {
-                    let row = Highs_addRow(raw, lb, ub, 0, std::ptr::null(), std::ptr::null());
-                    if row < 0 {
-                        return Err(from_native_status(row, "Highs_addRow"));
+                    // Highs_addRow returns a `kHighsStatus` constant, NOT the
+                    // new row index. Derive the index from the row count.
+                    let row = Highs_getNumRow(raw);
+                    let status = Highs_addRow(raw, lb, ub, 0, std::ptr::null(), std::ptr::null());
+                    if status != STATUS_OK {
+                        return Err(from_native_status(status, "Highs_addRow"));
                     }
                     row_map.insert(*con, row);
                     con_bounds.insert(*con, (lb, ub));
