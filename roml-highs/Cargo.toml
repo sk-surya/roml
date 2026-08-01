@@ -6,13 +6,14 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-description = "HiGHS solver adapter for roml"
+description = "HiGHS solver backend for roml"
 
 [dependencies]
-log = { workspace = true }
+highs-sys = "1.15"
+log = "0.4"
 roml = { version = "0.1.0", path = ".." }
 
-[build-dependencies]
-cmake = "0.1"
-
-[dev-dependencies]
+[features]
+default = ["bundled"]
+bundled = []
+system = []

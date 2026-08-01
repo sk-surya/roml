@@ -51,6 +51,7 @@ fn tier(s: TerminationStatus) -> u8 {
     match s {
         TerminationStatus::Optimal
         | TerminationStatus::Infeasible
+        | TerminationStatus::InfeasibleOrUnbounded
         | TerminationStatus::Unbounded => 4,
         TerminationStatus::Feasible => 3,
         TerminationStatus::TimeLimit
