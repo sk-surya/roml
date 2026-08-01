@@ -28,7 +28,12 @@ Clippy must produce zero warnings across all workspace members.
 
 ```bash
 cargo test --workspace
+# or faster: cargo nextest run --workspace (what CI uses)
 ```
+
+> **Note:** `roml-mosek` and `roml-xpress` are mid-migration to the `BackendSession`
+> contract and do not yet build on `main`. Until they land, run the buildable crates:
+> `cargo test -p roml -p roml-highs`.
 
 All unit tests, integration tests, and doc tests must pass. See the testing section of
 [CONTRIBUTING.md](../CONTRIBUTING.md) for test organization details.
