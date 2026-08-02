@@ -178,6 +178,18 @@ See `key-files` frontmatter. Highlights: `src/solver/facade.rs` (orchestration),
 - **First-solve sync-mode assertion**: initially asserted `Rebuild`; actual orchestration correctly chose the delta chain (journal retains r0→r1). Relaxed to `Delta | Rebuild` with the contract documented.
 - **Semi-continuous as rebuild trigger**: originally planned as the end-to-end rebuild-recovery trigger; the snapshot rebuild rejects it too, so the model is genuinely unsolvable with HiGHS — reframed as the error-path test.
 
+## Review Cycle (PR #21, 2026-08-02)
+
+Independent protocol/API review returned 4 blocking findings + 1 flag; all resolved:
+
+1. **Terminal sync errors were incorrectly retried** — any delta error triggered a snapshot rebuild, including terminal/license failures. `solve_with` now returns immediately on `SolveError::is_terminal()` (covers `License` and backend errors with `HealthEffect::Terminal`); only recoverable/dirty failures retry once. New test `terminal_delta_failure_returns_error_without_rebuild_retry` (rebuilds == 0, solves == 0).
+2. **Solve options leaked across repeated solves** — native HiGHS persisted options while metadata reported them unset. `negotiate_options` now resets every known option to its HiGHS default before applying the request's explicit values; each request is self-contained. New test `default_solve_after_solve_with_resets_options` (time limit/threads present after `solve_with`, absent after a default `solve`).
+3. **`last_solution()`/`backend()`/`backend_mut()` removed from the public API** — they were not part of the approved three-method `SolverSession` interface and bypassed stale-result protection. `SolverSession` now exposes only `new`/`solve`/`solve_with`; stale protection is structural (solve always re-synchronizes; error paths never surface a prior solution). Fault/recording tests reworked to shared `Rc<RefCell>` handles; invalidation tests rewritten (`prior_solution_never_reported_after_mutation`, `failed_solve_never_surfaces_prior_solution`).
+4. **Independent protocol review gate recorded** — the plan Gate requires it; now the verification report's human_verification item (`21-UAT.md`), status `human_needed` until re-review approves.
+5. **(Flag) `add_integer(Bounds)` is now fallible** — `Result<VarId, ModelError>` with bounds validation (D10/API-06.1/06.4), per the recorded migration plan; call sites updated.
+
+Post-fix matrix re-run: fmt clean; clippy `-D warnings` clean; roml 482/0; roml-highs 86/0; rustdoc `-D warnings` clean; doctests 2/2.
+
 ## Next Phase Readiness
 
 - **P22 (modeling ergonomics)** — much of its planned surface already landed in P21 via the D7/D10 migration: `Model::named`, `VariableDef`/`ParameterDef` builders (`continuous`/`integer`/`binary`/`parameter` with `.named`/`.bounds`), semantic aliases (`Variable`/`Constraint`/`Objective`/`Parameter`), canonical `add_constraint(spec)`/`minimize`/`maximize`, fallible `set_parameter`. Remaining P22 work per the M2 ROADMAP: names in diagnostics/model formatting, sparse cell semantics (D11 `set_coefficient`/`add_to_coefficient`/`remove_coefficient`), representative LP/MILP/sparse/parameterized compile tests, and validation-error coverage (API-06).
@@ -189,7 +201,7 @@ See `key-files` frontmatter. Highlights: `src/solver/facade.rs` (orchestration),
 
 - All 6 plan tasks executed; 10 commits on `phase-roml-P21-solver-facade` since main.
 - Target contracts compile AND execute (2/2 integration tests + 2 doctests).
-- Verification matrix green: fmt clean; clippy `-D warnings` both crates clean; `cargo test -p roml --all-targets` 481 passed / 0 failed; `cargo test -p roml-highs --all-targets` 85 passed / 0 failed; rustdoc `-D warnings` both crates clean; doctests pass (roml: 8 pre-existing ignored; roml-highs: 2 executing quickstart examples).
+- Verification matrix green (post-review-fix): fmt clean; clippy `-D warnings` both crates clean; `cargo test -p roml --all-targets` 482 passed / 0 failed; `cargo test -p roml-highs --all-targets` 86 passed / 0 failed; rustdoc `-D warnings` both crates clean; doctests pass (roml: 8 pre-existing ignored; roml-highs: 2 executing quickstart examples).
 - P20 baselines still green: `repeated_session_baseline.rs` (3/3) and `public_api_compile.rs` (3/3) unchanged.
 - No modifications to `.planning/STATE.md`, `.planning/ROADMAP.md`, or untracked local artifacts.
 
