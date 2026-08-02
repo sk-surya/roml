@@ -621,3 +621,116 @@ fn sparse_ops_reject_stale_entities_and_non_finite_values() {
     );
     assert_eq!(model.num_coefficients(), 0, "no mutation on rejection");
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Review round 1 — expression-semantics replacement + atomic creation (API-06.5)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `set_coefficient` compares EXPRESSION semantics, not cached evaluated
+/// values: a parameter-dependent cell whose current value coincides with the
+/// requested constant must still be replaced (dependency dropped), so a later
+/// parameter update cannot change the supposedly replaced coefficient
+/// (PR #22 review round 1).
+#[test]
+fn set_coefficient_replaces_parameter_dependent_expression(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous())?;
+    let con = model.add_constraint(ConstraintBounds::le(100.0))?;
+    let price = model.add_parameter(parameter(2.0))?;
+
+    // Parameter-dependent cell: price * x (evaluated value 2.0).
+    model.add_constraint_coefficient(con, x, roml::ValueExpr::Param(price))?;
+
+    // Replace with constant 2 — the evaluated value coincides (2.0), but the
+    // semantics differ: the dependency must be dropped.
+    model.set_coefficient(CoefficientTarget::Constraint(con), x, 2.0)?;
+
+    // A later parameter update must NOT change the replaced coefficient. If
+    // the parameter dependency survived (the bug), the cell would track the
+    // parameter and report 5.0 after the update.
+    model.set_parameter(price, 5.0)?;
+    model.commit()?;
+    assert_eq!(
+        model.constraint_expression(con)?.terms()[0]
+            .coeff
+            .as_constant(),
+        Some(2.0),
+        "replacement must drop the parameter dependency and survive updates"
+    );
+    Ok(())
+}
+
+/// A stale variable in a constraint spec fails atomically: no dangling row,
+/// no changelog event, no coefficients (API-06.5).
+#[test]
+fn add_constraint_with_stale_variable_is_atomic() {
+    let mut model = Model::new();
+    let y = model.add_variable(continuous()).expect("y");
+    let stale_x = VarId::new(999, Generation::new());
+
+    let err = model.add_constraint((stale_x + y).le(4.0));
+    assert!(matches!(err, Err(ModelError::VariableNotFound(_))));
+    assert_eq!(model.num_constraints(), 0, "no dangling row");
+    assert_eq!(model.num_coefficients(), 0, "no coefficients written");
+    assert!(!model.has_uncommitted(), "no changelog event");
+}
+
+/// A stale parameter in a constraint spec fails atomically (API-06.5).
+#[test]
+fn add_constraint_with_stale_parameter_is_atomic() {
+    let mut model_a = Model::new();
+    let x = model_a.add_variable(continuous()).expect("x");
+    let mut model_b = Model::new();
+    let stale_price = model_b
+        .add_parameter(parameter(2.0))
+        .expect("price in other model");
+
+    let err = model_a.add_constraint((stale_price * x).le(4.0));
+    assert!(matches!(err, Err(ModelError::ParameterNotFound(_))));
+    assert_eq!(model_a.num_constraints(), 0, "no dangling row");
+    assert_eq!(model_a.num_coefficients(), 0);
+    assert!(!model_a.has_uncommitted());
+}
+
+/// A stale variable in an objective spec fails atomically: no dangling
+/// objective, no activation, no changelog event (API-06.5).
+#[test]
+fn add_objective_with_stale_variable_is_atomic() {
+    let mut model = Model::new();
+    let stale_x = VarId::new(7, Generation::new());
+    let objs_before = model.num_objectives();
+
+    let err = model.maximize(stale_x);
+    assert!(matches!(err, Err(ModelError::VariableNotFound(_))));
+    assert_eq!(model.num_objectives(), objs_before, "no dangling objective");
+    assert!(model.active_objective().is_none(), "nothing activated");
+    assert!(!model.has_uncommitted());
+}
+
+/// A stale parameter in an objective spec fails atomically (API-06.5).
+#[test]
+fn add_objective_with_stale_parameter_is_atomic() {
+    let mut model_a = Model::new();
+    let x = model_a.add_variable(continuous()).expect("x");
+    let mut model_b = Model::new();
+    let stale_price = model_b.add_parameter(parameter(2.0)).expect("price");
+
+    let err = model_a.maximize(stale_price * x);
+    assert!(matches!(err, Err(ModelError::ParameterNotFound(_))));
+    assert_eq!(model_a.num_objectives(), 0, "no dangling objective");
+    assert!(!model_a.has_uncommitted());
+}
+
+/// The low-level `add_constraint_expr` path is atomic too: a stale variable
+/// must not leave a dangling row behind (API-06.5).
+#[test]
+fn add_constraint_expr_with_stale_variable_is_atomic() {
+    let mut model = Model::new();
+    let stale_x = VarId::new(3, Generation::new());
+
+    let err = model.add_constraint_expr(stale_x, ConstraintBounds::le(4.0));
+    assert!(matches!(err, Err(ModelError::VariableNotFound(_))));
+    assert_eq!(model.num_constraints(), 0, "no dangling row");
+    assert!(!model.has_uncommitted());
+}

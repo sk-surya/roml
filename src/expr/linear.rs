@@ -601,6 +601,9 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
+        // Atomicity (API-06.5): validate before inserting the row, so a stale
+        // variable/parameter cannot leave a dangling constraint behind.
+        self.validate_expression_entities(&expr)?;
         // Route through the public bounds-only primitive, not the spec API, so
         // the expr-only path neither round-trips through ConstraintSpec nor
         // captures the generic's spec semantics (M2 disposition migration).
@@ -629,6 +632,10 @@ impl Model {
         S: Into<ObjectiveSpec>,
     {
         let spec = spec.into();
+        // Atomicity (API-06.5): validate expression entities before creating
+        // the objective row, so a stale variable/parameter cannot leave a
+        // dangling objective or changelog event behind.
+        self.validate_expression_entities(&spec.expr)?;
         let obj = self.add_objective_internal(spec.sense, spec.name);
         let constant = spec.expr.compile_for_objective(self, obj)?;
         self.set_objective_constant_internal(obj, constant);
@@ -658,6 +665,8 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
+        // Atomicity (API-06.5): validate before creating the objective row.
+        self.validate_expression_entities(&expr)?;
         let obj = self.add_objective_internal(sense, None);
         let constant = expr.compile_for_objective(self, obj)?;
         self.set_objective_constant_internal(obj, constant);
