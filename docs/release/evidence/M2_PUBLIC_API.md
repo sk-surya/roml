@@ -211,6 +211,17 @@ disposition stands. Reviewer findings for P24 (this evidence document, the
 README/guide rewrite, the examples, and the packaging fix) are resolved in the
 P24 PR review; no unresolved blocker remains.
 
+## 9b. CI fix — version-portable callback struct access
+
+P24 CI exposed a version incompatibility: with the `system` feature wired to
+`highs-sys/discover`, the CI system job compiles against system HiGHS 1.9.0
+headers, where `HighsCallbackDataOut` has no `mip_solution_size` and
+`HighsCallbackDataIn` has only `user_interrupt`. Fixed in `b819bcd`
+(commit `fix(callback)`): the incumbent-solution iteration is bounded by the
+column map length, and the test initializes `HighsCallbackDataIn` via zeroed
+memory. Verified locally against HiGHS 1.9.0 (pkg-config discovery, full
+suite 100/0) and the bundled 1.15.0 (100/0).
+
 ## 10. Residual risks
 
 1. **`SolveError::NoActiveObjective` is never produced.** The façade solves a
