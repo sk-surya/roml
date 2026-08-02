@@ -188,7 +188,12 @@ Independent protocol/API review returned 4 blocking findings + 1 flag; all resol
 4. **Independent protocol review gate recorded** — the plan Gate requires it; now the verification report's human_verification item (`21-UAT.md`), status `human_needed` until re-review approves.
 5. **(Flag) `add_integer(Bounds)` is now fallible** — `Result<VarId, ModelError>` with bounds validation (D10/API-06.1/06.4), per the recorded migration plan; call sites updated.
 
-Post-fix matrix re-run: fmt clean; clippy `-D warnings` clean; roml 482/0; roml-highs 86/0; rustdoc `-D warnings` clean; doctests 2/2.
+**Review round 2** (2 residual findings, both resolved):
+
+1. **Session delta-failure health mapping** — `HighsSession::synchronize` unconditionally marked a failed delta `RequiresRebuild` even when the error was `HealthEffect::Terminal`, leaving the session state wrong for subsequent attempts. The cursor health is now derived from the error's effect (`health_after_failed_delta`): terminal → `Terminal`, otherwise `RequiresRebuild`; the internal cursor-advance failure also marks terminal. Unit test covers all mappings; a session-level regression test proves the real backend still reports `RequiresRebuild` for the unsupported-delta path.
+2. **Arbitrary `backend_option` leakage + metadata gap** — the typed-option reset did not cover arbitrary `backend_option(key, value)` entries (they persisted on the native handle and were not recorded). `negotiate_options` now calls `Highs_resetOptions` (session-wide reset, covers all options) before applying the request, and successful extra options are recorded in `EffectiveConfig.adjustments`. New e2e test `backend_option_is_recorded_and_reset_on_next_solve`.
+
+Post-fix matrix re-run: fmt clean; clippy `-D warnings` clean; roml 482/0; roml-highs 89/0; rustdoc `-D warnings` clean; doctests 2/2.
 
 ## Next Phase Readiness
 

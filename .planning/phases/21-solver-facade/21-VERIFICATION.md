@@ -16,7 +16,7 @@ human_verification:
 
 **Phase Goal:** close the complete build-synchronize-solve-result loop without exposing protocol internals.
 **Verified:** 2026-08-02T17:01:25Z
-**Updated:** 2026-08-02 (review round 1: 4 findings + 1 flag resolved; protocol review re-review pending)
+**Updated:** 2026-08-02 (review round 1: 4 findings + 1 flag resolved; review round 2: 2 residual findings resolved — session delta-failure health mapping, arbitrary backend_option reset + metadata recording; re-review pending)
 **Status:** human_needed — automated truths 15/15; plan Gate additionally requires independent protocol review of recovery semantics
 **Re-verification:** Yes — re-verified after review fixes at head (terminal no-retry, options reset, 3-method surface, fallible add_integer)
 
@@ -148,6 +148,13 @@ One item — the phase plan's Gate requires it:
 | 3. `last_solution()`/`backend()`/`backend_mut()` were not part of the approved three-method interface and bypassed stale-result protection | All three removed from the public API; `SolverSession` exposes only `new`/`solve`/`solve_with`. Stale protection is structural: the only way to obtain a solution is `solve`, which always re-synchronizes; error paths never surface a prior solution. Fault tests reworked to shared `Rc<RefCell>` knobs; invalidation tests rewritten to assert fresh returned solutions (`prior_solution_never_reported_after_mutation`, `failed_solve_never_surfaces_prior_solution`). |
 | 4. Verification marked passed without the plan-required independent protocol review | This report now records the protocol review as the human_verification item; status `human_needed` until re-review approves. |
 | 5. (Flag) Legacy `add_integer(Bounds)` remained infallible, bypassing D10 validation | `Model::add_integer` is now fallible (`Result<VarId, ModelError>`) with bounds validation (invalid/non-finite bounds rejected before mutation); call sites updated. |
+
+**Review round-2 findings and resolution (recorded 2026-08-02):**
+
+| Finding | Resolution |
+|---|---|
+| 1. `HighsSession::synchronize` unconditionally marked a failed delta as `RequiresRebuild`, even when the returned error had `HealthEffect::Terminal` — the façade returned the first terminal error correctly, but the session's state was wrong for subsequent attempts | The cursor health is now derived from the error's own health effect via `health_after_failed_delta` (`roml-highs/src/session.rs`): terminal failures leave the session `Terminal`; anything else demands `RequiresRebuild`. The internal cursor-advance failure path also marks the cursor terminal. Unit test covers all effect mappings; session-level regression test (`rejected_unsupported_delta_marks_session_rebuild_not_terminal`) proves the real backend still reports `RequiresRebuild` (not `Terminal`) for the unsupported-delta path. |
+| 2. Arbitrary `backend_option(key, value)` entries persisted on the native HiGHS handle across solves (not covered by the typed-option reset) and successful entries were not recorded in effective metadata | `negotiate_options` now calls `Highs_resetOptions(raw)` — a session-wide reset covering ALL options, including arbitrary extra entries — before applying the request. Successful extra options are recorded in `EffectiveConfig.adjustments` (with the API used). New e2e test `backend_option_is_recorded_and_reset_on_next_solve` proves the entry is recorded on the configured solve and absent (reset) on the following default solve. |
 
 ### Notes (non-blocking)
 
