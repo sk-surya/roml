@@ -54,8 +54,8 @@ local artifacts (`.planning/config.json`, `.planning/graphs/`,
 | `RUSTDOCFLAGS='-D warnings' cargo doc -p roml -p roml-highs --no-deps --features bundled` | 0 | docs generated, no warnings |
 | `cargo test -p roml --doc` | 0 | 1 passed; 10 ignored (compile-fail prelude + `ignore`-gated macro docs) |
 | `cargo test -p roml-highs --doc --features bundled` | 0 | 2 passed (quickstart + incremental doctests) |
-| `cargo package --list -p roml` (clean worktree) | 0 | 66 files — exactly the intended crate files (Section 6) |
-| `cargo package --list -p roml-highs` (clean worktree) | 0 | 31 files — exactly the intended crate files |
+| `cargo package --list -p roml` (clean worktree) | 0 | 70 files — exactly the intended crate files (Section 6) |
+| `cargo package --list -p roml-highs` (clean worktree) | 0 | 32 files — exactly the intended crate files |
 | `cargo package -p roml --locked` (clean worktree) | 0 | packaged + verified |
 | `cargo package -p roml-highs --locked` | **skipped** | reason in Section 8 |
 | `cargo public-api -p roml` / `-p roml-highs` | 0 | diff vs P23: 0 added / 0 removed lines |
@@ -117,7 +117,7 @@ src/**  (46 files)  tests/**  (25 files)
 ```
 
 `roml-highs --list` shows exactly `Cargo.toml`, `build.rs`, `src/**`, `tests/**`,
-`examples/**` (31 files).
+`examples/**` (32 files).
 
 ## 7. Packed fresh consumers
 
