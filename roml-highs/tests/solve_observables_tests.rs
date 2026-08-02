@@ -17,6 +17,7 @@ use roml::solver::backend::TerminationStatus;
 use roml::solver::request::SolveRequest;
 use roml::solver::session::{BackendSession, SolutionView, Synchronization};
 use roml::value_expr::ValueExpr;
+use roml::LpAlgorithm;
 use roml_highs::HighsSession;
 
 // ── Test Helpers ───────────────────────────────────────────────────────────────
@@ -437,5 +438,386 @@ fn q5_status_infeasible_or_unbounded() {
         TerminationStatus::Unbounded,
         "Unbounded LP should map to Unbounded, got {:?}",
         result.termination
+    );
+}
+
+// ── Q5 follow-up: option negotiation end-to-end ──────────────────────────────
+
+/// Q5: Every `LpAlgorithm` request must be recorded faithfully in
+/// `effective_configuration.lp_algorithm` — no silent remapping.
+#[test]
+fn q5_lp_algorithm_variants_map_to_effective_config() {
+    let cases = [
+        (LpAlgorithm::Automatic, LpAlgorithm::Automatic),
+        (LpAlgorithm::DualSimplex, LpAlgorithm::DualSimplex),
+        (LpAlgorithm::Primal, LpAlgorithm::Primal),
+        (LpAlgorithm::Dual, LpAlgorithm::Dual),
+        (LpAlgorithm::Barrier, LpAlgorithm::Barrier),
+    ];
+
+    for (requested, expected) in cases {
+        let mut session = create_session();
+        let r0 = ModelRevision::ZERO;
+        session
+            .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+            .expect("Empty rebuild should succeed");
+
+        let result = session
+            .solve(&SolveRequest::new().with_lp_algorithm(requested))
+            .expect("Solve with lp_algorithm should succeed");
+        assert_eq!(
+            result.termination,
+            TerminationStatus::Optimal,
+            "{requested:?} solve should be Optimal"
+        );
+        assert_eq!(
+            result.effective_configuration.lp_algorithm,
+            Some(expected),
+            "requested {requested:?} must be reported faithfully, got {:?}",
+            result.effective_configuration.lp_algorithm
+        );
+    }
+}
+
+/// Q5: mip_rel_gap is applied and recorded.
+#[test]
+fn q5_mip_rel_gap_applied() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest::new().with_mip_rel_gap(0.1))
+        .expect("Solve with mip_rel_gap should succeed");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let cfg = result.effective_configuration;
+    assert!(
+        approx_eq(cfg.mip_rel_gap.unwrap_or(-1.0), 0.1, 1e-4),
+        "mip_rel_gap not recorded: {:?}",
+        cfg.mip_rel_gap
+    );
+}
+
+/// Q5: mip_abs_gap is applied and recorded as a ConfigAdjustment.
+#[test]
+fn q5_mip_abs_gap_recorded_as_adjustment() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest {
+            mip_abs_gap: Some(1e-4),
+            ..SolveRequest::new()
+        })
+        .expect("Solve with mip_abs_gap should succeed");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let cfg = result.effective_configuration;
+    assert!(
+        cfg.adjustments.iter().any(|a| a.key == "mip_abs_gap"),
+        "mip_abs_gap should be recorded as an adjustment, got {:?}",
+        cfg.adjustments
+    );
+}
+
+/// Q5: enable_output maps to the output_flag native option.
+#[test]
+fn q5_enable_output_flag_applied() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    for enabled in [true, false] {
+        let result = session
+            .solve(&SolveRequest {
+                enable_output: Some(enabled),
+                ..SolveRequest::new()
+            })
+            .expect("Solve with enable_output should succeed");
+        assert_eq!(result.termination, TerminationStatus::Optimal);
+        assert_eq!(
+            result.effective_configuration.enable_output,
+            Some(enabled),
+            "enable_output not recorded"
+        );
+    }
+}
+
+/// Q5: random_seed is applied and recorded as a ConfigAdjustment.
+#[test]
+fn q5_random_seed_recorded_as_adjustment() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest {
+            random_seed: Some(42),
+            ..SolveRequest::new()
+        })
+        .expect("Solve with random_seed should succeed");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let cfg = result.effective_configuration;
+    assert!(
+        cfg.adjustments.iter().any(|a| a.key == "random_seed"),
+        "random_seed should be recorded as an adjustment, got {:?}",
+        cfg.adjustments
+    );
+}
+
+/// Q5: an extra option whose KEY has an interior null byte is rejected (not
+/// a panic) and the solve still succeeds.
+#[test]
+fn q5_extra_option_null_byte_in_key_rejected() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest::new().with_option("bad\0key", "x"))
+        .expect("Solve must not fail on a null-byte option key");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    assert!(
+        result
+            .effective_configuration
+            .rejections
+            .iter()
+            .any(|r| r.key == "bad\0key" && r.reason.contains("null byte")),
+        "expected a null-byte rejection, got {:?}",
+        result.effective_configuration.rejections
+    );
+}
+
+/// Q5: an extra option whose VALUE has an interior null byte is rejected and
+/// the solve still succeeds.
+#[test]
+fn q5_extra_option_null_byte_in_value_rejected() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest::new().with_option("solver", "simplex\0foo"))
+        .expect("Solve must not fail on a null-byte option value");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    assert!(
+        result
+            .effective_configuration
+            .rejections
+            .iter()
+            .any(|r| r.key == "solver" && r.reason.contains("null byte")),
+        "expected a null-byte rejection, got {:?}",
+        result.effective_configuration.rejections
+    );
+}
+
+/// Q5: an option unknown to HiGHS fails both the string and option APIs and
+/// is recorded as a rejection naming both return codes.
+#[test]
+fn q5_extra_option_unknown_rejected_via_both_apis() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .expect("Empty rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest::new().with_option("definitely_not_a_highs_option", "x"))
+        .expect("Solve must not fail on an unknown option");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    assert!(
+        result
+            .effective_configuration
+            .rejections
+            .iter()
+            .any(|r| r.key == "definitely_not_a_highs_option" && r.reason.contains("string API")),
+        "expected a both-APIs rejection, got {:?}",
+        result.effective_configuration.rejections
+    );
+}
+
+// ── Q5 follow-up: interrupted-solve status mapping ───────────────────────────
+
+/// A sparse 12-binary-variable MIP that takes longer than 1µs to solve, so a
+/// 1µs time limit produces `TerminationStatus::TimeLimit` with an extracted
+/// (partial) solution.
+fn time_limit_mip_snapshot() -> ModelSnapshot {
+    let r0 = ModelRevision::ZERO;
+    let o = obj_id(0);
+    let mut variables = Vec::new();
+    let mut cells = Vec::new();
+    for i in 0..12 {
+        variables.push(VariableEntry {
+            id: var_id(i),
+            bounds: Bounds::BINARY,
+            var_type: VarType::Binary,
+            active: true,
+            semicontinuous_lower: None,
+        });
+        cells.push(CellEntry {
+            cell_key: (CoefficientTarget::Objective(o), var_id(i)),
+            value_expr: ValueExpr::constant(1.0),
+            evaluated_value: 1.0,
+            dependencies: vec![],
+        });
+    }
+    let mut constraints = Vec::new();
+    for k in 0..6 {
+        constraints.push(ConstraintEntry {
+            id: con_id(k),
+            bounds: ConstraintBounds::le(3.0),
+            active: true,
+        });
+        for i in 0..12 {
+            if (i + k) % 3 == 0 {
+                cells.push(CellEntry {
+                    cell_key: (CoefficientTarget::Constraint(con_id(k)), var_id(i)),
+                    value_expr: ValueExpr::constant(1.0),
+                    evaluated_value: 1.0,
+                    dependencies: vec![],
+                });
+            }
+        }
+    }
+    ModelSnapshot {
+        revision: r0,
+        variables,
+        constraints,
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells,
+    }
+}
+
+/// Q5: a time-limited MIP solve maps to `TimeLimit` and still yields an
+/// extracted solution with variable values.
+#[test]
+fn q5_status_time_limit_with_extracted_solution() {
+    let mut session = create_session();
+    session
+        .synchronize(Synchronization::Rebuild(time_limit_mip_snapshot()))
+        .expect("Rebuild should succeed");
+
+    let result = session
+        .solve(&SolveRequest::new().with_time_limit(1e-6))
+        .expect("Solve should succeed");
+    assert_eq!(
+        result.termination,
+        TerminationStatus::TimeLimit,
+        "expected TimeLimit, got {:?}",
+        result.termination
+    );
+    let sol = result
+        .solution
+        .expect("time-limited solve should still extract a solution");
+    assert!(
+        !sol.variable_values.is_empty(),
+        "expected extracted variable values at TimeLimit"
+    );
+}
+
+/// A 8-variable / 4-row LP that requires more than one simplex iteration, so
+/// `simplex_iteration_limit=1` produces `TerminationStatus::IterationLimit`.
+fn iteration_limit_lp_snapshot() -> ModelSnapshot {
+    let r0 = ModelRevision::ZERO;
+    let o = obj_id(0);
+    let mut variables = Vec::new();
+    let mut cells = Vec::new();
+    for i in 0..8 {
+        variables.push(VariableEntry {
+            id: var_id(i),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        });
+        cells.push(CellEntry {
+            cell_key: (CoefficientTarget::Objective(o), var_id(i)),
+            value_expr: ValueExpr::constant((i + 1) as f64),
+            evaluated_value: (i + 1) as f64,
+            dependencies: vec![],
+        });
+    }
+    let mut constraints = Vec::new();
+    for k in 0..4 {
+        constraints.push(ConstraintEntry {
+            id: con_id(k),
+            bounds: ConstraintBounds::le(10.0),
+            active: true,
+        });
+        for i in 0..8 {
+            // Varied (non-degenerate) coefficients so the LP genuinely needs
+            // several simplex pivots and cannot be presolved to trivial.
+            let coeff = ((i + 1) * (k + 1)) % 7 + 1;
+            cells.push(CellEntry {
+                cell_key: (CoefficientTarget::Constraint(con_id(k)), var_id(i)),
+                value_expr: ValueExpr::constant(coeff as f64),
+                evaluated_value: coeff as f64,
+                dependencies: vec![],
+            });
+        }
+    }
+    ModelSnapshot {
+        revision: r0,
+        variables,
+        constraints,
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells,
+    }
+}
+
+/// Q5: an iteration-limited simplex solve maps to `IterationLimit` and still
+/// yields an extracted solution.
+#[test]
+fn q5_status_iteration_limit_with_extracted_solution() {
+    let mut session = create_session();
+    session
+        .synchronize(Synchronization::Rebuild(iteration_limit_lp_snapshot()))
+        .expect("Rebuild should succeed");
+
+    let result = session
+        .solve(
+            &SolveRequest::new()
+                .with_option("simplex_iteration_limit", "1")
+                // Presolve would otherwise remove the problem; the iteration
+                // limit only fires when simplex actually runs.
+                .with_option("presolve", "off"),
+        )
+        .expect("Solve should succeed");
+    assert_eq!(
+        result.termination,
+        TerminationStatus::IterationLimit,
+        "expected IterationLimit, got {:?}",
+        result.termination
+    );
+    let sol = result
+        .solution
+        .expect("iteration-limited solve should still extract a solution");
+    assert!(
+        !sol.variable_values.is_empty(),
+        "expected extracted variable values at IterationLimit"
     );
 }

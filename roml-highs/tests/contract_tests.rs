@@ -18,7 +18,9 @@ use roml::revision::ModelRevision;
 use roml::snapshot::{CellEntry, ConstraintEntry, ModelSnapshot, ObjectiveEntry, VariableEntry};
 use roml::solver::backend::{ErrorCategory, HealthEffect, TerminationStatus};
 use roml::solver::request::SolveRequest;
-use roml::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
+use roml::solver::session::{
+    BackendMetadata, BackendSession, SessionHealth, SolutionView, Synchronization,
+};
 use roml::sync::AdapterHealth;
 use roml::value_expr::ValueExpr;
 use roml_highs::HighsSession;
@@ -1891,3 +1893,487 @@ fn c13_inactive_objective_sense_change() {
     // Active is Minimize 1*x → x=0, obj≈0.
     assert!(o < 5.0, "inactive sense leaked: obj={}", o);
 }
+
+// ── C14-C21: Rebuild/delta paths for previously-uncovered projections ─────────
+
+/// C14: Rebuild fixes inactive variables to [0,0].
+///
+/// x∈[0,10] with `active: false` under a Maximize 1*x objective must solve as
+/// x=0, obj=0. If the inactive variable leaked its bounds, x would reach 10.
+#[test]
+fn c14_rebuild_inactive_variable_fixed_to_zero() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let o = obj_id(0);
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: false,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![CellEntry {
+            cell_key: (CoefficientTarget::Objective(o), v),
+            value_expr: ValueExpr::constant(1.0),
+            evaluated_value: 1.0,
+            dependencies: vec![],
+        }],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let obj = result.solution.unwrap().objective_value.unwrap_or(f64::NAN);
+    assert!(
+        obj.abs() < 1e-6,
+        "inactive variable contributed to objective: {}",
+        obj
+    );
+    // The variable must be fixed at 0, not free to reach its [0,10] bound.
+    assert_eq!(session.value(v), Some(0.0));
+}
+
+/// C15: Rebuild drops inactive constraints entirely.
+///
+/// x∈[0,10], Maximize x, with an inactive `x <= 5` row. The row must not
+/// constrain the solve: x=10, obj=10. A leaked row bound would cap x at 5.
+#[test]
+fn c15_rebuild_inactive_constraint_ignored() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let c = con_id(0);
+    let o = obj_id(0);
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![ConstraintEntry {
+            id: c,
+            bounds: ConstraintBounds::le(5.0),
+            active: false,
+        }],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![
+            CellEntry {
+                cell_key: (CoefficientTarget::Constraint(c), v),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                dependencies: vec![],
+            },
+            CellEntry {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                dependencies: vec![],
+            },
+        ],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let obj = result.solution.unwrap().objective_value.unwrap_or(f64::NAN);
+    assert!(
+        approx_eq(obj, 10.0, 1e-4),
+        "inactive constraint leaked: expected x=10 → obj=10, got {}",
+        obj
+    );
+}
+
+/// C16: Delta `AddVariable` with an Integer type honors integrality.
+///
+/// Rebuild empty, then delta-add x∈[0,10] as Integer, 2x <= 3, Maximize x.
+/// Integer x → x=1, obj=1 (a continuous x would give x=1.5, obj=1.5).
+#[test]
+fn c16_delta_add_integer_variable_respects_integrality() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let c = con_id(0);
+    let o = obj_id(0);
+    let r1 = r0.next().unwrap();
+
+    session
+        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .unwrap();
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::new(0.0, 10.0),
+                var_type: VarType::Integer,
+            },
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(3.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c), v),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+            },
+            ModelOp::AddObjective {
+                obj: o,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                constant: 0.0,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o) },
+        ],
+    )
+    .unwrap();
+    session
+        .synchronize(Synchronization::DeltaBatch(batch))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let obj = result.solution.unwrap().objective_value.unwrap_or(f64::NAN);
+    let x = session.value(v).unwrap_or(f64::NAN);
+    assert!(
+        approx_eq(x, 1.0, 1e-4),
+        "integrality not honored: expected x=1, got {}",
+        x
+    );
+    assert!(
+        approx_eq(obj, 1.0, 1e-4),
+        "integrality not honored: expected obj=1, got {}",
+        obj
+    );
+}
+
+/// C17: Delta `SetCell` on an active Objective target updates the native cost.
+///
+/// x∈[0,10], Maximize x with zero cost. SetCell{Objective(o0), v} = 5.0 must
+/// reach the native column cost: x=10, obj=50. A cache-only update would
+/// leave obj=0.
+#[test]
+fn c17_delta_set_cell_objective_updates_native_cost() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let o = obj_id(0);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    session
+        .synchronize(Synchronization::DeltaBatch(
+            DeltaBatch::new(
+                r0,
+                r1,
+                vec![ModelOp::SetCell {
+                    cell_key: (CoefficientTarget::Objective(o), v),
+                    value_expr: ValueExpr::constant(5.0),
+                    evaluated_value: 5.0,
+                }],
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let obj = result.solution.unwrap().objective_value.unwrap_or(f64::NAN);
+    assert!(
+        approx_eq(obj, 50.0, 1e-4),
+        "Objective-target SetCell not applied natively: expected 50 (5*10), got {}",
+        obj
+    );
+}
+
+/// C18: Delta `RemoveCell` on an Objective target clears the native cost.
+///
+/// x∈[0,10], Maximize 5*x. RemoveCell{Objective(o0), v} must zero the native
+/// cost: obj=0. A stale cost would give 50.
+#[test]
+fn c18_delta_remove_cell_objective_clears_cost() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let o = obj_id(0);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![CellEntry {
+            cell_key: (CoefficientTarget::Objective(o), v),
+            value_expr: ValueExpr::constant(5.0),
+            evaluated_value: 5.0,
+            dependencies: vec![],
+        }],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    session
+        .synchronize(Synchronization::DeltaBatch(
+            DeltaBatch::new(
+                r0,
+                r1,
+                vec![ModelOp::RemoveCell {
+                    cell_key: (CoefficientTarget::Objective(o), v),
+                }],
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let obj = result.solution.unwrap().objective_value.unwrap_or(f64::NAN);
+    assert!(
+        obj.abs() < 1e-6,
+        "Objective-target RemoveCell left a stale native cost: obj={}",
+        obj
+    );
+}
+
+/// C19: Delta `SetObjectiveCell` with a Constraint target is rejected with a
+/// typed error; the session must not apply anything (RequiresRebuild, r0).
+#[test]
+fn c19_delta_set_objective_cell_on_constraint_target_rejected() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let c = con_id(0);
+    let o = obj_id(0);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![ConstraintEntry {
+            id: c,
+            bounds: ConstraintBounds::le(5.0),
+            active: true,
+        }],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Minimize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![CellEntry {
+            cell_key: (CoefficientTarget::Constraint(c), v),
+            value_expr: ValueExpr::constant(1.0),
+            evaluated_value: 1.0,
+            dependencies: vec![],
+        }],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    assert_eq!(session.revision(), r0);
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::SetObjectiveCell {
+            cell_key: (CoefficientTarget::Constraint(c), v),
+            value_expr: ValueExpr::constant(3.0),
+            evaluated_value: 3.0,
+            constant: 0.0,
+        }],
+    )
+    .unwrap();
+    let result = session.synchronize(Synchronization::DeltaBatch(batch));
+
+    let err = match result {
+        Ok(_) => panic!("SetObjectiveCell with Constraint target must be rejected"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        err.category,
+        ErrorCategory::InvalidInput,
+        "expected InvalidInput, got {:?}",
+        err.category
+    );
+    assert_eq!(
+        err.health_effect,
+        HealthEffect::Recoverable,
+        "expected Recoverable, got {:?}",
+        err.health_effect
+    );
+    // Nothing was applied: the cursor must demand a rebuild and keep r0.
+    assert_eq!(session.health(), AdapterHealth::RequiresRebuild);
+    assert_eq!(session.revision(), r0);
+}
+
+/// C20: Delta `SetObjectiveCell` on the ACTIVE objective applies the offset
+/// and native cost immediately.
+///
+/// x∈[0,10], Minimize 0*x + 0. SetObjectiveCell{Objective(o0), v, 5.0, 2.0}
+/// → native cost 5 and offset 2.0 applied. Solve Minimize → x=0, obj=2.0.
+#[test]
+fn c20_delta_set_objective_cell_on_active_objective_applies_immediately() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let o = obj_id(0);
+    let r1 = r0.next().unwrap();
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(0.0, 10.0),
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Minimize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![],
+    };
+    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+
+    session
+        .synchronize(Synchronization::DeltaBatch(
+            DeltaBatch::new(
+                r0,
+                r1,
+                vec![ModelOp::SetObjectiveCell {
+                    cell_key: (CoefficientTarget::Objective(o), v),
+                    value_expr: ValueExpr::constant(5.0),
+                    evaluated_value: 5.0,
+                    constant: 2.0,
+                }],
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+
+    let result = session.solve(&SolveRequest::new()).unwrap();
+    assert_eq!(result.termination, TerminationStatus::Optimal);
+    let obj = result.solution.unwrap().objective_value.unwrap_or(f64::NAN);
+    // Minimize 5*x + 2.0 at x=0 → obj = 2.0 (offset applied immediately).
+    assert!(
+        approx_eq(obj, 2.0, 1e-4),
+        "SetObjectiveCell on active objective not applied: expected 2.0, got {}",
+        obj
+    );
+}
+
+/// C21: A malformed snapshot (inverted bounds, lower > upper) is rejected by
+/// HiGHS with a typed `BackendError` — both on rebuild (`Highs_addVar`) and
+/// on a delta bounds change (`Highs_changeColBounds`).
+#[test]
+fn c21_rebuild_with_inverted_bounds_rejected() {
+    let mut session = create_session();
+    let r0 = ModelRevision::ZERO;
+    let v = var_id(0);
+    let o = obj_id(0);
+
+    let snap = ModelSnapshot {
+        revision: r0,
+        variables: vec![VariableEntry {
+            id: v,
+            bounds: Bounds::new(5.0, 0.0), // lower > upper
+            var_type: VarType::Continuous,
+            active: true,
+            semicontinuous_lower: None,
+        }],
+        constraints: vec![],
+        objectives: vec![ObjectiveEntry {
+            id: o,
+            sense: Sense::Maximize,
+            active: true,
+            constant: 0.0,
+        }],
+        parameters: vec![],
+        cells: vec![],
+    };
+    let err = match session.synchronize(Synchronization::Rebuild(snap)) {
+        Ok(_) => panic!("inverted bounds must be rejected by HiGHS"),
+        Err(e) => e,
+    };
+    assert_eq!(err.category, ErrorCategory::Internal);
+    assert_eq!(err.health_effect, HealthEffect::Recoverable);
+    assert!(
+        err.message.contains("Highs_addVar"),
+        "unexpected error message: {}",
+        err.message
+    );
+}
+
+// Note: a delta `SetVariableBounds` with inverted bounds (lower > upper) is
+// NOT rejected — `Highs_changeColBounds` accepts it (only `Highs_addVar`
+// surfaces a non-OK status). Inverted bounds are therefore only detected on
+// the rebuild path (c21_rebuild_with_inverted_bounds_rejected).

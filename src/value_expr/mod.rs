@@ -559,4 +559,154 @@ mod tests {
         let result = expr.eval(|id| if id == p1 { 10.0 } else { 2.0 });
         assert_eq!(result, 5.0);
     }
+
+    #[test]
+    fn subtraction_family_eval() {
+        let p1 = make_param(0);
+        let p2 = make_param(1);
+        let val = |id: ParamId| -> f64 {
+            if id == p1 {
+                3.0
+            } else if id == p2 {
+                5.0
+            } else {
+                0.0
+            }
+        };
+
+        // ValueExpr - ValueExpr
+        let a = ValueExpr::constant(10.0) - ValueExpr::constant(3.0);
+        assert_eq!(a.eval(|_| 0.0), 7.0);
+        assert_eq!(
+            a,
+            ValueExpr::sub(ValueExpr::constant(10.0), ValueExpr::constant(3.0))
+        );
+        // ValueExpr - f64
+        let b = ValueExpr::param(p1) - 2.0;
+        assert_eq!(b.eval(val), 1.0);
+        assert_eq!(
+            b,
+            ValueExpr::sub(ValueExpr::param(p1), ValueExpr::constant(2.0))
+        );
+        // f64 - ValueExpr
+        let c = 2.0 - ValueExpr::constant(1.0);
+        assert_eq!(c.eval(|_| 0.0), 1.0);
+        assert_eq!(
+            c,
+            ValueExpr::sub(ValueExpr::constant(2.0), ValueExpr::constant(1.0))
+        );
+        // ParamId - ParamId
+        let d = p1 - p2;
+        assert_eq!(d.eval(val), -2.0);
+        assert_eq!(
+            d,
+            ValueExpr::sub(ValueExpr::param(p1), ValueExpr::param(p2))
+        );
+        // ParamId - f64
+        assert_eq!((p1 - 2.0).eval(val), 1.0);
+        // f64 - ParamId
+        assert_eq!((10.0 - p1).eval(val), 7.0);
+        // ValueExpr - ParamId
+        assert_eq!((ValueExpr::param(p1) - p2).eval(val), -2.0);
+        // ParamId - ValueExpr
+        assert_eq!((p1 - ValueExpr::param(p2)).eval(val), -2.0);
+    }
+
+    #[test]
+    fn scalar_division_and_f64_left() {
+        let p1 = make_param(0);
+        let p2 = make_param(1);
+        let val = |id: ParamId| -> f64 {
+            if id == p1 {
+                10.0
+            } else if id == p2 {
+                2.0
+            } else {
+                0.0
+            }
+        };
+
+        // ValueExpr / f64
+        let a = ValueExpr::param(p1) / 2.0;
+        assert_eq!(a.eval(val), 5.0);
+        assert_eq!(
+            a,
+            ValueExpr::div(ValueExpr::param(p1), ValueExpr::constant(2.0))
+        );
+        // f64 / ValueExpr
+        let b = 8.0 / ValueExpr::constant(2.0);
+        assert_eq!(b.eval(|_| 0.0), 4.0);
+        assert_eq!(
+            b,
+            ValueExpr::div(ValueExpr::constant(8.0), ValueExpr::constant(2.0))
+        );
+        assert_eq!((10.0 / ValueExpr::param(p1)).eval(val), 1.0);
+        // ParamId / f64
+        assert_eq!((p1 / 2.0).eval(val), 5.0);
+        // f64 / ParamId
+        assert_eq!((20.0 / p1).eval(val), 2.0);
+        // ParamId / ParamId
+        let f = p1 / p2;
+        assert_eq!(f.eval(val), 5.0);
+        assert_eq!(
+            f,
+            ValueExpr::div(ValueExpr::param(p1), ValueExpr::param(p2))
+        );
+        // ValueExpr / ParamId
+        assert_eq!((ValueExpr::param(p1) / p2).eval(val), 5.0);
+        // ParamId / ValueExpr
+        assert_eq!((p1 / ValueExpr::param(p2)).eval(val), 5.0);
+    }
+
+    #[test]
+    fn neg_and_f64_left_add() {
+        let p1 = make_param(0);
+        let val = |id: ParamId| -> f64 {
+            if id == p1 {
+                5.0
+            } else {
+                0.0
+            }
+        };
+
+        // -ValueExpr (only -ParamId was covered before)
+        assert_eq!((-ValueExpr::constant(5.0)).eval(|_| 0.0), -5.0);
+        let b = -ValueExpr::param(p1);
+        assert_eq!(b.eval(val), -5.0);
+        assert_eq!(b, ValueExpr::neg(ValueExpr::param(p1)));
+        // f64 + ParamId
+        assert_eq!((2.0 + p1).eval(val), 7.0);
+        // f64 + ValueExpr
+        assert_eq!((2.0 + ValueExpr::constant(3.0)).eval(|_| 0.0), 5.0);
+        // ParamId * f64 and f64 * ParamId
+        assert_eq!((p1 * 2.0).eval(val), 10.0);
+        assert_eq!((2.0 * p1).eval(val), 10.0);
+    }
+
+    #[test]
+    fn has_dependencies_and_as_constant() {
+        let p1 = make_param(0);
+        let p2 = make_param(1);
+
+        // Non-constant arms of has_dependencies.
+        assert!(ValueExpr::param(p1).has_dependencies());
+        assert!((ValueExpr::param(p1) + ValueExpr::constant(1.0)).has_dependencies());
+        assert!(ValueExpr::neg(ValueExpr::param(p1)).has_dependencies());
+        assert!((ValueExpr::param(p1) / ValueExpr::param(p2)).has_dependencies());
+        assert!(!ValueExpr::constant(1.0).has_dependencies());
+
+        // as_constant: Some for constants, None for parameters and composite.
+        assert_eq!(ValueExpr::constant(5.0).as_constant(), Some(5.0));
+        assert_eq!(ValueExpr::param(p1).as_constant(), None);
+        assert_eq!(
+            ValueExpr::mul(ValueExpr::constant(2.0), ValueExpr::constant(3.0)).as_constant(),
+            None
+        );
+
+        // Neg arm of dependency collection.
+        assert_eq!(ValueExpr::neg(ValueExpr::param(p1)).dependencies().len(), 1);
+        assert!(ValueExpr::neg(ValueExpr::param(p1))
+            .dependencies()
+            .contains(&p1));
+    }
 }

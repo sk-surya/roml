@@ -295,6 +295,40 @@ fn cleared_callback_handler_is_not_invoked() {
     );
 }
 
+/// A handler that panics whenever invoked. The trampoline must catch the
+/// panic at the FFI boundary instead of unwinding through C.
+struct PanicHandler;
+
+impl CallbackHandler for PanicHandler {
+    fn on_candidate(&mut self, _data: &CallbackData) -> CallbackAction {
+        panic!("panic in callback handler")
+    }
+}
+
+/// A panicking callback handler must not abort the solve or unwind across the
+/// C boundary — the trampoline catches the panic and the solve completes.
+#[test]
+fn panicking_callback_handler_does_not_abort_solve() {
+    let mut session = create_session();
+    let snap = binary_mip_snapshot();
+    session
+        .synchronize(Synchronization::Rebuild(snap))
+        .expect("Rebuild should succeed");
+
+    session
+        .set_callback_handler(Box::new(PanicHandler))
+        .expect("set_callback_handler should succeed");
+
+    let result = session
+        .solve(&SolveRequest::new())
+        .expect("solve must succeed even when the handler panics");
+    assert_eq!(
+        result.termination,
+        TerminationStatus::Optimal,
+        "MIP solve should still complete"
+    );
+}
+
 // ── 2. SolutionView accessors ────────────────────────────────────────────────
 
 /// After an optimal LP solve, `SolutionView::value`/`dual`/`reduced_cost`/
