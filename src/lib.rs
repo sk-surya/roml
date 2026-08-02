@@ -143,6 +143,20 @@ macro_rules! objective {
 /// constrain!(model, x + y <= 4.0)?;
 /// constrain!(model, between: 0.0, x, 3.0)?;
 /// ```
+///
+/// **Deprecated (P23):** this macro is effectful (D1) — it mutates the model
+/// directly. Use the canonical method-first mutation instead:
+///
+/// ```ignore
+/// model.add_constraint(constraint!(x + y <= 4.0))?;
+/// model.add_constraint((x + y).le(4.0))?;
+/// ```
+///
+/// See `MIGRATION.md` → "Constraints".
+#[deprecated(
+    since = "0.1.0",
+    note = "effectful; use `model.add_constraint(constraint!(...))` or `model.add_constraint((expr).le/ge/eq/between(...))`; see MIGRATION.md -> Constraints"
+)]
 #[macro_export]
 macro_rules! constrain {
 	($model:expr, between: $lower:expr, $expr:expr, $upper:expr) => {
@@ -165,6 +179,20 @@ macro_rules! constrain {
 /// let obj = set_objective!(model, maximize: x + 2.0 * y + 3.0)?;
 /// assert_eq!(model.objective_constant(obj), Some(3.0));
 /// ```
+///
+/// **Deprecated (P23):** this macro is effectful (D1) — it mutates the model
+/// directly. Use the canonical method-first mutations instead:
+///
+/// ```ignore
+/// model.maximize(x + 2.0 * y + 3.0)?;
+/// model.minimize(x + 2.0 * y + 3.0)?;
+/// ```
+///
+/// See `MIGRATION.md` → "Objectives".
+#[deprecated(
+    since = "0.1.0",
+    note = "effectful; use `model.maximize(expr)` / `model.minimize(expr)`; see MIGRATION.md -> Objectives"
+)]
 #[macro_export]
 macro_rules! set_objective {
 	($model:expr, minimize: $expr:expr) => {
