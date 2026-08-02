@@ -383,6 +383,22 @@ fn negotiate_options(
 ) -> Result<EffectiveConfig, BackendError> {
     let mut effective = EffectiveConfig::default();
 
+    // ── Reset to HiGHS defaults ─────────────────────────────────────────────
+    // HiGHS options persist on the native session between solves. A request
+    // is self-contained: every option the request can express is reset to its
+    // HiGHS default before the request's explicit values are applied, so a
+    // default solve after a configured solve_with does not silently retain
+    // the previous time limit, gaps, threads, output flag, random seed, or
+    // algorithm while metadata reports them unset.
+    set_option(raw, "time_limit", "1e20")?;
+    set_option(raw, "mip_rel_gap", "1e-4")?;
+    set_option(raw, "mip_abs_gap", "1e-6")?;
+    set_option(raw, "threads", "0")?;
+    set_option(raw, "output_flag", "true")?;
+    set_option(raw, "random_seed", "0")?;
+    set_option(raw, "solver", "choose")?;
+    set_option(raw, "simplex_strategy", "0")?;
+
     // ── lp_algorithm ────────────────────────────────────────────────────────
     if let Some(algo) = &request.lp_algorithm {
         match algo {
@@ -582,7 +598,13 @@ mod tests {
     #[test]
     fn negotiate_options_empty_request() {
         let request = SolveRequest::new();
-        let result = negotiate_options(std::ptr::null_mut(), &request);
+        // SAFETY: negotiation resets every known option to its HiGHS default
+        // before applying the request, so even an empty request touches the
+        // native session — a real (non-null) instance is required.
+        let raw = unsafe { Highs_create() };
+        assert!(!raw.is_null(), "HiGHS instance must be created");
+        let result = negotiate_options(raw, &request);
+        unsafe { Highs_destroy(raw) };
         assert!(result.is_ok());
         let config = result.unwrap();
         assert!(config.lp_algorithm.is_none());

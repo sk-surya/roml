@@ -70,6 +70,19 @@ impl SolveError {
         }
     }
 
+    /// Whether this error leaves the backend in a terminal state, in which
+    /// case retrying (e.g. a snapshot rebuild) is meaningless — the plan's
+    /// "terminal -> return without retry" branch (API-02.3).
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            SolveError::License(_) => true,
+            SolveError::Synchronization(e) | SolveError::Solve(e) => {
+                e.health_effect == HealthEffect::Terminal
+            }
+            _ => false,
+        }
+    }
+
     /// The error category of this failure (API-02.4).
     pub fn category(&self) -> Option<ErrorCategory> {
         match self {

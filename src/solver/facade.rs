@@ -91,12 +91,18 @@ pub fn normalize_result(
 /// 8. solve exactly once after successful synchronization;
 /// 9. normalize the result and attach [`SolveMetadata`].
 ///
-/// At most one automatic rebuild retry per solve attempt (API-02.3), and a
-/// prior solution is invalidated once the model is mutated so a stale result
-/// is never reported as current (API-01.5).
+/// At most one automatic rebuild retry per solve attempt (API-02.3), and
+/// terminal failures (including license errors) return immediately without a
+/// retry. Stale-result protection is structural (API-01.5): the only way to
+/// obtain a solution is [`solve`](SolverSession::solve)/
+/// [`solve_with`](SolverSession::solve_with),
+/// which always re-synchronize before solving, and an error path never
+/// surfaces a previously computed solution.
+///
+/// Public surface: `new`/`solve`/`solve_with` only — the approved interface
+/// (plan Task 3). The wrapped backend is deliberately not exposed.
 pub struct SolverSession<B> {
     backend: B,
-    last_solution: Option<Solution>,
 }
 
 impl<B> SolverSession<B>
@@ -105,10 +111,7 @@ where
 {
     /// Create a session wrapping a backend session.
     pub fn new(backend: B) -> Self {
-        Self {
-            backend,
-            last_solution: None,
-        }
+        Self { backend }
     }
 
     /// Solve the current model with default options.
@@ -141,17 +144,6 @@ where
             )));
         }
 
-        // Invalidate a prior solution if the model has been mutated since it
-        // was produced — this happens before synchronization so a failed sync
-        // cannot leave a stale solution as the session's current one.
-        if self
-            .last_solution
-            .as_ref()
-            .is_some_and(|prev| prev.metadata().model_revision != committed)
-        {
-            self.last_solution = None;
-        }
-
         let mut sync_mode = SynchronizationMode::NoChange;
 
         if health == AdapterHealth::RequiresRebuild {
@@ -162,6 +154,10 @@ where
             // 5. Ready and behind -> sequential delta batches.
             match self.apply_deltas(model, backend_rev) {
                 Ok(()) => sync_mode = SynchronizationMode::Delta,
+                // 3/7. Terminal failures (including license errors) return
+                // immediately with no retry; only recoverable/dirty sync
+                // failures get the one snapshot rebuild attempt (API-02.3).
+                Err(e) if e.is_terminal() => return Err(e),
                 Err(_) => {
                     // 7. Recoverable/dirty sync failure -> one rebuild attempt.
                     self.rebuild_from_snapshot(model)?;
@@ -208,25 +204,7 @@ where
             sync_mode,
         )?;
 
-        self.last_solution = Some(solution.clone());
         Ok(solution)
-    }
-
-    /// The solution produced by the most recent successful solve, if any.
-    ///
-    /// Invalidated once the model is mutated (API-01.5).
-    pub fn last_solution(&self) -> Option<&Solution> {
-        self.last_solution.as_ref()
-    }
-
-    /// Access the wrapped backend session.
-    pub fn backend(&self) -> &B {
-        &self.backend
-    }
-
-    /// Mutably access the wrapped backend session.
-    pub fn backend_mut(&mut self) -> &mut B {
-        &mut self.backend
     }
 
     fn rebuild_from_snapshot(&mut self, model: &Model) -> Result<(), SolveError> {

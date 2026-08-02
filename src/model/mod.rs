@@ -238,8 +238,22 @@ impl Model {
     }
 
     /// Add a new integer variable with the given bounds.
-    pub fn add_integer(&mut self, bounds: Bounds) -> VarId {
-        self.add_variable_internal(bounds, VarType::Integer, None)
+    ///
+    /// Fallible (D10, API-06.1/06.4): invalid or non-finite bounds are
+    /// rejected before any mutation — the compatibility wrapper for
+    /// `add_variable(integer().bounds(...))` (see Signature-collision
+    /// migration in the P20 disposition).
+    pub fn add_integer(&mut self, bounds: Bounds) -> Result<VarId, ModelError> {
+        if !bounds.is_valid() {
+            return Err(ModelError::InvalidBounds);
+        }
+        if !bounds.lower.is_finite() && bounds.lower != f64::NEG_INFINITY {
+            return Err(ModelError::NonFiniteValue("variable lower bound"));
+        }
+        if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
+            return Err(ModelError::NonFiniteValue("variable upper bound"));
+        }
+        Ok(self.add_variable_internal(bounds, VarType::Integer, None))
     }
 
     /// Remove a variable and all its coefficients.

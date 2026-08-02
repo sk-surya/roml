@@ -85,7 +85,7 @@ fn add_multiple_variables() {
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_binary();
-    let z = model.add_integer(Bounds::new(-5.0, 50.0));
+    let z = model.add_integer(Bounds::new(-5.0, 50.0)).unwrap();
     let r0 = model.commit().unwrap();
 
     let ops = &nth_batch(&model, 0).operations;

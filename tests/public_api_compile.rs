@@ -49,7 +49,7 @@ fn current_prelude_surface_compiles() {
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_binary();
-    let z = model.add_integer(Bounds::new(0.0, 10.0));
+    let z = model.add_integer(Bounds::new(0.0, 10.0)).unwrap();
     let price = model.add_parameter(1.0).unwrap();
     assert_eq!(model.parameter_value(price), Some(1.0));
 
