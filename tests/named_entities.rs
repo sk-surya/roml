@@ -171,3 +171,88 @@ fn names_survive_clone_and_ordinary_mutation() {
         Some("profit")
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Task 6 — Model diagnostics
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `pprint` prefers names for variables, parameters, constraints, objectives,
+/// and their expression terms, falling back to stable debug handles (x[N]) for
+/// unnamed entities (D6, API-05.5).
+#[test]
+fn pprint_prefers_names() {
+    let mut model = Model::named("production");
+    let x = model.add_variable(continuous().named("units")).expect("x");
+    let y = model.add_variable(continuous()).expect("y");
+    let p = model
+        .add_parameter(parameter(2.0).named("rate"))
+        .expect("p");
+    let _con = model
+        .add_constraint((x + 2.0 * y).le(10.0).named("capacity"))
+        .expect("con");
+    let obj = model
+        .set_objective((3.0 * x + p * y).maximize().named("profit"))
+        .expect("obj");
+    assert_eq!(model.active_objective(), Some(obj));
+
+    let out = model.pprint();
+    // Entity names appear in the headers.
+    assert!(out.contains("\"units\""), "named variable header");
+    assert!(out.contains("\"rate\""), "named parameter header");
+    assert!(out.contains("\"capacity\""), "named constraint header");
+    assert!(out.contains("\"profit\""), "named objective header");
+
+    // Reconstructed expressions prefer the named variable and fall back to the
+    // stable debug handle for the unnamed one (term order is not guaranteed).
+    let con_line = out
+        .lines()
+        .find(|l| l.contains("capacity"))
+        .expect("constraint line");
+    assert!(
+        con_line.contains("units"),
+        "named variable in constraint expr"
+    );
+    assert!(
+        con_line.contains("x[1]"),
+        "unnamed variable debug fallback in constraint expr"
+    );
+
+    let obj_line = out
+        .lines()
+        .find(|l| l.contains("profit"))
+        .expect("objective line");
+    assert!(
+        obj_line.contains("units"),
+        "named variable in objective expr"
+    );
+    assert!(
+        obj_line.contains("x[1]"),
+        "unnamed variable debug fallback in objective expr"
+    );
+}
+
+/// Formatting must never panic when entities are removed/stale.
+#[test]
+fn pprint_never_panics_on_removed_entities() {
+    let mut model = Model::named("m");
+    let x = model.add_variable(continuous().named("x")).expect("x");
+    let y = model.add_variable(continuous().named("y")).expect("y");
+    let con = model
+        .add_constraint((x + y).le(10.0).named("cap"))
+        .expect("con");
+    model.maximize(x).expect("obj");
+    assert!(model.pprint().contains("\"cap\""));
+
+    // Removing a constraint must not break formatting.
+    model.remove_constraint(con).expect("remove con");
+    let out = model.pprint();
+    assert!(
+        !out.contains("cap"),
+        "removed constraint no longer rendered"
+    );
+
+    // Removing a variable (cascading to its cells) must not break formatting.
+    model.remove_variable(x).expect("remove x");
+    let out = model.pprint();
+    assert!(out.contains("\"y\""), "remaining named variable rendered");
+}
