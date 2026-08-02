@@ -5,6 +5,7 @@
 //! - Objective value(s)
 //! - Solver status
 //! - Optional duals and reduced costs
+//! - Solve metadata (backend, revision, effective configuration)
 //!
 //! # Design
 //!
@@ -14,13 +15,17 @@
 
 use std::collections::HashMap;
 
+pub mod metadata;
+
 use crate::id::{ConId, ObjId, VarId};
-use crate::solver::SolverStatus;
+use crate::solver::SolveStatus;
+
+pub use metadata::{SolveMetadata, SynchronizationMode};
 
 /// A solution to the optimization problem.
 ///
-/// Contains variable values, objective value, and solver status.
-/// Solutions are immutable once created.
+/// Contains variable values, objective value, solver status, and solve
+/// metadata. Solutions are immutable once created.
 #[derive(Clone, Debug)]
 pub struct Solution {
     /// Variable values.
@@ -30,16 +35,18 @@ pub struct Solution {
     /// Which objective this solution is solution for.
     objective_id: Option<ObjId>,
     /// Solver status
-    status: SolverStatus,
+    status: SolveStatus,
     /// Dual values for constraints (if available).
     duals: Option<HashMap<ConId, f64>>,
     /// Reduced costs for variables (if available).
     reduced_costs: Option<HashMap<VarId, f64>>,
+    /// Metadata describing how this solution was produced.
+    metadata: SolveMetadata,
 }
 
 impl Solution {
     /// Create a new solution with the given status.
-    pub fn new(status: SolverStatus) -> Self {
+    pub fn new(status: SolveStatus) -> Self {
         Self {
             values: HashMap::new(),
             objective_value: None,
@@ -47,11 +54,12 @@ impl Solution {
             status,
             duals: None,
             reduced_costs: None,
+            metadata: SolveMetadata::default(),
         }
     }
 
     /// Create a solution from variable values.
-    pub fn from_values(values: HashMap<VarId, f64>, status: SolverStatus) -> Self {
+    pub fn from_values(values: HashMap<VarId, f64>, status: SolveStatus) -> Self {
         Self {
             values,
             objective_value: None,
@@ -59,17 +67,29 @@ impl Solution {
             status,
             duals: None,
             reduced_costs: None,
+            metadata: SolveMetadata::default(),
         }
     }
 
     /// Get the solver status.
-    pub fn status(&self) -> SolverStatus {
+    pub fn status(&self) -> SolveStatus {
         self.status
+    }
+
+    /// Get the metadata describing how this solution was produced.
+    pub fn metadata(&self) -> &SolveMetadata {
+        &self.metadata
+    }
+
+    /// Set the metadata on a solution (builder style).
+    pub fn with_metadata(mut self, metadata: SolveMetadata) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Check if the solution is optimal.
     pub fn is_optimal(&self) -> bool {
-        self.status == SolverStatus::Optimal
+        self.status == SolveStatus::Optimal
     }
 
     /// Check if the solution has variable values.
@@ -146,9 +166,10 @@ pub struct SolutionBuilder {
     values: HashMap<VarId, f64>,
     objective_value: Option<f64>,
     objective_id: Option<ObjId>,
-    status: SolverStatus,
+    status: SolveStatus,
     duals: Option<HashMap<ConId, f64>>,
     reduced_costs: Option<HashMap<VarId, f64>>,
+    metadata: SolveMetadata,
 }
 
 impl SolutionBuilder {
@@ -158,7 +179,7 @@ impl SolutionBuilder {
     }
 
     /// Set the solver status.
-    pub fn status(mut self, status: SolverStatus) -> Self {
+    pub fn status(mut self, status: SolveStatus) -> Self {
         self.status = status;
         self
     }
@@ -215,6 +236,12 @@ impl SolutionBuilder {
         self
     }
 
+    /// Set the solve metadata.
+    pub fn metadata(mut self, metadata: SolveMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Build the solution.
     pub fn build(self) -> Solution {
         Solution {
@@ -224,6 +251,7 @@ impl SolutionBuilder {
             status: self.status,
             duals: self.duals,
             reduced_costs: self.reduced_costs,
+            metadata: self.metadata,
         }
     }
 }
@@ -299,6 +327,7 @@ impl SolutionStore {
 mod tests {
     use super::*;
     use crate::id::Generation;
+    use crate::SolverStatus;
 
     fn make_var(index: u32) -> VarId {
         VarId::new(index, Generation::new())
