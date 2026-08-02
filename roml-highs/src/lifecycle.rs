@@ -203,19 +203,13 @@ impl HighsSession {
 
     /// Access the raw HiGHS instance pointer for internal use.
     ///
-    /// This is a `pub(crate)` accessor used by projection, session,
-    /// and solution modules to call HiGHS C API functions.
+    /// `pub(crate)` accessor used by the session's unit tests to exercise
+    /// `set_option` against a real handle. `#[allow(dead_code)]` because
+    /// non-test builds compile the lib without this accessor's callers.
     #[allow(dead_code)]
     #[inline]
     pub(crate) fn raw_ptr(&self) -> *mut c_void {
         self.raw
-    }
-
-    /// The cached infinity value from `Highs_getInfinity`.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn infinity(&self) -> f64 {
-        self.inf
     }
 }
 

@@ -53,8 +53,6 @@ pub(crate) struct CallbackState {
     /// Number of columns in the current model (for solution mapping).
     #[allow(dead_code)]
     pub num_cols: i32,
-    /// Flag set when user requests interruption.
-    pub user_interrupt: bool,
 }
 
 // ── Callback Trampoline ──────────────────────────────────────────────────────
@@ -69,7 +67,7 @@ pub(crate) struct CallbackState {
 /// | Constant | Value | Disposition |
 /// |----------|-------|-------------|
 /// | `kHighsCallbackMipLogging` | 5 | Informational: log message |
-/// | `kHighsCallbackMipInterrupt` | 6 | Interrupt: set `data_in.user_interrupt` |
+/// | `kHighsCallbackMipInterrupt` | 6 | Interrupt-request check: invoke handler; native interrupt channel unused (deferred) |
 /// | `kHighsCallbackMipSolution` | 3 | Informational: candidate solution |
 /// | `kHighsCallbackMipImprovingSolution` | 4 | Informational: incumbent |
 /// | `kHighsCallbackMipGetCutPool` | 7 | Read-only diagnostic: no-op |
@@ -106,15 +104,15 @@ pub(crate) unsafe extern "C" fn callback_trampoline(
         }
 
         kHighsCallbackMipInterrupt => {
-            // Check the handler for user interruption. Set
-            // `data_in.user_interrupt` to 1 to signal HiGHS to stop.
+            // HiGHS interrupt-request check. The handler is invoked so it can
+            // observe the current state. The native `data_in.user_interrupt`
+            // channel is intentionally left untouched: nothing in this adapter
+            // requests interruption (CallbackAction has no Interrupt variant,
+            // and the feature is deferred post-v0.1 per AD-4).
+            let _ = data_in;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let cb_data = build_callback_data(data_out, state);
                 let _action = state.handler.on_candidate(&cb_data);
-
-                if state.user_interrupt && !data_in.is_null() {
-                    (*data_in).user_interrupt = 1;
-                }
             }));
 
             if let Err(e) = result {
@@ -194,7 +192,6 @@ pub(crate) fn register_callback(
         row_map,
         highs_ptr: raw,
         num_cols,
-        user_interrupt: false,
     }));
 
     // SAFETY: `state` is a valid pointer to a CallbackState we just created.
@@ -340,7 +337,6 @@ mod tests {
             row_map: std::ptr::null(),
             highs_ptr: std::ptr::null_mut(),
             num_cols: 0,
-            user_interrupt: false,
         };
 
         let data = unsafe { build_callback_data(std::ptr::null(), &state) };
@@ -348,5 +344,101 @@ mod tests {
         assert!(data.primal_bound.is_infinite());
         assert!(data.dual_bound.is_infinite());
         assert!(data.mip_gap.is_infinite());
+    }
+
+    /// A handler that counts invocations.
+    struct CountingHandler(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl CallbackHandler for CountingHandler {
+        fn on_candidate(&mut self, _data: &CallbackData) -> CallbackAction {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            CallbackAction::Accept
+        }
+    }
+
+    /// Every supported callback type must dispatch through the trampoline
+    /// without panicking or unwinding across the C boundary, invoking the
+    /// handler exactly for the event types that carry a candidate solution
+    /// (interrupt-check and solution). The native interrupt channel must stay
+    /// untouched since interruption is deferred.
+    #[test]
+    fn trampoline_dispatches_supported_callback_types() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut state = CallbackState {
+            handler: Box::new(CountingHandler(calls.clone())),
+            col_map: std::ptr::null(),
+            row_map: std::ptr::null(),
+            highs_ptr: std::ptr::null_mut(),
+            num_cols: 0,
+        };
+        let state_ptr: *mut c_void = &mut state as *mut CallbackState as *mut c_void;
+
+        let mut data_in = HighsCallbackDataIn {
+            user_interrupt: 0,
+            user_solution: std::ptr::null_mut(),
+            cbdata: std::ptr::null_mut(),
+            user_has_solution: 0,
+            user_solution_size: 0,
+        };
+
+        // SAFETY: test-only trampoline calls with a valid CallbackState and
+        // no model mutation; the interrupt call passes a real data_in.
+        unsafe {
+            callback_trampoline(
+                kHighsCallbackMipInterrupt,
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut data_in,
+                state_ptr,
+            );
+            callback_trampoline(
+                kHighsCallbackMipSolution,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                state_ptr,
+            );
+            callback_trampoline(
+                kHighsCallbackMipLogging,
+                c"hello".as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                state_ptr,
+            );
+            callback_trampoline(
+                kHighsCallbackMipImprovingSolution,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                state_ptr,
+            );
+            callback_trampoline(
+                kHighsCallbackMipGetCutPool,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                state_ptr,
+            );
+            callback_trampoline(
+                9999,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                state_ptr,
+            );
+        }
+
+        // Interrupt-check and solution events invoke the handler; logging,
+        // improving-incumbent, cut-pool, and unknown events do not.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "only interrupt-check and solution events should invoke the handler"
+        );
+        // The deferred interruption channel is never written.
+        assert_eq!(data_in.user_interrupt, 0);
     }
 }
