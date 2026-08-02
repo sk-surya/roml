@@ -1362,7 +1362,25 @@ fn format_bound(v: f64) -> String {
     }
 }
 
-fn format_lin_expr(expr: &LinExpr) -> String {
+/// Render a variable's diagnostic label: its name when present, else a stable
+/// `x[N]` debug handle (D6: names are diagnostics with an index fallback).
+fn var_label(model: &Model, var: VarId) -> String {
+    model
+        .variables
+        .get(var)
+        .and_then(|d| d.name.clone())
+        .unwrap_or_else(|| format!("x[{}]", var.index()))
+}
+
+/// Render an entity header label, e.g. `c[0] "capacity"` (named) or `c[0]`.
+fn entity_label(prefix: &str, index: u32, name: &Option<String>) -> String {
+    match name {
+        Some(name) => format!("{prefix}[{index}] \"{name}\""),
+        None => format!("{prefix}[{index}]"),
+    }
+}
+
+fn format_lin_expr(model: &Model, expr: &LinExpr) -> String {
     let terms = expr.terms();
     let constant = expr.get_constant();
 
@@ -1378,28 +1396,29 @@ fn format_lin_expr(expr: &LinExpr) -> String {
         };
         let abs_coeff = coeff.abs();
         let negative = coeff < 0.0;
+        let label = var_label(model, term.var);
 
         if i == 0 {
             if (coeff - 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("x[{}]", term.var.index()));
+                out.push_str(&label);
             } else if (coeff + 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("-x[{}]", term.var.index()));
+                out.push_str(&format!("-{label}"));
             } else {
-                out.push_str(&format!("{coeff}*x[{}]", term.var.index()));
+                out.push_str(&format!("{coeff}*{label}"));
             }
         } else if negative {
             out.push_str(" - ");
             if (abs_coeff - 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("x[{}]", term.var.index()));
+                out.push_str(&label);
             } else {
-                out.push_str(&format!("{abs_coeff}*x[{}]", term.var.index()));
+                out.push_str(&format!("{abs_coeff}*{label}"));
             }
         } else {
             out.push_str(" + ");
             if (abs_coeff - 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("x[{}]", term.var.index()));
+                out.push_str(&label);
             } else {
-                out.push_str(&format!("{abs_coeff}*x[{}]", term.var.index()));
+                out.push_str(&format!("{abs_coeff}*{label}"));
             }
         }
     }
@@ -1448,12 +1467,8 @@ impl Model {
                 VarType::Binary => "Binary",
             };
             let inactive = if !data.active { " [inactive]" } else { "" };
-            writeln!(
-                out,
-                "    x[{}]: [{lb}, {ub}] {type_s}{inactive}",
-                id.index()
-            )
-            .unwrap();
+            let label = entity_label("x", id.index(), &data.name);
+            writeln!(out, "    {label}: [{lb}, {ub}] {type_s}{inactive}").unwrap();
         }
 
         // Parameters
@@ -1461,7 +1476,8 @@ impl Model {
         let mut params: Vec<_> = self.parameters.iter().collect();
         params.sort_by_key(|(id, _)| id.index());
         for (id, data) in &params {
-            writeln!(out, "    p[{}]: {}", id.index(), data.value).unwrap();
+            let label = entity_label("p", id.index(), &data.name);
+            writeln!(out, "    {label}: {}", data.value).unwrap();
         }
 
         // Constraints
@@ -1474,14 +1490,10 @@ impl Model {
             let inactive = if !data.active { " [inactive]" } else { "" };
             let expr_s = self
                 .constraint_expression(*id)
-                .map(|e| format_lin_expr(&e))
+                .map(|e| format_lin_expr(self, &e))
                 .unwrap_or_else(|_| "?".to_string());
-            writeln!(
-                out,
-                "    c[{}]: {lb} <= {expr_s} <= {ub}{inactive}",
-                id.index()
-            )
-            .unwrap();
+            let label = entity_label("c", id.index(), &data.name);
+            writeln!(out, "    {label}: {lb} <= {expr_s} <= {ub}{inactive}").unwrap();
         }
 
         // Objectives
@@ -1496,9 +1508,10 @@ impl Model {
             let active = if data.active { " [active]" } else { "" };
             let expr_s = self
                 .objective_expression(*id)
-                .map(|e| format_lin_expr(&e))
+                .map(|e| format_lin_expr(self, &e))
                 .unwrap_or_else(|_| "?".to_string());
-            writeln!(out, "    obj[{}]: {sense} {expr_s}{active}", id.index()).unwrap();
+            let label = entity_label("obj", id.index(), &data.name);
+            writeln!(out, "    {label}: {sense} {expr_s}{active}").unwrap();
         }
 
         out
