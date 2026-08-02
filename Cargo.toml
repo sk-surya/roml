@@ -23,7 +23,7 @@ authors.workspace = true
 repository.workspace = true
 license.workspace = true
 readme.workspace = true
-description = "A pre-release, incremental MILP modeling library"
+description = "Rust Optimization Modeling Library for incremental MILP models"
 exclude = [
     ".claude/",
     "AGENTS.md",
