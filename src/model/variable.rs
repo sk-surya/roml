@@ -122,6 +122,20 @@ impl VariableDef {
         self
     }
 
+    /// Override only the lower bound, preserving the current upper bound
+    /// (default `+inf` for continuous/integer definitions, `1.0` for binary).
+    pub fn lower_bound(mut self, lower: f64) -> Self {
+        self.bounds.lower = lower;
+        self
+    }
+
+    /// Override only the upper bound, preserving the current lower bound
+    /// (default `0.0`).
+    pub fn upper_bound(mut self, upper: f64) -> Self {
+        self.bounds.upper = upper;
+        self
+    }
+
     /// Attach a name to this definition.
     pub fn named(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
