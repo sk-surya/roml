@@ -43,7 +43,8 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 
 ## Immediate next actions
 
-1. Merge the P22 branch (`phase-roml-P22-modeling-ergonomics` → main) via PR; then start P23 (`phase-roml-P23-surface-curation`).
+1. Merge the P23 branch (`phase-roml-P23-surface-curation` → main) via PR after the API coherence review; then start P24 (`phase-roml-P24-consumer-qualification`).
+1a. **P24 doc note (PR #23 review):** `roml::advanced` is an organized additional path, not an exclusive move — protocol modules/types remain available at the crate root. That compatibility choice is accepted; P24 must present root protocol imports as LEGACY (migration-era) rather than another recommended surface, so README/guides steer users to the curated prelude + `roml::advanced`.
 2. P23 (surface curation): prelude reduction, `roml::advanced`/`roml::backend` namespace moves, deprecations (effectful macros, `constrain`/`constraint` aliases, `add_var`/`add_binary`/`add_integer`/`add_parameter(f64)` wrappers), `MIGRATION.md` + `CHANGELOG.md` entries. P23 must not remove/deprecate an API until its replacement has compile-pass coverage (D12). The deferred-items list (`.planning/phases/22-modeling-ergonomics/deferred-items.md`) carries the surface-consistency subset for P23 (e.g. `set_variable_bounds` validation, `VarId - VarId`, raw `*_coefficient` NaN acceptance, stale-var atomicity in `add_constraint_spec_impl`).
 3. Optional follow-up (informational): real-HiGHS delta-path objective-constant e2e assertion (covered at other layers).
 4. Before P24 qualification: the `roml` package contains repo-level files (`.planning/`, `tools/`, `.foundry.toml`) — no `include` filter; packaging hygiene must be addressed (API-10.3). Also the `roml-mosek`/`roml-xpress` adapters fail to compile against the P21+ solver API (out of M2 scope; recorded in deferred-items).
