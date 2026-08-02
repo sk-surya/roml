@@ -212,7 +212,7 @@ macro_rules! set_objective {
 /// covers model, expression, definition, solver, solution, and error types.
 /// Protocol and backend-extension types are deliberately ABSENT from this
 /// prelude (API-07.2); framework and backend authors reach them through
-/// [`advanced`](crate::advanced).
+/// [`advanced`].
 ///
 /// ```compile_fail
 /// use roml::prelude::*;
