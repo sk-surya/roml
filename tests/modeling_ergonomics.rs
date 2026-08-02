@@ -320,3 +320,133 @@ fn advanced_add_empty_constraint_creates_bounds_only_row() {
     );
     assert_eq!(model.num_coefficients(), 0, "bounds-only row has no cells");
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Task 4 — Canonical objective path
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `minimize` creates and activates exactly one objective (API-04.2).
+#[test]
+fn minimize_activates_exactly_once() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let y = model.add_variable(continuous()).expect("y");
+    let obj = model.minimize(x + 2.0 * y).expect("obj");
+    assert_eq!(model.active_objective(), Some(obj));
+    assert_eq!(model.num_objectives(), 1);
+}
+
+/// `maximize` creates and activates exactly one objective (API-04.2).
+#[test]
+fn maximize_activates_exactly_once() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let obj = model.maximize(x + 1.0).expect("obj");
+    assert_eq!(model.active_objective(), Some(obj));
+    assert_eq!(model.num_objectives(), 1);
+}
+
+/// Objective constants are stored and reported (API-03.5).
+#[test]
+fn objective_constant_is_retained() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let obj = model.minimize(x + 5.0).expect("obj");
+    assert_eq!(model.objective_constant(obj), Some(5.0));
+    assert_eq!(model.active_objective_constant(), Some(5.0));
+    assert_eq!(
+        model
+            .objective_expression(obj)
+            .expect("expr")
+            .get_constant(),
+        5.0
+    );
+}
+
+/// A later objective replaces the active one; the ordinary path stays
+/// single-objective from the caller's perspective.
+#[test]
+fn subsequent_objective_replaces_active() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let first = model.maximize(x).expect("first");
+    assert_eq!(model.active_objective(), Some(first));
+
+    let second = model.minimize(2.0 * x).expect("second");
+    assert_eq!(model.active_objective(), Some(second));
+    assert_ne!(first, second);
+    assert_eq!(model.num_objectives(), 2);
+}
+
+/// Objective parameter coefficients compile to one canonical cell whose cached
+/// value tracks parameter updates.
+#[test]
+fn objective_parameter_coefficients_are_canonical() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let p = model.add_parameter(parameter(3.0)).expect("p");
+    let obj = model.maximize(p * x + 2.0).expect("obj");
+    assert_eq!(model.objective_constant(obj), Some(2.0));
+    assert_eq!(model.num_coefficients(), 1);
+    assert_eq!(
+        model.objective_expression(obj).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(3.0)
+    );
+
+    model.set_parameter(p, 4.0).expect("set");
+    model.commit().expect("commit");
+    assert_eq!(
+        model.objective_expression(obj).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(4.0)
+    );
+}
+
+/// Named objective variant through the spec path — does not complicate the
+/// ordinary `minimize`/`maximize` path (API-05.4).
+#[test]
+fn named_objective_via_spec_path() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let obj = model
+        .set_objective((3.0 * x).maximize().named("profit"))
+        .expect("obj");
+    assert_eq!(model.active_objective(), Some(obj));
+    assert_eq!(model.objective_name(obj).expect("name"), Some("profit"));
+}
+
+/// Advanced multiple-objective creation and switching under explicit names is
+/// preserved alongside the canonical single-objective path.
+#[test]
+fn advanced_named_objective_creation_and_switching() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let profit = model.add_objective_named(Sense::Maximize, "profit");
+    let cost = model.add_objective_named(Sense::Minimize, "cost");
+    assert_eq!(model.num_objectives(), 2);
+    assert_eq!(
+        model.active_objective(),
+        None,
+        "new objectives are inactive"
+    );
+    assert_eq!(model.objective_name(profit).expect("name"), Some("profit"));
+    assert_eq!(model.objective_name(cost).expect("name"), Some("cost"));
+
+    model
+        .set_objective_expr(profit, x + 2.0)
+        .expect("set profit expr");
+    assert_eq!(model.objective_constant(profit), Some(2.0));
+    model.set_active_objective(profit).expect("activate profit");
+    assert_eq!(model.active_objective(), Some(profit));
+
+    model.set_active_objective(cost).expect("switch to cost");
+    assert_eq!(model.active_objective(), Some(cost));
+    assert_eq!(
+        model.objective_constant(profit),
+        Some(2.0),
+        "profit retained"
+    );
+}

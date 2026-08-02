@@ -533,6 +533,16 @@ impl Model {
         self.add_objective_internal(sense, None)
     }
 
+    /// Advanced: create an inactive objective with an explicit name (D6).
+    ///
+    /// The returned objective is inactive; activate it with
+    /// [`Self::set_active_objective`] and populate it with
+    /// [`Self::set_objective_expr`]. The canonical path is
+    /// [`Self::minimize`] / [`Self::maximize`].
+    pub fn add_objective_named(&mut self, sense: Sense, name: impl Into<String>) -> ObjId {
+        self.add_objective_internal(sense, Some(name.into()))
+    }
+
     /// Private primitive: insert an objective (optionally named), pushing the
     /// changelog event. The new objective is inactive by default.
     pub(crate) fn add_objective_internal(&mut self, sense: Sense, name: Option<String>) -> ObjId {
