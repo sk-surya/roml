@@ -605,13 +605,16 @@ fn nan_variable_bounds_are_rejected() {
 }
 
 #[test]
-fn nan_constraint_bounds_accepted() {
+fn nan_constraint_bounds_rejected() {
     let mut model = Model::new();
-    // Current behavior: no bounds validation on add_constraint
-    let _con = model
+    // P23 (Task 3): NaN constraint bounds are now rejected before mutation
+    // (D10/API-06.2) instead of being stored unchecked.
+    let before = model.num_constraints();
+    let err = model
         .add_constraint(ConstraintBounds::le(f64::NAN))
-        .unwrap();
-    assert_eq!(model.num_constraints(), 1);
+        .expect_err("NaN constraint bounds must be rejected");
+    assert_eq!(err, ModelError::NonFiniteValue("constraint bound"));
+    assert_eq!(model.num_constraints(), before, "no mutation on rejection");
 }
 
 #[test]

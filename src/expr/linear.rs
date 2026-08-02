@@ -408,6 +408,16 @@ impl std::ops::Add<VarId> for VarId {
     }
 }
 
+// Subtract two variables directly, yielding an expression with both terms
+// (P23 deferred-item 3: mirrors the `x + y` ergonomics for `x - y`).
+impl std::ops::Sub<VarId> for VarId {
+    type Output = LinExpr;
+
+    fn sub(self, rhs: VarId) -> LinExpr {
+        LinExpr::from(self) - rhs
+    }
+}
+
 // Combine a constant and a variable, producing an expression.
 impl std::ops::Add<VarId> for f64 {
     type Output = LinExpr;
@@ -601,8 +611,11 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        // Atomicity (API-06.5): validate before inserting the row, so a stale
-        // variable/parameter cannot leave a dangling constraint behind.
+        // Atomicity + validation (API-06.5): reject invalid bounds and stale
+        // expression entities before inserting the row, so a NaN/inverted
+        // bound or a stale variable/parameter cannot leave a dangling
+        // constraint behind.
+        crate::model::validate_constraint_bounds(bounds)?;
         self.validate_expression_entities(&expr)?;
         // Route through the public bounds-only primitive, not the spec API, so
         // the expr-only path neither round-trips through ConstraintSpec nor
