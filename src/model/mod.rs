@@ -979,6 +979,133 @@ impl Model {
         self.add_objective_coefficient(obj, var, value)
     }
 
+    /// Advanced: set the coefficient cell at `(target, variable)` by
+    /// coordinate, replacing any existing canonical cell with `value` (D11).
+    ///
+    /// The scalar `value` becomes the cell's constant expression; any parameter
+    /// dependency of a prior expression at this cell is dropped. The
+    /// canonical-cell invariant (one cell per `(target, variable)`) is
+    /// preserved. Raw [`CoeffId`] operations remain in the advanced surface.
+    ///
+    /// Fallible (D10): stale entities and non-finite values are rejected before
+    /// any mutation.
+    pub fn set_coefficient(
+        &mut self,
+        target: CoefficientTarget,
+        var: VarId,
+        value: f64,
+    ) -> Result<(), ModelError> {
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("coefficient value"));
+        }
+        match target {
+            CoefficientTarget::Constraint(con) => {
+                if !self.constraints.contains(con) {
+                    return Err(ModelError::ConstraintNotFound(con));
+                }
+            }
+            CoefficientTarget::Objective(obj) => {
+                if !self.objectives.contains(obj) {
+                    return Err(ModelError::ObjectiveNotFound(obj));
+                }
+            }
+        }
+        if !self.variables.contains(var) {
+            return Err(ModelError::VariableNotFound(var));
+        }
+
+        let value_expr = ValueExpr::constant(value);
+        if let Some(existing_id) = self.coefficients.for_cell(target, var) {
+            let old = self
+                .coefficients
+                .get(existing_id)
+                .map(|d| d.cached_value)
+                .unwrap_or(value);
+            if (old - value).abs() < f64::EPSILON {
+                return Ok(());
+            }
+            self.coefficients
+                .set_expr(existing_id, value_expr.clone(), value);
+            self.changelog.push(Change::CoefficientValueChanged {
+                coeff: existing_id,
+                var,
+                target,
+                value_expr,
+                old,
+                new: value,
+            });
+        } else {
+            let id = self
+                .coefficients
+                .add(var, target, value_expr.clone(), value);
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value_expr,
+                value,
+            });
+        }
+        Ok(())
+    }
+
+    /// Advanced: algebraically add `value` to the canonical coefficient cell at
+    /// `(target, variable)`, creating it when absent (D11).
+    ///
+    /// Repeated additions keep one canonical cell whose value is the running
+    /// sum. Fallible (D10): stale entities and non-finite values are rejected
+    /// before any mutation.
+    pub fn add_to_coefficient(
+        &mut self,
+        target: CoefficientTarget,
+        var: VarId,
+        value: f64,
+    ) -> Result<(), ModelError> {
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("coefficient value"));
+        }
+        match target {
+            CoefficientTarget::Constraint(con) => {
+                self.add_constraint_coefficient(con, var, ValueExpr::constant(value))?;
+            }
+            CoefficientTarget::Objective(obj) => {
+                self.add_objective_coefficient(obj, var, ValueExpr::constant(value))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Advanced: remove the canonical coefficient cell at `(target, variable)`
+    /// by coordinate (D11).
+    ///
+    /// Removing a coordinate with no cell is a no-op. Fallible (D10): stale
+    /// target entities and variables are rejected.
+    pub fn remove_coefficient_at(
+        &mut self,
+        target: CoefficientTarget,
+        var: VarId,
+    ) -> Result<(), ModelError> {
+        match target {
+            CoefficientTarget::Constraint(con) => {
+                if !self.constraints.contains(con) {
+                    return Err(ModelError::ConstraintNotFound(con));
+                }
+            }
+            CoefficientTarget::Objective(obj) => {
+                if !self.objectives.contains(obj) {
+                    return Err(ModelError::ObjectiveNotFound(obj));
+                }
+            }
+        }
+        if !self.variables.contains(var) {
+            return Err(ModelError::VariableNotFound(var));
+        }
+        if let Some(existing_id) = self.coefficients.for_cell(target, var) {
+            self.remove_coefficient_internal(existing_id);
+        }
+        Ok(())
+    }
+
     /// Remove a coefficient.
     pub fn remove_coefficient(&mut self, coeff: CoeffId) -> Result<(), ModelError> {
         if !self.coefficients.contains(coeff) {
