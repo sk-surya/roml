@@ -1,18 +1,24 @@
 ---
 phase: 21-solver-facade
 verified: 2026-08-02T17:01:25Z
-status: passed
+updated: 2026-08-02
+status: human_needed
 score: 15/15 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
+human_verification:
+  - test: "Independent protocol review approves recovery semantics (plan Gate): terminal failures return without retry, at most one rebuild retry for recoverable/dirty failures, stale results are never reported as current, and solve options do not leak across repeated solves."
+    expected: "The protocol review (PR #21) approves the recovery semantics after the review findings are resolved: terminal delta failures no longer trigger a rebuild retry; per-solve option resets prevent option leakage; the SolverSession public surface is limited to new/solve/solve_with; legacy add_integer(Bounds) is fallible."
+    why_human: "The phase plan's Gate explicitly requires 'independent protocol review approves recovery semantics' — an automated verifier confirms behavior but cannot supply the independent review itself."
 ---
 
 # Phase 21: Solver Facade and Unified Result — Verification Report
 
 **Phase Goal:** close the complete build-synchronize-solve-result loop without exposing protocol internals.
 **Verified:** 2026-08-02T17:01:25Z
-**Status:** passed
-**Re-verification:** No — initial verification
+**Updated:** 2026-08-02 (review round 1: 4 findings + 1 flag resolved; protocol review re-review pending)
+**Status:** human_needed — automated truths 15/15; plan Gate additionally requires independent protocol review of recovery semantics
+**Re-verification:** Yes — re-verified after review fixes at head (terminal no-retry, options reset, 3-method surface, fallible add_integer)
 
 ## Goal Achievement
 
@@ -129,7 +135,19 @@ Scan covered `src/solver/facade.rs`, `error.rs`, `options.rs`, `src/solution/met
 
 ### Human Verification Required
 
-None. All behavior-dependent truths are exercised by passing behavioral tests on both the fault-injecting reference backend and the real HiGHS backend; the integration test matrix executes real solves (objective values 12.0/8.0/20.0 asserted). There is no UI, visual, or un-exercised external-service surface in this phase.
+One item — the phase plan's Gate requires it:
+
+1. **Independent protocol review approves recovery semantics.** The plan Gate states "P21 passes when … independent protocol review approves recovery semantics". PR #21 round 1 returned four blocking findings, all now resolved (see below); re-review is pending. Automated truths (15/15) cover the behaviors; the independent sign-off is the human item.
+
+**Review round-1 findings and resolution (recorded 2026-08-02):**
+
+| Finding | Resolution |
+|---|---|
+| 1. Terminal sync errors were incorrectly retried (any delta error triggered a rebuild, including terminal/license failures) | `solve_with` now returns immediately on `SolveError::is_terminal()` (`src/solver/error.rs`), which covers `License` and backend errors with `HealthEffect::Terminal`; only recoverable/dirty failures get the one rebuild retry. New test `terminal_delta_failure_returns_error_without_rebuild_retry` (rebuilds == 0, solves == 0). |
+| 2. Solve options leaked across repeated solves (native HiGHS persists options; a default solve after `solve_with` silently retained the previous settings while metadata said unset) | `negotiate_options` now resets every known option to its HiGHS default before applying the request's explicit values — each request is self-contained (`roml-highs/src/session.rs`). New test `default_solve_after_solve_with_resets_options` (metadata: time limit and threads present after `solve_with`, absent after a default `solve`). |
+| 3. `last_solution()`/`backend()`/`backend_mut()` were not part of the approved three-method interface and bypassed stale-result protection | All three removed from the public API; `SolverSession` exposes only `new`/`solve`/`solve_with`. Stale protection is structural: the only way to obtain a solution is `solve`, which always re-synchronizes; error paths never surface a prior solution. Fault tests reworked to shared `Rc<RefCell>` knobs; invalidation tests rewritten to assert fresh returned solutions (`prior_solution_never_reported_after_mutation`, `failed_solve_never_surfaces_prior_solution`). |
+| 4. Verification marked passed without the plan-required independent protocol review | This report now records the protocol review as the human_verification item; status `human_needed` until re-review approves. |
+| 5. (Flag) Legacy `add_integer(Bounds)` remained infallible, bypassing D10 validation | `Model::add_integer` is now fallible (`Result<VarId, ModelError>`) with bounds validation (invalid/non-finite bounds rejected before mutation); call sites updated. |
 
 ### Notes (non-blocking)
 
