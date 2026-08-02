@@ -26,9 +26,19 @@ pub(crate) use constraint::ConstraintStore;
 pub(crate) use objective::ObjectiveStore;
 pub use objective::Sense;
 pub(crate) use parameter::ParameterStore;
+pub use parameter::{parameter, ParameterDef};
 pub(crate) use transaction::Transaction;
 pub(crate) use variable::VariableStore;
-pub use variable::{Bounds, VarType};
+pub use variable::{binary, continuous, integer, Bounds, VarType, VariableDef};
+
+/// Semantic alias for a variable handle (D8). A plain type alias of [`VarId`].
+pub type Variable = crate::id::VarId;
+/// Semantic alias for a constraint handle (D8). A plain type alias of [`ConId`].
+pub type Constraint = crate::id::ConId;
+/// Semantic alias for an objective handle (D8). A plain type alias of [`ObjId`].
+pub type Objective = crate::id::ObjId;
+/// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
+pub type Parameter = crate::id::ParamId;
 
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -173,11 +183,42 @@ impl Model {
         }
     }
 
+    /// Create a new named model (P22 target constructor).
+    pub fn named(name: impl Into<String>) -> Self {
+        Self::with_name(name)
+    }
+
     // ========== Variable Operations ==========
 
-    /// Add a new variable with the given bounds and type.
-    pub fn add_variable(&mut self, bounds: Bounds, var_type: VarType) -> VarId {
-        let id = self.variables.add(bounds, var_type);
+    /// Add a variable from a validated [`VariableDef`] (D7).
+    ///
+    /// Fallible (D10): invalid bounds are rejected before any mutation.
+    /// Returns the semantic [`Variable`] handle.
+    pub fn add_variable(&mut self, def: VariableDef) -> Result<Variable, ModelError> {
+        let (bounds, var_type, name) = def.into_parts();
+        if !bounds.is_valid() {
+            return Err(ModelError::InvalidBounds);
+        }
+        if !bounds.lower.is_finite() && bounds.lower != f64::NEG_INFINITY {
+            return Err(ModelError::NonFiniteValue("variable lower bound"));
+        }
+        if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
+            return Err(ModelError::NonFiniteValue("variable upper bound"));
+        }
+        Ok(self.add_variable_internal(bounds, var_type, name))
+    }
+
+    /// Internal infallible variable insertion (arena + changelog).
+    fn add_variable_internal(
+        &mut self,
+        bounds: Bounds,
+        var_type: VarType,
+        name: Option<String>,
+    ) -> VarId {
+        let id = match name {
+            Some(name) => self.variables.add_named(bounds, var_type, name),
+            None => self.variables.add(bounds, var_type),
+        };
         self.changelog.push(Change::VariableAdded {
             var: id,
             bounds,
@@ -188,17 +229,17 @@ impl Model {
 
     /// Add a new continuous variable with non-negative bounds.
     pub fn add_var(&mut self) -> VarId {
-        self.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous)
+        self.add_variable_internal(Bounds::NON_NEGATIVE, VarType::Continuous, None)
     }
 
     /// Add a new binary variable.
     pub fn add_binary(&mut self) -> VarId {
-        self.add_variable(Bounds::BINARY, VarType::Binary)
+        self.add_variable_internal(Bounds::BINARY, VarType::Binary, None)
     }
 
     /// Add a new integer variable with the given bounds.
     pub fn add_integer(&mut self, bounds: Bounds) -> VarId {
-        self.add_variable(bounds, VarType::Integer)
+        self.add_variable_internal(bounds, VarType::Integer, None)
     }
 
     /// Remove a variable and all its coefficients.
@@ -314,12 +355,57 @@ impl Model {
 
     // ========== Constraint Operations ==========
 
-    /// Add a new constraint with the given bounds.
-    pub fn add_constraint(&mut self, bounds: ConstraintBounds) -> ConId {
-        let id = self.constraints.add(bounds);
+    /// Add a constraint from a [`ConstraintSpec`] (API-04.1, D1).
+    ///
+    /// Accepts any type that converts into a [`ConstraintSpec`], including raw
+    /// [`ConstraintBounds`] (input-shape compatibility bridge). Fallible (D10).
+    pub fn add_constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
+    where
+        S: Into<crate::expr::ConstraintSpec>,
+    {
+        let spec = spec.into();
+        self.add_constraint_spec_impl(spec)
+    }
+
+    /// Core constraint insertion shared by the spec API and the fluent
+    /// expression path: arena insert (with optional name) + changelog, then
+    /// expression compilation and bounds adjustment.
+    fn add_constraint_spec_impl(
+        &mut self,
+        spec: crate::expr::ConstraintSpec,
+    ) -> Result<ConId, ModelError> {
+        let crate::expr::ConstraintSpec { expr, bounds, name } = spec;
+        let con = self.add_empty_constraint(bounds, name);
+        let constant = expr.compile_for_constraint(self, con)?;
+        if constant.abs() >= f64::EPSILON {
+            let adjusted_bounds = ConstraintBounds {
+                lower: bounds.lower - constant,
+                upper: bounds.upper - constant,
+            };
+            self.set_constraint_bounds(con, adjusted_bounds)?;
+        }
+        Ok(con)
+    }
+
+    /// Private primitive: insert an empty constraint with the given bounds and
+    /// optional name, pushing the changelog event.
+    pub(crate) fn add_empty_constraint(
+        &mut self,
+        bounds: ConstraintBounds,
+        name: Option<String>,
+    ) -> ConId {
+        let id = match name {
+            Some(name) => self.constraints.add_named(bounds, name),
+            None => self.constraints.add(bounds),
+        };
         self.changelog
             .push(Change::ConstraintAdded { con: id, bounds });
         id
+    }
+
+    /// Get the bounds of a constraint, if it exists.
+    pub fn constraint_bounds(&self, con: ConId) -> Option<ConstraintBounds> {
+        self.constraints.get(con).map(|data| data.bounds)
     }
 
     /// Remove a constraint and all its coefficients.
@@ -457,17 +543,25 @@ impl Model {
 
     // ========== Parameter Operations ==========
 
-    /// Add a new parameter with the given initial value.
+    /// Add a parameter from a validated [`ParameterDef`] (D7).
     ///
-    /// # Panics
-    ///
-    /// Panics in debug builds if `value` is not finite.
-    pub fn add_parameter(&mut self, value: f64) -> ParamId {
-        debug_assert!(
-            value.is_finite(),
-            "parameter value must be finite, got {value}"
-        );
-        self.parameters.add(value)
+    /// Plain `f64` values convert through [`From<f64>`] so the current
+    /// `add_parameter(value)` call shape keeps compiling. Fallible (D10):
+    /// non-finite values are rejected before mutation. Returns the semantic
+    /// [`Parameter`] handle.
+    pub fn add_parameter<P>(&mut self, def: P) -> Result<Parameter, ModelError>
+    where
+        P: Into<ParameterDef>,
+    {
+        let def = def.into();
+        if !def.value.is_finite() {
+            return Err(ModelError::NonFiniteValue("parameter value"));
+        }
+        let id = match def.name {
+            Some(name) => self.parameters.add_named(def.value, name),
+            None => self.parameters.add(def.value),
+        };
+        Ok(id)
     }
 
     /// Get a parameter value.
@@ -479,15 +573,17 @@ impl Model {
     ///
     /// The change is not applied until `commit()` is called.
     ///
-    /// # Panics
-    ///
-    /// Panics in debug builds if `value` is not finite.
-    pub fn set_parameter(&mut self, param: ParamId, value: f64) {
-        debug_assert!(
-            value.is_finite(),
-            "parameter value must be finite, got {value}"
-        );
+    /// Fallible (D10/API-06.3): a stale parameter id or a non-finite value is
+    /// rejected before any state change.
+    pub fn set_parameter(&mut self, param: Parameter, value: f64) -> Result<(), ModelError> {
+        if !self.parameters.contains(param) {
+            return Err(ModelError::ParameterNotFound(param));
+        }
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("parameter value"));
+        }
         self.transaction.set_param(param, value);
+        Ok(())
     }
 
     /// Check if there are uncommitted parameter changes.
@@ -1334,7 +1430,7 @@ mod tests {
         let y = model.add_var();
 
         // Add constraint
-        // let c = model.add_constraint(ConstraintBounds::le(100.0));
+        // let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
         // // Add coefficients
         // model.add_coeff(c, x, 2.0).unwrap();
@@ -1353,9 +1449,9 @@ mod tests {
     fn parameter_propagation() {
         let mut model = Model::new();
 
-        let p = model.add_parameter(10.0);
+        let p = model.add_parameter(10.0).unwrap();
         let x = model.add_var();
-        let c = model.add_constraint(ConstraintBounds::le(100.0));
+        let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
         // Coefficient with parameter dependency: 2 * p
         let coeff_id = model
@@ -1370,7 +1466,7 @@ mod tests {
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 20.0);
 
         // Change parameter
-        model.set_parameter(p, 5.0);
+        model.set_parameter(p, 5.0).unwrap();
         let _ = model.commit();
 
         // Value should now be 2 * 5 = 10
@@ -1381,10 +1477,10 @@ mod tests {
     fn coefficient_api_accepts_constants_and_parameters_symmetrically() {
         let mut model = Model::new();
 
-        let p = model.add_parameter(2.5);
+        let p = model.add_parameter(2.5).unwrap();
         let x = model.add_var();
         let y = model.add_var();
-        let con = model.add_constraint(ConstraintBounds::le(100.0));
+        let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
         let obj = model.add_objective(Sense::Minimize);
 
         let constraint_coeff = model.add_constraint_coefficient(con, x, p).unwrap();
@@ -1409,10 +1505,10 @@ mod tests {
     fn transaction_batching() {
         let mut model = Model::new();
 
-        let p1 = model.add_parameter(1.0);
-        let p2 = model.add_parameter(2.0);
+        let p1 = model.add_parameter(1.0).unwrap();
+        let p2 = model.add_parameter(2.0).unwrap();
         let x = model.add_var();
-        let c = model.add_constraint(ConstraintBounds::le(100.0));
+        let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
         // Coefficient: p1 * p2
         let coeff_id = model
@@ -1426,8 +1522,8 @@ mod tests {
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 2.0); // 1 * 2
 
         // Batch changes
-        model.set_parameter(p1, 3.0);
-        model.set_parameter(p2, 4.0);
+        model.set_parameter(p1, 3.0).unwrap();
+        model.set_parameter(p2, 4.0).unwrap();
 
         // Not committed yet - value unchanged
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 2.0);
@@ -1444,7 +1540,7 @@ mod tests {
         let mut model = Model::new();
 
         let x = model.add_var();
-        let c = model.add_constraint(ConstraintBounds::le(100.0));
+        let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
         model.add_coeff(c, x, 2.0).unwrap();
 
         let changes = model.drain_changes();
@@ -1456,7 +1552,7 @@ mod tests {
         let mut model = Model::new();
 
         let x = model.add_var();
-        let c = model.add_constraint(ConstraintBounds::le(100.0));
+        let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
         model.add_coeff(c, x, 2.0).unwrap();
 
         assert_eq!(model.num_coefficients(), 1);
@@ -1471,12 +1567,12 @@ mod tests {
     fn complex_model_flow() {
         // build a model with variables, parameters, constraints, objective
         let mut model = Model::new();
-        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-        let z = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let x = model.add_variable(continuous()).unwrap();
+        let y = model.add_variable(continuous()).unwrap();
+        let z = model.add_variable(continuous()).unwrap();
 
-        let p = model.add_parameter(2.0);
-        let q = model.add_parameter(3.0);
+        let p = model.add_parameter(2.0).unwrap();
+        let q = model.add_parameter(3.0).unwrap();
 
         // constraint: 2*x + p*y - q*z <= 100
         let cons_expr: LinExpr = 2.0 * x + p * y - q * z;
@@ -1512,8 +1608,8 @@ mod tests {
         assert_eq!(objmap.get(&y), Some(&3.0));
 
         // update parameters and commit
-        model.set_parameter(p, 4.0);
-        model.set_parameter(q, 6.0);
+        model.set_parameter(p, 4.0).unwrap();
+        model.set_parameter(q, 6.0).unwrap();
         let _ = model.commit();
 
         // after update, cached values should change
@@ -1557,12 +1653,12 @@ mod tests {
     fn pprint_medium_model() {
         let mut model = Model::with_name("production_lp");
 
-        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-        let z = model.add_variable(Bounds::BINARY, VarType::Binary);
+        let x = model.add_variable(continuous()).unwrap();
+        let y = model.add_variable(continuous()).unwrap();
+        let z = model.add_variable(binary()).unwrap();
 
-        let a = model.add_parameter(2.0);
-        let b = model.add_parameter(5.0);
+        let a = model.add_parameter(2.0).unwrap();
+        let b = model.add_parameter(5.0).unwrap();
 
         // c1: a*x + y <= 10
         let c1 = model
@@ -1744,13 +1840,13 @@ mod tests {
         let mut model = Model::new();
 
         // x in [0, 10]  → solution x=12 violates upper bound
-        let x = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
 
         // y in [2, 8]   → solution y=1 violates lower bound
-        let y = model.add_variable(Bounds::new(2.0, 8.0), VarType::Continuous);
+        let y = model.add_variable(continuous().bounds(2.0, 8.0)).unwrap();
 
         // z in [0, 5]   → solution z=3 is fine
-        let z = model.add_variable(Bounds::new(0.0, 5.0), VarType::Continuous);
+        let z = model.add_variable(continuous().bounds(0.0, 5.0)).unwrap();
 
         use crate::solution::SolutionBuilder;
         use crate::solver::SolverStatus;
@@ -1795,7 +1891,7 @@ mod tests {
     fn simple_model_passes_invariants() {
         let mut model = Model::new();
         let x = model.add_var();
-        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
         model.add_coeff(con, x, 1.0).unwrap();
         assert!(model.validate_invariants().is_ok());
     }
@@ -1816,12 +1912,12 @@ mod tests {
     fn parameter_model_passes_invariants() {
         let mut model = Model::new();
         let x = model.add_var();
-        let p = model.add_parameter(5.0);
-        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        let p = model.add_parameter(5.0).unwrap();
+        let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
         model
             .add_constraint_coefficient(con, x, ValueExpr::param(p))
             .unwrap();
-        model.set_parameter(p, 3.0);
+        model.set_parameter(p, 3.0).unwrap();
         let _ = model.commit();
         assert!(model.validate_invariants().is_ok());
     }
@@ -1831,7 +1927,7 @@ mod tests {
         let mut model = Model::new();
         let x = model.add_var();
         let y = model.add_var();
-        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
         model.add_coeff(con, x, 1.0).unwrap();
         model.add_coeff(con, y, 2.0).unwrap();
 
@@ -1847,7 +1943,7 @@ mod tests {
         // Verify that canonical cell combining doesn't violate invariants
         let mut model = Model::new();
         let x = model.add_var();
-        let con = model.add_constraint(ConstraintBounds::le(10.0));
+        let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
 
         let id1 = model.add_coeff(con, x, 2.0).unwrap();
         // Adding another term for the same cell should combine

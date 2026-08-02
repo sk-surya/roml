@@ -12,7 +12,8 @@
 
 use roml::model::CoefficientTarget;
 use roml::{
-    Bounds, ConstraintBounds, DeltaBatch, Model, ModelOp, ModelRevision, Sense, ValueExpr, VarType,
+    continuous, integer, Bounds, ConstraintBounds, DeltaBatch, Model, ModelOp, ModelRevision,
+    Sense, ValueExpr, VarType,
 };
 
 // =========================================================================
@@ -118,7 +119,7 @@ fn add_multiple_variables() {
 #[test]
 fn add_variable_custom_bounds_and_type() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(-1.5, 20.0), VarType::Integer);
+    let x = model.add_variable(integer().bounds(-1.5, 20.0)).unwrap();
     let r = model.commit().unwrap();
 
     assert_ops(
@@ -242,7 +243,7 @@ fn set_binary_convenience() {
 #[test]
 fn set_semicontinuous_produces_semi_op() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(0.0, 100.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(0.0, 100.0)).unwrap();
     let r1 = model.commit().unwrap();
 
     model.set_semicontinuous(x, 10.0).unwrap();
@@ -264,7 +265,7 @@ fn set_semicontinuous_produces_semi_op() {
 #[test]
 fn add_constraint_produces_add_op() {
     let mut model = Model::new();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let r = model.commit().unwrap();
 
     assert_ops(
@@ -281,7 +282,9 @@ fn add_constraint_produces_add_op() {
 #[test]
 fn remove_constraint_produces_remove_op() {
     let mut model = Model::new();
-    let c = model.add_constraint(ConstraintBounds::range(0.0, 50.0));
+    let c = model
+        .add_constraint(ConstraintBounds::range(0.0, 50.0))
+        .unwrap();
     let r1 = model.commit().unwrap();
 
     model.remove_constraint(c).unwrap();
@@ -298,7 +301,7 @@ fn remove_constraint_produces_remove_op() {
 #[test]
 fn set_constraint_bounds_produces_bounds_op() {
     let mut model = Model::new();
-    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    let c = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     let r1 = model.commit().unwrap();
 
     model
@@ -320,7 +323,7 @@ fn set_constraint_bounds_produces_bounds_op() {
 #[test]
 fn set_constraint_active_produces_active_op() {
     let mut model = Model::new();
-    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    let c = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     let r1 = model.commit().unwrap();
 
     model.set_constraint_active(c, false).unwrap();
@@ -408,7 +411,7 @@ fn clear_active_objective_produces_none_op() {
 fn add_constraint_coefficient_new_cell() {
     let mut model = Model::new();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let r1 = model.commit().unwrap();
 
     model.add_coeff(c, x, 2.0).unwrap();
@@ -454,7 +457,7 @@ fn add_objective_coefficient_new_cell() {
 fn remove_coefficient_produces_remove_cell() {
     let mut model = Model::new();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let coeff = model.add_coeff(c, x, 2.0).unwrap();
     let r1 = model.commit().unwrap();
 
@@ -478,16 +481,16 @@ fn remove_coefficient_produces_remove_cell() {
 #[test]
 fn parameter_change_produces_set_parameter_and_updated_cell() {
     let mut model = Model::new();
-    let p = model.add_parameter(5.0);
+    let p = model.add_parameter(5.0).unwrap();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model
         .add_constraint_coefficient(c, x, ValueExpr::param(p))
         .unwrap();
     let r1 = model.commit().unwrap();
 
     // Change the parameter value
-    model.set_parameter(p, 10.0);
+    model.set_parameter(p, 10.0).unwrap();
     let r2 = model.commit().unwrap();
 
     // Verify the batch has:
@@ -508,10 +511,10 @@ fn parameter_change_produces_set_parameter_and_updated_cell() {
 #[test]
 fn multiple_parameters_in_one_commit_batch() {
     let mut model = Model::new();
-    let p1 = model.add_parameter(1.0);
-    let p2 = model.add_parameter(2.0);
+    let p1 = model.add_parameter(1.0).unwrap();
+    let p2 = model.add_parameter(2.0).unwrap();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model
         .add_constraint_coefficient(
             c,
@@ -522,8 +525,8 @@ fn multiple_parameters_in_one_commit_batch() {
     let r1 = model.commit().unwrap();
 
     // Change both parameters before a single commit
-    model.set_parameter(p1, 3.0);
-    model.set_parameter(p2, 4.0);
+    model.set_parameter(p1, 3.0).unwrap();
+    model.set_parameter(p2, 4.0).unwrap();
     let r2 = model.commit().unwrap();
 
     let ops = &nth_batch(&model, 1).operations;
@@ -577,18 +580,18 @@ fn multiple_parameters_in_one_commit_batch() {
 #[test]
 fn all_pending_changes_in_one_batch() {
     let mut model = Model::new();
-    let p1 = model.add_parameter(1.0);
-    let p2 = model.add_parameter(2.0);
+    let p1 = model.add_parameter(1.0).unwrap();
+    let p2 = model.add_parameter(2.0).unwrap();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model
         .add_constraint_coefficient(c, x, ValueExpr::param(p1) * ValueExpr::param(p2))
         .unwrap();
     let r1 = model.commit().unwrap();
 
     // Queue multiple changes
-    model.set_parameter(p1, 3.0);
-    model.set_parameter(p2, 5.0);
+    model.set_parameter(p1, 3.0).unwrap();
+    model.set_parameter(p2, 5.0).unwrap();
 
     // One commit should capture all changes
     let r2 = model.commit().unwrap();
@@ -660,7 +663,7 @@ fn multiple_operations_in_single_batch() {
     // Make several changes before committing
     let x = model.add_var();
     let y = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(50.0));
+    let c = model.add_constraint(ConstraintBounds::le(50.0)).unwrap();
     model.add_coeff(c, x, 2.0).unwrap();
     model.add_coeff(c, y, 3.0).unwrap();
     let r = model.commit().unwrap();
@@ -718,7 +721,7 @@ fn sequence_of_separate_commits() {
     let r1 = model.commit().unwrap();
 
     // Commit 2: add constraint
-    let con = model.add_constraint(ConstraintBounds::ge(10.0));
+    let con = model.add_constraint(ConstraintBounds::ge(10.0)).unwrap();
     let r2 = model.commit().unwrap();
 
     // Commit 3: add coefficient
@@ -790,7 +793,7 @@ fn remove_variable_includes_remove_cell_ops() {
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(50.0));
+    let c = model.add_constraint(ConstraintBounds::le(50.0)).unwrap();
     model.add_coeff(c, x, 2.0).unwrap();
     model.add_coeff(c, y, 3.0).unwrap();
     let r1 = model.commit().unwrap();
@@ -817,8 +820,8 @@ fn remove_variable_includes_remove_cell_ops() {
 fn remove_constraint_includes_remove_cell_ops() {
     let mut model = Model::new();
     let x = model.add_var();
-    let c1 = model.add_constraint(ConstraintBounds::le(50.0));
-    let c2 = model.add_constraint(ConstraintBounds::le(30.0));
+    let c1 = model.add_constraint(ConstraintBounds::le(50.0)).unwrap();
+    let c2 = model.add_constraint(ConstraintBounds::le(30.0)).unwrap();
     model.add_coeff(c1, x, 2.0).unwrap();
     model.add_coeff(c2, x, 3.0).unwrap();
     let r1 = model.commit().unwrap();
@@ -891,7 +894,7 @@ fn stale_variable_id_produces_no_ops() {
 #[test]
 fn stale_constraint_id_produces_no_ops() {
     let mut model = Model::new();
-    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    let c = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     let r1 = model.commit().unwrap();
 
     // Remove the constraint

@@ -19,6 +19,36 @@ impl ParameterData {
     }
 }
 
+/// A validated parameter definition (D7).
+///
+/// Built by [`parameter`] and consumed by
+/// [`Model::add_parameter`](crate::Model::add_parameter). Carries the initial
+/// value and an optional name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParameterDef {
+    pub(crate) value: f64,
+    pub(crate) name: Option<String>,
+}
+
+impl ParameterDef {
+    /// Attach a name to this definition.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
+/// A validated parameter definition with the given initial value.
+pub fn parameter(value: f64) -> ParameterDef {
+    ParameterDef { value, name: None }
+}
+
+impl From<f64> for ParameterDef {
+    fn from(value: f64) -> Self {
+        parameter(value)
+    }
+}
+
 /// Storage for all parameters in the model.
 ///
 /// Parameters are coefficient value sources that can be modified at runtime.

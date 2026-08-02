@@ -91,8 +91,8 @@ where
 fn canonical_coefficient_per_cell() -> Result<(), ModelError> {
     let mut model = Model::new();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
-    let p = model.add_parameter(3.0);
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
+    let p = model.add_parameter(3.0).unwrap();
 
     // Add constant coefficient, then param-dependent coefficient to same cell
     let k1 = model.add_constraint_coefficient(c, x, ValueExpr::from(3.0))?;
@@ -110,7 +110,7 @@ fn canonical_coefficient_per_cell() -> Result<(), ModelError> {
     );
 
     // Update parameter: 3.0 + 5.0 = 8.0
-    model.set_parameter(p, 5.0);
+    model.set_parameter(p, 5.0).unwrap();
     model.commit()?;
 
     assert_eq!(model.num_coefficients(), 1);
@@ -137,7 +137,7 @@ fn end_to_end_commuting_square() -> Result<(), ModelError> {
     // Build a model with all entity types using fine-grained primitives
     let x = model.add_var();
     let y = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model.add_coeff(con, x, 2.0)?;
     model.add_coeff(con, y, 3.0)?;
     let obj = model.add_objective(Sense::Minimize);
@@ -325,7 +325,7 @@ fn add_constraint_produces_addconstraint() {
     };
 
     // New constraint on a clean model (no coefficients attached)
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let snap_after = {
         let rev_before = model.current_revision();
         let rev_after = model.commit().unwrap();
@@ -345,7 +345,7 @@ fn add_constraint_produces_addconstraint() {
 #[test]
 fn remove_constraint_produces_removeconstraint() {
     let mut model = Model::new();
-    let con = model.add_constraint(ConstraintBounds::le(50.0));
+    let con = model.add_constraint(ConstraintBounds::le(50.0)).unwrap();
     model.commit().unwrap();
 
     let expected_ops = vec![ModelOp::RemoveConstraint { con }];
@@ -364,7 +364,7 @@ fn remove_constraint_produces_removeconstraint() {
 #[test]
 fn set_constraint_bounds_produces_setconstraintbounds() {
     let mut model = Model::new();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model.commit().unwrap();
 
     let new_bounds = ConstraintBounds::range(10.0, 50.0);
@@ -454,7 +454,7 @@ fn set_active_objective_produces_setobjectiveactive() {
 fn coefficient_mutation_produces_setcoefficient() {
     let mut model = Model::new();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model.commit().unwrap();
 
     let _snap_before = model.take_snapshot().unwrap();
@@ -481,7 +481,7 @@ fn coefficient_mutation_produces_setcoefficient() {
 fn remove_coefficient_produces_removecell() {
     let mut model = Model::new();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let coeff = model.add_coeff(con, x, 2.0).unwrap();
     model.commit().unwrap();
 
@@ -533,7 +533,7 @@ fn add_objective_coefficient_produces_setcoefficient() {
 #[test]
 fn parameter_set_produces_setparameter() {
     let mut model = Model::new();
-    let p = model.add_parameter(3.0);
+    let p = model.add_parameter(3.0).unwrap();
     model.commit().unwrap();
 
     let expected_ops = vec![ModelOp::SetParameter {
@@ -543,7 +543,7 @@ fn parameter_set_produces_setparameter() {
     assert_commit_produces(
         &mut model,
         |m| {
-            m.set_parameter(p, 5.0);
+            m.set_parameter(p, 5.0).unwrap();
             Ok(())
         },
         &expected_ops,
@@ -560,7 +560,7 @@ fn parameter_set_produces_setparameter() {
 fn multiple_coefficients_per_cell_combine_to_one_modelop() {
     let mut model = Model::new();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(100.0));
+    let c = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model.commit().unwrap();
 
     let _snap_before = model.take_snapshot().unwrap();
@@ -659,7 +659,7 @@ fn sequential_revision_advancement() {
     assert_eq!(r2.as_u64(), 2);
 
     // Third mutation
-    model.add_constraint(ConstraintBounds::le(100.0));
+    model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let r3 = model.commit().unwrap();
     assert!(r3 > r2, "third commit advances");
     assert_eq!(r3.as_u64(), 3);
@@ -677,7 +677,9 @@ fn semicontinuous_bounds_produces_setsemicontinuousbound() {
     let mut model = Model::new();
     // Start with a variable that already has a lower bound >= the semicontinuous lower,
     // so that set_semicontinuous produces exactly one Change (no extra bounds update).
-    let x = model.add_variable(Bounds::new(10.0, 100.0), VarType::Continuous);
+    let x = model
+        .add_variable(continuous().bounds(10.0, 100.0))
+        .unwrap();
     model.commit().unwrap();
 
     // Set semicontinuous lower to 5.0, which is <= the current lower bound of 10.0
@@ -697,7 +699,7 @@ fn semicontinuous_bounds_produces_setsemicontinuousbound() {
 fn semicontinuous_with_bounds_update_produces_two_ops() {
     let mut model = Model::new();
     // Variable with lower bound 0.0
-    let x = model.add_variable(Bounds::new(0.0, 100.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(0.0, 100.0)).unwrap();
     model.commit().unwrap();
 
     let _snap_before = model.take_snapshot().unwrap();

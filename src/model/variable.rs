@@ -103,6 +103,63 @@ impl VariableData {
     }
 }
 
+/// A validated variable definition (D7).
+///
+/// Built by [`continuous`], [`integer`], and [`binary`] and consumed by
+/// [`Model::add_variable`](crate::Model::add_variable). Supports optional
+/// bounds and a name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariableDef {
+    pub(crate) bounds: Bounds,
+    pub(crate) var_type: VarType,
+    pub(crate) name: Option<String>,
+}
+
+impl VariableDef {
+    /// Override the bounds of this definition.
+    pub fn bounds(mut self, lower: f64, upper: f64) -> Self {
+        self.bounds = Bounds::new(lower, upper);
+        self
+    }
+
+    /// Attach a name to this definition.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub(crate) fn into_parts(self) -> (Bounds, VarType, Option<String>) {
+        (self.bounds, self.var_type, self.name)
+    }
+}
+
+/// A validated continuous variable definition with non-negative bounds.
+pub fn continuous() -> VariableDef {
+    VariableDef {
+        bounds: Bounds::NON_NEGATIVE,
+        var_type: VarType::Continuous,
+        name: None,
+    }
+}
+
+/// A validated integer variable definition with non-negative bounds.
+pub fn integer() -> VariableDef {
+    VariableDef {
+        bounds: Bounds::NON_NEGATIVE,
+        var_type: VarType::Integer,
+        name: None,
+    }
+}
+
+/// A validated binary variable definition with `[0, 1]` bounds.
+pub fn binary() -> VariableDef {
+    VariableDef {
+        bounds: Bounds::BINARY,
+        var_type: VarType::Binary,
+        name: None,
+    }
+}
+
 /// Storage for all variables in the model.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct VariableStore {
