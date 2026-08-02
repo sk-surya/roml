@@ -19,9 +19,9 @@ awaiting: user response
 
 ### 1. Review baseline evidence
 
-Review `docs/release/evidence/M2_P20_BASELINE.md` against `EXECUTION.md` evidence standards: base SHA `d1391fb`, toolchain (rustc 1.97.1, aarch64-apple-darwin), core matrix (399 passed) and HiGHS matrix (73 passed) at base, and the `cargo package --list -p roml` exit-101 skip reason.
+Review `docs/release/evidence/M2_P20_BASELINE.md` against `EXECUTION.md` evidence standards: base SHA `d1391fb`, toolchain (rustc 1.97.1, aarch64-apple-darwin), core matrix (399 passed) and HiGHS matrix (73 passed) at base, and the clean-worktree `cargo package --list -p roml` capture (exit 0, 99 files — previously exit 101 from a dirty primary tree, now resolved).
 
-expected: Baseline commands, item counts, and skipped-check reasons are acceptable and the recorded counts match what a clean re-run at the base commit produces.
+expected: Baseline commands, item counts, and the clean-worktree package list are acceptable and the recorded counts match what a clean re-run at the base commit produces.
 result: [pending]
 
 ### 2. Review drift characterization

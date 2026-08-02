@@ -6,9 +6,18 @@
 
 Every public entry point of `roml` and `roml-highs` at the P20 base is assigned
 exactly one disposition. The inventory is derived from `cargo public-api`
-output stored verbatim in `docs/release/evidence/M2_P20_public_api_roml.txt`
-(7431 lines) and `M2_P20_public_api_roml_highs.txt` (110 lines), cross-checked
-against `src/lib.rs`, the prelude, and `src/model/mod.rs`.
+output stored as normalized evidence in
+`docs/release/evidence/M2_P20_public_api_roml.txt` (7431 lines) and
+`M2_P20_public_api_roml_highs.txt` (80 lines; absolute repository paths
+replaced with `$REPO`), cross-checked against `src/lib.rs`, the prelude, and
+`src/model/mod.rs`.
+
+**Current vs target signatures:** every row classifies the *current-main*
+signature. Where a target reuses an existing method name with a different
+signature, the row notes `(target)` and the concrete migration approach is
+recorded in "Signature-collision migration" below — Rust forbids inherent
+method overloads, so a target cannot simply coexist with the current
+signature under the same name.
 
 ## Disposition legend
 
@@ -29,21 +38,20 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 
 | Item | Disposition | Replacement / note |
 |---|---|---|
-| `roml::prelude::Model`, `ModelError`, `ConstraintBounds`, `ConstraintSpec`, `ObjectiveSpec`, `LinExpr`, `Sense`, `Bounds`, `VarType`, `VarId`, `ConId`, `ObjId`, `ParamId`, `ValueExpr`, `Solution`, `SolverError` | **golden path** | Core model/solution vocabulary; retained in the curated P23 prelude. |
+| `roml::prelude::Model`, `ModelError`, `ConstraintSpec`, `ObjectiveSpec`, `LinExpr`, `Sense`, `Bounds`, `VarType`, `Solution` | **golden path** | Core model/solution vocabulary; retained in the curated P23 prelude. Raw IDs (`VarId`/`ConId`/`ObjId`/`ParamId`), `ValueExpr`, `SolverError`, `ConstraintBounds`, and `SolutionBuilder`/`SolutionStore` are classified individually below, not here. |
 | `roml::prelude::ConstraintExprExt`, `ObjectiveExprExt` | **golden path** | Fluent `.le/.ge/.eq/.between/.minimize/.maximize` (API-04.3). |
-| `roml::prelude::constrain`, `set_objective` (macros) | **compatibility/deprecated** | Effectful macros (D1); replaced by `Model::constrain`/`Model::minimize`/`Model::maximize`. Deprecated in P23. |
-| `roml::prelude::Change`, `CoeffId` | **advanced backend extension** | API-07.2 requires these absent from the default prelude; move to `roml::backend`. |
+| `roml::prelude::constrain`, `set_objective` (macros) | **compatibility/deprecated** | Effectful macros (D1); replaced by `Model::add_constraint`/`Model::minimize`/`Model::maximize`. Deprecated in P23. |
+| `roml::Change` (root and prelude re-exports; `model::changelog::Change`) | **advanced backend extension** | Change journal (API-07.2); move to `roml::backend`. |
 | `roml::DeltaBatch`, `ModelOp` | **advanced backend extension** | Protocol types (API-07.2); move to `roml::backend`. |
 | `roml::ModelRevision`, `ModelSnapshot` | **advanced backend extension** | Protocol types (API-07.2); move to `roml::backend`. |
-| `roml::Change` | **advanced backend extension** | Protocol type; move to `roml::backend`. |
 | `roml::BackendSession`, `Synchronization`, `SyncReceipt`, `SessionHealth`, `SolutionView`, `BackendMetadata`, `CallbackSession` | **advanced backend extension** | Backend contract (API-07.2/07.3); move to `roml::backend`. |
 | `roml::AdapterCursor`, `AdapterHealth`, `ApplyOutcome` | **advanced backend extension** | Sync protocol (API-07.2); move to `roml::backend`. |
 | `roml::BackendError`, `ErrorCategory`, `HealthEffect`, `TerminationStatus`, `BackendCapabilities` | **advanced backend extension** | Backend error/capability contract; move to `roml::backend`. |
 | `roml::SolveRequest`, `SolveResult`, `SolveSolution`, `EffectiveConfig`, `ConfigAdjustment`, `ConfigRejection` | **advanced backend extension** | Solve-request protocol (D4/D9); move to `roml::backend`. |
-| `roml::LpAlgorithm`, `SolverError` | **advanced backend extension** | Solve-policy / error types; move to `roml::backend`. |
-| `roml::CoeffId` | **advanced backend extension** | Implementation identity (D11); not user-facing. |
-| `roml::Solution`, `SolutionBuilder`, `SolutionStore` | **golden path** | `Solution` is the unified golden-path result (API-03.1). `SolutionBuilder`/`SolutionStore` are advanced result construction. |
-| `roml::ValueExpr` | **advanced backend extension** | Parameter-dependent persistent expressions. |
+| `roml::LpAlgorithm` | **advanced backend extension** | Solve-policy enum used by `SolveRequest`; move to `roml::backend`. |
+| `roml::Solution` | **golden path** | Unified golden-path result type (API-03.1). |
+| `roml::SolutionBuilder`, `SolutionStore` | **advanced backend extension** | Result construction/storage for frameworks; see Section 6. |
+| `roml::ConstraintBounds` | **advanced backend extension** | Raw constraint-bounds form; the golden path uses spec builders (API-04.1). |
 
 ## 2. Model constructors and mutators (API-04, API-05, API-06)
 
@@ -54,18 +62,18 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 | `Model::add_var()` | **compatibility/deprecated** | Replaced by `add_variable(continuous())` (D7) in P22. |
 | `Model::add_binary()` | **compatibility/deprecated** | Replaced by `add_variable(binary())` (D7). |
 | `Model::add_integer(Bounds)` | **compatibility/deprecated** | Replaced by `add_variable(integer())` with optional `.bounds(...)` (D7). |
-| `Model::add_variable(Bounds, VarType)` | **compatibility/deprecated** | Signature collides with target `add_variable(VariableDef)` (D7); replaced in P22. |
+| `Model::add_variable(Bounds, VarType)` | **compatibility/deprecated** (removed, not overloadable) | Current signature (infallible, returns `VarId`). The target `add_variable(VariableDef)` (D7) cannot coexist — Rust forbids overloads. Approach: intentional pre-1.0 break; the two-arg form is removed in the same release P22 adds the builder form; `add_var()`/`add_integer(Bounds)`/`add_binary()` remain as the deprecated compatibility wrappers. See "Signature-collision migration". |
 | `Model::add_parameter(f64)` | **compatibility/deprecated** | Replaced by `add_parameter(parameter(value))` (D7) in P22. |
-| `Model::add_constraint(ConstraintBounds)` | **golden path** (target form) | `add_constraint(spec)` (API-04.1) is the canonical form; the raw bounds form remains advanced. |
-| `Model::constrain(spec)` | **golden path** | Canonical constraint mutation (API-04.1, D1). |
-| `Model::constraint(spec)` | **compatibility/deprecated** | Redundant alias of `constrain`; deprecate in P23. |
+| `Model::add_constraint(ConstraintBounds)` | **golden path** `(target)` | Current signature takes raw bounds (returns `ConId`). The target `add_constraint(spec)` (API-04.1, D1) is canonical and subsumes it via the generic pattern `S: Into<ConstraintSpec>` that `Model::constrain` already uses, with `impl From<ConstraintBounds> for ConstraintSpec` — both call shapes compile through one method. See "Signature-collision migration". |
+| `Model::constrain(spec)` | **compatibility/deprecated** | Current canonical-by-habit form (generic `S: Into<ConstraintSpec>`). Superseded by `add_constraint(spec)` (API-04.1, D1); deprecated in P23 after the replacement compiles (D12). |
+| `Model::constraint(spec)` | **compatibility/deprecated** | Redundant alias of `constrain`; superseded by `add_constraint(spec)`; deprecate in P23. |
 | `Model::add_constraint_expr(expr, bounds)` | **advanced backend extension** | Low-level constraint mutation; sparse/advanced. |
 | `Model::minimize(expr)` / `Model::maximize(expr)` | **golden path** | Canonical single-objective mutations (API-04.2, D1). |
 | `Model::set_objective(spec)` | **compatibility/deprecated** | Superseded by `minimize`/`maximize` (D1); deprecated in P23. |
 | `Model::add_objective_expr(expr, sense)` / `add_objective_spec(spec)` | **advanced backend extension** | Low-level objective mutation; returns `(ObjId, constant)` pair. |
 | `Model::set_active_objective`, `clear_active_objective`, `active_objective`, `num_objectives` | **advanced backend extension** | Multi-objective control; the ordinary path uses `minimize`/`maximize`. |
 | `Model::objective_constant(obj)`, `active_objective_constant()` | **golden path** | Objective constant inspection (API-03.5). |
-| `Model::set_parameter(param, f64)` (infallible) | **compatibility/deprecated** | Target is fallible `set_parameter(param, value) -> Result` (D10, target fixture); P22 makes it fallible. |
+| `Model::set_parameter(param, f64)` (infallible) | **compatibility/deprecated** (return type breaks) | Current signature returns `()`. The target is fallible `set_parameter(param, value) -> Result<(), ModelError>` (D10/API-06.3, target fixture); old and new signatures cannot coexist (return type is not part of the method key). Approach: intentional pre-1.0 break in P22; statement-style call sites keep compiling for the window, gaining a `#[must_use]` warning. See "Signature-collision migration". |
 | `Model::parameter_value(param)` | **golden path** | Parameter inspection (API-06.3). |
 | `Model::set_variable_bounds`, `set_variable_type`, `set_binary`, `set_variable_active`, `set_constraint_bounds`, `set_constraint_active` | **advanced backend extension** | Low-level mutators; fluent builders and definitions cover the golden path. |
 | `Model::set_semicontinuous(var, lower)` | **advanced backend extension** | Semi-continuous domain (advanced). |
@@ -121,7 +129,7 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 | `SolutionBuilder`, `SolutionStore` | **advanced backend extension** | Result construction/storage for frameworks. |
 | `SolveRequest`, `SolveResult`, `SolveSolution`, `EffectiveConfig` | **advanced backend extension** | Backend-protocol result types (D4); `Solution` is the public normalization. |
 | `TerminationStatus` | **advanced backend extension** | Native termination mapping retained for protocol (API-03.2 distinctions). |
-| `SolverError` | **golden path** | Public error type for the solve path. |
+| `SolverError` (`roml::solver::SolverError`) | **compatibility/deprecated** | Current public error type for the solve path (simple `pub struct SolverError(pub String)`). Superseded by `SolveError` (D4, API-01.2) once the P21 façade lands; deprecated in P23 after `SolveError` compiles (D12). |
 | `roml_highs::HighsError` (= `BackendError`) | **advanced backend extension** | Backend error; golden path uses `SolveError` (API-01.1/01.2) once P21 lands. |
 
 ## 7. Backend session traits and sync types (API-02, D2, D9)
@@ -152,7 +160,6 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 | `ModelSnapshot` (module `snapshot`, incl. `CellEntry`, `ConstraintEntry`, `ObjectiveEntry`, `VariableEntry`, `take_snapshot`) | **advanced backend extension** | Rebuild input for orchestration (D2). |
 | `ModelRevision`, `RevisionError` | **advanced backend extension** | Revision identity; core-orchestrated (D2). |
 | `DeltaBatch` | **advanced backend extension** | Revisioned delta stream (D2). |
-| `Change` / `model::changelog::Change` | **advanced backend extension** | Change journal; supersedes destructive drain (D2). |
 | `ValidationError`, `BoundValue`, `FiniteScalar`, `Tolerance` | **advanced backend extension** | Validation building blocks (D10). |
 | `Transaction` internals | **internal exposure to remove** | Model-private transaction; verify no public leakage. |
 
@@ -189,14 +196,33 @@ Full target bodies are frozen in `tests/ui/target_quickstart.rs` and
 |---|---|---|---|
 | 1 | `drain_changes()` (destructive drain) | implicit commit + revisioned sync in `SolverSession<B>` | after P21 |
 | 2 | `set_objective`, `set_objective!` | `minimize`/`maximize` | after P21 |
-| 3 | `constrain!` | `model.constrain(...)` | after P21 |
-| 4 | `add_var`, `add_binary`, `add_integer`, `add_parameter(f64)`, `add_variable(Bounds, VarType)` | definition-builder forms | after P22 |
-| 5 | infallible `set_parameter(param, f64)` | fallible `set_parameter` | after P22 |
-| 6 | `Model::constraint` (alias) | `Model::constrain` | after P22 |
-| 7 | Protocol/sync/ID items in the default prelude | `roml::advanced` / `roml::backend` | after P23 curation |
+| 3 | `constrain!` | `model.add_constraint(...)` | after P21 |
+| 4 | `add_var`, `add_binary`, `add_integer`, `add_parameter(f64)` | definition-builder forms | after P22 |
+| 5 | `add_variable(Bounds, VarType)` | removed in the same release the builder form lands (pre-1.0 break); wrappers `add_var`/`add_integer`/`add_binary` from row 4 cover the old shapes | after P22 (see Signature-collision migration) |
+| 6 | infallible `set_parameter(param, f64)` | fallible `set_parameter` (return-type break, pre-1.0) | after P22 (see Signature-collision migration) |
+| 7 | `Model::constrain`, `Model::constraint` (aliases) | `Model::add_constraint(spec)` (API-04.1) | after P22 |
+| 8 | Protocol/sync/ID items in the default prelude | `roml::advanced` / `roml::backend` | after P23 curation |
 
 All deprecations are documented in `MIGRATION.md` and `CHANGELOG.md` and remain
 tested for the chosen window (API-08.2/08.3).
+
+## Signature-collision migration (Rust has no method overloading)
+
+D12 promises "replacement before deprecation". Three current signatures
+cannot coexist with their targets under the same method name, so each needs
+an explicit approach. The packet's accepted assumption — "M2 may make
+documented pre-1.0 breaking changes with migration notes" — applies where
+noted.
+
+| Collision | Current | Target | Approach |
+|---|---|---|---|
+| `Model::add_variable` | `add_variable(Bounds, VarType) -> VarId` (infallible) | `add_variable(VariableDef) -> Result<Variable, ModelError>` (D7) | **Intentional pre-1.0 break.** The two-arg call shape cannot be preserved through a generic (two arguments vs one). The two-arg form is removed in the same pre-1.0 release that adds the builder form; `add_var()`, `add_integer(Bounds)`, and `add_binary()` (row 4) remain as the deprecated compatibility wrappers for those exact shapes until P23. MIGRATION.md documents the mechanical rewrite. |
+| `Model::set_parameter` | `set_parameter(ParamId, f64)` (infallible, `-> ()`) | `set_parameter(Parameter, f64) -> Result<(), ModelError>` (D10/API-06.3; `Parameter` is a D8 alias of `ParamId`, so the parameter type is unchanged in effect) | **Intentional pre-1.0 break.** Return type is not part of the method key, so the two signatures cannot coexist; fallibility is mandatory for release-mode validation (D10). The method's return type changes in one release. Statement-style call sites (`model.set_parameter(p, 3.0);`) keep compiling for the window, gaining a `#[must_use]` warning; MIGRATION.md documents `_ = …` and `?` handling. |
+| `Model::add_constraint` | `add_constraint(ConstraintBounds) -> ConId` | `add_constraint(spec) -> Result<ConId, ModelError>` (API-04.1) | **Generic compatibility input.** One method `add_constraint<S: Into<ConstraintSpec>>` (the pattern `Model::constrain` already uses) plus `impl From<ConstraintBounds> for ConstraintSpec` lets both call shapes compile through the same method, so D12 holds without a break. If the bridge proves infeasible in P22, fall back to an intentional pre-1.0 break for the raw-bounds form. |
+
+These approaches are recorded here so P22 implements the migration instead of
+guessing it. `constrain`/`constraint` and the builder wrappers carry the
+normal deprecation cycle (replacement compiles first, then deprecation).
 
 ## Open items inherited from planning (recorded in M2 STATE.md)
 
