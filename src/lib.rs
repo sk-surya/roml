@@ -183,7 +183,7 @@ pub mod prelude {
         binary, constrain, continuous, integer, parameter, set_objective, Bounds, Change, CoeffId,
         ConId, Constraint, ConstraintBounds, ConstraintExprExt, ConstraintSpec, LinExpr, Model,
         ModelError, ObjId, Objective, ObjectiveExprExt, ObjectiveSpec, ParamId, Parameter,
-        ParameterDef, Sense, Solution, SolveError, SolveMetadata, SolveStatus, SolverError,
-        SynchronizationMode, ValueExpr, VarId, VarType, Variable, VariableDef,
+        ParameterDef, Sense, Solution, SolveError, SolveMetadata, SolveOptions, SolveStatus,
+        SolverError, SynchronizationMode, ValueExpr, VarId, VarType, Variable, VariableDef,
     };
 }
