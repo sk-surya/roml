@@ -13,11 +13,14 @@ pub mod callback;
 pub mod conformance;
 pub mod error;
 pub mod facade;
+pub mod options;
 pub mod reference;
 pub mod request;
 pub mod session;
 
 pub use error::SolveError;
+pub use facade::SolverSession;
+pub use options::SolveOptions;
 
 /// Error type for solver operations.
 #[derive(Clone, Debug, PartialEq)]
