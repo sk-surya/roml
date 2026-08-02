@@ -68,6 +68,8 @@ pub enum ModelError {
     CoefficientNotFound(CoeffId),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
+    /// Binary bounds must lie within `[0, 1]`.
+    InvalidBinaryBounds,
     /// A numeric value was not finite (NaN or infinite).
     NonFiniteValue(&'static str),
     /// A value was NaN.
@@ -85,6 +87,12 @@ impl std::fmt::Display for ModelError {
             Self::ParameterNotFound(id) => write!(f, "Parameter not found: {:?}", id),
             Self::CoefficientNotFound(id) => write!(f, "Coefficient not found: {:?}", id),
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
+            Self::InvalidBinaryBounds => {
+                write!(
+                    f,
+                    "Invalid binary bounds: binary variable bounds must lie within [0, 1]"
+                )
+            }
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
@@ -204,6 +212,9 @@ impl Model {
         }
         if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
             return Err(ModelError::NonFiniteValue("variable upper bound"));
+        }
+        if var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
+            return Err(ModelError::InvalidBinaryBounds);
         }
         Ok(self.add_variable_internal(bounds, var_type, name))
     }
