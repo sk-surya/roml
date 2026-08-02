@@ -219,4 +219,24 @@ mod tests {
         let values: Vec<_> = arena.iter().map(|(_, _, &v)| v).collect();
         assert_eq!(values, vec![1, 3]);
     }
+
+    #[test]
+    fn with_capacity_default_slot_and_iter_mut() {
+        // Slot::default is an empty slot with a fresh generation.
+        let slot: Slot<i32> = Slot::default();
+        assert!(slot.data.is_none());
+
+        let mut arena: IdArena<i32> = IdArena::with_capacity(4);
+        assert!(arena.is_empty());
+        let (idx, gen) = arena.allocate(1);
+        arena.allocate(2);
+        assert!(!arena.is_empty());
+        assert_eq!(arena.len(), 2);
+
+        // iter_mut mutates every occupied slot in place.
+        for (_, _, v) in arena.iter_mut() {
+            *v *= 10;
+        }
+        assert_eq!(arena.get(idx, gen), Some(&10));
+    }
 }

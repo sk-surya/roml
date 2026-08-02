@@ -394,9 +394,18 @@ fn negotiate_options(
                 set_option(raw, "simplex_strategy", "1")?;
                 effective.lp_algorithm = Some(LpAlgorithm::DualSimplex);
             }
-            LpAlgorithm::Primal | LpAlgorithm::Dual => {
+            LpAlgorithm::Primal => {
+                // HiGHS simplex_strategy: 1 = dual, 2 = primal. A Primal
+                // request must actually run primal simplex, not silently fall
+                // back to dual (which is what the HiGHS default does).
                 set_option(raw, "solver", "simplex")?;
-                effective.lp_algorithm = Some(LpAlgorithm::DualSimplex);
+                set_option(raw, "simplex_strategy", "2")?;
+                effective.lp_algorithm = Some(LpAlgorithm::Primal);
+            }
+            LpAlgorithm::Dual => {
+                set_option(raw, "solver", "simplex")?;
+                set_option(raw, "simplex_strategy", "1")?;
+                effective.lp_algorithm = Some(LpAlgorithm::Dual);
             }
             LpAlgorithm::Barrier => {
                 set_option(raw, "solver", "ipm")?;
@@ -601,5 +610,24 @@ mod tests {
         if let Err(e) = result {
             assert_eq!(e.category, ErrorCategory::InvalidInput);
         }
+    }
+
+    #[test]
+    fn set_option_rejects_native_failure_with_internal_error() {
+        // A valid key with an invalid value makes Highs_setStringOptionValue
+        // return a non-OK status, which check_highs_status converts to an
+        // Internal/Recoverable BackendError carrying the native code.
+        let session = HighsSession::try_new().expect("HiGHS should be available");
+        let raw = session.raw_ptr();
+        let result = set_option(raw, "output_flag", "not_a_bool");
+        let err = result.expect_err("HiGHS must reject an invalid boolean option value");
+        assert_eq!(err.category, ErrorCategory::Internal);
+        assert_eq!(err.health_effect, HealthEffect::Recoverable);
+        assert!(
+            err.message
+                .contains("Highs_setStringOptionValue(output_flag)"),
+            "unexpected message: {}",
+            err.message
+        );
     }
 }
