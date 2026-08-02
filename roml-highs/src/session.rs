@@ -107,6 +107,25 @@ impl BackendSession for HighsSession {
                     batch.operations.len()
                 );
 
+                // Reject a batch whose base revision doesn't match the cursor
+                // BEFORE applying any operation. Applying first and failing at
+                // cursor.advance would leave the HiGHS model partially mutated
+                // (dirty state) while the cursor still reports Ready — exactly
+                // the partial-apply defect the differential harness guards
+                // against. The reference backend checks this up front.
+                if batch.from != self.cursor.applied_revision {
+                    let e = BackendError::new(
+                        format!(
+                            "delta batch from {} does not match cursor at {}",
+                            batch.from, self.cursor.applied_revision
+                        ),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::Recoverable,
+                    );
+                    self.cursor.mark_rebuild();
+                    return Err(e);
+                }
+
                 let result = apply_delta_batch(
                     self.raw,
                     &batch,
