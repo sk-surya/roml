@@ -22,8 +22,10 @@ use std::time::Duration;
 
 use roml::model::{Bounds, Model};
 use roml::prelude::*;
+use roml::solver::session::{BackendSession, SessionHealth, Synchronization};
+use roml::sync::AdapterHealth;
 use roml::SynchronizationMode;
-use roml_highs::Highs;
+use roml_highs::{Highs, HighsSession};
 
 fn approx(a: Option<f64>, expected: f64) {
     let got = a.unwrap_or_else(|| panic!("expected Some({expected}) but got None"));
@@ -277,6 +279,81 @@ fn default_solve_after_solve_with_resets_options() -> Result<(), Box<dyn std::er
         again.metadata().effective_configuration.threads,
         None,
         "threads must not leak into a default solve"
+    );
+    Ok(())
+}
+
+/// Arbitrary `backend_option(key, value)` entries must not leak across
+/// solves either: they persist on the native HiGHS handle, so the per-request
+/// reset must cover them (via `Highs_resetOptions`). Successful extra
+/// options are also recorded in the effective metadata.
+#[test]
+fn backend_option_is_recorded_and_reset_on_next_solve() -> Result<(), Box<dyn std::error::Error>> {
+    let (mut model, _x, _y) = quickstart_model();
+    let mut highs = Highs::new()?;
+
+    // A successful extra option is applied AND recorded in metadata.
+    let with_opt = highs.solve_with(
+        &mut model,
+        SolveOptions::new().backend_option("presolve", "off"),
+    )?;
+    assert!(with_opt.status().is_optimal());
+    assert!(
+        with_opt
+            .metadata()
+            .effective_configuration
+            .adjustments
+            .iter()
+            .any(|a| a.key == "presolve" && a.applied == "off"),
+        "successful backend_option must be recorded in effective metadata"
+    );
+
+    // A default solve must not retain the previous extra option.
+    let again = highs.solve(&mut model)?;
+    assert!(again.status().is_optimal());
+    assert!(
+        again
+            .metadata()
+            .effective_configuration
+            .adjustments
+            .iter()
+            .all(|a| a.key != "presolve"),
+        "backend_option must not leak into a default solve"
+    );
+    Ok(())
+}
+
+/// Session-level health regression (PR #21 review round 2): a rejected delta
+/// whose error is NOT terminal must mark the session RequiresRebuild — never
+/// Terminal. (The terminal mapping itself is unit-tested in
+/// `roml-highs/src/session.rs`.)
+#[test]
+fn rejected_unsupported_delta_marks_session_rebuild_not_terminal(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous())?;
+    model.add_constraint(x.le(10.0))?;
+    model.maximize(x)?;
+    let r1 = model.commit()?;
+
+    let mut session = HighsSession::try_new()?;
+    session.synchronize(Synchronization::Rebuild(model.take_snapshot()?))?;
+    assert_eq!(session.health(), AdapterHealth::Ready);
+
+    // Advance the model with an unsupported operation (semi-continuous
+    // domain): the projection rejects the delta with HealthEffect::RequiresRebuild.
+    model.set_semicontinuous(x, 1.0)?;
+    let r2 = model.commit()?;
+    let batches = model.deltas_since(r1)?;
+    let batch = batches.last().expect("r1->r2 batch");
+    assert_eq!(batch.to, r2);
+
+    let err = session.synchronize(Synchronization::DeltaBatch((*batch).clone()));
+    assert!(err.is_err(), "semi-continuous delta must be rejected");
+    assert_eq!(
+        session.health(),
+        AdapterHealth::RequiresRebuild,
+        "unsupported/recoverable failure demands a rebuild, not terminal"
     );
     Ok(())
 }

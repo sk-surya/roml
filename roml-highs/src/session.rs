@@ -49,6 +49,7 @@ use roml::solver::session::{
     BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt,
     Synchronization,
 };
+use roml::sync::AdapterHealth;
 use roml::LpAlgorithm;
 
 // ── BackendSession ──────────────────────────────────────────────────────────────
@@ -143,6 +144,7 @@ impl BackendSession for HighsSession {
                 match result {
                     Ok(()) => {
                         self.cursor.advance(&batch).map_err(|e| {
+                            self.cursor.mark_terminal();
                             BackendError::new(
                                 format!("cursor failed to advance after delta: {}", e),
                                 ErrorCategory::Internal,
@@ -154,7 +156,11 @@ impl BackendSession for HighsSession {
                         info!("Delta batch applied, cursor at revision {}", batch.to);
                     }
                     Err(e) => {
-                        self.cursor.mark_rebuild();
+                        // Map the failure onto the cursor health from the
+                        // error's own health effect: a terminal failure (e.g.
+                        // license) leaves the session terminally broken, not
+                        // merely rebuild-required (PR #21 review round 2).
+                        self.cursor.health = health_after_failed_delta(e.health_effect);
                         return Err(e);
                     }
                 }
@@ -385,19 +391,22 @@ fn negotiate_options(
 
     // ── Reset to HiGHS defaults ─────────────────────────────────────────────
     // HiGHS options persist on the native session between solves. A request
-    // is self-contained: every option the request can express is reset to its
-    // HiGHS default before the request's explicit values are applied, so a
-    // default solve after a configured solve_with does not silently retain
-    // the previous time limit, gaps, threads, output flag, random seed, or
-    // algorithm while metadata reports them unset.
-    set_option(raw, "time_limit", "1e20")?;
-    set_option(raw, "mip_rel_gap", "1e-4")?;
-    set_option(raw, "mip_abs_gap", "1e-6")?;
-    set_option(raw, "threads", "0")?;
-    set_option(raw, "output_flag", "true")?;
-    set_option(raw, "random_seed", "0")?;
-    set_option(raw, "solver", "choose")?;
-    set_option(raw, "simplex_strategy", "0")?;
+    // is self-contained: ALL options are reset to their HiGHS defaults before
+    // the request's explicit values are applied, so a default solve after a
+    // configured solve_with does not silently retain the previous time limit,
+    // gaps, threads, output flag, random seed, algorithm, or arbitrary
+    // backend_option(key, value) entries — the latter have no roml-level
+    // default to reset individually, so the session-wide reset is required
+    // (PR #21 review round 2).
+    // SAFETY: raw is a valid HiGHS instance handle.
+    let reset_ret = unsafe { Highs_resetOptions(raw) };
+    if reset_ret != STATUS_OK {
+        return Err(BackendError::new(
+            "Highs_resetOptions failed to restore defaults",
+            ErrorCategory::Internal,
+            HealthEffect::Recoverable,
+        ));
+    }
 
     // ── lp_algorithm ────────────────────────────────────────────────────────
     if let Some(algo) = &request.lp_algorithm {
@@ -528,7 +537,17 @@ fn negotiate_options(
         // null-terminated strings. Return code is checked immediately.
         let ret = unsafe { Highs_setStringOptionValue(raw, key_c.as_ptr(), value_c.as_ptr()) };
 
-        if ret != STATUS_OK {
+        if ret == STATUS_OK {
+            // Successful extra options are recorded in the effective
+            // configuration so metadata reflects what the backend applied
+            // (PR #21 review round 2).
+            effective.adjustments.push(ConfigAdjustment {
+                key: key.clone(),
+                requested: value.clone(),
+                applied: value.clone(),
+                reason: "set via Highs_setStringOptionValue".into(),
+            });
+        } else {
             // Fallback: try Highs_setOptionValue. Some HiGHS options use
             // a different format parser in each variant.
             // SAFETY: same invariants as above.
@@ -540,6 +559,13 @@ fn negotiate_options(
                         "HiGHS rejected option '{}' (string API: {}, option API: {})",
                         key, ret, ret2
                     ),
+                });
+            } else {
+                effective.adjustments.push(ConfigAdjustment {
+                    key: key.clone(),
+                    requested: value.clone(),
+                    applied: value.clone(),
+                    reason: "set via Highs_setOptionValue".into(),
                 });
             }
         }
@@ -557,6 +583,19 @@ fn negotiate_options(
 /// # Safety
 ///
 /// `raw` must be a valid HiGHS instance handle.
+/// Map a failed delta's error health effect onto the session cursor.
+///
+/// A terminal failure (e.g. license) leaves the session terminally broken;
+/// anything else demands a snapshot rebuild. This keeps the session's
+/// reported health consistent with the error it returned, so subsequent
+/// attempts treat the session as terminal rather than rebuildable.
+fn health_after_failed_delta(effect: HealthEffect) -> AdapterHealth {
+    match effect {
+        HealthEffect::Terminal => AdapterHealth::Terminal,
+        _ => AdapterHealth::RequiresRebuild,
+    }
+}
+
 fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendError> {
     let key_c = CString::new(key).map_err(|e| {
         BackendError::new(
@@ -594,6 +633,27 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_after_failed_delta_maps_terminal_and_rebuild() {
+        assert_eq!(
+            health_after_failed_delta(HealthEffect::Terminal),
+            AdapterHealth::Terminal,
+            "terminal failure must leave the session terminal"
+        );
+        assert_eq!(
+            health_after_failed_delta(HealthEffect::Recoverable),
+            AdapterHealth::RequiresRebuild
+        );
+        assert_eq!(
+            health_after_failed_delta(HealthEffect::RequiresRebuild),
+            AdapterHealth::RequiresRebuild
+        );
+        assert_eq!(
+            health_after_failed_delta(HealthEffect::None),
+            AdapterHealth::RequiresRebuild
+        );
+    }
 
     #[test]
     fn negotiate_options_empty_request() {
