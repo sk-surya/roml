@@ -163,4 +163,18 @@ mod tests {
         assert_eq!(lookup(p1), 10.0);
         assert_eq!(lookup(p2), 20.0);
     }
+
+    #[test]
+    fn with_capacity_add_named_and_empty() {
+        let mut store = ParameterStore::with_capacity(4);
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+
+        let id = store.add_named(3.0, "param".to_string());
+        assert!(!store.is_empty());
+        assert_eq!(store.len(), 1);
+        assert!(store.contains(id));
+        assert_eq!(store.get_value(id), Some(3.0));
+        assert_eq!(store.get(id).unwrap().name.as_deref(), Some("param"));
+    }
 }

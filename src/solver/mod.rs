@@ -52,3 +52,15 @@ pub enum LpAlgorithm {
     DualSimplex,
     Automatic,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solver_error_display_and_status_default() {
+        let err = SolverError("boom".to_string());
+        assert_eq!(err.to_string(), "SolverError(boom)");
+        assert_eq!(SolverStatus::default(), SolverStatus::Unknown);
+    }
+}

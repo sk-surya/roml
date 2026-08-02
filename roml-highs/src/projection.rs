@@ -817,9 +817,9 @@ pub(crate) fn apply_delta_batch(
                 }
             }
             ModelOp::SetSemiContinuousBound { .. } => {
-                return Err(BackendError::unsupported(
-                    "SetSemiContinuousBound: HiGHS does not support semi-continuous domains",
-                ));
+                // Unreachable: the pre-validation phase above rejects any
+                // batch containing this operation before the match loop.
+                unreachable!("SetSemiContinuousBound is rejected by pre-validation")
             }
             ModelOp::SetParameter { param, value } => {
                 // Map known parameters to HiGHS equivalents if applicable.

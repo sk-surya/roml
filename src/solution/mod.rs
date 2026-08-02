@@ -388,4 +388,133 @@ mod tests {
         assert!(solution.has_reduced_costs());
         assert_eq!(solution.reduced_cost(x), Some(0.0));
     }
+
+    #[test]
+    fn solution_constructors_and_accessors() {
+        let x = make_var(0);
+        let y = make_var(1);
+
+        // Solution::new(status) — empty, non-optimal.
+        let s = Solution::new(SolverStatus::Infeasible);
+        assert_eq!(s.status(), SolverStatus::Infeasible);
+        assert!(!s.is_optimal());
+        assert!(!s.has_values());
+        assert!(s.values().is_empty());
+        assert_eq!(s.objective_value(), None);
+        assert_eq!(s.objective_id(), None);
+
+        // Solution::from_values preserves the value map and status.
+        let mut map = HashMap::new();
+        map.insert(x, 1.0);
+        map.insert(y, 2.0);
+        let s2 = Solution::from_values(map.clone(), SolverStatus::Optimal);
+        assert!(s2.is_optimal());
+        assert!(s2.has_values());
+        assert_eq!(s2.values(), &map);
+        assert_eq!(s2.value(x), Some(1.0));
+        assert_eq!(s2.value(y), Some(2.0));
+    }
+
+    #[test]
+    fn builder_values_replaces_and_objective_id() {
+        let x = make_var(0);
+        let o = ObjId::new(0, Generation::new());
+
+        let mut map = HashMap::new();
+        map.insert(x, 1.0);
+        let sol = SolutionBuilder::new()
+            .value(x, 99.0) // overwritten by .values(map)
+            .values(map.clone())
+            .objective_id(o)
+            .build();
+        assert_eq!(sol.values(), &map);
+        assert_eq!(sol.objective_id(), Some(o));
+
+        // objective_id is None when never set.
+        let sol2 = SolutionBuilder::new().build();
+        assert_eq!(sol2.objective_id(), None);
+    }
+
+    #[test]
+    fn builder_dual_and_reduced_cost_maps() {
+        let x = make_var(0);
+        let c = make_con(0);
+
+        // Per-entry setters (lazy-init map insertion).
+        let sol = SolutionBuilder::new()
+            .dual(c, 0.5)
+            .reduced_cost(x, 0.25)
+            .build();
+        assert!(sol.has_duals());
+        assert_eq!(sol.dual(c), Some(0.5));
+        assert!(sol.has_reduced_costs());
+        assert_eq!(sol.reduced_cost(x), Some(0.25));
+
+        // Whole-map setters round-trip through build().
+        let mut dmap = HashMap::new();
+        dmap.insert(c, 1.5);
+        let mut rmap = HashMap::new();
+        rmap.insert(x, 2.5);
+        let sol2 = SolutionBuilder::new()
+            .duals(dmap.clone())
+            .reduced_costs(rmap.clone())
+            .build();
+        assert_eq!(sol2.duals(), Some(&dmap));
+        assert_eq!(sol2.reduced_costs(), Some(&rmap));
+        assert_eq!(sol2.dual(c), Some(1.5));
+        assert_eq!(sol2.reduced_cost(x), Some(2.5));
+    }
+
+    #[test]
+    fn solution_store_lifecycle() {
+        let x = make_var(0);
+        let mut store = SolutionStore::new();
+
+        // save_as with no latest solution returns false.
+        assert!(!store.save_as("a"));
+        assert!(store.get_named("a").is_none());
+
+        let sol = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 1.0)
+            .build();
+        store.set_latest(sol);
+        assert!(store.save_as("a"));
+        assert!(store.get_named("a").is_some());
+
+        // set_named overwrites an existing name.
+        let sol2 = SolutionBuilder::new()
+            .status(SolverStatus::Optimal)
+            .value(x, 2.0)
+            .build();
+        store.set_named("a", sol2);
+        assert_eq!(store.get_named("a").unwrap().value(x), Some(2.0));
+
+        // remove_named returns the stored solution and drops the entry.
+        let removed = store.remove_named("a");
+        assert!(removed.is_some());
+        assert!(store.get_named("a").is_none());
+
+        // named_solutions yields stored names; clear empties everything.
+        store.set_named("b", SolutionBuilder::new().build());
+        store.set_named("c", SolutionBuilder::new().build());
+        let names: Vec<&str> = store.named_solutions().collect();
+        assert!(names.contains(&"b"));
+        assert!(names.contains(&"c"));
+        store.clear();
+        assert!(store.latest().is_none());
+        assert_eq!(store.named_solutions().count(), 0);
+
+        // take_latest removes and returns the latest solution.
+        store.set_latest(
+            SolutionBuilder::new()
+                .status(SolverStatus::Optimal)
+                .value(x, 3.0)
+                .build(),
+        );
+        let taken = store.take_latest();
+        assert_eq!(taken.unwrap().value(x), Some(3.0));
+        assert!(store.latest().is_none());
+        assert!(store.take_latest().is_none());
+    }
 }
