@@ -408,11 +408,37 @@ impl Model {
     /// Core constraint insertion shared by the spec API and the fluent
     /// expression path: arena insert (with optional name) + changelog, then
     /// expression compilation and bounds adjustment.
+    /// Validate every entity referenced by a linear expression BEFORE any
+    /// mutation (API-06.5): a stale variable or parameter must fail
+    /// atomically instead of leaving a dangling row, objective, or changelog
+    /// event behind (PR #22 review round 1).
+    pub(crate) fn validate_expression_entities(&self, expr: &LinExpr) -> Result<(), ModelError> {
+        if !expr.constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("expression constant"));
+        }
+        for term in &expr.terms {
+            if !self.variables.contains(term.var) {
+                return Err(ModelError::VariableNotFound(term.var));
+            }
+            let value_expr = term.coeff.clone().into_value_expr();
+            for param in value_expr.dependencies() {
+                if !self.parameters.contains(param) {
+                    return Err(ModelError::ParameterNotFound(param));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn add_constraint_spec_impl(
         &mut self,
         spec: crate::expr::ConstraintSpec,
     ) -> Result<ConId, ModelError> {
         let crate::expr::ConstraintSpec { expr, bounds, name } = spec;
+        // Atomicity: validate all expression entities before inserting the
+        // row, so a stale variable/parameter cannot leave a dangling
+        // constraint or changelog event behind (API-06.5).
+        self.validate_expression_entities(&expr)?;
         let con = self.add_empty_constraint_internal(bounds, name);
         let constant = expr.compile_for_constraint(self, con)?;
         if constant.abs() >= f64::EPSILON {
@@ -1016,13 +1042,19 @@ impl Model {
 
         let value_expr = ValueExpr::constant(value);
         if let Some(existing_id) = self.coefficients.for_cell(target, var) {
-            let old = self
-                .coefficients
-                .get(existing_id)
-                .map(|d| d.cached_value)
-                .unwrap_or(value);
-            if (old - value).abs() < f64::EPSILON {
-                return Ok(());
+            // Replacement compares EXPRESSION semantics, not cached evaluated
+            // values (PR #22 review round 1): only a prior CONSTANT
+            // expression equal to the requested value is a semantic no-op. A
+            // parameter-dependent expression must be replaced even when its
+            // current evaluated value coincides with the requested constant —
+            // otherwise the dependency survives and a later parameter update
+            // silently changes the supposedly replaced coefficient.
+            let existing = self.coefficients.get(existing_id);
+            let old = existing.map(|d| d.cached_value).unwrap_or(value);
+            if let Some(ValueExpr::Constant(c)) = existing.map(|d| &d.value_expr) {
+                if (c - value).abs() < f64::EPSILON {
+                    return Ok(());
+                }
             }
             self.coefficients
                 .set_expr(existing_id, value_expr.clone(), value);
