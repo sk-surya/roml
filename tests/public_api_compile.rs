@@ -30,7 +30,9 @@ fn readme_method_style_compiles_and_runs() {
     let x = model.add_var();
     let y = model.add_var();
 
-    model.constrain((x + y).le(4.0)).expect("constrain should succeed");
+    model
+        .constrain((x + y).le(4.0))
+        .expect("constrain should succeed");
     let obj = model
         .maximize(x + 2.0 * y + 5.0)
         .expect("maximize should succeed");
@@ -52,9 +54,15 @@ fn current_prelude_surface_compiles() {
     assert_eq!(model.parameter_value(price), Some(1.0));
 
     let cap = constraint!(2.0 * x + y <= 10.0);
-    model.constrain(cap).expect("fluent constraint should succeed");
-    model.constrain((y + z).ge(1.0)).expect("ge constraint should succeed");
-    model.minimize(price * x + 3.0 * z).expect("minimize should succeed");
+    model
+        .constrain(cap)
+        .expect("fluent constraint should succeed");
+    model
+        .constrain((y + z).ge(1.0))
+        .expect("ge constraint should succeed");
+    model
+        .minimize(price * x + 3.0 * z)
+        .expect("minimize should succeed");
 
     // Parameter updates are queued and take effect on commit (current
     // documented semantics).
@@ -72,11 +80,11 @@ fn low_level_and_between_forms_compile() {
     let y = model.add_var();
 
     model.add_constraint(ConstraintBounds::le(4.0));
-    model.constrain((x).between(0.0, 10.0)).expect("between should succeed");
+    model
+        .constrain((x).between(0.0, 10.0))
+        .expect("between should succeed");
     model.constrain((y).ge(0.0)).expect("ge should succeed");
 
-    let obj = model
-        .maximize(x + y)
-        .expect("objective should be set");
+    let obj = model.maximize(x + y).expect("objective should be set");
     assert!(model.active_objective() == Some(obj) || model.active_objective().is_some());
 }

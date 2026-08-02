@@ -53,7 +53,9 @@ fn build_parameterized_model(price_value: f64) -> (Model, VarId, VarId, roml::id
     model
         .constrain((x + y).le(4.0))
         .expect("constraint should build");
-    model.maximize(price * x + y).expect("objective should build");
+    model
+        .maximize(price * x + y)
+        .expect("objective should build");
     (model, x, y, price)
 }
 
@@ -153,7 +155,8 @@ fn repeated_solve_bound_delta_updates_optimal() -> Result<(), Box<dyn std::error
 /// cursor is rejected before mutation, the cursor requires a rebuild, and a
 /// deterministic snapshot rebuild restores `Ready` and a correct solve.
 #[test]
-fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dyn std::error::Error>> {
+fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dyn std::error::Error>>
+{
     let (mut model, x, _y, _price) = build_parameterized_model(3.0);
     let r1 = model.commit()?;
 
@@ -198,7 +201,9 @@ fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dy
     assert_eq!(session.health(), AdapterHealth::Ready);
     assert_eq!(session.revision(), r1);
 
-    let recovered = session.solve(&SolveRequest::new()).expect("recovered solve");
+    let recovered = session
+        .solve(&SolveRequest::new())
+        .expect("recovered solve");
     assert_eq!(recovered.termination, TerminationStatus::Optimal);
     assert!(recovered.solution.is_some());
     approx(recovered.solution.as_ref().unwrap().objective_value, 12.0);
