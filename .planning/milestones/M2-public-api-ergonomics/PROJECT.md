@@ -68,17 +68,17 @@ let generation = model.add_variable(
     continuous().bounds(0.0, 100.0).named("generation"),
 )?;
 let committed = model.add_variable(binary().named("committed"))?;
-let demand = model.add_parameter(parameter(50.0).named("demand"))?;
+let price = model.add_parameter(parameter(20.0).named("price"))?;
 
 model.add_constraint(
-    generation.ge(demand).named("meet_demand"),
+    generation.ge(10.0).named("minimum_generation"),
 )?;
 model.add_constraint(
     (generation - 100.0 * committed)
         .le(0.0)
         .named("commitment_link"),
 )?;
-model.minimize(20.0 * generation + 100.0 * committed)?;
+model.maximize(price * generation - 100.0 * committed)?;
 ```
 
 ### Solve and incremental update
@@ -87,7 +87,7 @@ model.minimize(20.0 * generation + 100.0 * committed)?;
 let mut highs = Highs::new()?;
 let first = highs.solve(&mut model)?;
 
-model.set_parameter(demand, 75.0)?;
+model.set_parameter(price, 30.0)?;
 let second = highs.solve(&mut model)?;
 ```
 
