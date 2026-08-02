@@ -35,6 +35,9 @@
 //! what the session layer does today so P21 can decide the invalidation
 //! policy.
 
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
+
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::expr::ConstraintExprExt;
 use roml::id::VarId;
@@ -62,7 +65,7 @@ fn build_parameterized_model(price_value: f64) -> (Model, VarId, VarId, roml::id
     let y = model.add_var();
     let price = model.add_parameter(price_value).unwrap();
     model
-        .constrain((x + y).le(4.0))
+        .add_constraint((x + y).le(4.0))
         .expect("constraint should build");
     model
         .maximize(price * x + y)

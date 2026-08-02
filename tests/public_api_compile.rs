@@ -11,7 +11,15 @@
 //! It uses only the current, documented `roml::prelude` surface and the
 //! method-first style that already compiles (see README's method-based
 //! example). Keep this file green.
+//!
+//! P23: this file is the current-surface guard. It intentionally exercises
+//! the pre-1.0 compatibility surface (`add_var`/`add_binary`/`add_integer`/
+//! `add_parameter(f64)`, `Model::constrain`) that P23 deprecates, proving it
+//! still works during the deprecation window (API-08.3).
 
+#![allow(deprecated)]
+
+use roml::model::ConstraintBounds;
 use roml::prelude::*;
 
 /// The README's documented method-based workflow compiles and runs today.

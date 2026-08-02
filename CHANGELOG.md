@@ -9,6 +9,21 @@ between minor versions.
 
 ## [Unreleased] — Pre-1.0 Hardening Program
 
+### Deprecated
+
+#### Surface curation (P23)
+- **`Model::add_var()`** — use `Model::add_variable(continuous())` (D7).
+- **`Model::add_binary()`** — use `Model::add_variable(binary())` (D7).
+- **`Model::add_integer(Bounds)`** — use `Model::add_variable(integer().bounds(...))` (D7).
+- **`Model::constrain(spec)` / `Model::constraint(spec)`** — use `Model::add_constraint(spec)` (API-04.1).
+- **`constrain!` (effectful macro)** — use `model.add_constraint(constraint!(...))` or fluent specs.
+- **`Model::set_objective(spec)` / `set_objective!` (effectful macro)** — use `model.maximize(expr)` / `model.minimize(expr)`.
+- **`Model::drain_changes()`** — use `model.commit()`; the `roml_highs::Highs` façade synchronizes automatically.
+- **`Model::add_parameter(f64)`** — the call shape is preserved via the `Into<ParameterDef>` bridge, but `model.add_parameter(parameter(value))` is the recommended definition form (see `MIGRATION.md`).
+
+All deprecated APIs remain tested for the pre-1.0 window (API-08.3); the full
+before/after migration is in `MIGRATION.md`.
+
 ### Added
 
 #### Core model correctness (P1)
@@ -61,6 +76,28 @@ between minor versions.
 #### Examples (P5)
 - `examples/simple_lp.rs` — solver-free model construction demonstration.
 - `examples/parameter_update.rs` — parameter propagation and canonical cell combining.
+
+### Changed
+
+#### Surface curation and validation (P23)
+- **Curated default prelude** — `roml::prelude` now exports only common model,
+  expression, definition, solver, solution, and error types (API-07.1).
+  Protocol/backend types (`Change`, `CoeffId`, `DeltaBatch`, `ModelOp`,
+  `ModelRevision`, `ModelSnapshot`, `AdapterCursor`, `AdapterHealth`,
+  `Synchronization`, `BackendSession`, `SyncReceipt`) are absent from the
+  prelude (API-07.2) and grouped under `roml::advanced` (API-07.3).
+- **`roml::advanced` namespace** — backend contract, revisions, snapshots,
+  deltas, cursors, capabilities, callbacks, raw IDs, and expression internals
+  with explicit stability and semver documentation; `IdArena` made
+  crate-private (API-07.4).
+- **`VarId - VarId` expression operator** — `x - y` now compiles, mirroring
+  the existing `x + y` form.
+- **Validation is release-safe** — `set_variable_bounds`,
+  `set_constraint_bounds`, `set_semicontinuous`, and the raw
+  `add_constraint_coefficient`/`add_objective_coefficient` mutators reject
+  NaN/inverted/non-finite inputs with typed errors in all build profiles;
+  `add_constraint` and `add_constraint_expr` reject NaN constraint bounds
+  atomically (API-06, D10).
 
 ### Changed
 - **Public API narrowing** — internal store types (`VariableStore`, `ConstraintStore`,

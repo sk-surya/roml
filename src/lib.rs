@@ -7,6 +7,7 @@
 //! - Stores and reasons about solutions
 //! - Allows algebraic introspection (slack, infeasibility, evaluation)
 
+pub mod advanced;
 pub mod delta;
 pub mod expr;
 pub mod id;
@@ -142,6 +143,20 @@ macro_rules! objective {
 /// constrain!(model, x + y <= 4.0)?;
 /// constrain!(model, between: 0.0, x, 3.0)?;
 /// ```
+///
+/// **Deprecated (P23):** this macro is effectful (D1) — it mutates the model
+/// directly. Use the canonical method-first mutation instead:
+///
+/// ```ignore
+/// model.add_constraint(constraint!(x + y <= 4.0))?;
+/// model.add_constraint((x + y).le(4.0))?;
+/// ```
+///
+/// See `MIGRATION.md` → "Constraints".
+#[deprecated(
+    since = "0.1.0",
+    note = "effectful; use `model.add_constraint(constraint!(...))` or `model.add_constraint((expr).le/ge/eq/between(...))`; see MIGRATION.md -> Constraints"
+)]
 #[macro_export]
 macro_rules! constrain {
 	($model:expr, between: $lower:expr, $expr:expr, $upper:expr) => {
@@ -164,6 +179,20 @@ macro_rules! constrain {
 /// let obj = set_objective!(model, maximize: x + 2.0 * y + 3.0)?;
 /// assert_eq!(model.objective_constant(obj), Some(3.0));
 /// ```
+///
+/// **Deprecated (P23):** this macro is effectful (D1) — it mutates the model
+/// directly. Use the canonical method-first mutations instead:
+///
+/// ```ignore
+/// model.maximize(x + 2.0 * y + 3.0)?;
+/// model.minimize(x + 2.0 * y + 3.0)?;
+/// ```
+///
+/// See `MIGRATION.md` → "Objectives".
+#[deprecated(
+    since = "0.1.0",
+    note = "effectful; use `model.maximize(expr)` / `model.minimize(expr)`; see MIGRATION.md -> Objectives"
+)]
 #[macro_export]
 macro_rules! set_objective {
 	($model:expr, minimize: $expr:expr) => {
@@ -177,13 +206,40 @@ macro_rules! set_objective {
 	};
 }
 
-/// Common imports for the fluent modeling API.
+/// Common imports for the fluent modeling API (P23 curated default surface).
+///
+/// This is the intentional default for ordinary model authors (API-07.1): it
+/// covers model, expression, definition, solver, solution, and error types.
+/// Protocol and backend-extension types are deliberately ABSENT from this
+/// prelude (API-07.2); framework and backend authors reach them through
+/// [`advanced`].
+///
+/// ```compile_fail
+/// use roml::prelude::*;
+///
+/// // API-07.2: these protocol/backend-extension types must NOT resolve from
+/// // the default prelude. If any of them compile here, the negative
+/// // inventory has regressed and this doctest (correctly) fails.
+/// fn _absent(
+///     _: DeltaBatch,
+///     _: ModelOp,
+///     _: ModelRevision,
+///     _: ModelSnapshot,
+///     _: Change,
+///     _: CoeffId,
+///     _: AdapterCursor,
+///     _: AdapterHealth,
+///     _: Synchronization,
+///     _: BackendSession,
+///     _: SyncReceipt,
+/// ) {
+/// }
+/// ```
 pub mod prelude {
     pub use crate::{
-        binary, constrain, continuous, integer, parameter, set_objective, Bounds, Change, CoeffId,
-        ConId, Constraint, ConstraintBounds, ConstraintExprExt, ConstraintSpec, LinExpr, Model,
-        ModelError, ObjId, Objective, ObjectiveExprExt, ObjectiveSpec, ParamId, Parameter,
-        ParameterDef, Sense, Solution, SolveError, SolveMetadata, SolveOptions, SolveStatus,
-        SolverError, SynchronizationMode, ValueExpr, VarId, VarType, Variable, VariableDef,
+        binary, constraint, continuous, integer, parameter, Bounds, Constraint, ConstraintExprExt,
+        ConstraintSpec, LinExpr, Model, ModelError, Objective, ObjectiveExprExt, ObjectiveSpec,
+        Parameter, ParameterDef, Sense, Solution, SolveError, SolveOptions, SolveStatus, VarType,
+        Variable, VariableDef,
     };
 }
