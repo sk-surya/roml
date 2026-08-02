@@ -410,6 +410,7 @@ fn objective_parameter_coefficients_are_canonical() {
 /// Named objective variant through the spec path — does not complicate the
 /// ordinary `minimize`/`maximize` path (API-05.4).
 #[test]
+#[allow(deprecated)] // exercises the deprecated set_objective named-spec convenience (API-08.3)
 fn named_objective_via_spec_path() {
     let mut model = Model::new();
     let x = model.add_variable(continuous()).expect("x");

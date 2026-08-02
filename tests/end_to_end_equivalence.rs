@@ -394,9 +394,7 @@ fn set_objective_produces_addobjective_and_cell_and_active() {
 
     let _snap_before = model.take_snapshot().unwrap();
 
-    let obj = model
-        .set_objective(roml::ObjectiveSpec::new(Sense::Minimize, x))
-        .unwrap();
+    let obj = model.minimize(x).unwrap();
     let snap_after = {
         let rev_before = model.current_revision();
         let rev_after = model.commit().unwrap();
@@ -426,9 +424,7 @@ fn set_objective_produces_addobjective_and_cell_and_active() {
 fn set_active_objective_produces_setobjectiveactive() {
     let mut model = Model::new();
     let x = model.add_var();
-    let obj1 = model
-        .set_objective(roml::ObjectiveSpec::new(Sense::Minimize, x))
-        .unwrap();
+    let obj1 = model.minimize(x).unwrap();
     model.commit().unwrap();
 
     // Add a second objective but don't activate it within the commit
@@ -756,9 +752,7 @@ fn objective_sense_in_add_objective() {
     // the objective constant (e.g. from x + 10.0) is model state not
     // propagated through the Change/ModelOp pipeline. Constants are verified
     // separately in `objective_constants_in_snapshot`.
-    let obj = model
-        .set_objective(roml::ObjectiveSpec::new(Sense::Maximize, x))
-        .unwrap();
+    let obj = model.maximize(x).unwrap();
     let snap_after = {
         let rev_before = model.current_revision();
         let rev_after = model.commit().unwrap();
@@ -796,9 +790,7 @@ fn objective_constants_in_snapshot() {
     let x = model.add_var();
     model.commit().unwrap();
 
-    let obj = model
-        .set_objective(roml::ObjectiveSpec::new(Sense::Maximize, x + 10.0))
-        .unwrap();
+    let obj = model.maximize(x + 10.0).unwrap();
     model.commit().unwrap();
 
     // Snapshot should capture objective constant
@@ -836,14 +828,10 @@ fn multi_objective_active_switching() {
     let _snap_before = model.take_snapshot().unwrap();
 
     // Create and activate first objective
-    let obj1 = model
-        .set_objective(roml::ObjectiveSpec::new(Sense::Maximize, x))
-        .unwrap();
+    let obj1 = model.maximize(x).unwrap();
 
     // Create and activate second objective (replaces obj1)
-    let obj2 = model
-        .set_objective(roml::ObjectiveSpec::new(Sense::Minimize, y))
-        .unwrap();
+    let obj2 = model.minimize(y).unwrap();
 
     // Explicitly set active to obj2 — note: this is a no-op at this point
     // because set_objective already activates. Included to verify the
