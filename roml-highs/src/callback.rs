@@ -287,15 +287,21 @@ unsafe fn build_callback_data(
     let cd_out = &*data_out;
 
     let mut var_values = HashMap::new();
-    if !cd_out.mip_solution.is_null() && cd_out.mip_solution_size > 0 {
-        let solution_slice =
-            std::slice::from_raw_parts(cd_out.mip_solution, cd_out.mip_solution_size as usize);
-
+    // The incumbent MIP solution has one entry per model column in every
+    // supported HiGHS version; 1.9.0 exposes no explicit size field, so the
+    // column map length is the iteration bound (version-portable — the P24
+    // CI system job compiles against system HiGHS 1.9.0 headers).
+    if !cd_out.mip_solution.is_null() && !state.col_map.is_null() {
         // SAFETY: col_map is valid for the duration of the solve.
         // We dereference the raw pointer to read mapped indices.
-        if !state.col_map.is_null() {
-            let col_map_ref = &*state.col_map;
-            let rev = col_map_ref.reverse_map();
+        let col_map_ref = &*state.col_map;
+        let rev = col_map_ref.reverse_map();
+        if !rev.is_empty() {
+            // SAFETY: mip_solution is the full incumbent solution (one entry
+            // per column); rev.len() is the HiGHS column count, and the map
+            // lookup below bounds every read to indices that exist.
+            let solution_slice =
+                unsafe { std::slice::from_raw_parts(cd_out.mip_solution, rev.len()) };
             for (hi_idx, &val) in solution_slice.iter().enumerate() {
                 if let Some(&var_id) = rev.get(&(hi_idx as i32)) {
                     var_values.insert(var_id, val);
@@ -376,13 +382,14 @@ mod tests {
         };
         let state_ptr: *mut c_void = &mut state as *mut CallbackState as *mut c_void;
 
-        let mut data_in = HighsCallbackDataIn {
-            user_interrupt: 0,
-            user_solution: std::ptr::null_mut(),
-            cbdata: std::ptr::null_mut(),
-            user_has_solution: 0,
-            user_solution_size: 0,
-        };
+        // Only `user_interrupt` exists across supported HiGHS versions;
+        // `user_solution`/`cbdata`/`user_has_solution`/`user_solution_size`
+        // are 1.15-only. A field literal is not version-portable, so the
+        // test initializes via zeroed memory (all-int/pointer fields — a
+        // valid zeroed bit pattern) and sets the common field explicitly
+        // (P24 CI system job).
+        let mut data_in: HighsCallbackDataIn = unsafe { std::mem::zeroed() };
+        data_in.user_interrupt = 0;
 
         // SAFETY: test-only trampoline calls with a valid CallbackState and
         // no model mutation; the interrupt call passes a real data_in.
