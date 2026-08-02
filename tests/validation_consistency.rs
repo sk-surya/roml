@@ -286,3 +286,45 @@ fn var_id_sub_var_id_produces_expression() {
     let scaled: roml::LinExpr = (x - y) * 2.0;
     assert_eq!(scaled.num_terms(), 2);
 }
+
+/// Raw `add_constraint_coefficient` must reject STALE PARAMETER dependencies
+/// before insertion (PR #23 review): `as_lookup` returns 0.0 for a missing
+/// parameter, so without dependency validation an invalid dependency would be
+/// stored as a valid zero-valued coefficient instead of
+/// `ModelError::ParameterNotFound`.
+#[test]
+fn add_constraint_coefficient_rejects_stale_parameter_dependency() {
+    let mut model_a = Model::new();
+    let x = model_a.add_variable(continuous()).expect("x");
+    let con = model_a
+        .add_constraint(ConstraintBounds::le(100.0))
+        .expect("con");
+    let mut model_b = Model::new();
+    let stale = model_b.add_parameter(parameter(2.0)).expect("price");
+
+    let before = snapshot(&model_a);
+    let err = model_a.add_constraint_coefficient(con, x, roml::ValueExpr::Param(stale));
+    assert!(
+        matches!(err, Err(ModelError::ParameterNotFound(_))),
+        "stale parameter must be rejected: {err:?}"
+    );
+    assert_unchanged(&model_a, &before);
+}
+
+/// Same for the objective raw mutator.
+#[test]
+fn add_objective_coefficient_rejects_stale_parameter_dependency() {
+    let mut model_a = Model::new();
+    let x = model_a.add_variable(continuous()).expect("x");
+    let obj = model_a.add_objective_named(roml::Sense::Maximize, "obj");
+    let mut model_b = Model::new();
+    let stale = model_b.add_parameter(parameter(2.0)).expect("price");
+
+    let before = snapshot(&model_a);
+    let err = model_a.add_objective_coefficient(obj, x, roml::ValueExpr::Param(stale));
+    assert!(
+        matches!(err, Err(ModelError::ParameterNotFound(_))),
+        "stale parameter must be rejected: {err:?}"
+    );
+    assert_unchanged(&model_a, &before);
+}

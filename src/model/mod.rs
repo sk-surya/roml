@@ -472,14 +472,28 @@ impl Model {
             if !self.variables.contains(term.var) {
                 return Err(ModelError::VariableNotFound(term.var));
             }
-            for param in value_expr.dependencies() {
-                if !self.parameters.contains(param) {
-                    return Err(ModelError::ParameterNotFound(param));
-                }
-            }
+            self.validate_value_expr_parameters(&value_expr)?;
         }
         if !expr.constant.is_finite() {
             return Err(ModelError::NonFiniteValue("expression constant"));
+        }
+        Ok(())
+    }
+
+    /// Validate every parameter referenced by a [`ValueExpr`] BEFORE any
+    /// mutation — shared by the raw coefficient mutators and the expression
+    /// paths (PR #23 review). A stale parameter must fail with
+    /// `ModelError::ParameterNotFound` instead of being stored as a
+    /// zero-valued coefficient: `ParameterStore::as_lookup()` returns 0.0
+    /// for a missing parameter, so the dependency must be checked explicitly.
+    pub(crate) fn validate_value_expr_parameters(
+        &self,
+        value_expr: &ValueExpr,
+    ) -> Result<(), ModelError> {
+        for param in value_expr.dependencies() {
+            if !self.parameters.contains(param) {
+                return Err(ModelError::ParameterNotFound(param));
+            }
         }
         Ok(())
     }
@@ -926,6 +940,10 @@ impl Model {
 
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Constraint(con);
+        // Reject stale parameter dependencies before any mutation (PR #23
+        // review): `as_lookup` returns 0.0 for a missing parameter, so the
+        // dependency must be checked explicitly.
+        self.validate_value_expr_parameters(&value_expr)?;
         let initial_value = value_expr.eval(self.parameters.as_lookup());
 
         // Reject non-finite coefficient values before any mutation
@@ -1008,6 +1026,10 @@ impl Model {
 
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Objective(obj);
+        // Reject stale parameter dependencies before any mutation (PR #23
+        // review): `as_lookup` returns 0.0 for a missing parameter, so the
+        // dependency must be checked explicitly.
+        self.validate_value_expr_parameters(&value_expr)?;
         let initial_value = value_expr.eval(self.parameters.as_lookup());
 
         // Reject non-finite coefficient values before any mutation
