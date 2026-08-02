@@ -70,7 +70,8 @@ fn zero_constant_is_not_emitted() {
     let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
     let ops = &batches.last().expect("one committed batch").operations;
     assert!(
-        !ops.iter().any(|op| matches!(op, ModelOp::SetObjectiveConstant { .. })),
+        !ops.iter()
+            .any(|op| matches!(op, ModelOp::SetObjectiveConstant { .. })),
         "zero constant must not be journaled, ops: {ops:#?}"
     );
 }
