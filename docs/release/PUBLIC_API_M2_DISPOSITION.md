@@ -61,9 +61,9 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 | `Model::with_name(name)` / `Model::named(name)` | **golden path** (target) | `named` is the P22 target name-bearing constructor (target fixture). |
 | `Model::add_var()` | **compatibility/deprecated** | Replaced by `add_variable(continuous())` (D7) in P22. |
 | `Model::add_binary()` | **compatibility/deprecated** | Replaced by `add_variable(binary())` (D7). |
-| `Model::add_integer(Bounds)` | **compatibility/deprecated** | Replaced by `add_variable(integer())` with optional `.bounds(...)` (D7). |
+| `Model::add_integer(Bounds)` | **compatibility/deprecated** | Replaced by `add_variable(integer())` with optional `.bounds(...)` (D7). Kept as a wrapper, but its return type becomes fallible (`Result<VarId, ModelError>`, D10) — see "Signature-collision migration". |
 | `Model::add_variable(Bounds, VarType)` | **compatibility/deprecated** (removed, not overloadable) | Current signature (infallible, returns `VarId`). The target `add_variable(VariableDef)` (D7) cannot coexist — Rust forbids overloads. Approach: intentional pre-1.0 break; the two-arg form is removed in the same release P22 adds the builder form; `add_var()`/`add_integer(Bounds)`/`add_binary()` remain as the deprecated compatibility wrappers. See "Signature-collision migration". |
-| `Model::add_parameter(f64)` | **compatibility/deprecated** | Replaced by `add_parameter(parameter(value))` (D7) in P22. |
+| `Model::add_parameter(f64)` | **compatibility/deprecated** | Replaced by `add_parameter(parameter(value))` (D7) in P22. Single-argument shape allows an `Into<ParameterDef>` bridge (`From<f64>`) preserving the call shape; return type changes — see "Signature-collision migration". |
 | `Model::add_constraint(ConstraintBounds)` | **golden path** `(target)` | Current signature takes raw bounds (returns `ConId`). The target `add_constraint(spec)` (API-04.1, D1) is canonical and subsumes it via the generic pattern `S: Into<ConstraintSpec>` that `Model::constrain` already uses, with `impl From<ConstraintBounds> for ConstraintSpec` — both call shapes compile through one method. See "Signature-collision migration". |
 | `Model::constrain(spec)` | **compatibility/deprecated** | Current canonical-by-habit form (generic `S: Into<ConstraintSpec>`). Superseded by `add_constraint(spec)` (API-04.1, D1); deprecated in P23 after the replacement compiles (D12). |
 | `Model::constraint(spec)` | **compatibility/deprecated** | Redundant alias of `constrain`; superseded by `add_constraint(spec)`; deprecate in P23. |
@@ -95,7 +95,7 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 | `LinExpr` | **golden path** | Canonical expression type. |
 | `ConstraintExprExt` (`.le/.ge/.eq/.between`) | **golden path** | Canonical constraint builders (API-04.3). |
 | `ObjectiveExprExt` (`.minimize/.maximize`) | **golden path** | Canonical objective builders. |
-| `ConstraintSpec`, `ObjectiveSpec` | **golden path** | Builder result types consumed by `Model::constrain`/`minimize`. |
+| `ConstraintSpec`, `ObjectiveSpec` | **golden path** | Builder result types consumed by `Model::constrain` today; the canonical target consumer is `Model::add_constraint(spec)` (API-04.1). |
 | `ValueExpr` (persistent parameter expressions) | **advanced backend extension** | Parameter-dependent coefficient expressions. |
 | `Term`, `TermCoeff` | **advanced backend extension** | Expression internals; keep public for advanced algebra but not in prelude. |
 | `LinExpr::compile_for_constraint/compile_for_objective`, `simplify`, `evaluate` | **advanced backend extension** | Advanced expression surgery. |
@@ -107,7 +107,7 @@ protocol types that API-07.2 explicitly excludes from the default prelude.
 |---|---|---|
 | `constraint!` | **optional syntax sugar** | Pure `ConstraintSpec` builder; may remain (D1). |
 | `objective!` | **optional syntax sugar** | Pure `ObjectiveSpec` builder; may remain (D1). |
-| `constrain!` | **compatibility/deprecated** | Effectful (D1); replaced by `model.constrain(...)`. Deprecated in P23. |
+| `constrain!` | **compatibility/deprecated** | Effectful (D1); replaced by the canonical `model.add_constraint(...)` (API-04.1). Deprecated in P23. |
 | `set_objective!` | **compatibility/deprecated** | Effectful (D1); replaced by `model.maximize(...)`/`model.minimize(...)`. Deprecated in P23. |
 
 ## 5. IDs and coefficient APIs (API-05.6, API-06, D8, D11)
@@ -197,7 +197,7 @@ Full target bodies are frozen in `tests/ui/target_quickstart.rs` and
 | 1 | `drain_changes()` (destructive drain) | implicit commit + revisioned sync in `SolverSession<B>` | after P21 |
 | 2 | `set_objective`, `set_objective!` | `minimize`/`maximize` | after P21 |
 | 3 | `constrain!` | `model.add_constraint(...)` | after P21 |
-| 4 | `add_var`, `add_binary`, `add_integer`, `add_parameter(f64)` | definition-builder forms | after P22 |
+| 4 | `add_var`, `add_binary`, `add_integer`, `add_parameter(f64)` | definition-builder forms (`add_integer` and `add_parameter` carry return-type breaks — see Signature-collision migration) | after P22 |
 | 5 | `add_variable(Bounds, VarType)` | removed in the same release the builder form lands (pre-1.0 break); wrappers `add_var`/`add_integer`/`add_binary` from row 4 cover the old shapes | after P22 (see Signature-collision migration) |
 | 6 | infallible `set_parameter(param, f64)` | fallible `set_parameter` (return-type break, pre-1.0) | after P22 (see Signature-collision migration) |
 | 7 | `Model::constrain`, `Model::constraint` (aliases) | `Model::add_constraint(spec)` (API-04.1) | after P22 |
@@ -208,17 +208,26 @@ tested for the chosen window (API-08.2/08.3).
 
 ## Signature-collision migration (Rust has no method overloading)
 
-D12 promises "replacement before deprecation". Three current signatures
-cannot coexist with their targets under the same method name, so each needs
-an explicit approach. The packet's accepted assumption — "M2 may make
-documented pre-1.0 breaking changes with migration notes" — applies where
-noted.
+D12 promises "replacement before deprecation". Four current signatures cannot
+coexist with their targets under the same method name, so each needs an
+explicit approach. The packet's accepted assumption — "M2 may make documented
+pre-1.0 breaking changes with migration notes" — applies where noted.
+
+**"Compatibility" here means *input-shape* compatibility only.** Every target
+method is fallible (D10), so return types change on every bridged or
+replaced method (`ConId` → `Result<ConId, ModelError>`, `VarId` →
+`Result<Variable, ModelError>`, `()` → `Result<(), ModelError>`). A bridge
+preserves how the call is *written*; it cannot preserve the old infallible
+semantics. Statement-style call sites that ignore the result keep compiling
+for the window, gaining a `#[must_use]` warning.
 
 | Collision | Current | Target | Approach |
 |---|---|---|---|
 | `Model::add_variable` | `add_variable(Bounds, VarType) -> VarId` (infallible) | `add_variable(VariableDef) -> Result<Variable, ModelError>` (D7) | **Intentional pre-1.0 break.** The two-arg call shape cannot be preserved through a generic (two arguments vs one). The two-arg form is removed in the same pre-1.0 release that adds the builder form; `add_var()`, `add_integer(Bounds)`, and `add_binary()` (row 4) remain as the deprecated compatibility wrappers for those exact shapes until P23. MIGRATION.md documents the mechanical rewrite. |
 | `Model::set_parameter` | `set_parameter(ParamId, f64)` (infallible, `-> ()`) | `set_parameter(Parameter, f64) -> Result<(), ModelError>` (D10/API-06.3; `Parameter` is a D8 alias of `ParamId`, so the parameter type is unchanged in effect) | **Intentional pre-1.0 break.** Return type is not part of the method key, so the two signatures cannot coexist; fallibility is mandatory for release-mode validation (D10). The method's return type changes in one release. Statement-style call sites (`model.set_parameter(p, 3.0);`) keep compiling for the window, gaining a `#[must_use]` warning; MIGRATION.md documents `_ = …` and `?` handling. |
-| `Model::add_constraint` | `add_constraint(ConstraintBounds) -> ConId` | `add_constraint(spec) -> Result<ConId, ModelError>` (API-04.1) | **Generic compatibility input.** One method `add_constraint<S: Into<ConstraintSpec>>` (the pattern `Model::constrain` already uses) plus `impl From<ConstraintBounds> for ConstraintSpec` lets both call shapes compile through the same method, so D12 holds without a break. If the bridge proves infeasible in P22, fall back to an intentional pre-1.0 break for the raw-bounds form. |
+| `Model::add_parameter` | `add_parameter(f64) -> ParamId` (infallible) | `add_parameter(ParameterDef) -> Result<Parameter, ModelError>` (D7) | **Generic compatibility input (partial).** Single-argument shape allows one method `add_parameter<P: Into<ParameterDef>>` with `impl From<f64> for ParameterDef` (initial value, no name), so `add_parameter(1.0)` and `add_parameter(parameter(1.0))` both compile. Input-shape compatible only: return type changes `ParamId` → `Result<Parameter, ModelError>`. |
+| `Model::add_constraint` | `add_constraint(ConstraintBounds) -> ConId` (infallible) | `add_constraint(spec) -> Result<ConId, ModelError>` (API-04.1) | **Generic compatibility input (partial).** One method `add_constraint<S: Into<ConstraintSpec>>` (the pattern `Model::constrain` already uses) plus `impl From<ConstraintBounds> for ConstraintSpec` preserves the raw-bounds input shape; return type changes `ConId` → `Result<ConId, ModelError>` (D10). **Required internal refactor:** `add_constraint_expr` currently calls the public `add_constraint(bounds)` (`src/expr/linear.rs:578`); once the public method becomes the generic spec API, that call must route through a private primitive `add_empty_constraint(bounds)` (arena insert + changelog) so the expr-only path neither round-trips through `ConstraintSpec` nor captures the generic's spec semantics. Fallback if the bridge proves infeasible in P22: intentional pre-1.0 break for the raw-bounds form. |
+| `Model::add_integer(Bounds)` | `add_integer(Bounds) -> VarId` (infallible) | kept as compatibility wrapper (deprecation row 4); semantics via `add_variable(integer().bounds(...))` (D7) | **Return-type break.** The wrapper stays but must become fallible: `add_integer(Bounds) -> Result<VarId, ModelError>` — D10 forbids infallible mutation where invalid bounds are possible (API-06.1/06.4). Invalid bounds surface as typed errors instead of asserting. `add_var()` and `add_binary()` take no inputs, have no failure mode, and may remain `-> VarId`. |
 
 These approaches are recorded here so P22 implements the migration instead of
 guessing it. `constrain`/`constraint` and the builder wrappers carry the
