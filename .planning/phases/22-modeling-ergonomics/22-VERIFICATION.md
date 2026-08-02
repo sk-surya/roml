@@ -90,7 +90,7 @@ Not applicable — no probes declared in the PLAN, and this is a modeling-API ph
 | API-06.2 | NaN/non-finite rejected in debug AND release | ✓ SATISFIED | Runtime `is_finite()`/`is_valid()` checks, not `debug_assert!` (`src/model/mod.rs:206-219, 258-267, 663-665, 697-703`); tests `rejects_nan_bounds`, `rejects_invalid_infinities`, `parameter_definition_defaults_and_validation`, `sparse_ops_reject_stale_entities_and_non_finite_values` |
 | API-06.3 | Parameter mutation fallible, rejects stale IDs | ✓ SATISFIED | `set_parameter` checks `contains` then non-finite (`src/model/mod.rs:696-705`); test `tests/definition_builders.rs#set_parameter_rejects_unknown_parameter` |
 | API-06.4 | Builders validate domain invariants incl. binary bounds | ✓ SATISFIED | `rejects_binary_bounds_outside_unit_interval`; `InvalidBinaryBounds` error `src/model/mod.rs:71-72, 216-218` |
-| API-06.5 | Public mutations atomic on validation failure | ✓ SATISFIED | `failed_creation_is_atomic` (counts, changelog, revision) |
+| API-06.5 | Public mutations atomic on validation failure | ✓ SATISFIED | `failed_creation_is_atomic` (counts, changelog, revision); review round 1 closed the canonical-path gap: `validate_expression_entities` pre-validates before any row/objective insertion in `add_constraint_spec_impl`/`add_objective_spec`/`add_objective_expr`/`add_constraint_expr`, with 6 atomicity tests (stale variable/parameter × constraint/objective) |
 | API-06.6 | Error messages identify entity/invariant | ✓ SATISFIED | Typed errors carry entity (`VariableNotFound(id)`, `NonFiniteValue("variable lower bound")`, `InvalidBinaryBounds` with invariant text `src/model/mod.rs:81-101`); tests assert exact variants |
 
 ### Anti-Patterns Found

@@ -347,13 +347,23 @@ None - no external service configuration required.
 *Phase: 22-modeling-ergonomics*
 *Completed: 2026-08-02*
 
+## Review Cycle (PR #22, 2026-08-02)
+
+Independent review returned 2 blocking findings, both resolved:
+
+1. **`set_coefficient` compared cached evaluated values instead of expression semantics** — replacing a parameter-dependent cell (`p * x`, p = 2) with the constant 2 hit the cached-value early-return, leaving the parameter dependency in place; a later `p` update silently changed the "replaced" coefficient. Fix: the no-op check now only fires for a prior **constant** expression equal to the requested value; any parameter-dependent cell is replaced (dependency dropped). Test: `set_coefficient_replaces_parameter_dependent_expression` (replacement survives a parameter update).
+2. **API-06.5 claimed satisfied while `add_constraint(spec)`/`add_objective` were non-atomic** — the row/objective was inserted before expression compilation, so a stale variable/parameter left a dangling row + changelog event. Fix (in P22, not deferred): `Model::validate_expression_entities` pre-validates every referenced variable, parameter, and the expression constant's finiteness BEFORE any insertion, applied to `add_constraint_spec_impl`, `add_objective_spec`, `add_objective_expr`, and `add_constraint_expr`. Six atomicity tests cover the matrix (stale variable/parameter × constraint/objective + `add_constraint_expr`). Deferred item 4 marked resolved.
+
+Post-fix matrix: roml **528 passed / 0 failed**; roml-highs 89/0; clippy/rustdoc/fmt/doctests clean.
+
 ## Self-Check: PASSED
 
 - `22-SUMMARY.md` exists at `.planning/phases/22-modeling-ergonomics/22-SUMMARY.md`.
 - Task commits verified: `53715a8`, `c30173d`, `9501a26`, `c74cc21`, `6053bc7`, `5e84994`.
 - Test files exist: `tests/modeling_ergonomics.rs`, `tests/named_entities.rs`.
 - Verification matrix green: fmt clean; clippy `-D warnings` clean for `roml` and
-  `roml-highs`; `cargo test -p roml --all-targets` 522 passed / 0 failed;
+  `roml-highs`; `cargo test -p roml --all-targets` 528 passed / 0 failed
+  (522 at phase end + 6 review-round tests);
   `cargo test -p roml-highs --all-targets` 89 passed / 0 failed;
   `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` clean
   (and for `roml-highs`). Pre-existing `roml-mosek`/`roml-xpress` E0432 failures
