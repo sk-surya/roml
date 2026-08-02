@@ -45,7 +45,9 @@ pub use solver::session::{
     BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt,
     Synchronization,
 };
-pub use solver::{LpAlgorithm, SolveError, SolveStatus, SolverError, SolverStatus};
+pub use solver::{
+    LpAlgorithm, SolveError, SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
+};
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;
 

@@ -4,14 +4,19 @@
 //! - [`normalize_result`]: conversion of a backend [`SolveResult`] into the
 //!   user-facing [`Solution`] (D4), kept here so HiGHS-specific code never
 //!   constructs golden-path solutions directly;
-//! - (later) the generic [`SolverSession`](Self) orchestration.
+//! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
 use crate::id::ObjId;
+use crate::model::Model;
 use crate::revision::ModelRevision;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
 use crate::solution::{Solution, SolutionBuilder};
+use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
+use crate::solver::options::SolveOptions;
 use crate::solver::request::SolveResult;
+use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
 use crate::solver::{SolveError, SolveStatus};
+use crate::sync::{AdapterCursor, AdapterHealth};
 
 /// Normalize a backend [`SolveResult`] into a user-facing [`Solution`].
 ///
@@ -68,6 +73,193 @@ pub fn normalize_result(
     }
 
     Ok(builder.build())
+}
+
+/// Generic model-to-backend solve orchestration (D2).
+///
+/// Owns one backend session and coordinates commit → synchronization →
+/// solve → normalization for repeated solves on one [`Model`]. The solve
+/// algorithm (plan Task 3):
+///
+/// 1. `model.commit()` — fails before any backend mutation (D5);
+/// 2. inspect backend health and revision;
+/// 3. terminal health → [`SolveError`] without retry;
+/// 4. requires rebuild or missing delta chain → snapshot rebuild;
+/// 5. ready and behind → apply sequential delta batches;
+/// 6. ready and current → no synchronization;
+/// 7. recoverable/dirty sync failure → one snapshot rebuild attempt;
+/// 8. solve exactly once after successful synchronization;
+/// 9. normalize the result and attach [`SolveMetadata`].
+///
+/// At most one automatic rebuild retry per solve attempt (API-02.3), and a
+/// prior solution is invalidated once the model is mutated so a stale result
+/// is never reported as current (API-01.5).
+pub struct SolverSession<B> {
+    backend: B,
+    last_solution: Option<Solution>,
+}
+
+impl<B> SolverSession<B>
+where
+    B: BackendSession + SessionHealth + BackendMetadata,
+{
+    /// Create a session wrapping a backend session.
+    pub fn new(backend: B) -> Self {
+        Self {
+            backend,
+            last_solution: None,
+        }
+    }
+
+    /// Solve the current model with default options.
+    pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
+        self.solve_with(model, SolveOptions::default())
+    }
+
+    /// Solve the current model with explicit [`SolveOptions`].
+    pub fn solve_with(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+    ) -> Result<Solution, SolveError> {
+        // 0. Validate options before any state change (extended in Task 4).
+        options.validate()?;
+
+        // 1. Commit; fail before backend mutation on error (D5).
+        let committed = model.commit().map_err(SolveError::Commit)?;
+
+        // 2. Inspect backend health and revision.
+        let health = self.backend.health();
+        let backend_rev = self.backend.revision();
+
+        // 3. Terminal -> error without retry.
+        if health == AdapterHealth::Terminal {
+            return Err(SolveError::Synchronization(BackendError::new(
+                "backend session is terminal; create a new session",
+                ErrorCategory::Internal,
+                HealthEffect::Terminal,
+            )));
+        }
+
+        // Invalidate a prior solution if the model has been mutated since it
+        // was produced — this happens before synchronization so a failed sync
+        // cannot leave a stale solution as the session's current one.
+        if self
+            .last_solution
+            .as_ref()
+            .is_some_and(|prev| prev.metadata().model_revision != committed)
+        {
+            self.last_solution = None;
+        }
+
+        let mut sync_mode = SynchronizationMode::NoChange;
+
+        if health == AdapterHealth::RequiresRebuild {
+            // 4. Requires rebuild -> snapshot rebuild.
+            self.rebuild_from_snapshot(model)?;
+            sync_mode = SynchronizationMode::Rebuild;
+        } else if backend_rev < committed {
+            // 5. Ready and behind -> sequential delta batches.
+            match self.apply_deltas(model, backend_rev) {
+                Ok(()) => sync_mode = SynchronizationMode::Delta,
+                Err(_) => {
+                    // 7. Recoverable/dirty sync failure -> one rebuild attempt.
+                    self.rebuild_from_snapshot(model)?;
+                    sync_mode = SynchronizationMode::Rebuild;
+                }
+            }
+        } else if backend_rev > committed {
+            // Backend ahead of the model (foreign cursor / future revision):
+            // re-synchronize via a snapshot rebuild.
+            self.rebuild_from_snapshot(model)?;
+            sync_mode = SynchronizationMode::Rebuild;
+        }
+        // 6. backend_rev == committed -> no synchronization.
+
+        // Post-synchronization invariant: the backend must be Ready and
+        // exactly at the committed revision before any solve.
+        if self.backend.health() != AdapterHealth::Ready || self.backend.revision() != committed {
+            return Err(SolveError::Synchronization(BackendError::new(
+                format!(
+                    "backend not synchronized: health {:?}, revision {} != model {}",
+                    self.backend.health(),
+                    self.backend.revision(),
+                    committed
+                ),
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            )));
+        }
+
+        // 8. Solve exactly once.
+        let request = options.into_request();
+        let result = self
+            .backend
+            .solve(&request)
+            .map_err(|e| SolveError::from_backend(false, e))?;
+
+        // 9. Normalize and attach metadata.
+        let active_objective = model.active_objective();
+        let solution = normalize_result(
+            &result,
+            committed,
+            active_objective,
+            self.backend.name(),
+            sync_mode,
+        )?;
+
+        self.last_solution = Some(solution.clone());
+        Ok(solution)
+    }
+
+    /// The solution produced by the most recent successful solve, if any.
+    ///
+    /// Invalidated once the model is mutated (API-01.5).
+    pub fn last_solution(&self) -> Option<&Solution> {
+        self.last_solution.as_ref()
+    }
+
+    /// Access the wrapped backend session.
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Mutably access the wrapped backend session.
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    fn rebuild_from_snapshot(&mut self, model: &Model) -> Result<(), SolveError> {
+        let snapshot = model.take_snapshot().map_err(SolveError::Commit)?;
+        self.backend
+            .synchronize(Synchronization::Rebuild(snapshot))
+            .map_err(|e| SolveError::from_backend(true, e))?;
+        Ok(())
+    }
+
+    fn apply_deltas(
+        &mut self,
+        model: &Model,
+        backend_rev: ModelRevision,
+    ) -> Result<(), SolveError> {
+        let cursor = AdapterCursor {
+            applied_revision: backend_rev,
+            health: AdapterHealth::Ready,
+        };
+        let batches = model.coordinator.batches_for_cursor(&cursor).map_err(|_| {
+            SolveError::Synchronization(BackendError::new(
+                "delta chain unavailable for backend revision; rebuild required",
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            ))
+        })?;
+        for batch in batches {
+            self.backend
+                .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+                .map_err(|e| SolveError::from_backend(true, e))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
