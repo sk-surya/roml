@@ -13,7 +13,7 @@
 
 mod arena;
 
-pub use arena::IdArena;
+pub(crate) use arena::IdArena;
 
 /// Generation counter for detecting stale IDs.
 ///
