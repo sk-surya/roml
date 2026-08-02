@@ -673,6 +673,15 @@ impl Model {
     }
 
     /// Add and activate an objective from a fluent objective specification.
+    ///
+    /// Deprecated in P23: the canonical single-objective mutations are
+    /// [`Self::minimize`] and [`Self::maximize`] (API-04.2, D1). This
+    /// convenience is kept for the pre-1.0 compatibility window and remains
+    /// tested (API-08.3). See `MIGRATION.md` → "Objectives".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::maximize(expr)` / `Model::minimize(expr)`; see MIGRATION.md -> Objectives"
+    )]
     pub fn set_objective<S>(&mut self, spec: S) -> Result<ObjId, ModelError>
     where
         S: Into<ObjectiveSpec>,
@@ -708,6 +717,7 @@ impl Model {
     where
         E: Into<LinExpr>,
     {
+        #[allow(deprecated)]
         self.set_objective(expr.minimize())
     }
 
@@ -716,6 +726,7 @@ impl Model {
     where
         E: Into<LinExpr>,
     {
+        #[allow(deprecated)]
         self.set_objective(expr.maximize())
     }
 
