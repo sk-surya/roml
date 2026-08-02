@@ -28,7 +28,10 @@ pub use model::changelog::Change;
 pub use model::{Bounds, ConstraintBounds, Model, ModelError, Sense, VarType};
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
-pub use solution::{Solution, SolutionBuilder, SolutionStore};
+pub use solution::{
+    metadata::SolveMetadata, metadata::SynchronizationMode, Solution, SolutionBuilder,
+    SolutionStore,
+};
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
@@ -39,7 +42,7 @@ pub use solver::session::{
     BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt,
     Synchronization,
 };
-pub use solver::{LpAlgorithm, SolverError};
+pub use solver::{LpAlgorithm, SolveError, SolveStatus, SolverError, SolverStatus};
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;
 
@@ -174,6 +177,7 @@ pub mod prelude {
     pub use crate::{
         constrain, set_objective, Bounds, Change, CoeffId, ConId, ConstraintBounds,
         ConstraintExprExt, ConstraintSpec, LinExpr, Model, ModelError, ObjId, ObjectiveExprExt,
-        ObjectiveSpec, ParamId, Sense, Solution, SolverError, ValueExpr, VarId, VarType,
+        ObjectiveSpec, ParamId, Sense, Solution, SolveError, SolveMetadata, SolveStatus,
+        SolverError, SynchronizationMode, ValueExpr, VarId, VarType,
     };
 }
