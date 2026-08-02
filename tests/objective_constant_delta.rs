@@ -7,6 +7,9 @@
 //! incremental solve. These tests pin that the constant reaches the backend
 //! exactly once through `SetObjectiveConstant`.
 
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
+
 use roml::delta::ModelOp;
 use roml::prelude::*;
 use roml::revision::ModelRevision;
