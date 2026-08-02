@@ -116,7 +116,7 @@ coverage:
     human_judgment: true
     rationale: "The disposition table and deprecation order are an API review artifact required by the P20 gate; automation cannot judge naming/curation coherence."
   - id: D6
-    description: "Repeated-solve HighsSession protocol baseline: rebuild+solve, parameter delta re-solve (12.0->20.0), bound delta re-solve (12.0->8.0), and dirty-path deterministic snapshot recovery."
+    description: "Repeated-solve HighsSession protocol baseline: rebuild+solve, parameter delta re-solve (12.0->20.0), bound delta re-solve (12.0->8.0), and dirty-path recovery (model advanced to r2 -> stale r1 solution readable -> deterministic rebuild from real r2 snapshot -> 20.0)."
     requirement: "API-02"
     verification:
       - kind: integration
@@ -154,7 +154,7 @@ status: complete
 - Characterized the documentation drift: README/MODELING_API `HighsAdapter::solve_model` does not exist in production code; compile evidence (E0432 unresolved import, E0599 no method) frozen in `tests/ui/current_readme_drift.rs` and `tests/ui/current_solve_model_method.rs`, reproduced by `scripts/p20-capture-drift.sh`.
 - Defined frozen target compile contracts for the golden-path quickstart and incremental one-`Highs` re-solve, exactly as planned, plus a green compile-pass characterization of the current `roml` prelude surface.
 - Classified every public entry point with exactly one of five dispositions, with replacement signatures (D7 builders, `Highs` façade) and a replacement-before-deprecation order (D12/API-08).
-- Baselined repeated-solve `HighsSession` behavior: rebuild→solve (obj 12.0), parameter delta re-solve (obj 20.0), bound delta re-solve (obj 8.0), and deterministic dirty-path snapshot recovery — the expected parity targets for P21.
+- Baselined repeated-solve `HighsSession` behavior: rebuild→solve (obj 12.0), parameter delta re-solve (obj 20.0), bound delta re-solve (obj 8.0), and deterministic dirty-path recovery — the canonical model advances to r2 (price 5.0), the rejected sync leaves the r1 solution readable-but-stale (obj 12.0), and a rebuild from the real r2 snapshot solves to 20.0 — the expected parity targets for P21.
 
 ## Task Commits
 
@@ -199,7 +199,7 @@ No auto-fixed bugs were required; the plan executed without Rule 1-4 deviation e
 
 - **`.le` resolving to `Iterator::le`** - In the new HiGHS test, `(x + y).le(4.0)` initially failed with "LinExpr is not an iterator" because `ConstraintExprExt` was not in scope. Resolved by importing the trait.
 - **`deltas_since` error type** - Returns `RevisionError`, not `ModelError`; test functions use `Result<(), Box<dyn std::error::Error>>`.
-- **Stale-solution invalidation on a REJECTED delta (finding for P21)** - Current `HighsSession::synchronize` clears the cached solution on *successful* sync (T-11-18) but leaves `current_solution` readable via `SolutionView` when a delta is *rejected* (mismatched base) while the cursor moves to `RequiresRebuild`. The P20 dirty-path test now asserts this readable-but-stale state explicitly (objective still 12.0), then verifies revision/health recovery and a correct post-rebuild solve. P21 (API-01.5) must decide whether a rejected/unsupported sync must also invalidate the previously reported solution when the model has advanced past it.
+- **Stale-solution invalidation on a REJECTED sync (finding for P21)** - Current `HighsSession::synchronize` clears the cached solution on *successful* sync (T-11-18) but leaves `current_solution` readable via `SolutionView` when a sync is *rejected* (mismatched base) while the cursor moves to `RequiresRebuild`. The P20 dirty-path test establishes genuine staleness: the canonical model advances to r2 (price 3.0 -> 5.0), the sync is rejected, and the session still reports the r1 solution (objective 12.0) while the advanced model solves to 20.0. It asserts this readable-but-stale state, then verifies revision/health recovery and a correct post-rebuild solve from the real r2 snapshot (20.0). P21 (API-01.5) must decide whether a rejected/unsupported sync must also invalidate the previously reported solution when the model has advanced past it.
 
 ## User Setup Required
 

@@ -293,17 +293,19 @@ health, termination status, objective value, and solution availability.
 | Rebuild from snapshot, solve (`price = 3.0`) | r1 | Ready | Optimal | 12.0 | yes |
 | Apply parameter delta (`price 3.0 -> 5.0`), solve | r2 | Ready | Optimal | 20.0 | yes |
 | Apply bound delta (`x` upper 4.0 -> 2.0), solve | r2 | Ready | Optimal | 8.0 | yes |
-| Rejected mismatched-base delta | r1 (unchanged) | RequiresRebuild | — | 12.0 (stale) | yes — prior solution stays readable but is stale |
-| Snapshot rebuild (deterministic recovery), solve | r1 | Ready | Optimal | 12.0 | yes |
+| Model advanced to r2 (`price 3.0 -> 5.0`); sync rejected (mismatched base) | session r1 (model r2) | RequiresRebuild | — | 12.0 (stale) | yes — r1 solution stays readable but no longer matches the model |
+| Rebuild from real r2 snapshot (deterministic recovery), solve | r2 | Ready | Optimal | 20.0 | yes |
 
-On a rejected delta the previously computed solution **remains readable**
-through `SolutionView` (the objective still reads 12.0) but is stale relative
-to the advanced model; it is not invalidated. The test
+On the dirty path the canonical model is genuinely ahead of the session: the
+model has advanced to r2 (expected objective 20.0) while the session still
+exposes its r1 solution — the objective reads 12.0, which is **stale**, not
+just "the r1 solution". It is not invalidated. The test
 (`dirty_path_recovers_via_deterministic_snapshot_rebuild`) asserts exactly
-this readable-but-stale state before the rebuild. P21's façade (API-01.5)
-must never report that stale result as current — the invalidation policy on
-the rejected path is a P21 decision (recorded in the phase SUMMARY's Issues
-and M2 STATE.md).
+this readable-but-stale state before recovering from the *real* r2 snapshot,
+which then solves to 20.0 with no stale values surviving. P21's façade
+(API-01.5) must never report that stale result as current — the invalidation
+policy on the rejected path is a P21 decision (recorded in the phase
+SUMMARY's Issues and M2 STATE.md).
 
 These values are the expected behavior for the P21 `SolverSession<B>` / `Highs`
 façade tests: the parameter delta applies incrementally without a rebuild, and

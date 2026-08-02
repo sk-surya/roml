@@ -42,7 +42,7 @@ The phase goal — establish the exact current-main public API behavior and free
 | 3 | Golden-path target compile contracts frozen against exact target signatures (quickstart + incremental) | ✓ VERIFIED | `tests/ui/target_quickstart.rs:38-48` matches plan verbatim; `tests/ui/target_incremental.rs:35-46` matches plan verbatim; confirmed not auto-discovered (no test binary lists them) |
 | 4 | Compile-pass characterization of the current `roml` prelude surface that compiles and runs today | ✓ VERIFIED | `tests/public_api_compile.rs` — 3/3 tests pass (independently re-run) |
 | 5 | Every public entry point assigned exactly one of five dispositions, covering all 8 required categories, with replacement signatures and deprecation order | ✓ VERIFIED | `docs/release/PUBLIC_API_M2_DISPOSITION.md` — 91 rows; disposition counts: golden path 22, optional syntax sugar 3, advanced backend extension 48, compatibility/deprecated 13, internal exposure to remove 5; all 8 categories present (Sections 1-8); all four macros classified (lines 100-103); replacement signatures (lines 159-181); deprecation order D12 (lines 186-199) |
-| 6 | Repeated-solve `HighsSession` protocol baseline recorded (revision/health/status/objective/solution availability per step, incl. deterministic dirty-path snapshot recovery) | ✓ VERIFIED | `roml-highs/tests/repeated_session_baseline.rs` — 3/3 tests pass (independently re-run): rebuild→solve obj 12.0, parameter delta 3.0→5.0 → 20.0, bound delta 4.0→2.0 → 8.0, rejected mismatched-base delta → RequiresRebuild + deterministic recovery → 12.0; behavior table in baseline doc lines 156-178 |
+| 6 | Repeated-solve `HighsSession` protocol baseline recorded (revision/health/status/objective/solution availability per step, incl. deterministic dirty-path snapshot recovery) | ✓ VERIFIED | `roml-highs/tests/repeated_session_baseline.rs` — 3/3 tests pass (independently re-run): rebuild→solve obj 12.0, parameter delta 3.0→5.0 → 20.0, bound delta 4.0→2.0 → 8.0; dirty path: model advances to r2 (price 5.0) → rejected mismatched-base sync → RequiresRebuild, r1 solution stays readable but stale (12.0) → deterministic rebuild from real r2 snapshot → 20.0; behavior table in baseline doc repeated-solve section |
 | 7 | Zero production code changes (phase Gate: characterization-only) | ✓ VERIFIED | `git log --name-only fa8e52b^..8ebbb1d`: only 9 docs/evidence/test files touched; working tree has no phase-related modifications |
 | 8 | Requirement IDs API-04, API-07, API-08, API-10 each accounted for by actual evidence | ✓ VERIFIED | See Requirements Coverage table below |
 | 9 | Approved M2 decisions referenced (D1-D13); no new naming/signature ambiguity — the four inherited open naming items are explicitly recorded and deferred to P21/P22 per the M2 packet | ✓ VERIFIED (note) | Disposition doc "Open items inherited from planning" (lines 201-209) records compat window, SolveStatus-vs-SolverStatus, `SolverSession<B>` name, alias-vs-wrapper; states dispositions do not depend on their resolution. These were never this phase's to resolve (plan Gate: "No production API implementation is required in this phase") |
@@ -62,7 +62,7 @@ The phase goal — establish the exact current-main public API behavior and free
 | `tests/ui/target_quickstart.rs` | frozen golden-path target contract | ✓ VERIFIED | verbatim plan form |
 | `tests/ui/target_incremental.rs` | frozen incremental one-`Highs` target contract | ✓ VERIFIED | verbatim plan form |
 | `tests/public_api_compile.rs` | compile-pass current-surface characterization (3 tests) | ✓ VERIFIED | 3/3 pass; exact `assert_eq!` on active objective |
-| `roml-highs/tests/repeated_session_baseline.rs` | repeated-solve protocol baseline (3 tests) | ✓ VERIFIED | 3/3 pass; asserts stale-readable state on rejected delta |
+| `roml-highs/tests/repeated_session_baseline.rs` | repeated-solve protocol baseline (3 tests) | ✓ VERIFIED | 3/3 pass; model advances to r2, r1 solution asserted readable-but-stale, recovery solves 20.0 |
 
 ### Key Link Verification
 
@@ -78,7 +78,7 @@ The phase goal — establish the exact current-main public API behavior and free
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 | -------- | ------------- | ------ | ------------------ | ------ |
-| `repeated_session_baseline.rs` | objective_value, revision, health | real `HighsSession::solve` via bundled HiGHS | yes — real solver output (obj 12.0/20.0/8.0 asserted) | ✓ FLOWING |
+| `repeated_session_baseline.rs` | objective_value, revision, health | real `HighsSession::solve` via bundled HiGHS | yes — real solver output (obj 12.0/20.0/8.0/20.0 asserted) | ✓ FLOWING |
 | `public_api_compile.rs` | objective_constant, parameter_value | real `Model` mutation | yes — real model semantics asserted | ✓ FLOWING |
 
 ### Behavioral Spot-Checks
@@ -86,7 +86,7 @@ The phase goal — establish the exact current-main public API behavior and free
 | Behavior | Command | Result | Status |
 | -------- | ------- | ------ | ------ |
 | Current-surface compile-pass characterization | `cargo test -p roml --test public_api_compile` | 3 passed; 0 failed | ✓ PASS |
-| Repeated-solve protocol (param delta 3.0→5.0 → 20.0; bound delta → 8.0; dirty-path recovery → 12.0) | `cargo test -p roml-highs --test repeated_session_baseline` | 3 passed; 0 failed | ✓ PASS |
+| Repeated-solve protocol (param delta 3.0→5.0 → 20.0; bound delta → 8.0; dirty path: r1 solution readable-but-stale after rejected sync, recovery → 20.0) | `cargo test -p roml-highs --test repeated_session_baseline` | 3 passed; 0 failed | ✓ PASS |
 | Formatting clean | `cargo fmt --all -- --check` | exit 0 | ✓ PASS |
 | UI fixtures not auto-discovered (do not break default suites) | `cargo test -p roml --all-targets -- --list` / `-p roml-highs` | no `target_*`/`current_readme`/`current_solve_model`/`drift` test names | ✓ PASS |
 
