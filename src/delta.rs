@@ -27,84 +27,157 @@ use crate::value_expr::ValueExpr;
 pub enum ModelOp {
     /// Add a new variable.
     AddVariable {
+        /// The added variable.
         var: VarId,
+        /// Bounds of the added variable.
         bounds: Bounds,
+        /// Domain type (continuous, integer, or binary).
         var_type: VarType,
     },
 
     /// Remove a variable and all associated cells.
-    RemoveVariable { var: VarId },
+    RemoveVariable {
+        /// The removed variable.
+        var: VarId,
+    },
 
     /// Change variable bounds.
-    SetVariableBounds { var: VarId, bounds: Bounds },
+    SetVariableBounds {
+        /// The affected variable.
+        var: VarId,
+        /// New bounds.
+        bounds: Bounds,
+    },
 
     /// Change variable activity.
-    SetVariableActive { var: VarId, active: bool },
+    SetVariableActive {
+        /// The affected variable.
+        var: VarId,
+        /// Whether the variable is now active.
+        active: bool,
+    },
 
     /// Change variable type.
-    SetVariableType { var: VarId, var_type: VarType },
+    SetVariableType {
+        /// The affected variable.
+        var: VarId,
+        /// New domain type.
+        var_type: VarType,
+    },
 
     /// Add a new constraint.
     AddConstraint {
+        /// The added constraint.
         con: ConId,
+        /// Bounds of the added constraint.
         bounds: ConstraintBounds,
     },
 
     /// Remove a constraint and all associated cells.
-    RemoveConstraint { con: ConId },
+    RemoveConstraint {
+        /// The removed constraint.
+        con: ConId,
+    },
 
     /// Change constraint bounds.
     SetConstraintBounds {
+        /// The affected constraint.
         con: ConId,
+        /// New bounds.
         bounds: ConstraintBounds,
     },
 
     /// Change constraint activity.
-    SetConstraintActive { con: ConId, active: bool },
+    SetConstraintActive {
+        /// The affected constraint.
+        con: ConId,
+        /// Whether the constraint is now active.
+        active: bool,
+    },
 
     /// Add or update a coefficient cell.
     SetCell {
+        /// The canonical cell coordinate.
         cell_key: CellKey,
+        /// The cell's value expression (possibly parameter-dependent).
         value_expr: ValueExpr,
+        /// Evaluated value at the batch's `to` revision.
         evaluated_value: f64,
     },
 
     /// Remove a coefficient cell.
-    RemoveCell { cell_key: CellKey },
+    RemoveCell {
+        /// The canonical cell coordinate.
+        cell_key: CellKey,
+    },
 
     /// Add a new objective.
-    AddObjective { obj: ObjId, sense: Sense },
+    AddObjective {
+        /// The added objective.
+        obj: ObjId,
+        /// Minimize/maximize sense.
+        sense: Sense,
+    },
 
     /// Remove an objective.
-    RemoveObjective { obj: ObjId },
+    RemoveObjective {
+        /// The removed objective.
+        obj: ObjId,
+    },
 
     /// Set the active objective.
-    SetActiveObjective { obj: Option<ObjId> },
+    SetActiveObjective {
+        /// The newly active objective, if any.
+        obj: Option<ObjId>,
+    },
 
     /// Update objective coefficient cell.
     SetObjectiveCell {
+        /// The canonical cell coordinate.
         cell_key: CellKey,
+        /// The cell's value expression (possibly parameter-dependent).
         value_expr: ValueExpr,
+        /// Evaluated value at the batch's `to` revision.
         evaluated_value: f64,
-        /// Objective constant.
+        /// Objective constant (reported exactly once, API-03.5).
         constant: f64,
     },
 
     /// Set the optimization sense of an objective.
-    SetObjectiveSense { obj: ObjId, sense: Sense },
+    SetObjectiveSense {
+        /// The affected objective.
+        obj: ObjId,
+        /// New minimize/maximize sense.
+        sense: Sense,
+    },
 
     /// Set the constant offset of an objective.
     ///
     /// Propagated on the incremental path so objective constants reach the
     /// backend exactly once (API-03.5); the rebuild path carries them in the
     /// snapshot's objective entries.
-    SetObjectiveConstant { obj: ObjId, constant: f64 },
+    SetObjectiveConstant {
+        /// The affected objective.
+        obj: ObjId,
+        /// New constant value.
+        constant: f64,
+    },
 
     /// Set a parameter value (for solvers that need to know parameters).
-    SetParameter { param: ParamId, value: f64 },
+    SetParameter {
+        /// The affected parameter.
+        param: ParamId,
+        /// New value.
+        value: f64,
+    },
 
     /// Mark a variable as semi-continuous with the given lower bound.
-    SetSemiContinuousBound { var: VarId, lower: f64 },
+    SetSemiContinuousBound {
+        /// The affected variable.
+        var: VarId,
+        /// The semi-continuous lower bound.
+        lower: f64,
+    },
 }
 
 /// An immutable batch of operations transforming from one revision to another.

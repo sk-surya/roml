@@ -43,7 +43,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The binary variable is 0 or 1; the integer variable is integral.
     let xv = solution.value_or_zero(x);
     let yv = solution.value_or_zero(y);
-    assert!(xv == 0.0 || xv == 1.0, "binary variable violated its domain: {xv}");
+    assert!(
+        xv == 0.0 || xv == 1.0,
+        "binary variable violated its domain: {xv}"
+    );
     assert_eq!(yv.fract(), 0.0, "integer variable was not integral: {yv}");
     assert_eq!(xv, 1.0);
     assert_eq!(yv, 4.0);
