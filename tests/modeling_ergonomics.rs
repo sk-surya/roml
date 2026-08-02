@@ -5,6 +5,8 @@
 //! objective paths, and the sparse cell-coordinate operations. Each section
 //! pins the accepted M2 semantics and guards API-04/API-05/API-06.
 
+use roml::id::{ConId, Generation, VarId};
+use roml::model::CoefficientTarget;
 use roml::prelude::*;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -449,4 +451,173 @@ fn advanced_named_objective_creation_and_switching() {
         Some(2.0),
         "profit retained"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Task 5 — Sparse cell-coordinate operations (D11)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `set_coefficient` replaces the canonical cell's value (D11): repeating a set
+/// overwrites rather than accumulates.
+#[test]
+fn set_coefficient_replaces_cell_value() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model
+        .add_constraint(ConstraintBounds::le(100.0))
+        .expect("con");
+    model
+        .set_coefficient(CoefficientTarget::Constraint(con), x, 2.0)
+        .expect("set");
+    model
+        .set_coefficient(CoefficientTarget::Constraint(con), x, 5.0)
+        .expect("replace");
+    assert_eq!(model.num_coefficients(), 1, "canonical cell preserved");
+    assert_eq!(
+        model.constraint_expression(con).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(5.0)
+    );
+}
+
+/// `set_coefficient` creates the cell when the coordinate is empty.
+#[test]
+fn set_coefficient_creates_cell_if_absent() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model
+        .add_constraint(ConstraintBounds::le(100.0))
+        .expect("con");
+    assert_eq!(model.num_coefficients(), 0);
+    model
+        .set_coefficient(CoefficientTarget::Constraint(con), x, 3.0)
+        .expect("set");
+    assert_eq!(model.num_coefficients(), 1);
+    assert_eq!(
+        model.constraint_expression(con).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(3.0)
+    );
+}
+
+/// `add_to_coefficient` algebraically accumulates; repeated additions keep one
+/// canonical cell whose value is the running sum (D11 canonical-cell invariant).
+#[test]
+fn add_to_coefficient_accumulates_and_keeps_one_cell() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model
+        .add_constraint(ConstraintBounds::le(100.0))
+        .expect("con");
+    model
+        .add_to_coefficient(CoefficientTarget::Constraint(con), x, 2.0)
+        .expect("add");
+    model
+        .add_to_coefficient(CoefficientTarget::Constraint(con), x, 3.0)
+        .expect("add");
+    model
+        .add_to_coefficient(CoefficientTarget::Constraint(con), x, 4.0)
+        .expect("add");
+    assert_eq!(
+        model.num_coefficients(),
+        1,
+        "canonical cell count stays one"
+    );
+    assert_eq!(
+        model.constraint_expression(con).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(9.0)
+    );
+    assert!(model.validate_invariants().is_ok());
+}
+
+/// `remove_coefficient_at` removes the cell by coordinate and is idempotent.
+#[test]
+fn remove_coefficient_at_removes_by_coordinate() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model
+        .add_constraint(ConstraintBounds::le(100.0))
+        .expect("con");
+    model
+        .set_coefficient(CoefficientTarget::Constraint(con), x, 2.0)
+        .expect("set");
+    assert_eq!(model.num_coefficients(), 1);
+
+    model
+        .remove_coefficient_at(CoefficientTarget::Constraint(con), x)
+        .expect("remove");
+    assert_eq!(model.num_coefficients(), 0);
+
+    // Removing a missing cell is a no-op, not an error.
+    model
+        .remove_coefficient_at(CoefficientTarget::Constraint(con), x)
+        .expect("idempotent remove");
+    assert_eq!(model.num_coefficients(), 0);
+}
+
+/// The sparse trio works symmetrically on objective targets.
+#[test]
+fn sparse_cells_work_on_objective_targets() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let obj = model.add_objective_named(Sense::Maximize, "profit");
+    model
+        .set_coefficient(CoefficientTarget::Objective(obj), x, 3.0)
+        .expect("set");
+    model
+        .add_to_coefficient(CoefficientTarget::Objective(obj), x, 1.5)
+        .expect("add");
+    assert_eq!(model.num_coefficients(), 1);
+    assert_eq!(
+        model.objective_expression(obj).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(4.5)
+    );
+    model
+        .remove_coefficient_at(CoefficientTarget::Objective(obj), x)
+        .expect("remove");
+    assert_eq!(model.num_coefficients(), 0);
+}
+
+/// The sparse trio rejects stale entities and non-finite values (D10/API-06.2).
+#[test]
+fn sparse_ops_reject_stale_entities_and_non_finite_values() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model
+        .add_constraint(ConstraintBounds::le(100.0))
+        .expect("con");
+    let fake_con = ConId::new(999, Generation::new());
+    let fake_var = VarId::new(999, Generation::new());
+
+    assert_eq!(
+        model
+            .set_coefficient(CoefficientTarget::Constraint(fake_con), x, 1.0)
+            .expect_err("stale constraint rejected"),
+        ModelError::ConstraintNotFound(fake_con)
+    );
+    assert_eq!(
+        model
+            .set_coefficient(CoefficientTarget::Constraint(con), fake_var, 1.0)
+            .expect_err("stale variable rejected"),
+        ModelError::VariableNotFound(fake_var)
+    );
+    assert_eq!(
+        model
+            .set_coefficient(CoefficientTarget::Constraint(con), x, f64::NAN)
+            .expect_err("NaN rejected"),
+        ModelError::NonFiniteValue("coefficient value")
+    );
+    assert_eq!(
+        model
+            .add_to_coefficient(CoefficientTarget::Constraint(con), x, f64::INFINITY)
+            .expect_err("infinite rejected"),
+        ModelError::NonFiniteValue("coefficient value")
+    );
+    assert_eq!(model.num_coefficients(), 0, "no mutation on rejection");
 }
