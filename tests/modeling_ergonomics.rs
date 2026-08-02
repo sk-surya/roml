@@ -176,3 +176,147 @@ fn parameter_definition_defaults_and_validation() {
     assert!(model.add_parameter(parameter(f64::INFINITY)).is_err());
     assert_eq!(model.num_parameters(), 1);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Task 3 — Canonical constraint path
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `add_constraint((x + y).le(4.0))` is the canonical constraint mutation
+/// (API-04.1/04.3). Each variable compiles to one canonical coefficient cell.
+#[test]
+fn canonical_add_constraint_le() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let y = model.add_variable(continuous()).expect("y");
+    let con = model.add_constraint((x + y).le(4.0)).expect("con");
+    assert_eq!(model.num_constraints(), 1);
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::le(4.0))
+    );
+    assert_eq!(
+        model.num_coefficients(),
+        2,
+        "one canonical cell per variable"
+    );
+}
+
+/// Equality builder routes through the same canonical path.
+#[test]
+fn canonical_add_constraint_eq() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let y = model.add_variable(continuous()).expect("y");
+    let con = model.add_constraint((2.0 * x - y).eq(2.0)).expect("con");
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::eq(2.0))
+    );
+    assert_eq!(model.num_coefficients(), 2);
+}
+
+/// Lower-bound builder routes through the same canonical path.
+#[test]
+fn canonical_add_constraint_ge() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let y = model.add_variable(continuous()).expect("y");
+    let con = model.add_constraint((x + y).ge(1.0)).expect("con");
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::ge(1.0))
+    );
+}
+
+/// Ranged `.between` builder routes through the same canonical path.
+#[test]
+fn canonical_add_constraint_between() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model.add_constraint((x).between(0.0, 10.0)).expect("con");
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::range(0.0, 10.0))
+    );
+}
+
+/// The expression's constant offset is folded into the bounds, not stored as a
+/// coefficient cell (canonical-cell invariant).
+#[test]
+fn constraint_expression_constant_adjusts_bounds() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let con = model.add_constraint((2.0 * x + 3.0).le(10.0)).expect("con");
+    // expr constant 3.0 is subtracted from the RHS: 2x + 3 <= 10 -> 2x <= 7
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::le(7.0))
+    );
+    assert_eq!(model.num_coefficients(), 1, "constant is not a coefficient");
+    let expr = model.constraint_expression(con).expect("expr");
+    assert_eq!(expr.get_constant(), 0.0);
+    assert_eq!(expr.terms()[0].coeff.as_constant(), Some(2.0));
+}
+
+/// Parameter coefficients compile to one canonical cell whose cached value
+/// tracks parameter updates.
+#[test]
+fn constraint_parameter_coefficients_are_canonical() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let p = model.add_parameter(parameter(2.0)).expect("p");
+    let con = model.add_constraint((p * x).le(10.0)).expect("con");
+    assert_eq!(model.num_coefficients(), 1);
+    let expr = model.constraint_expression(con).expect("expr");
+    assert_eq!(expr.terms()[0].coeff.as_constant(), Some(2.0));
+
+    model.set_parameter(p, 5.0).expect("set");
+    model.commit().expect("commit");
+    assert_eq!(
+        model.constraint_expression(con).expect("expr").terms()[0]
+            .coeff
+            .as_constant(),
+        Some(5.0)
+    );
+}
+
+/// Named constraint specs are retrievable by name (D6).
+#[test]
+fn named_constraint_via_spec_is_retrievable() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("x");
+    let y = model.add_variable(continuous()).expect("y");
+    let con = model
+        .add_constraint((x + y).le(4.0).named("capacity"))
+        .expect("con");
+    assert_eq!(model.constraint_name(con).expect("name"), Some("capacity"));
+}
+
+/// Raw `ConstraintBounds` still compiles through the generic spec API with no
+/// ambiguity (API-04.1 input-shape compatibility bridge).
+#[test]
+fn add_constraint_raw_bounds_keeps_working_without_ambiguity() {
+    let mut model = Model::new();
+    let con = model
+        .add_constraint(ConstraintBounds::le(4.0))
+        .expect("con");
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::le(4.0))
+    );
+    assert_eq!(model.num_coefficients(), 0);
+}
+
+/// Raw bounds-only row creation is an explicitly advanced method
+/// (`add_empty_constraint`), kept separate from the canonical spec path.
+#[test]
+fn advanced_add_empty_constraint_creates_bounds_only_row() {
+    let mut model = Model::new();
+    let con = model.add_empty_constraint(ConstraintBounds::le(5.0));
+    assert_eq!(model.num_constraints(), 1);
+    assert_eq!(
+        model.constraint_bounds(con),
+        Some(ConstraintBounds::le(5.0))
+    );
+    assert_eq!(model.num_coefficients(), 0, "bounds-only row has no cells");
+}

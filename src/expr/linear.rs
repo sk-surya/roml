@@ -601,10 +601,10 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        // Route through the private primitive, not the public spec API, so the
-        // expr-only path neither round-trips through ConstraintSpec nor
+        // Route through the public bounds-only primitive, not the spec API, so
+        // the expr-only path neither round-trips through ConstraintSpec nor
         // captures the generic's spec semantics (M2 disposition migration).
-        let con = self.add_empty_constraint(bounds, None);
+        let con = self.add_empty_constraint(bounds);
         let constant = expr.compile_for_constraint(self, con)?;
 
         // Adjust bounds for constant term: expr <= b becomes (expr - c) <= (b - c)

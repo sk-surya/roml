@@ -413,7 +413,7 @@ impl Model {
         spec: crate::expr::ConstraintSpec,
     ) -> Result<ConId, ModelError> {
         let crate::expr::ConstraintSpec { expr, bounds, name } = spec;
-        let con = self.add_empty_constraint(bounds, name);
+        let con = self.add_empty_constraint_internal(bounds, name);
         let constant = expr.compile_for_constraint(self, con)?;
         if constant.abs() >= f64::EPSILON {
             let adjusted_bounds = ConstraintBounds {
@@ -425,9 +425,18 @@ impl Model {
         Ok(con)
     }
 
+    /// Advanced: insert an empty constraint row with the given bounds.
+    ///
+    /// This is the raw bounds-only row creation primitive (D11-adjacent low-level
+    /// mutation). The canonical path is [`Self::add_constraint`] with a spec.
+    /// No coefficients are created; fill the row with the sparse cell APIs.
+    pub fn add_empty_constraint(&mut self, bounds: ConstraintBounds) -> ConId {
+        self.add_empty_constraint_internal(bounds, None)
+    }
+
     /// Private primitive: insert an empty constraint with the given bounds and
     /// optional name, pushing the changelog event.
-    pub(crate) fn add_empty_constraint(
+    pub(crate) fn add_empty_constraint_internal(
         &mut self,
         bounds: ConstraintBounds,
         name: Option<String>,
