@@ -1,0 +1,80 @@
+ Documenting roml-highs v0.1.0 ($REPO/roml-highs)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+pub mod roml_highs
+pub use roml_highs::HighsInt
+pub struct roml_highs::HighsFixture
+impl roml::solver::session::BackendFixture for roml_highs::HighsFixture
+pub type roml_highs::HighsFixture::Session = roml_highs::HighsSession
+pub fn roml_highs::HighsFixture::backend_name(&self) -> &str
+pub fn roml_highs::HighsFixture::new_session(&self) -> core::result::Result<Self::Session, roml::solver::backend::BackendError>
+impl core::marker::Freeze for roml_highs::HighsFixture
+impl core::marker::Send for roml_highs::HighsFixture
+impl core::marker::Sync for roml_highs::HighsFixture
+impl core::marker::Unpin for roml_highs::HighsFixture
+impl core::marker::UnsafeUnpin for roml_highs::HighsFixture
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::HighsFixture
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::HighsFixture
+impl<T, U> core::convert::Into<U> for roml_highs::HighsFixture where U: core::convert::From<T>
+pub fn roml_highs::HighsFixture::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::HighsFixture where U: core::convert::Into<T>
+pub type roml_highs::HighsFixture::Error = core::convert::Infallible
+pub fn roml_highs::HighsFixture::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for roml_highs::HighsFixture where U: core::convert::TryFrom<T>
+pub type roml_highs::HighsFixture::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::HighsFixture::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::HighsFixture where T: 'static + ?core::marker::Sized
+pub fn roml_highs::HighsFixture::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::HighsFixture where T: ?core::marker::Sized
+pub fn roml_highs::HighsFixture::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::HighsFixture where T: ?core::marker::Sized
+pub fn roml_highs::HighsFixture::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::HighsFixture
+pub fn roml_highs::HighsFixture::from(T) -> T
+pub struct roml_highs::HighsSession
+impl roml_highs::HighsSession
+pub fn roml_highs::HighsSession::new_unchecked() -> Self
+pub fn roml_highs::HighsSession::try_new() -> core::result::Result<Self, roml::solver::backend::BackendError>
+impl core::marker::Send for roml_highs::HighsSession
+impl core::ops::drop::Drop for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::drop(&mut self)
+impl roml::solver::session::BackendMetadata for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::capabilities(&self) -> roml::solver::backend::BackendCapabilities
+pub fn roml_highs::HighsSession::name(&self) -> &str
+impl roml::solver::session::BackendSession for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::close(self) -> core::result::Result<(), roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::solve(&mut self, &roml::solver::request::SolveRequest) -> core::result::Result<roml::solver::request::SolveResult, roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::synchronize(&mut self, roml::solver::session::Synchronization) -> core::result::Result<roml::solver::session::SyncReceipt, roml::solver::backend::BackendError>
+impl roml::solver::session::CallbackSession for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::clear_callback_handler(&mut self) -> core::result::Result<(), roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::set_callback_handler(&mut self, alloc::boxed::Box<dyn roml::solver::callback::CallbackHandler>) -> core::result::Result<(), roml::solver::backend::BackendError>
+impl roml::solver::session::SessionHealth for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::health(&self) -> roml::sync::AdapterHealth
+pub fn roml_highs::HighsSession::revision(&self) -> roml::revision::ModelRevision
+impl roml::solver::session::SolutionView for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::dual(&self, roml::id::ConId) -> core::option::Option<f64>
+pub fn roml_highs::HighsSession::objective_value(&self) -> core::option::Option<f64>
+pub fn roml_highs::HighsSession::reduced_cost(&self, roml::id::VarId) -> core::option::Option<f64>
+pub fn roml_highs::HighsSession::value(&self, roml::id::VarId) -> core::option::Option<f64>
+impl core::marker::Freeze for roml_highs::HighsSession
+impl !core::marker::Sync for roml_highs::HighsSession
+impl core::marker::Unpin for roml_highs::HighsSession
+impl core::marker::UnsafeUnpin for roml_highs::HighsSession
+impl !core::panic::unwind_safe::RefUnwindSafe for roml_highs::HighsSession
+impl !core::panic::unwind_safe::UnwindSafe for roml_highs::HighsSession
+impl<T, U> core::convert::Into<U> for roml_highs::HighsSession where U: core::convert::From<T>
+pub fn roml_highs::HighsSession::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::HighsSession where U: core::convert::Into<T>
+pub type roml_highs::HighsSession::Error = core::convert::Infallible
+pub fn roml_highs::HighsSession::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for roml_highs::HighsSession where U: core::convert::TryFrom<T>
+pub type roml_highs::HighsSession::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::HighsSession::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::HighsSession where T: 'static + ?core::marker::Sized
+pub fn roml_highs::HighsSession::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::HighsSession where T: ?core::marker::Sized
+pub fn roml_highs::HighsSession::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::HighsSession where T: ?core::marker::Sized
+pub fn roml_highs::HighsSession::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::from(T) -> T
+pub type roml_highs::HighsError = roml::solver::backend::BackendError
