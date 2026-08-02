@@ -42,18 +42,17 @@ boundary so they are not lost. Do not fix as part of P22.
 - **Suggestion:** Add `impl Sub<VarId> for VarId` (mirrors `Add<VarId>` for
   ergonomics) in a future phase if desired.
 
-## 4. `add_constraint` / `add_objective` are not atomic when the expression
-references a stale variable
+## 4. ~~`add_constraint` / `add_objective` are not atomic when the expression
+references a stale variable~~ — RESOLVED in P22 review round 1
 
-- **Where:** `Model::add_constraint_spec_impl`, `Model::add_objective_expr`
-  (insert the row/objective before expression compilation).
-- **Issue:** If an expression references a removed variable, compilation fails
-  after the empty row/objective was inserted, leaving a dangling row. API-06.5
-  atomicity is proven for the definition builders (Task 1); the canonical
-  expression path was not retrofitted because the plan's Task 1 atomicity scope
-  is definition creation and a refactor risks the P21 suites.
-- **Suggestion:** Pre-validate expression variables before inserting the row in
-  a future hardening pass.
+- **Resolution:** `Model::validate_expression_entities` now pre-validates
+  every variable and parameter referenced by an expression (plus the
+  expression constant's finiteness) BEFORE any row/objective insertion. It is
+  applied in `add_constraint_spec_impl`, `add_objective_spec`,
+  `add_objective_expr`, and `add_constraint_expr`, so a stale variable or
+  parameter fails atomically with no dangling row, objective, or changelog
+  event (API-06.5). Six tests cover the atomicity matrix
+  (`tests/modeling_ergonomics.rs`).
 
 ## 5. `add_constraint_coefficient` / `add_objective_coefficient` accept NaN/∞ constants
 
