@@ -289,6 +289,18 @@ impl Model {
         self.variables.get(var).map(|d| d.bounds)
     }
 
+    /// Get a variable's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named variable, `Ok(None)` for a valid
+    /// unnamed variable, and a typed stale-ID error if the variable was
+    /// removed (D10/API-06.3).
+    pub fn variable_name(&self, var: VarId) -> Result<Option<&str>, ModelError> {
+        self.variables
+            .get(var)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::VariableNotFound(var))
+    }
+
     /// Set variable bounds.
     pub fn set_variable_bounds(&mut self, var: VarId, bounds: Bounds) -> Result<(), ModelError> {
         let data = self
@@ -434,6 +446,18 @@ impl Model {
         self.constraints.get(con).map(|data| data.bounds)
     }
 
+    /// Get a constraint's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named constraint, `Ok(None)` for a valid
+    /// unnamed constraint, and a typed stale-ID error if the constraint was
+    /// removed (D10/API-06.3).
+    pub fn constraint_name(&self, con: ConId) -> Result<Option<&str>, ModelError> {
+        self.constraints
+            .get(con)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::ConstraintNotFound(con))
+    }
+
     /// Remove a constraint and all its coefficients.
     pub fn remove_constraint(&mut self, con: ConId) -> Result<(), ModelError> {
         if !self.constraints.contains(con) {
@@ -497,7 +521,16 @@ impl Model {
 
     /// Add a new objective with the given sense.
     pub fn add_objective(&mut self, sense: Sense) -> ObjId {
-        let id = self.objectives.add(sense);
+        self.add_objective_internal(sense, None)
+    }
+
+    /// Private primitive: insert an objective (optionally named), pushing the
+    /// changelog event. The new objective is inactive by default.
+    pub(crate) fn add_objective_internal(&mut self, sense: Sense, name: Option<String>) -> ObjId {
+        let id = match name {
+            Some(name) => self.objectives.add_named(sense, name),
+            None => self.objectives.add(sense),
+        };
         self.changelog
             .push(Change::ObjectiveAdded { obj: id, sense });
         id
@@ -556,6 +589,18 @@ impl Model {
         self.objectives.get(obj).map(|data| data.constant)
     }
 
+    /// Get an objective's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named objective, `Ok(None)` for a valid
+    /// unnamed objective, and a typed stale-ID error if the objective was
+    /// removed (D10/API-06.3).
+    pub fn objective_name(&self, obj: ObjId) -> Result<Option<&str>, ModelError> {
+        self.objectives
+            .get(obj)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::ObjectiveNotFound(obj))
+    }
+
     /// Set an objective's constant offset, journaling the change when it
     /// differs (API-03.5: the delta path propagates constants to backends).
     pub(crate) fn set_objective_constant_internal(&mut self, obj: ObjId, constant: f64) {
@@ -609,6 +654,18 @@ impl Model {
     /// Get a parameter value.
     pub fn parameter_value(&self, param: ParamId) -> Option<f64> {
         self.parameters.get_value(param)
+    }
+
+    /// Get a parameter's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named parameter, `Ok(None)` for a valid
+    /// unnamed parameter, and a typed stale-ID error if the parameter was
+    /// removed (D10/API-06.3).
+    pub fn parameter_name(&self, param: ParamId) -> Result<Option<&str>, ModelError> {
+        self.parameters
+            .get(param)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::ParameterNotFound(param))
     }
 
     /// Queue a parameter change in the current transaction.
