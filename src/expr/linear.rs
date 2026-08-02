@@ -730,6 +730,14 @@ impl Model {
         self.set_objective(expr.maximize())
     }
 
+    /// Replace the expression of an existing objective, returning the folded
+    /// constant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::ObjectiveNotFound`] if `obj` is stale, or a
+    /// validation error if the expression references a stale entity or a
+    /// non-finite constant.
     pub fn set_objective_expr<E>(&mut self, obj: ObjId, expr: E) -> Result<f64, ModelError>
     where
         E: Into<LinExpr>,

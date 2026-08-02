@@ -121,6 +121,7 @@ impl Tolerance {
         }
     }
 
+    /// Return the wrapped tolerance value.
     pub fn get(self) -> f64 {
         self.0
     }
@@ -165,13 +166,27 @@ pub(crate) fn require_valid_bounds(lower: f64, upper: f64) -> Result<(), Validat
 #[derive(Clone, Debug, PartialEq)]
 pub enum ValidationError {
     /// Value was not finite (NaN or ±∞).
-    NonFinite { label: &'static str },
+    NonFinite {
+        /// The offending value's label (e.g. a coefficient or bound name).
+        label: &'static str,
+    },
     /// Value was NaN.
-    NaN { label: &'static str },
+    NaN {
+        /// The offending value's label (e.g. a coefficient or bound name).
+        label: &'static str,
+    },
     /// Lower bound exceeds upper bound.
-    InvalidBounds { lower: f64, upper: f64 },
+    InvalidBounds {
+        /// The lower bound that was supplied.
+        lower: f64,
+        /// The upper bound that was supplied.
+        upper: f64,
+    },
     /// Tolerance must be ≥ 0 and finite.
-    InvalidTolerance { value: f64 },
+    InvalidTolerance {
+        /// The offending tolerance value.
+        value: f64,
+    },
 }
 
 impl std::fmt::Display for ValidationError {

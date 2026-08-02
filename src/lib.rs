@@ -6,6 +6,12 @@
 //! - Supports multiple solver backends
 //! - Stores and reasons about solutions
 //! - Allows algebraic introspection (slack, infeasibility, evaluation)
+//!
+//! The public surface is split into a curated [`prelude`] for ordinary model
+//! authors and the [`advanced`] namespace for framework/backend authors
+//! (API-07). See `MODELING_API.md` for the modeling guide.
+
+#![warn(missing_docs)]
 
 pub mod advanced;
 pub mod delta;

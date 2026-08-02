@@ -5,8 +5,8 @@
 **Milestone:** M2 Public API Ergonomics  
 **Branch:** `docs/public-api-ergonomics-gsd-ultra`  
 **Base:** `main@ac473911bc2239e940b8c2019dee3e01a445701e`  
-**Status:** P23 executed on `phase-roml-P23-surface-curation`; verified 11/11, gate met; awaiting independent API review (PR #23)  
-**Current phase:** P23 — surface curation, validation, and migration (gate met)
+**Status:** P24 executed on `phase-roml-P24-consumer-qualification`; all API-01..API-10 requirements closed with evidence; gate met (see `24-SUMMARY.md` and `docs/release/evidence/M2_PUBLIC_API.md`)  
+**Current phase:** P24 — documentation and consumer qualification (gate met)
 
 ## Objective ledger
 
@@ -19,7 +19,7 @@
 | Unified solution/status | Complete — gate passed | `SolveStatus`/`SolveMetadata`/`SolveError`/`Solution` + status mapping tests | merge P21 branch, then P22 |
 | Modeling ergonomics | Complete — gate passed | `tests/modeling_ergonomics.rs`, `tests/named_entities.rs`, name getters, D11 sparse trio, named diagnostics | merge P22 branch, then P23 |
 | Surface curation | Complete — gate met, awaiting review | curated prelude, `roml::advanced`, `MIGRATION.md`, deprecations | merge P23 branch (API review via PR), then P24 |
-| Consumer qualification | Planned | P24 plan | fresh packed consumers green |
+| Consumer qualification | Complete — gate met | P24 plan, `docs/release/evidence/M2_PUBLIC_API.md`, packed consumers green | merge P24 branch (final M2 review), then milestone archive |
 
 ## Accepted assumptions
 
@@ -77,7 +77,18 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 | P21 | Gate passed — pending merge | API-01, API-02, API-03 | `21-VERIFICATION.md` (15/15), `21-SUMMARY.md`, executing target contracts |
 | P22 | Gate passed — pending merge | API-04, API-05, API-06 | `22-VERIFICATION.md` (11/11), `22-SUMMARY.md`, `tests/modeling_ergonomics.rs`, `tests/named_entities.rs` |
 | P23 | Gate met — awaiting API review | API-06, API-07, API-08 | `23-VERIFICATION.md` (11/11), `23-SUMMARY.md`, `MIGRATION.md`, curated prelude |
-| P24 | Blocked on P23 | API-09, API-10, all | pending |
+| P24 | Gate passed — pending merge | API-09, API-10, all | `24-SUMMARY.md`, `docs/release/evidence/M2_PUBLIC_API.md`, `M2_P24_public_api_{roml,roml_highs}.txt`, rewritten README/MODELING_API, 5 HiGHS examples, packed fresh consumers |
+
+## P24 execution record (verified facts only)
+
+- **Execution branch:** `phase-roml-P24-consumer-qualification` (12 commits above the P23 merge `cc05001`); verification head `d112f3f`; record commits `1130666`/`b2fc500`/`ca43923`.
+- **Closed requirement IDs:** API-09, API-10 — behavioral completion with evidence (`docs/release/evidence/M2_PUBLIC_API.md`); every earlier requirement (API-01..API-08) re-verified against packaged consumers.
+- **What landed:** README rewritten around the golden path (both examples extracted as compiled-and-run fixtures); `MODELING_API.md` rewritten with the 11 plan chapters (snippets compiled by `roml-highs/tests/modeling_guide.rs`); five HiGHS examples moved to `roml-highs/examples/` (simple_lp, simple_mip, parameter_update, solve_options, sparse_build); rustdoc closure with `missing_docs` enabled and `# Errors` on the façade; packaging `include` filters for `roml` and `roml-highs`; `roml-highs` `bundled`/`system` features wired to `highs-sys`.
+- **Deviations (documented):** (1) `roml-highs` features were empty no-ops — `system` silently built from source; wired to `highs-sys` `build`/`discover` (Rule 1). (2) packaging include filter anchored to the package root after an unanchored `README.md` pattern still leaked `.planning/.../README.md`. (3) examples relocated to `roml-highs/examples/` so HiGHS CI `--all-targets` compiles them without pulling native deps into core CI. (4) `cargo package -p roml-highs --locked` skipped: `roml` 0.1.0 is unpublished, and `cargo package` requires every versioned dependency to resolve from a registry (pre-publish Cargo limitation). (5) workspace matrix scoped to `roml` + `roml-highs` because mosek/xpress do not compile against the P21+ API (pre-existing deferred item) and `roml-highs --all-features` intentionally trips the bundled+system mutual-exclusion.
+- **Test counts:** roml 553 passed / 0 failed; roml-highs 100 passed / 0 failed; doctests 1 + 2 passed; fmt/clippy/rustdoc `-D warnings`/deny green. `cargo public-api` P24 diff vs P23 = 0 lines (no public surface change).
+- **Fresh consumers (packed):** core-only builds a named model with no C compiler (API-10.4); default HiGHS consumer runs the README quickstart and repeated parameter solve (4 → 12); system consumer produces the actionable `Could neither discover nor build HiGHS` diagnostic on this host (API-10.5 negative).
+- **Skipped/notes:** `cargo package -p roml-highs --locked` and `cargo-semver-checks` skipped with reasons in `M2_PUBLIC_API.md` §8. Residual risks: `SolveError::NoActiveObjective` never produced by the façade (degenerate empty-objective solve); one `Highs` is tied to one `Model` (model-local revisions); system discovery relies on pkg-config.
+- **Review cycle:** independent API/protocol review completed for P23 (PR #23); P24 changes no public item (0-line public-api diff), so the P23 surface disposition stands. P24 branch review (evidence doc, docs rewrite, packaging fix) resolves in the P24 PR.
 
 ## P20 execution record (verified facts only)
 

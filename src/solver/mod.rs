@@ -23,8 +23,14 @@ pub use facade::SolverSession;
 pub use options::SolveOptions;
 
 /// Error type for solver operations.
+///
+/// Legacy error kept for the pre-1.0 compatibility window; the golden path
+/// uses [`SolveError`].
 #[derive(Clone, Debug, PartialEq)]
-pub struct SolverError(pub String);
+pub struct SolverError(
+    /// Human-readable error message.
+    pub String,
+);
 
 impl std::fmt::Display for SolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,6 +50,7 @@ impl std::error::Error for SolverError {}
 /// `SolverStatus` is a compatibility alias of this type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SolveStatus {
+    /// The status has not been determined (default / pre-solve).
     #[default]
     Unknown,
     /// Proven optimal solution.
@@ -79,6 +86,12 @@ impl SolveStatus {
     /// `Unknown`) maps to `Err(SolveError::Status(..))` (API-03.3). The match
     /// is exhaustive — no wildcard arm — so a new backend status cannot be
     /// silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError::Status`] for the uninterpretable terminations
+    /// [`crate::solver::backend::TerminationStatus::Error`] and
+    /// [`crate::solver::backend::TerminationStatus::Unknown`].
     pub fn from_termination(
         termination: crate::solver::backend::TerminationStatus,
     ) -> Result<SolveStatus, crate::solver::error::SolveError> {
@@ -116,10 +129,15 @@ pub type SolverStatus = SolveStatus;
 /// Legacy solver algorithm selection — preserved for backward compatibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LpAlgorithm {
+    /// Primal simplex method.
     Primal,
+    /// Dual simplex method.
     Dual,
+    /// Interior-point (barrier) method.
     Barrier,
+    /// Dual simplex with crossover.
     DualSimplex,
+    /// Let the solver choose automatically.
     Automatic,
 }
 

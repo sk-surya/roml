@@ -52,6 +52,11 @@ pub struct Highs {
 
 impl Highs {
     /// Create a new HiGHS-backed solve session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HighsError`] when the native HiGHS session cannot be
+    /// initialized (for example, the HiGHS library is not available).
     pub fn new() -> Result<Self, HighsError> {
         let session = HighsSession::try_new()?;
         Ok(Self {
@@ -65,6 +70,14 @@ impl Highs {
     /// returns the normalized [`Solution`]. Mathematical terminations such
     /// as infeasible return `Ok(Solution)` with no primal values; operational
     /// failures return `Err` (API-03.3).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError`] when the model cannot be committed, options are
+    /// invalid, synchronization fails (after at most one rebuild retry), the
+    /// backend solve fails, or the native termination is uninterpretable.
+    /// No previously computed solution is ever reported as current after an
+    /// error.
     pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
         self.inner.solve(model)
     }
@@ -73,6 +86,12 @@ impl Highs {
     ///
     /// Options are validated before any synchronization, so a failed
     /// validation leaves the model and backend state unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Same failure classes as [`Highs::solve`]; additionally returns
+    /// [`SolveError::InvalidOptions`] when `options` fails validation (for
+    /// example a negative gap or non-positive thread count).
     pub fn solve_with(
         &mut self,
         model: &mut Model,
