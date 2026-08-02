@@ -212,6 +212,17 @@ None - no external service configuration required. `roml-highs` builds HiGHS bun
 - **P23 (surface curation)** consumes the disposition table for prelude reduction, deprecations, and `roml::advanced`/`roml::backend` namespace moves.
 - No blockers. The M2 planning blockers (compat window, SolveStatus naming, `SolverSession<B>` name, alias-vs-wrapper) remain open as recorded in M2 STATE.md and are decided during P21/P22, not here.
 
+## Self-Check: PASSED
+
+- All 9 phase files present (3 evidence/docs, 3 tests, 3 ui fixtures) plus the SUMMARY.
+- All 7 commits present on `phase-roml-P20-api-contract`:
+  `fa8e52b`, `cdc28fe`, `811bd51`, `4403f82`, `fc1e23d`, `890a98a`, `8ebbb1d`.
+- Verification matrix green: `cargo fmt --all -- --check` (0), clippy both crates `-D warnings` (0),
+  `cargo test -p roml --all-targets` (402 passed / 0 failed), `cargo test -p roml-highs --all-targets`
+  (76 passed / 0 failed), rustdoc `-D warnings` both crates (0).
+- No modifications to `.planning/STATE.md`, `.planning/ROADMAP.md`, or untracked local artifacts
+  (`.planning/config.json`, `.planning/graphs/`, `graphify-out/` untouched).
+
 ---
 *Phase: 20-public-api-contract*
 *Completed: 2026-08-02*
