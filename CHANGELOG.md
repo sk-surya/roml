@@ -79,6 +79,25 @@ before/after migration is in `MIGRATION.md`.
 
 ### Changed
 
+#### Documentation and consumer qualification (P24)
+- **Rewritten README** — the golden-path HiGHS solve and incremental
+  parameter-update examples are the primary content, both extracted as
+  compiled-and-run fixtures (`roml-highs/tests/readme_quickstart.rs`,
+  `readme_incremental.rs`). Root protocol imports are presented as
+  legacy/migration-era; the curated prelude + `roml::advanced` are the
+  recommended surfaces.
+- **Rewritten modeling guide** (`MODELING_API.md`) — 11 chapters teaching the
+  canonical path first with labeled advanced escape hatches. Every snippet is
+  compiled (`roml-highs/tests/modeling_guide.rs`) or linked to a compiled
+  example.
+- **Examples moved to `roml-highs/examples/`** — `simple_lp`, `simple_mip`,
+  `parameter_update`, `solve_options`, `sparse_build`. They solve with HiGHS,
+  so they live in the backend crate and compile under the HiGHS CI targets.
+  The solver-free `roml` examples were removed.
+- **Rustdoc closure** — `missing_docs` is enabled (warn) on both crates and
+  the public surface is fully documented, including `# Errors` sections on the
+  `Highs`/`SolverSession` façade and `SolveStatus::from_termination`.
+
 #### Surface curation and validation (P23)
 - **Curated default prelude** — `roml::prelude` now exports only common model,
   expression, definition, solver, solution, and error types (API-07.1).
@@ -86,6 +105,14 @@ before/after migration is in `MIGRATION.md`.
   `ModelRevision`, `ModelSnapshot`, `AdapterCursor`, `AdapterHealth`,
   `Synchronization`, `BackendSession`, `SyncReceipt`) are absent from the
   prelude (API-07.2) and grouped under `roml::advanced` (API-07.3).
+- **Packaging hygiene (P24)** — `roml` gained an `include` filter so the
+  packed crate contains exactly its intended files (no repo-level `.planning/`,
+  `tools/`, `.foundry.toml`, `badges/`, or `docs/knowledge/` leakage);
+  `roml-highs` gained a matching `include` filter.
+- **HiGHS feature wiring fixed (P24)** — `roml-highs` `bundled` and `system`
+  features now map to `highs-sys` `build`/`discover`. Previously both were
+  no-ops and `system` silently built HiGHS from source instead of discovering
+  an installed library.
 - **`roml::advanced` namespace** — backend contract, revisions, snapshots,
   deltas, cursors, capabilities, callbacks, raw IDs, and expression internals
   with explicit stability and semver documentation; `IdArena` made

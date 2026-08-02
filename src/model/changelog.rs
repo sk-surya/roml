@@ -21,75 +21,102 @@ use crate::model::variable::{Bounds, VarType};
 #[derive(Clone, Debug)]
 pub enum Change {
     // ========== Variable Changes ==========
-    // Variable was added.
+    /// A variable was added.
     VariableAdded {
+        /// The added variable.
         var: VarId,
+        /// Bounds of the added variable.
         bounds: Bounds,
+        /// Domain type (continuous, integer, or binary).
         var_type: VarType,
     },
 
-    // Variable was removed.
+    /// A variable was removed.
     VariableRemoved {
+        /// The removed variable.
         var: VarId,
     },
 
-    // Variable bounds was changed.
+    /// A variable's bounds were changed.
     VariableBoundsChanged {
+        /// The affected variable.
         var: VarId,
+        /// Previous bounds.
         old: Bounds,
+        /// New bounds.
         new: Bounds,
     },
 
-    // Variable type was changed.
+    /// A variable's domain type was changed.
     VariableTypeChanged {
+        /// The affected variable.
         var: VarId,
+        /// Previous domain type.
         old: VarType,
+        /// New domain type.
         new: VarType,
     },
 
-    // Variable activity was toggled.
+    /// A variable's activity was toggled.
     VariableActivityChanged {
+        /// The affected variable.
         var: VarId,
+        /// Whether the variable is now active.
         active: bool,
     },
 
-    // Variable was marked semi-continuous with a lower bound.
-    // When the variable is nonzero, it must be ≥ lower; zero is also feasible.
+    /// A variable was marked semi-continuous with a lower bound.
+    ///
+    /// When the variable is nonzero, it must be ≥ `lower`; zero is also
+    /// feasible.
     SemiContinuousBoundChanged {
+        /// The affected variable.
         var: VarId,
+        /// The semi-continuous lower bound.
         lower: f64,
     },
 
     // ========== Constraint Changes ==========
-    /// Constraint was added.
+    /// A constraint was added.
     ConstraintAdded {
+        /// The added constraint.
         con: ConId,
+        /// Bounds of the added constraint.
         bounds: ConstraintBounds,
     },
 
-    /// Constraint was removed.
+    /// A constraint was removed.
     ConstraintRemoved {
+        /// The removed constraint.
         con: ConId,
     },
 
-    /// Constraint bounds were changed.
+    /// A constraint's bounds were changed.
     ConstraintBoundsChanged {
+        /// The affected constraint.
         con: ConId,
+        /// Previous bounds.
         old: ConstraintBounds,
+        /// New bounds.
         new: ConstraintBounds,
     },
 
-    /// Constraint activity was toggled.
+    /// A constraint's activity was toggled.
     ConstraintActivityChanged {
+        /// The affected constraint.
         con: ConId,
+        /// Whether the constraint is now active.
         active: bool,
     },
 
     // ========== Coefficient Changes ==========
     /// A coefficient was added.
     CoefficientAdded {
+        /// The added coefficient cell.
         coeff: CoeffId,
+        /// The variable the coefficient multiplies.
         var: VarId,
+        /// The target row (constraint or objective).
         target: CoefficientTarget,
         /// The full expression (parameterized).
         value_expr: crate::value_expr::ValueExpr,
@@ -99,44 +126,61 @@ pub enum Change {
 
     /// A coefficient was removed.
     CoefficientRemoved {
+        /// The removed coefficient cell.
         coeff: CoeffId,
+        /// The variable the coefficient multiplied.
         var: VarId,
+        /// The target row (constraint or objective).
         target: CoefficientTarget,
     },
 
-    /// A coefficient value changed (due to parameter propagation or direct modification).
+    /// A coefficient value changed (due to parameter propagation or direct
+    /// modification).
     CoefficientValueChanged {
+        /// The affected coefficient cell.
         coeff: CoeffId,
+        /// The variable the coefficient multiplies.
         var: VarId,
+        /// The target row (constraint or objective).
         target: CoefficientTarget,
         /// The full expression (parameterized).
         value_expr: crate::value_expr::ValueExpr,
+        /// Previous resolved value.
         old: f64,
+        /// New resolved value.
         new: f64,
     },
 
     // ========== Objective Changes ==========
     /// An objective was added.
     ObjectiveAdded {
+        /// The added objective.
         obj: ObjId,
+        /// Minimize/maximize sense.
         sense: Sense,
     },
 
     /// An objective was removed.
     ObjectiveRemoved {
+        /// The removed objective.
         obj: ObjId,
     },
 
-    /// Objective sense was changed.
+    /// An objective's sense was changed.
     ObjectiveSenseChanged {
+        /// The affected objective.
         obj: ObjId,
+        /// Previous sense.
         old: Sense,
+        /// New sense.
         new: Sense,
     },
 
     /// The active objective was changed.
     ActiveObjectiveChanged {
+        /// Previously active objective, if any.
         old: Option<ObjId>,
+        /// Newly active objective, if any.
         new: Option<ObjId>,
     },
 
@@ -145,18 +189,25 @@ pub enum Change {
     /// Journaled so the incremental (delta) path propagates the constant to the
     /// backend exactly once (API-03.5); the snapshot path already carries it.
     ObjectiveConstantChanged {
+        /// The affected objective.
         obj: ObjId,
+        /// Previous constant.
         old: f64,
+        /// New constant.
         new: f64,
     },
 
     // ========== Parameter Changes ==========
     /// A parameter value was changed.
     ///
-    /// Note: This is followed by CoefficientValueChanged for each affected coefficient.
+    /// Note: This is followed by `CoefficientValueChanged` for each affected
+    /// coefficient.
     ParameterValueChanged {
+        /// The affected parameter.
         param: ParamId,
+        /// Previous value.
         old: f64,
+        /// New value.
         new: f64,
     },
 }

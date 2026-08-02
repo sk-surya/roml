@@ -24,13 +24,22 @@ repository.workspace = true
 license.workspace = true
 readme.workspace = true
 description = "Rust Optimization Modeling Library for incremental MILP models"
-exclude = [
-    ".claude/",
-    "AGENTS.md",
-    ".gitignore",
-    "docs/release/evidence/",
-    "docs/superpowers/",
-    ".github/",
+# Packaging hygiene (P20 finding, API-10.3): the package root is the repository
+# root, so without an include filter repo-level files (.planning/, tools/,
+# .foundry.toml, badges/, docs/knowledge/) leak into the packed crate. The
+# include list ships exactly the crate's intended files.
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/MODELING_API.md",
+    "/MIGRATION.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/assets/roml-logo-v2.png",
+    "/src/**",
+    "/tests/**",
 ]
 
 [lints]
@@ -43,14 +52,6 @@ log = { workspace = true }
 
 [dev-dependencies]
 rand = "0.9"
-
-[[example]]
-name = "simple_lp"
-path = "examples/simple_lp.rs"
-
-[[example]]
-name = "parameter_update"
-path = "examples/parameter_update.rs"
 
 [profile.dev]
 opt-level = 0

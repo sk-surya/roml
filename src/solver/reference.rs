@@ -31,6 +31,7 @@ use crate::value_expr::ValueExpr;
 /// Used for correctness comparisons, not optimization.
 #[derive(Clone, Debug, Default)]
 pub struct ReferenceBackend {
+    /// The model revision this backend is synchronized to.
     pub revision: ModelRevision,
 
     /// Variables: id → (bounds, var_type, active)
@@ -382,13 +383,21 @@ impl ReferenceBackend {
 /// A normalized, deterministic view of backend state for comparison.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NormalizedView {
+    /// The revision represented by this view.
     pub revision: ModelRevision,
+    /// The active objective, if any.
     pub active_objective: Option<ObjId>,
+    /// Variables as `(id, bounds, type, active, semicontinuous_lower)`.
     pub variables: Vec<(VarId, Bounds, VarType, bool, Option<f64>)>,
+    /// Constraints as `(id, bounds, active)`.
     pub constraints: Vec<(ConId, ConstraintBounds, bool)>,
+    /// Objectives as `(id, sense, active)`.
     pub objectives: Vec<(ObjId, Sense, bool)>,
+    /// Parameters as `(id, value)`.
     pub parameters: Vec<(ParamId, f64)>,
+    /// Constraint cells as `(cell, evaluated_value)`.
     pub cells: Vec<(CellKey, f64)>,
+    /// Objective cells as `(cell, evaluated_value, constant)`.
     pub objective_cells: Vec<(CellKey, f64, f64)>,
 }
 

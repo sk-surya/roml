@@ -115,11 +115,25 @@ where
     }
 
     /// Solve the current model with default options.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError`] when the model cannot be committed, options are
+    /// invalid, synchronization fails (after at most one rebuild retry), the
+    /// backend solve fails, or the native termination is uninterpretable.
     pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
         self.solve_with(model, SolveOptions::default())
     }
 
     /// Solve the current model with explicit [`SolveOptions`].
+    ///
+    /// Options are validated before any synchronization, so a failed
+    /// validation leaves the model and backend state unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Same failure classes as [`SolverSession::solve`]; additionally returns
+    /// [`SolveError::InvalidOptions`] when `options` fails validation.
     pub fn solve_with(
         &mut self,
         model: &mut Model,
