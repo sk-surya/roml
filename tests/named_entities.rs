@@ -7,6 +7,7 @@
 //! removed/stale entities (API-05, API-06).
 
 use roml::id::{ConId, Generation, ObjId, ParamId, VarId};
+use roml::model::ConstraintBounds;
 use roml::prelude::*;
 
 fn fake_var() -> VarId {
@@ -51,6 +52,7 @@ fn aliases_support_expression_operators_unchanged() {
 
 /// Named creation for all four entity types (D6, API-05).
 #[test]
+#[allow(deprecated)] // exercises the deprecated set_objective named-spec convenience (API-08.3)
 fn named_creation_for_all_entity_types() {
     let mut model = Model::named("model");
     let x = model.add_variable(continuous().named("x")).expect("x");
@@ -133,6 +135,7 @@ fn duplicate_names_are_diagnostics_not_unique_keys() {
 /// the rebuild identity (D6 non-goal: names are not stable serialized
 /// identities), so they are only asserted to survive clone and mutation.
 #[test]
+#[allow(deprecated)] // exercises the deprecated set_objective named-spec convenience (API-08.3)
 fn names_survive_clone_and_ordinary_mutation() {
     let mut model = Model::named("base");
     let x = model.add_variable(continuous().named("x")).expect("x");
@@ -180,6 +183,7 @@ fn names_survive_clone_and_ordinary_mutation() {
 /// and their expression terms, falling back to stable debug handles (x[N]) for
 /// unnamed entities (D6, API-05.5).
 #[test]
+#[allow(deprecated)] // exercises the deprecated set_objective named-spec convenience (API-08.3)
 fn pprint_prefers_names() {
     let mut model = Model::named("production");
     let x = model.add_variable(continuous().named("units")).expect("x");

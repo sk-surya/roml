@@ -239,11 +239,29 @@ impl Model {
     }
 
     /// Add a new continuous variable with non-negative bounds.
+    ///
+    /// Deprecated in P23: replaced by [`Self::add_variable`] with the
+    /// [`continuous()`](crate::continuous) definition builder (D7). Kept for
+    /// the pre-1.0 compatibility window and remains tested (API-08.3). See
+    /// `MIGRATION.md` → "Variable and parameter creation".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_variable(continuous())` (D7); see MIGRATION.md -> Variable and parameter creation"
+    )]
     pub fn add_var(&mut self) -> VarId {
         self.add_variable_internal(Bounds::NON_NEGATIVE, VarType::Continuous, None)
     }
 
     /// Add a new binary variable.
+    ///
+    /// Deprecated in P23: replaced by [`Self::add_variable`] with the
+    /// [`binary()`](crate::binary) definition builder (D7). Kept for the
+    /// pre-1.0 compatibility window and remains tested (API-08.3). See
+    /// `MIGRATION.md` → "Variable and parameter creation".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_variable(binary())` (D7); see MIGRATION.md -> Variable and parameter creation"
+    )]
     pub fn add_binary(&mut self) -> VarId {
         self.add_variable_internal(Bounds::BINARY, VarType::Binary, None)
     }
@@ -254,6 +272,16 @@ impl Model {
     /// rejected before any mutation — the compatibility wrapper for
     /// `add_variable(integer().bounds(...))` (see Signature-collision
     /// migration in the P20 disposition).
+    ///
+    /// Deprecated in P23: replaced by
+    /// [`Self::add_variable`](Self::add_variable) with the
+    /// [`integer()`](crate::integer) definition builder plus `.bounds(...)`
+    /// (D7). Kept for the pre-1.0 compatibility window and remains tested
+    /// (API-08.3). See `MIGRATION.md` → "Variable and parameter creation".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_variable(integer().bounds(lower, upper))` (D7); see MIGRATION.md -> Variable and parameter creation"
+    )]
     pub fn add_integer(&mut self, bounds: Bounds) -> Result<VarId, ModelError> {
         if !bounds.is_valid() {
             return Err(ModelError::InvalidBounds);
@@ -302,11 +330,27 @@ impl Model {
     }
 
     /// Set variable bounds.
+    ///
+    /// Fallible (D10/API-06.1/06.2/06.4): inverted or NaN bounds are rejected
+    /// before any mutation, ±inf misuse (a `+inf` lower or `-inf` upper) is
+    /// rejected, and a binary variable must stay inside `[0, 1]`.
     pub fn set_variable_bounds(&mut self, var: VarId, bounds: Bounds) -> Result<(), ModelError> {
         let data = self
             .variables
             .get_mut(var)
             .ok_or(ModelError::VariableNotFound(var))?;
+        if !bounds.is_valid() {
+            return Err(ModelError::InvalidBounds);
+        }
+        if !bounds.lower.is_finite() && bounds.lower != f64::NEG_INFINITY {
+            return Err(ModelError::NonFiniteValue("variable lower bound"));
+        }
+        if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
+            return Err(ModelError::NonFiniteValue("variable upper bound"));
+        }
+        if data.var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
+            return Err(ModelError::InvalidBinaryBounds);
+        }
         let old = data.bounds;
         if old != bounds {
             data.bounds = bounds;
@@ -373,6 +417,9 @@ impl Model {
         let bounds = self
             .variable_bounds(var)
             .ok_or(ModelError::VariableNotFound(var))?;
+        if !lower.is_finite() {
+            return Err(ModelError::NonFiniteValue("semi-continuous lower bound"));
+        }
         if lower > bounds.upper {
             return Err(ModelError::InvalidBounds);
         }
@@ -413,18 +460,39 @@ impl Model {
     /// atomically instead of leaving a dangling row, objective, or changelog
     /// event behind (PR #22 review round 1).
     pub(crate) fn validate_expression_entities(&self, expr: &LinExpr) -> Result<(), ModelError> {
-        if !expr.constant.is_finite() {
-            return Err(ModelError::NonFiniteValue("expression constant"));
-        }
         for term in &expr.terms {
+            let value_expr = term.coeff.clone().into_value_expr();
+            // Reject non-finite coefficient values before any mutation
+            // (API-06.2, deferred item 5). Checking here — before the row is
+            // inserted — also catches NaN term coefficients that `simplify`
+            // would otherwise silently drop, preserving atomicity (API-06.5).
+            if !value_expr.eval(self.parameters.as_lookup()).is_finite() {
+                return Err(ModelError::NonFiniteValue("coefficient value"));
+            }
             if !self.variables.contains(term.var) {
                 return Err(ModelError::VariableNotFound(term.var));
             }
-            let value_expr = term.coeff.clone().into_value_expr();
-            for param in value_expr.dependencies() {
-                if !self.parameters.contains(param) {
-                    return Err(ModelError::ParameterNotFound(param));
-                }
+            self.validate_value_expr_parameters(&value_expr)?;
+        }
+        if !expr.constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("expression constant"));
+        }
+        Ok(())
+    }
+
+    /// Validate every parameter referenced by a [`ValueExpr`] BEFORE any
+    /// mutation — shared by the raw coefficient mutators and the expression
+    /// paths (PR #23 review). A stale parameter must fail with
+    /// `ModelError::ParameterNotFound` instead of being stored as a
+    /// zero-valued coefficient: `ParameterStore::as_lookup()` returns 0.0
+    /// for a missing parameter, so the dependency must be checked explicitly.
+    pub(crate) fn validate_value_expr_parameters(
+        &self,
+        value_expr: &ValueExpr,
+    ) -> Result<(), ModelError> {
+        for param in value_expr.dependencies() {
+            if !self.parameters.contains(param) {
+                return Err(ModelError::ParameterNotFound(param));
             }
         }
         Ok(())
@@ -435,9 +503,11 @@ impl Model {
         spec: crate::expr::ConstraintSpec,
     ) -> Result<ConId, ModelError> {
         let crate::expr::ConstraintSpec { expr, bounds, name } = spec;
-        // Atomicity: validate all expression entities before inserting the
-        // row, so a stale variable/parameter cannot leave a dangling
-        // constraint or changelog event behind (API-06.5).
+        // Atomicity + validation (API-06.5): reject invalid bounds and stale
+        // expression entities before inserting the row, so a NaN/inverted
+        // bound or a stale variable/parameter cannot leave a dangling
+        // constraint or changelog event behind.
+        validate_constraint_bounds(bounds)?;
         self.validate_expression_entities(&expr)?;
         let con = self.add_empty_constraint_internal(bounds, name);
         let constant = expr.compile_for_constraint(self, con)?;
@@ -511,6 +581,9 @@ impl Model {
     }
 
     /// Set constraint bounds.
+    ///
+    /// Fallible (D10/API-06.1/06.2): NaN bounds are rejected before any
+    /// mutation. Infinite sides remain valid (`le`/`ge` forms).
     pub fn set_constraint_bounds(
         &mut self,
         con: ConId,
@@ -520,6 +593,7 @@ impl Model {
             .constraints
             .get_mut(con)
             .ok_or(ModelError::ConstraintNotFound(con))?;
+        validate_constraint_bounds(bounds)?;
         let old = data.bounds;
         if old != bounds {
             data.bounds = bounds;
@@ -866,7 +940,17 @@ impl Model {
 
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Constraint(con);
+        // Reject stale parameter dependencies before any mutation (PR #23
+        // review): `as_lookup` returns 0.0 for a missing parameter, so the
+        // dependency must be checked explicitly.
+        self.validate_value_expr_parameters(&value_expr)?;
         let initial_value = value_expr.eval(self.parameters.as_lookup());
+
+        // Reject non-finite coefficient values before any mutation
+        // (API-06.2, deferred item 5).
+        if !initial_value.is_finite() {
+            return Err(ModelError::NonFiniteValue("coefficient value"));
+        }
 
         // Check if this cell already exists (for correct changelog event)
         let existing = self.coefficients.for_cell(target, var);
@@ -942,7 +1026,17 @@ impl Model {
 
         let value_expr = value_expr.into();
         let target = CoefficientTarget::Objective(obj);
+        // Reject stale parameter dependencies before any mutation (PR #23
+        // review): `as_lookup` returns 0.0 for a missing parameter, so the
+        // dependency must be checked explicitly.
+        self.validate_value_expr_parameters(&value_expr)?;
         let initial_value = value_expr.eval(self.parameters.as_lookup());
+
+        // Reject non-finite coefficient values before any mutation
+        // (API-06.2, deferred item 5).
+        if !initial_value.is_finite() {
+            return Err(ModelError::NonFiniteValue("coefficient value"));
+        }
 
         // Check if this cell already exists
         let existing = self.coefficients.for_cell(target, var);
@@ -1626,6 +1720,23 @@ impl Model {
     }
 }
 
+// ── Constraint bounds validation ──────────────────────────────────────────
+
+/// Validate raw constraint bounds before mutation (D10/API-06.1/06.2).
+///
+/// Rejects NaN bounds (typed [`ModelError::NonFiniteValue`]) and inverted
+/// bounds (`lower > upper`, [`ModelError::InvalidBounds`]). Infinite sides
+/// remain valid (`le`/`ge` forms).
+pub(crate) fn validate_constraint_bounds(bounds: ConstraintBounds) -> Result<(), ModelError> {
+    if bounds.lower.is_nan() || bounds.upper.is_nan() {
+        return Err(ModelError::NonFiniteValue("constraint bound"));
+    }
+    if bounds.lower > bounds.upper {
+        return Err(ModelError::InvalidBounds);
+    }
+    Ok(())
+}
+
 // ── Change compilation ─────────────────────────────────────────────────────
 
 /// Compile a `Change` into a self-contained `ModelOp` for DeltaBatch.
@@ -1706,6 +1817,7 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)] // unit tests exercise the pre-1.0 compatibility surface
     use crate::expr::LinExpr;
 
     use super::*;

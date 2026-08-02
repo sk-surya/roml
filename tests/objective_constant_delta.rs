@@ -7,6 +7,9 @@
 //! incremental solve. These tests pin that the constant reaches the backend
 //! exactly once through `SetObjectiveConstant`.
 
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
+
 use roml::delta::ModelOp;
 use roml::prelude::*;
 use roml::revision::ModelRevision;
@@ -18,7 +21,7 @@ fn objective_constant_is_propagated_in_delta_batch() {
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_var();
-    model.constrain((x + y).le(4.0)).unwrap();
+    model.add_constraint((x + y).le(4.0)).unwrap();
     let obj = model.maximize(3.0 * x + y + 5.0).unwrap();
     assert_eq!(model.objective_constant(obj), Some(5.0));
 

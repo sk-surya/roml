@@ -5,8 +5,8 @@
 **Milestone:** M2 Public API Ergonomics  
 **Branch:** `docs/public-api-ergonomics-gsd-ultra`  
 **Base:** `main@ac473911bc2239e940b8c2019dee3e01a445701e`  
-**Status:** P22 executed on `phase-roml-P22-modeling-ergonomics`; verified 11/11, gate passed, pending merge/PR  
-**Current phase:** P22 — modeling ergonomics and entity names (gate passed)
+**Status:** P23 executed on `phase-roml-P23-surface-curation`; verified 11/11, gate met; awaiting independent API review (PR #23)  
+**Current phase:** P23 — surface curation, validation, and migration (gate met)
 
 ## Objective ledger
 
@@ -18,7 +18,7 @@
 | Solver façade | Complete — gate passed | `src/solver/facade.rs`, `roml-highs/src/facade.rs`, `tests/solver_facade.rs`, `roml-highs/tests/facade_tests.rs` | merge P21 branch, then P22 |
 | Unified solution/status | Complete — gate passed | `SolveStatus`/`SolveMetadata`/`SolveError`/`Solution` + status mapping tests | merge P21 branch, then P22 |
 | Modeling ergonomics | Complete — gate passed | `tests/modeling_ergonomics.rs`, `tests/named_entities.rs`, name getters, D11 sparse trio, named diagnostics | merge P22 branch, then P23 |
-| Surface curation | Planned | P23 plan | public API review green |
+| Surface curation | Complete — gate met, awaiting review | curated prelude, `roml::advanced`, `MIGRATION.md`, deprecations | merge P23 branch (API review via PR), then P24 |
 | Consumer qualification | Planned | P24 plan | fresh packed consumers green |
 
 ## Accepted assumptions
@@ -43,7 +43,8 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 
 ## Immediate next actions
 
-1. Merge the P22 branch (`phase-roml-P22-modeling-ergonomics` → main) via PR; then start P23 (`phase-roml-P23-surface-curation`).
+1. Merge the P23 branch (`phase-roml-P23-surface-curation` → main) via PR after the API coherence review; then start P24 (`phase-roml-P24-consumer-qualification`).
+1a. **P24 doc note (PR #23 review):** `roml::advanced` is an organized additional path, not an exclusive move — protocol modules/types remain available at the crate root. That compatibility choice is accepted; P24 must present root protocol imports as LEGACY (migration-era) rather than another recommended surface, so README/guides steer users to the curated prelude + `roml::advanced`.
 2. P23 (surface curation): prelude reduction, `roml::advanced`/`roml::backend` namespace moves, deprecations (effectful macros, `constrain`/`constraint` aliases, `add_var`/`add_binary`/`add_integer`/`add_parameter(f64)` wrappers), `MIGRATION.md` + `CHANGELOG.md` entries. P23 must not remove/deprecate an API until its replacement has compile-pass coverage (D12). The deferred-items list (`.planning/phases/22-modeling-ergonomics/deferred-items.md`) carries the surface-consistency subset for P23 (e.g. `set_variable_bounds` validation, `VarId - VarId`, raw `*_coefficient` NaN acceptance, stale-var atomicity in `add_constraint_spec_impl`).
 3. Optional follow-up (informational): real-HiGHS delta-path objective-constant e2e assertion (covered at other layers).
 4. Before P24 qualification: the `roml` package contains repo-level files (`.planning/`, `tools/`, `.foundry.toml`) — no `include` filter; packaging hygiene must be addressed (API-10.3). Also the `roml-mosek`/`roml-xpress` adapters fail to compile against the P21+ solver API (out of M2 scope; recorded in deferred-items).
@@ -75,7 +76,7 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 | P20 | Gate passed — pending merge | API-04, API-07, API-08, API-10 | `M2_P20_BASELINE.md`, `M2_P20_public_api_roml{,_highs}.txt`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/{target_quickstart,target_incremental,current_readme_drift,current_solve_model_method}.rs`, `scripts/p20-capture-drift.sh`, `tests/public_api_compile.rs`, `roml-highs/tests/repeated_session_baseline.rs` — verification 9/9, `20-VERIFICATION.md`, `20-UAT.md` (4/4 passed) |
 | P21 | Gate passed — pending merge | API-01, API-02, API-03 | `21-VERIFICATION.md` (15/15), `21-SUMMARY.md`, executing target contracts |
 | P22 | Gate passed — pending merge | API-04, API-05, API-06 | `22-VERIFICATION.md` (11/11), `22-SUMMARY.md`, `tests/modeling_ergonomics.rs`, `tests/named_entities.rs` |
-| P23 | Blocked on P22 | API-06, API-07, API-08 | pending |
+| P23 | Gate met — awaiting API review | API-06, API-07, API-08 | `23-VERIFICATION.md` (11/11), `23-SUMMARY.md`, `MIGRATION.md`, curated prelude |
 | P24 | Blocked on P23 | API-09, API-10, all | pending |
 
 ## P20 execution record (verified facts only)

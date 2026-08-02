@@ -408,6 +408,16 @@ impl std::ops::Add<VarId> for VarId {
     }
 }
 
+// Subtract two variables directly, yielding an expression with both terms
+// (P23 deferred-item 3: mirrors the `x + y` ergonomics for `x - y`).
+impl std::ops::Sub<VarId> for VarId {
+    type Output = LinExpr;
+
+    fn sub(self, rhs: VarId) -> LinExpr {
+        LinExpr::from(self) - rhs
+    }
+}
+
 // Combine a constant and a variable, producing an expression.
 impl std::ops::Add<VarId> for f64 {
     type Output = LinExpr;
@@ -574,6 +584,14 @@ impl std::ops::Neg for LinExpr {
 
 impl Model {
     /// Add a constraint from a fluent constraint specification.
+    ///
+    /// Deprecated in P23: the canonical mutation is [`Self::add_constraint`]
+    /// (API-04.1, D1). This alias is kept for the pre-1.0 compatibility window
+    /// and remains tested (API-08.3). See `MIGRATION.md` → "Constraints".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_constraint(spec)` (API-04.1); see MIGRATION.md -> Constraints"
+    )]
     pub fn constrain<S>(&mut self, spec: S) -> Result<ConId, ModelError>
     where
         S: Into<ConstraintSpec>,
@@ -582,11 +600,20 @@ impl Model {
     }
 
     /// Add a constraint from a fluent constraint specification.
+    ///
+    /// Deprecated in P23: the canonical mutation is [`Self::add_constraint`]
+    /// (API-04.1, D1). This redundant alias is kept for the pre-1.0
+    /// compatibility window and remains tested (API-08.3). See
+    /// `MIGRATION.md` → "Constraints".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_constraint(spec)` (API-04.1); see MIGRATION.md -> Constraints"
+    )]
     pub fn constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
     where
         S: Into<ConstraintSpec>,
     {
-        self.constrain(spec)
+        self.add_constraint(spec)
     }
 
     /// Add a constraint from a linear expression.
@@ -601,8 +628,11 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        // Atomicity (API-06.5): validate before inserting the row, so a stale
-        // variable/parameter cannot leave a dangling constraint behind.
+        // Atomicity + validation (API-06.5): reject invalid bounds and stale
+        // expression entities before inserting the row, so a NaN/inverted
+        // bound or a stale variable/parameter cannot leave a dangling
+        // constraint behind.
+        crate::model::validate_constraint_bounds(bounds)?;
         self.validate_expression_entities(&expr)?;
         // Route through the public bounds-only primitive, not the spec API, so
         // the expr-only path neither round-trips through ConstraintSpec nor
@@ -643,6 +673,15 @@ impl Model {
     }
 
     /// Add and activate an objective from a fluent objective specification.
+    ///
+    /// Deprecated in P23: the canonical single-objective mutations are
+    /// [`Self::minimize`] and [`Self::maximize`] (API-04.2, D1). This
+    /// convenience is kept for the pre-1.0 compatibility window and remains
+    /// tested (API-08.3). See `MIGRATION.md` → "Objectives".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::maximize(expr)` / `Model::minimize(expr)`; see MIGRATION.md -> Objectives"
+    )]
     pub fn set_objective<S>(&mut self, spec: S) -> Result<ObjId, ModelError>
     where
         S: Into<ObjectiveSpec>,
@@ -678,6 +717,7 @@ impl Model {
     where
         E: Into<LinExpr>,
     {
+        #[allow(deprecated)]
         self.set_objective(expr.minimize())
     }
 
@@ -686,6 +726,7 @@ impl Model {
     where
         E: Into<LinExpr>,
     {
+        #[allow(deprecated)]
         self.set_objective(expr.maximize())
     }
 
@@ -742,6 +783,7 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)] // unit tests exercise the pre-1.0 compatibility surface
     use super::*;
     use crate::continuous;
     use crate::id::Generation;

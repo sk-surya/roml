@@ -11,15 +11,15 @@ fn main() {
     let mut model = Model::with_name("simple_lp");
 
     // Variables
-    let x = model.add_var(); // defaults to x >= 0, continuous
-    let y = model.add_var();
+    let x = model.add_variable(continuous()).expect("x should be valid");
+    let y = model.add_variable(continuous()).expect("y should be valid");
 
     // Constraints
     model
-        .constrain((x + y).le(4.0))
+        .add_constraint((x + y).le(4.0))
         .expect("constraint should be valid");
     model
-        .constrain(x.le(3.0))
+        .add_constraint(x.le(3.0))
         .expect("constraint should be valid");
 
     // Objective: maximize 3x + y

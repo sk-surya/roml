@@ -136,6 +136,7 @@ impl<T> IdArena<T> {
 
     /// Get the total number of slots (including deleted).
     #[inline]
+    #[allow(dead_code)] // used by store unit tests; crate-private since P23
     pub fn capacity_used(&self) -> usize {
         self.slots.len()
     }
