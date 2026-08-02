@@ -32,7 +32,7 @@
 | `4b76cba` | `fix(package): anchor roml include patterns to package root` | 5 |
 | `9921f9d` | `fix(highs): wire bundled/system features to highs-sys` | 5 |
 | `1130666` | `docs: add P24 changelog and public API evidence` | 6 |
-| `<this record commit>` | `docs: record M2 public API qualification` | 6 |
+| ``b2fc500`` | `docs: record M2 public API qualification` | 6 |
 
 Tasks 2 and 3 are committed in implementation order (examples before the guide
 so the guide's compiled links resolve); the commit messages match the plan.
