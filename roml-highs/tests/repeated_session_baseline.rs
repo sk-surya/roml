@@ -16,13 +16,21 @@
 //! |---|---|---|---|---|
 //! | Rebuild from snapshot | r1 | Ready | Optimal | 12.0 (`price = 3.0`) |
 //! | Apply parameter delta (`price 3.0 -> 5.0`) | r2 | Ready | Optimal | 20.0 |
-//! | Failed delta (mismatched base) | r1 (unchanged) | RequiresRebuild | — | solution invalidated |
+//! | Failed delta (mismatched base) | r1 (unchanged) | RequiresRebuild | — | prior solution stays readable but stale |
 //! | Snapshot rebuild (deterministic recovery) | r1 | Ready | Optimal | 12.0 |
 //!
 //! The last two rows are the "unsupported/dirty path": a delta whose base
 //! revision does not match the cursor (a missed/unsupported incremental
 //! update) is rejected before mutation, the cursor demands a rebuild, and a
 //! deterministic snapshot rebuild restores `Ready` and a correct solve.
+//!
+//! Characterized current behavior on the rejected delta (asserted in
+//! `dirty_path_recovers_via_deterministic_snapshot_rebuild`): the previously
+//! reported solution REMAINS readable through `SolutionView` — the objective
+//! still reads 12.0 — but it is stale relative to the advanced model. It is
+//! not invalidated. P21's façade must never report that stale result as
+//! current (API-01.5); this baseline records what the session layer does
+//! today so P21 can decide the invalidation policy.
 
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::expr::ConstraintExprExt;
@@ -192,6 +200,23 @@ fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dy
         "cursor must require a rebuild after a rejected delta"
     );
     assert_eq!(session.revision(), r1, "revision unchanged after rejection");
+
+    // Characterized current behavior: the prior optimal solution REMAINS
+    // readable through SolutionView after the rejected delta — the objective
+    // still reads 12.0 — but it is stale relative to the advanced model
+    // (revision r1 cannot satisfy the model at r11). It is not invalidated.
+    // P21 (API-01.5) must decide that the façade never reports this stale
+    // result as current; this assertion freezes what the session layer does
+    // today as the parity target for that decision.
+    assert_eq!(
+        session.objective_value(),
+        Some(12.0),
+        "prior solution stays readable (but stale) after a rejected delta"
+    );
+    assert!(
+        session.value(x).is_some(),
+        "prior variable values also stay readable after a rejected delta"
+    );
 
     // Deterministic recovery: rebuild from the snapshot restores Ready and a
     // correct, non-stale solve.

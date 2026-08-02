@@ -86,5 +86,5 @@ fn low_level_and_between_forms_compile() {
     model.constrain((y).ge(0.0)).expect("ge should succeed");
 
     let obj = model.maximize(x + y).expect("objective should be set");
-    assert!(model.active_objective() == Some(obj) || model.active_objective().is_some());
+    assert_eq!(model.active_objective(), Some(obj));
 }
