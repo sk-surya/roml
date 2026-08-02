@@ -190,6 +190,37 @@ impl CoefficientIndex {
         id
     }
 
+    /// Replace an existing coefficient's value expression, maintaining the
+    /// parameter dependency index.
+    ///
+    /// The coefficient's identity and cell key are unchanged; only the
+    /// expression and cached value are replaced (D11 replace-by-cell semantics).
+    pub fn set_expr(&mut self, id: CoeffId, value_expr: ValueExpr, evaluated: f64) {
+        // Drop the old parameter dependencies.
+        let old_deps: Vec<ParamId> = self
+            .arena
+            .get(id.index(), id.generation())
+            .map(|d| d.value_expr.dependencies().into_iter().collect())
+            .unwrap_or_default();
+        for param in &old_deps {
+            if let Some(set) = self.by_param.get_mut(param) {
+                set.remove(&id);
+                if set.is_empty() {
+                    self.by_param.remove(param);
+                }
+            }
+        }
+
+        // Update the expression and cached value, then re-index dependencies.
+        if let Some(existing) = self.arena.get_mut(id.index(), id.generation()) {
+            existing.value_expr = value_expr.clone();
+            existing.cached_value = evaluated;
+            for param in value_expr.dependencies() {
+                self.by_param.entry(param).or_default().insert(id);
+            }
+        }
+    }
+
     /// Remove a coefficient by ID.
     ///
     /// Returns the data if it existed. Automatically cleans up all secondary indices.
