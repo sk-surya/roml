@@ -27,10 +27,13 @@
 //! 10. **SolveOptions on Model** - options stored on model (KNOWN BUG -- should
 //!     move to solve request)
 
+use roml::model::changelog::Change;
+use roml::model::ConstraintBounds;
 use roml::model::ModelConstants;
 use roml::prelude::*;
 use roml::solver::request::SolveRequest;
 use roml::LpAlgorithm;
+use roml::ValueExpr;
 
 // =========================================================================
 // 1. Variable Lifecycle

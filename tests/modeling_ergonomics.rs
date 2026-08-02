@@ -6,7 +6,7 @@
 //! pins the accepted M2 semantics and guards API-04/API-05/API-06.
 
 use roml::id::{ConId, Generation, VarId};
-use roml::model::CoefficientTarget;
+use roml::model::{CoefficientTarget, ConstraintBounds};
 use roml::prelude::*;
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -7,9 +7,8 @@
 //! aliases `Variable` / `Parameter` (D8). These tests pin that behavior so
 //! the fixtures can compile and execute.
 
-use roml::id::Generation;
-use roml::id::ParamId;
-use roml::model::Bounds;
+use roml::id::{ConId, Generation, ObjId, ParamId, VarId};
+use roml::model::{Bounds, ConstraintBounds};
 use roml::prelude::*;
 
 fn fake_param() -> ParamId {

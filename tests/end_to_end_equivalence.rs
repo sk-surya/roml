@@ -20,10 +20,12 @@
 
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::model::coefficient::CoefficientTarget;
+use roml::model::ConstraintBounds;
 use roml::prelude::*;
 use roml::snapshot::ModelSnapshot;
 use roml::solver::reference::ReferenceBackend;
 use roml::sync::{AdapterCursor, ApplyOutcome};
+use roml::ValueExpr;
 
 // =========================================================================
 // Helpers
