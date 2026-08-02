@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/roml-logo.svg" alt="ROML logo" width="760">
+  <img src="assets/roml-logo.png" alt="ROML logo" width="760">
 </p>
 
 <h1 align="center">Rust Optimization Modeling Library</h1>
