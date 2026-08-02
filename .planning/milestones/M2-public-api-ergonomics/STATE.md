@@ -5,8 +5,8 @@
 **Milestone:** M2 Public API Ergonomics  
 **Branch:** `docs/public-api-ergonomics-gsd-ultra`  
 **Base:** `main@ac473911bc2239e940b8c2019dee3e01a445701e`  
-**Status:** P22 executed on `phase-roml-P22-modeling-ergonomics`; verified 11/11, gate passed, pending merge/PR  
-**Current phase:** P22 — modeling ergonomics and entity names (gate passed)
+**Status:** P23 executed on `phase-roml-P23-surface-curation`; verified 11/11, gate met; awaiting independent API review (PR #23)  
+**Current phase:** P23 — surface curation, validation, and migration (gate met)
 
 ## Objective ledger
 
@@ -18,7 +18,7 @@
 | Solver façade | Complete — gate passed | `src/solver/facade.rs`, `roml-highs/src/facade.rs`, `tests/solver_facade.rs`, `roml-highs/tests/facade_tests.rs` | merge P21 branch, then P22 |
 | Unified solution/status | Complete — gate passed | `SolveStatus`/`SolveMetadata`/`SolveError`/`Solution` + status mapping tests | merge P21 branch, then P22 |
 | Modeling ergonomics | Complete — gate passed | `tests/modeling_ergonomics.rs`, `tests/named_entities.rs`, name getters, D11 sparse trio, named diagnostics | merge P22 branch, then P23 |
-| Surface curation | Planned | P23 plan | public API review green |
+| Surface curation | Complete — gate met, awaiting review | curated prelude, `roml::advanced`, `MIGRATION.md`, deprecations | merge P23 branch (API review via PR), then P24 |
 | Consumer qualification | Planned | P24 plan | fresh packed consumers green |
 
 ## Accepted assumptions
@@ -75,7 +75,7 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 | P20 | Gate passed — pending merge | API-04, API-07, API-08, API-10 | `M2_P20_BASELINE.md`, `M2_P20_public_api_roml{,_highs}.txt`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/{target_quickstart,target_incremental,current_readme_drift,current_solve_model_method}.rs`, `scripts/p20-capture-drift.sh`, `tests/public_api_compile.rs`, `roml-highs/tests/repeated_session_baseline.rs` — verification 9/9, `20-VERIFICATION.md`, `20-UAT.md` (4/4 passed) |
 | P21 | Gate passed — pending merge | API-01, API-02, API-03 | `21-VERIFICATION.md` (15/15), `21-SUMMARY.md`, executing target contracts |
 | P22 | Gate passed — pending merge | API-04, API-05, API-06 | `22-VERIFICATION.md` (11/11), `22-SUMMARY.md`, `tests/modeling_ergonomics.rs`, `tests/named_entities.rs` |
-| P23 | Blocked on P22 | API-06, API-07, API-08 | pending |
+| P23 | Gate met — awaiting API review | API-06, API-07, API-08 | `23-VERIFICATION.md` (11/11), `23-SUMMARY.md`, `MIGRATION.md`, curated prelude |
 | P24 | Blocked on P23 | API-09, API-10, all | pending |
 
 ## P20 execution record (verified facts only)
