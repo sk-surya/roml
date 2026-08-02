@@ -4,6 +4,10 @@
 //! HiGHS mixed-integer linear programming solver, using authoritative
 //! `highs-sys` bindings for FFI.
 //!
+//! The golden-path user type is [`Highs`]: a thin façade exposing
+//! `new`/`solve`/`solve_with`. Ordinary users need nothing else from this
+//! crate. [`HighsSession`] remains public for framework authors and tests.
+//!
 //! # Feature Mutual Exclusion
 //!
 //! `bundled` and `system` are mutually exclusive — activating both is a
@@ -20,6 +24,8 @@
 //! - `callback`: Callback bridge for MIP lazy constraints/interrupts.
 //! - `index_map`: Dense index bookkeeping (kept from original adapter).
 //! - `facade`: The golden-path [`Highs`] façade (D3).
+
+#![warn(missing_docs)]
 //!
 //! # Quick Start
 //!

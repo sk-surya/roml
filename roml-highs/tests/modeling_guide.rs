@@ -28,6 +28,7 @@ fn guide_entities_definitions_and_names() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(model.variable_name(y)?, Some("y"));
     assert_eq!(model.variable_name(z)?, Some("z"));
     assert_eq!(model.parameter_name(price)?, Some("price"));
+    assert_eq!(model.variable_bounds(w).map(|b| b.lower), Some(1.0));
 
     // Names are optional; unnamed entities still exist.
     let _anon = model.add_variable(continuous())?;

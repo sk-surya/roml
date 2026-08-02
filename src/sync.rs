@@ -129,7 +129,9 @@ pub enum ApplyOutcome {
 pub enum ApplyError {
     /// The batch's `from` revision doesn't match the cursor.
     RevisionMismatch {
+        /// The revision the cursor expected.
         expected: ModelRevision,
+        /// The revision the batch actually starts from.
         got: ModelRevision,
     },
     /// The requested revision is not in the journal.

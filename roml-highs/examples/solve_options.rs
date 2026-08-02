@@ -35,9 +35,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("backend:            {}", metadata.backend_name);
     println!("model revision:     {:?}", metadata.model_revision);
     println!("synchronization:    {:?}", metadata.synchronization);
-    println!("effective threads:  {:?}", metadata.effective_configuration.threads);
-    println!("effective gap:      {:?}", metadata.effective_configuration.mip_rel_gap);
-    println!("adjustments:        {:?}", metadata.effective_configuration.adjustments);
-    println!("rejections:         {:?}", metadata.effective_configuration.rejections);
+    println!(
+        "effective threads:  {:?}",
+        metadata.effective_configuration.threads
+    );
+    println!(
+        "effective gap:      {:?}",
+        metadata.effective_configuration.mip_rel_gap
+    );
+    println!(
+        "adjustments:        {:?}",
+        metadata.effective_configuration.adjustments
+    );
+    println!(
+        "rejections:         {:?}",
+        metadata.effective_configuration.rejections
+    );
     Ok(())
 }

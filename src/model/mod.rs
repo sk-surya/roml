@@ -149,6 +149,8 @@ pub struct Model {
     pub(crate) coordinator: crate::sync::SyncCoordinator,
 }
 
+/// Model-level constants used by algebraic introspection (slack and violation
+/// checks).
 #[derive(Clone, Debug)]
 pub struct ModelConstants {
     /// Tolerance for considering a constraint violated (negative slack).
@@ -165,6 +167,7 @@ impl Default for ModelConstants {
 }
 
 impl ModelConstants {
+    /// Create model constants with default values.
     pub fn new() -> Self {
         Self::default()
     }

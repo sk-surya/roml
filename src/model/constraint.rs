@@ -25,7 +25,7 @@ impl ConstraintBounds {
         }
     }
 
-    // Create a less-than-or-equal constraint (expr <= upper)
+    /// Create a less-than-or-equal constraint (expr <= upper)
     pub const fn le(upper: f64) -> Self {
         Self {
             lower: f64::NEG_INFINITY,
@@ -61,7 +61,7 @@ impl ConstraintBounds {
         self.upper.is_finite()
     }
 
-    // Check if bounds are valid (lower <= upper).
+    /// Check if bounds are valid (lower <= upper).
     pub fn is_valid(&self) -> bool {
         self.lower <= self.upper
     }

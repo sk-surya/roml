@@ -65,10 +65,15 @@ pub enum RevisionError {
     /// The revision counter would overflow.
     Overflow,
     /// The requested revision has been compacted (no longer in journal).
-    Compacted { revision: ModelRevision },
+    Compacted {
+        /// The revision that is no longer available.
+        revision: ModelRevision,
+    },
     /// The requested revision is in the future.
     FutureRevision {
+        /// The revision that was requested.
         requested: ModelRevision,
+        /// The model's current revision.
         current: ModelRevision,
     },
 }
