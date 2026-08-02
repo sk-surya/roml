@@ -140,6 +140,16 @@ pub enum Change {
         new: Option<ObjId>,
     },
 
+    /// The constant offset of an objective changed.
+    ///
+    /// Journaled so the incremental (delta) path propagates the constant to the
+    /// backend exactly once (API-03.5); the snapshot path already carries it.
+    ObjectiveConstantChanged {
+        obj: ObjId,
+        old: f64,
+        new: f64,
+    },
+
     // ========== Parameter Changes ==========
     /// A parameter value was changed.
     ///

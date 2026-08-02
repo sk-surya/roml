@@ -530,6 +530,22 @@ impl Model {
         self.objectives.get(obj).map(|data| data.constant)
     }
 
+    /// Set an objective's constant offset, journaling the change when it
+    /// differs (API-03.5: the delta path propagates constants to backends).
+    pub(crate) fn set_objective_constant_internal(&mut self, obj: ObjId, constant: f64) {
+        if let Some(data) = self.objectives.get_mut(obj) {
+            let old = data.constant;
+            if (old - constant).abs() >= f64::EPSILON {
+                data.constant = constant;
+                self.changelog.push(Change::ObjectiveConstantChanged {
+                    obj,
+                    old,
+                    new: constant,
+                });
+            }
+        }
+    }
+
     /// Get the constant offset for the active objective.
     pub fn active_objective_constant(&self) -> Option<f64> {
         self.active_objective()
@@ -1404,6 +1420,9 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::ObjectiveSenseChanged {
             obj, new: sense, ..
         } => Ok(ModelOp::SetObjectiveSense { obj, sense }),
+        Change::ObjectiveConstantChanged {
+            obj, new: constant, ..
+        } => Ok(ModelOp::SetObjectiveConstant { obj, constant }),
         Change::ActiveObjectiveChanged { new, .. } => Ok(ModelOp::SetActiveObjective { obj: new }),
         Change::ParameterValueChanged { param, new, .. } => {
             Ok(ModelOp::SetParameter { param, value: new })
