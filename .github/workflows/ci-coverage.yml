@@ -35,6 +35,7 @@ jobs:
             --features roml-highs/bundled \
             --ignore-filename-regex 'tests?/'
           cargo llvm-cov report \
+            -p roml -p roml-highs \
             --summary-only --json \
             --output-path coverage.json
       - name: Parse coverage and enforce threshold
