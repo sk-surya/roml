@@ -5,8 +5,8 @@
 **Milestone:** M2 Public API Ergonomics  
 **Branch:** `docs/public-api-ergonomics-gsd-ultra`  
 **Base:** `main@ac473911bc2239e940b8c2019dee3e01a445701e`  
-**Status:** P20 executed on `phase-roml-P20-api-contract`; awaiting API review (4 UAT items)  
-**Current phase:** P20 — contract baseline and API characterization (gate not yet passed)
+**Status:** P20 gate passed (UAT recorded 2026-08-02); `phase-roml-P20-api-contract` pending merge (PR #20)  
+**Current phase:** P20 — contract baseline and API characterization (gate passed)
 
 ## Objective ledger
 
@@ -14,7 +14,7 @@
 |---|---|---|---|
 | Repository inspection | Complete | `RESEARCH.md` | P20 characterization tests |
 | API direction | Accepted for planning | `DECISIONS.md` | signature compile tests |
-| P20 contract baseline | Executed — awaiting review | `M2_P20_BASELINE.md`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/*.rs`, `repeated_session_baseline.rs` | 4 UAT review items, then P21 |
+| P20 contract baseline | Complete — UAT passed | `M2_P20_BASELINE.md`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/*.rs`, `repeated_session_baseline.rs` | merge PR #20, then P21 |
 | Solver façade | Planned | P21 plan | end-to-end solve green |
 | Unified solution/status | Planned | P21 plan | mapping tests green |
 | Modeling ergonomics | Planned | P22 plan | named model examples green |
@@ -43,16 +43,16 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 
 ## Immediate next actions
 
-1. Owner reviews the 4 UAT items (`20-UAT.md` / `20-VERIFICATION.md`) for the P20 gate: baseline evidence, drift characterization, target signatures, disposition table.
-2. After UAT passes, run `/gsd-verify-work 20` to mark P20 complete and advance to P21.
+1. Merge PR #20 (`phase-roml-P20-api-contract` → main) — gate passed, UAT recorded.
+2. Start P21 (`phase-roml-P21-solver-facade`) from the merged main: generic `SolverSession<B>` in core, `roml_highs::Highs` façade, unified `Solution`/`SolveStatus`/`SolveMetadata`/`SolveError`; target contracts in `tests/ui/target_*.rs` turn green; one-rebuild retry; stale-solution invalidation (API-01.5).
 3. P21 resolves the stale-solution-on-rejected-sync question (API-01.5) surfaced by `repeated_session_baseline.rs`: current `HighsSession::synchronize` clears the cached solution on successful sync but leaves `SolutionView` readable when a sync is rejected (cursor → `RequiresRebuild`) — the P20 test establishes this is genuinely stale by advancing the canonical model to r2 (expected 20.0) while the session still reports the r1 solution (12.0).
-4. `cargo package --list -p roml` exit-101 skip (untracked local artifacts `.planning/`, `graphify-out/` make the tree dirty) must be re-run in a clean checkout before P24 qualification.
+4. Before P24 qualification: the `roml` package contains repo-level files (`.planning/`, `tools/`, `.foundry.toml`) — no `include` filter; packaging hygiene must be addressed (API-10.3).
 
 ## Phase ledger
 
 | Phase | Status | Requirement range | Completion evidence |
 |---|---|---|---|
-| P20 | Executed — awaiting review | API-04, API-07, API-08, API-10 | `M2_P20_BASELINE.md`, `M2_P20_public_api_roml{,_highs}.txt`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/{target_quickstart,target_incremental,current_readme_drift}.rs`, `tests/public_api_compile.rs`, `roml-highs/tests/repeated_session_baseline.rs` — verification 9/9, `20-VERIFICATION.md`, `20-UAT.md` |
+| P20 | Gate passed — pending merge | API-04, API-07, API-08, API-10 | `M2_P20_BASELINE.md`, `M2_P20_public_api_roml{,_highs}.txt`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/{target_quickstart,target_incremental,current_readme_drift,current_solve_model_method}.rs`, `scripts/p20-capture-drift.sh`, `tests/public_api_compile.rs`, `roml-highs/tests/repeated_session_baseline.rs` — verification 9/9, `20-VERIFICATION.md`, `20-UAT.md` (4/4 passed) |
 | P21 | Blocked on P20 review | API-01, API-02, API-03 | pending |
 | P22 | Blocked on P21 | API-04, API-05, API-06 | pending |
 | P23 | Blocked on P22 | API-06, API-07, API-08 | pending |
