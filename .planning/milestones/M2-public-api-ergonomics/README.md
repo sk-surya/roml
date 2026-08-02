@@ -3,9 +3,13 @@
 **Branch:** `docs/public-api-ergonomics-gsd-ultra`  
 **Baseline:** `main@ac473911bc2239e940b8c2019dee3e01a445701e`  
 **Planning date:** 2026-08-02  
-**Status:** planning complete; implementation not started
+**Status:** ✅ **COMPLETE** — all five phases (P20–P24) executed, reviewed, and merged to `main` via PRs #20–#24 (final merge `5de1b24`); independent reviews passed for every phase; publication remains a separate owner decision
 
 This packet is the authoritative execution plan for making ROML's external API intuitive, coherent, and complete. It does not replace the historical release-hardening documents; it narrows the next body of work to the user-facing modeling and solve experience on the current qualified core and HiGHS backend.
+
+## Milestone outcome (verified)
+
+The canonical target below is now the **running golden path**: it compiles and executes as an integration test (`roml-highs/tests/target_quickstart.rs`), a doctest, and the README example. Every requirement API-01..API-10 is closed with evidence in `docs/release/evidence/M2_PUBLIC_API.md` (traceability, fresh packed consumers, packaging hygiene, residual risks).
 
 ## Outcome
 
