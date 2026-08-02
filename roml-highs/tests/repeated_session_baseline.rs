@@ -60,7 +60,7 @@ fn build_parameterized_model(price_value: f64) -> (Model, VarId, VarId, roml::id
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_var();
-    let price = model.add_parameter(price_value);
+    let price = model.add_parameter(price_value).unwrap();
     model
         .constrain((x + y).le(4.0))
         .expect("constraint should build");
@@ -100,7 +100,7 @@ fn repeated_solve_rebuild_then_parameter_delta() -> Result<(), Box<dyn std::erro
     assert!(session.value(_x).is_some(), "variable value available");
 
     // Apply one parameter delta: price 3.0 -> 5.0.
-    model.set_parameter(price, 5.0);
+    model.set_parameter(price, 5.0).unwrap();
     let r2 = model.commit()?;
     let batches = model.deltas_since(r1)?;
     let batch = batches.last().expect("exactly the r1->r2 batch");
@@ -188,7 +188,7 @@ fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dy
     // Advance the REAL canonical model to r2 (price 3.0 -> 5.0). The session
     // does not know yet: it still holds the r1 solution, which is now
     // genuinely stale — the r2 model solves to 20.0, not 12.0.
-    model.set_parameter(price, 5.0);
+    model.set_parameter(price, 5.0).unwrap();
     let r2 = model.commit()?;
     assert_ne!(r2, r1, "model must have advanced to r2");
     let snap_r2 = model.take_snapshot()?;

@@ -5,8 +5,8 @@
 **Milestone:** M2 Public API Ergonomics  
 **Branch:** `docs/public-api-ergonomics-gsd-ultra`  
 **Base:** `main@ac473911bc2239e940b8c2019dee3e01a445701e`  
-**Status:** P20 gate passed (UAT recorded 2026-08-02); `phase-roml-P20-api-contract` pending merge (PR #20)  
-**Current phase:** P20 — contract baseline and API characterization (gate passed)
+**Status:** P21 executed on `phase-roml-P21-solver-facade`; verified 15/15, gate passed, pending merge/PR  
+**Current phase:** P21 — solver façade and unified result (gate passed)
 
 ## Objective ledger
 
@@ -15,9 +15,9 @@
 | Repository inspection | Complete | `RESEARCH.md` | P20 characterization tests |
 | API direction | Accepted for planning | `DECISIONS.md` | signature compile tests |
 | P20 contract baseline | Complete — UAT passed | `M2_P20_BASELINE.md`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/*.rs`, `repeated_session_baseline.rs` | merge PR #20, then P21 |
-| Solver façade | Planned | P21 plan | end-to-end solve green |
-| Unified solution/status | Planned | P21 plan | mapping tests green |
-| Modeling ergonomics | Planned | P22 plan | named model examples green |
+| Solver façade | Complete — gate passed | `src/solver/facade.rs`, `roml-highs/src/facade.rs`, `tests/solver_facade.rs`, `roml-highs/tests/facade_tests.rs` | merge P21 branch, then P22 |
+| Unified solution/status | Complete — gate passed | `SolveStatus`/`SolveMetadata`/`SolveError`/`Solution` + status mapping tests | merge P21 branch, then P22 |
+| Modeling ergonomics | Partially landed in P21 (D7/D10) | builders, `Model::named`, aliases, fallible entry points | P22 remainder: names in diagnostics, D11 sparse cells, API-06 coverage |
 | Surface curation | Planned | P23 plan | public API review green |
 | Consumer qualification | Planned | P24 plan | fresh packed consumers green |
 
@@ -43,17 +43,28 @@ No owner decision blocks P20. The following issues must be resolved during P20 r
 
 ## Immediate next actions
 
-1. Merge PR #20 (`phase-roml-P20-api-contract` → main) — gate passed, UAT recorded.
-2. Start P21 (`phase-roml-P21-solver-facade`) from the merged main: generic `SolverSession<B>` in core, `roml_highs::Highs` façade, unified `Solution`/`SolveStatus`/`SolveMetadata`/`SolveError`; target contracts in `tests/ui/target_*.rs` turn green; one-rebuild retry; stale-solution invalidation (API-01.5).
-3. P21 resolves the stale-solution-on-rejected-sync question (API-01.5) surfaced by `repeated_session_baseline.rs`: current `HighsSession::synchronize` clears the cached solution on successful sync but leaves `SolutionView` readable when a sync is rejected (cursor → `RequiresRebuild`) — the P20 test establishes this is genuinely stale by advancing the canonical model to r2 (expected 20.0) while the session still reports the r1 solution (12.0).
+1. Merge the P21 branch (`phase-roml-P21-solver-facade` → main) via PR; then start P22 (`phase-roml-P22-modeling-ergonomics`).
+2. P22 remainder (much of its surface landed in P21 via the D7/D10 migration): names in diagnostics and model formatting, sparse cell semantics (D11 `set_coefficient`/`add_to_coefficient`/`remove_coefficient`), representative LP/MILP/sparse/parameterized compile tests, API-06 validation-error coverage.
+3. Optional follow-up (verifier note, informational): add a real-HiGHS end-to-end assertion of the delta path with a non-zero objective constant (current proofs cover normalization, core-delta, journaling, and HiGHS rebuild path).
 4. Before P24 qualification: the `roml` package contains repo-level files (`.planning/`, `tools/`, `.foundry.toml`) — no `include` filter; packaging hygiene must be addressed (API-10.3).
+
+## P21 execution record (verified facts only)
+
+- **Execution branch:** `phase-roml-P21-solver-facade` (10 commits above main merge `456f172`); verification head `6b403d9`.
+- **Closed requirement IDs:** API-01, API-02, API-03 — behavioral completion with tests (see `21-VERIFICATION.md`, 15/15 truths; matrix re-run independently by orchestrator and verifier).
+- **Key decisions:** `SolveStatus` is golden-path with `SolverStatus` compatibility alias (M2 open item 2 resolved); first-solve sync is delta-first when the journal retains the chain (contract = correct sync, not a fixed mode); unsupported model changes surface as `Err(Synchronization)` after at most one rebuild retry, never a stale/fabricated result.
+- **Deviations (documented):** D7/D10 fallible migration landed in P21 ahead of its P22 slot (the target contracts needed it); target fixtures promoted from `tests/ui/` to `roml-highs/tests/` and execute; end-to-end rebuild-retry recovery with real HiGHS is unreachable for supported models (all 18 delta ops supported) — recovery semantics proven at core level with fault backends.
+- **Test counts:** roml 482 passed / 0 failed; roml-highs 86 passed / 0 failed; doctests execute the M2 quickstart (2/2); clippy/rustdoc/fmt clean.
+- **Skipped/notes:** no skips. Informational note: HiGHS delta-path objective-constant e2e assertion deferred (covered at other layers).
+- **Review cycle (PR #21, 2026-08-02):** independent protocol/API review returned 4 blocking findings + 1 flag, all resolved — (1) terminal sync errors (incl. license) no longer retried (`SolveError::is_terminal` + new fault test); (2) solve options reset to HiGHS defaults per request (no cross-solve leakage; new e2e test); (3) `SolverSession` public surface narrowed to `new`/`solve`/`solve_with` (`last_solution`/`backend`/`backend_mut` removed; stale protection structural; fault tests use shared handles); (4) independent protocol review recorded as the verification human item (`21-UAT.md`, status human_needed until re-review); (5) legacy `add_integer(Bounds)` made fallible per the recorded migration plan.
+- **Review round 2 (2 residual findings, resolved):** (1) `HighsSession::synchronize` now maps a failed delta's cursor health from the error's own `HealthEffect` (terminal → `Terminal`, else `RequiresRebuild`) instead of unconditionally `RequiresRebuild`; unit + session-level regression tests. (2) `negotiate_options` now calls `Highs_resetOptions` (session-wide reset covering arbitrary `backend_option` entries) before applying the request, and successful extra options are recorded in `EffectiveConfig.adjustments`; new e2e test. Status: awaiting re-review (round 2 fixes at head).
 
 ## Phase ledger
 
 | Phase | Status | Requirement range | Completion evidence |
 |---|---|---|---|
 | P20 | Gate passed — pending merge | API-04, API-07, API-08, API-10 | `M2_P20_BASELINE.md`, `M2_P20_public_api_roml{,_highs}.txt`, `PUBLIC_API_M2_DISPOSITION.md`, `tests/ui/{target_quickstart,target_incremental,current_readme_drift,current_solve_model_method}.rs`, `scripts/p20-capture-drift.sh`, `tests/public_api_compile.rs`, `roml-highs/tests/repeated_session_baseline.rs` — verification 9/9, `20-VERIFICATION.md`, `20-UAT.md` (4/4 passed) |
-| P21 | Blocked on P20 review | API-01, API-02, API-03 | pending |
+| P21 | Gate passed — pending merge | API-01, API-02, API-03 | `21-VERIFICATION.md` (15/15), `21-SUMMARY.md`, executing target contracts |
 | P22 | Blocked on P21 | API-04, API-05, API-06 | pending |
 | P23 | Blocked on P22 | API-06, API-07, API-08 | pending |
 | P24 | Blocked on P23 | API-09, API-10, all | pending |

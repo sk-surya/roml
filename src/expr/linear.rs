@@ -249,6 +249,8 @@ pub struct ConstraintSpec {
     pub expr: LinExpr,
     /// The bounds applied to the expression.
     pub bounds: ConstraintBounds,
+    /// Optional name for the constraint (D6).
+    pub name: Option<String>,
 }
 
 impl ConstraintSpec {
@@ -260,7 +262,23 @@ impl ConstraintSpec {
         Self {
             expr: expr.into(),
             bounds,
+            name: None,
         }
+    }
+
+    /// Attach a name to this constraint specification.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
+/// Raw [`ConstraintBounds`] convert into an empty constraint specification,
+/// preserving the current `add_constraint(bounds)` call shape through the
+/// generic spec API (signature-collision migration in the M2 disposition).
+impl From<ConstraintBounds> for ConstraintSpec {
+    fn from(bounds: ConstraintBounds) -> Self {
+        ConstraintSpec::new(LinExpr::new(), bounds)
     }
 }
 
@@ -551,8 +569,7 @@ impl Model {
     where
         S: Into<ConstraintSpec>,
     {
-        let spec = spec.into();
-        self.add_constraint_expr(spec.expr, spec.bounds)
+        self.add_constraint(spec)
     }
 
     /// Add a constraint from a fluent constraint specification.
@@ -575,7 +592,10 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        let con = self.add_constraint(bounds);
+        // Route through the private primitive, not the public spec API, so the
+        // expr-only path neither round-trips through ConstraintSpec nor
+        // captures the generic's spec semantics (M2 disposition migration).
+        let con = self.add_empty_constraint(bounds, None);
         let constant = expr.compile_for_constraint(self, con)?;
 
         // Adjust bounds for constant term: expr <= b becomes (expr - c) <= (b - c)
@@ -624,9 +644,7 @@ impl Model {
         let expr = expr.into();
         let obj = self.add_objective(sense);
         let constant = expr.compile_for_objective(self, obj)?;
-        if let Some(data) = self.objectives.get_mut(obj) {
-            data.constant = constant;
-        }
+        self.set_objective_constant_internal(obj, constant);
         Ok((obj, constant))
     }
 
@@ -655,9 +673,7 @@ impl Model {
         }
         let expr = expr.into();
         let constant = expr.compile_for_objective(self, obj)?;
-        if let Some(data) = self.objectives.get_mut(obj) {
-            data.constant = constant;
-        }
+        self.set_objective_constant_internal(obj, constant);
         Ok(constant)
     }
 
@@ -702,8 +718,9 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::continuous;
     use crate::id::Generation;
-    use crate::model::{Bounds, ConstraintBounds, VarType};
+    use crate::model::ConstraintBounds;
 
     fn make_var(index: u32) -> VarId {
         VarId::new(index, Generation::new())
@@ -914,8 +931,8 @@ mod tests {
     #[test]
     fn compile_for_constraint() {
         let mut model = Model::new();
-        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let x = model.add_variable(continuous()).unwrap();
+        let y = model.add_variable(continuous()).unwrap();
 
         let expr = LinExpr::new().term(2.0, x).term(3.0, y);
 
@@ -931,8 +948,8 @@ mod tests {
     #[test]
     fn reconstruct_expression() {
         let mut model = Model::new();
-        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-        let y = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let x = model.add_variable(continuous()).unwrap();
+        let y = model.add_variable(continuous()).unwrap();
 
         let expr = LinExpr::new().term(2.0, x).term(3.0, y);
 
@@ -947,8 +964,8 @@ mod tests {
     #[test]
     fn param_term_expression() {
         let mut model = Model::new();
-        let p = model.add_parameter(5.0);
-        let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+        let p = model.add_parameter(5.0).unwrap();
+        let x = model.add_variable(continuous()).unwrap();
 
         // Expression: p * x
         let expr = LinExpr::new().term(p, x);
@@ -962,7 +979,7 @@ mod tests {
         assert_eq!(model.coefficient(coeff_id).unwrap().cached_value, 5.0);
 
         // Change parameter and commit
-        model.set_parameter(p, 10.0);
+        model.set_parameter(p, 10.0).unwrap();
         let _ = model.commit();
 
         // Coefficient should now be 10.0

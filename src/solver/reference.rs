@@ -190,6 +190,22 @@ impl ReferenceBackend {
                     entry.0 = *sense;
                 }
             }
+            ModelOp::SetObjectiveConstant { obj, constant } => {
+                self.objective_constants.insert(*obj, *constant);
+                // Keep the per-cell cached constant in sync so a subsequent
+                // normalized-view comparison matches the rebuild path.
+                let keys: Vec<CellKey> = self
+                    .objective_cells
+                    .keys()
+                    .filter(|k| matches!(k.0, CoefficientTarget::Objective(o) if o == *obj))
+                    .cloned()
+                    .collect();
+                for key in keys {
+                    if let Some(entry) = self.objective_cells.get_mut(&key) {
+                        entry.2 = *constant;
+                    }
+                }
+            }
             ModelOp::SetSemiContinuousBound { var, lower } => {
                 self.semicontinuous.insert(*var, *lower);
             }

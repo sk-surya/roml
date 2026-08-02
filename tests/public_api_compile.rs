@@ -49,8 +49,8 @@ fn current_prelude_surface_compiles() {
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_binary();
-    let z = model.add_integer(Bounds::new(0.0, 10.0));
-    let price = model.add_parameter(1.0);
+    let z = model.add_integer(Bounds::new(0.0, 10.0)).unwrap();
+    let price = model.add_parameter(1.0).unwrap();
     assert_eq!(model.parameter_value(price), Some(1.0));
 
     let cap = constraint!(2.0 * x + y <= 10.0);
@@ -66,7 +66,7 @@ fn current_prelude_surface_compiles() {
 
     // Parameter updates are queued and take effect on commit (current
     // documented semantics).
-    model.set_parameter(price, 3.0);
+    model.set_parameter(price, 3.0).unwrap();
     model.commit().expect("commit should succeed");
     assert_eq!(model.parameter_value(price), Some(3.0));
 }
@@ -79,7 +79,7 @@ fn low_level_and_between_forms_compile() {
     let x = model.add_var();
     let y = model.add_var();
 
-    model.add_constraint(ConstraintBounds::le(4.0));
+    model.add_constraint(ConstraintBounds::le(4.0)).unwrap();
     model
         .constrain((x).between(0.0, 10.0))
         .expect("between should succeed");

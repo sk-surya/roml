@@ -25,10 +25,16 @@ pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
 pub use model::changelog::Change;
-pub use model::{Bounds, ConstraintBounds, Model, ModelError, Sense, VarType};
+pub use model::{
+    binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, Model,
+    ModelError, Objective, Parameter, ParameterDef, Sense, VarType, Variable, VariableDef,
+};
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
-pub use solution::{Solution, SolutionBuilder, SolutionStore};
+pub use solution::{
+    metadata::SolveMetadata, metadata::SynchronizationMode, Solution, SolutionBuilder,
+    SolutionStore,
+};
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
@@ -39,7 +45,9 @@ pub use solver::session::{
     BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView, SyncReceipt,
     Synchronization,
 };
-pub use solver::{LpAlgorithm, SolverError};
+pub use solver::{
+    LpAlgorithm, SolveError, SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
+};
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;
 
@@ -172,8 +180,10 @@ macro_rules! set_objective {
 /// Common imports for the fluent modeling API.
 pub mod prelude {
     pub use crate::{
-        constrain, set_objective, Bounds, Change, CoeffId, ConId, ConstraintBounds,
-        ConstraintExprExt, ConstraintSpec, LinExpr, Model, ModelError, ObjId, ObjectiveExprExt,
-        ObjectiveSpec, ParamId, Sense, Solution, SolverError, ValueExpr, VarId, VarType,
+        binary, constrain, continuous, integer, parameter, set_objective, Bounds, Change, CoeffId,
+        ConId, Constraint, ConstraintBounds, ConstraintExprExt, ConstraintSpec, LinExpr, Model,
+        ModelError, ObjId, Objective, ObjectiveExprExt, ObjectiveSpec, ParamId, Parameter,
+        ParameterDef, Sense, Solution, SolveError, SolveMetadata, SolveOptions, SolveStatus,
+        SolverError, SynchronizationMode, ValueExpr, VarId, VarType, Variable, VariableDef,
     };
 }
