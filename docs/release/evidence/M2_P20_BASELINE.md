@@ -153,6 +153,30 @@ comment in `roml-highs/src/ffi.rs` ("Only binding limited functions needed by
 HighsAdapter.") — pre-existing, out of scope for P20. The primary user story
 fails at copy/paste; P21 must provide the replacement façade.
 
+## Repeated-solve protocol baseline (Task 5)
+
+Source: `roml-highs/tests/repeated_session_baseline.rs` (3 tests).
+
+```bash
+cargo test -p roml-highs --test repeated_session_baseline   # exit 0, 3 passed
+```
+
+Model under test: `maximize price*x + y` subject to `x + y <= 4`, `x,y >= 0`,
+with a parameterized objective coefficient. Recorded per solve: revision,
+health, termination status, objective value, and solution availability.
+
+| Step | Revision | Health | Status | Objective | Solution available |
+|---|---|---|---|---|---|
+| Rebuild from snapshot, solve (`price = 3.0`) | r1 | Ready | Optimal | 12.0 | yes |
+| Apply parameter delta (`price 3.0 -> 5.0`), solve | r2 | Ready | Optimal | 20.0 | yes |
+| Apply bound delta (`x` upper 4.0 -> 2.0), solve | r2 | Ready | Optimal | 8.0 | yes |
+| Rejected mismatched-base delta | r1 (unchanged) | RequiresRebuild | — | — | invalidated |
+| Snapshot rebuild (deterministic recovery), solve | r1 | Ready | Optimal | 12.0 | yes |
+
+These values are the expected behavior for the P21 `SolverSession<B>` / `Highs`
+façade tests: the parameter delta applies incrementally without a rebuild, and
+the dirty path recovers deterministically via one snapshot rebuild.
+
 ## Skipped checks
 
 | Check | Reason |
