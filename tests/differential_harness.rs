@@ -1725,7 +1725,7 @@ fn dx_multi_adapter_cursor_independence() {
     let batches_b_at_r0 = coordinator.batches_for_cursor(&cursor_b).unwrap();
 
     // Apply only batch1
-    apply_ok(&mut backend_b, &mut cursor_b, &batches_b_at_r0[0]);
+    apply_ok(&mut backend_b, &mut cursor_b, batches_b_at_r0[0]);
     assert_eq!(cursor_b.applied_revision, r1);
 
     // Verify B's state at r1 is correct by comparing with snapshot rebuild at r1
