@@ -314,6 +314,8 @@ pub struct ObjectiveSpec {
     pub sense: Sense,
     /// Objective expression.
     pub expr: LinExpr,
+    /// Optional name for the objective (D6).
+    pub name: Option<String>,
 }
 
 impl ObjectiveSpec {
@@ -325,7 +327,14 @@ impl ObjectiveSpec {
         Self {
             sense,
             expr: expr.into(),
+            name: None,
         }
+    }
+
+    /// Attach a name to this objective specification.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 
@@ -611,12 +620,19 @@ impl Model {
     }
 
     /// Add an objective from a fluent objective specification.
+    ///
+    /// Honors the spec's optional name (D6): the objective is inserted with the
+    /// name and left inactive; the caller activates it explicitly or uses
+    /// [`Self::set_objective`].
     pub fn add_objective_spec<S>(&mut self, spec: S) -> Result<(ObjId, f64), ModelError>
     where
         S: Into<ObjectiveSpec>,
     {
         let spec = spec.into();
-        self.add_objective_expr(spec.expr, spec.sense)
+        let obj = self.add_objective_internal(spec.sense, spec.name);
+        let constant = spec.expr.compile_for_objective(self, obj)?;
+        self.set_objective_constant_internal(obj, constant);
+        Ok((obj, constant))
     }
 
     /// Add and activate an objective from a fluent objective specification.
@@ -642,7 +658,7 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        let obj = self.add_objective(sense);
+        let obj = self.add_objective_internal(sense, None);
         let constant = expr.compile_for_objective(self, obj)?;
         self.set_objective_constant_internal(obj, constant);
         Ok((obj, constant))
