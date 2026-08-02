@@ -1,5 +1,5 @@
 ---
-status: testing
+status: passed
 phase: 21-solver-facade
 source: [21-VERIFICATION.md]
 started: 2026-08-02
@@ -25,15 +25,23 @@ awaiting: user response
 Review the recovery semantics per the phase plan Gate: terminal-no-retry (including license errors), one-rebuild retry bound, stale-result invalidation, per-solve option self-containment, the three-method `SolverSession` surface, and fallible `add_integer(Bounds)`.
 
 expected: The protocol review approves the recovery semantics and the resolved findings.
-result: [pending]
+result: passed
 
 ## Summary
 
 total: 1
-passed: 0
+passed: 1
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
+
+None. Independent protocol review (PR #21, rounds 1-3) approved the recovery
+semantics at head `9457898` on 2026-08-02: terminal delta failures leave the
+session terminal, recoverable failures require rebuild, cursor-advance
+failure marks terminal, Highs_resetOptions resets the complete native option
+table (including arbitrary backend options), successful backend options are
+recorded in effective metadata, and real-HiGHS regression tests cover option
+isolation and failed-delta health. The P21 gate passes.
