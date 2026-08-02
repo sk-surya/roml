@@ -644,9 +644,7 @@ impl Model {
         let expr = expr.into();
         let obj = self.add_objective(sense);
         let constant = expr.compile_for_objective(self, obj)?;
-        if let Some(data) = self.objectives.get_mut(obj) {
-            data.constant = constant;
-        }
+        self.set_objective_constant_internal(obj, constant);
         Ok((obj, constant))
     }
 
@@ -675,9 +673,7 @@ impl Model {
         }
         let expr = expr.into();
         let constant = expr.compile_for_objective(self, obj)?;
-        if let Some(data) = self.objectives.get_mut(obj) {
-            data.constant = constant;
-        }
+        self.set_objective_constant_internal(obj, constant);
         Ok(constant)
     }
 

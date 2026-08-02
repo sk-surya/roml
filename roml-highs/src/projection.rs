@@ -816,6 +816,22 @@ pub(crate) fn apply_delta_batch(
                     }
                 }
             }
+            ModelOp::SetObjectiveConstant { obj, constant } => {
+                // Store the offset in the per-objective cache and apply it
+                // immediately if this objective is active, so the objective
+                // value reported by Highs_getObjectiveValue includes the
+                // constant exactly once (API-03.5).
+                obj_offsets.insert(*obj, *constant);
+                if *active_obj == Some(*obj) {
+                    unsafe {
+                        check_highs_status(
+                            Highs_changeObjectiveOffset(raw, *constant),
+                            raw,
+                            "Highs_changeObjectiveOffset",
+                        )?;
+                    }
+                }
+            }
             ModelOp::SetSemiContinuousBound { .. } => {
                 // Unreachable: the pre-validation phase above rejects any
                 // batch containing this operation before the match loop.
