@@ -1,5 +1,5 @@
- Documenting roml v0.1.0 (/Users/skrishnan/repos/roml)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+ Documenting roml v0.1.0 ($REPO)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.56s
 pub mod roml
 pub mod roml::delta
 pub enum roml::delta::ModelOp

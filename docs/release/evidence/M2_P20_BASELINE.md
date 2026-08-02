@@ -37,7 +37,7 @@ commit. Exit status and test counts are recorded per command per EXECUTION.md.
 | `cargo test -p roml --all-targets` | 0 | **399 passed; 0 failed; 2 ignored** |
 | `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
 | `cargo test --doc -p roml` | 0 | 0 passed; 8 ignored (all `ignore`-gated) |
-| `cargo package --list -p roml` | 101 | **skipped** — see "Skipped checks" |
+| `cargo package --list -p roml` | 0 | 99 files — list below (clean-worktree capture, review item 4) |
 
 ## HiGHS baseline matrix (`-p roml-highs`)
 
@@ -74,13 +74,128 @@ tests/contract_tests.rs
 tests/solve_observables_tests.rs
 ```
 
+### `cargo package --list -p roml` (clean-worktree capture)
+
+Captured in a fresh worktree at the verification head (`680ea83`), where the
+git tree is clean. Exit 0. Note: `roml`'s package root is the repository
+root and its manifest has no `include`/`exclude` filter, so the package
+currently contains repo-level planning, tooling, and documentation files
+(`.planning/`, `tools/`, `.foundry.toml`, `badges/`, `docs/knowledge/`).
+That is a packaging-hygiene baseline finding for P6/P24 (API-10.3 fresh
+consumers, "no workspace path leakage") — not a P20 defect.
+
+```text
+.cargo_vcs_info.json
+.foundry.toml
+.planning/PROJECT.md
+.planning/REQUIREMENTS.md
+.planning/ROADMAP.md
+.planning/STATE.md
+.planning/milestones/M2-public-api-ergonomics/DECISIONS.md
+.planning/milestones/M2-public-api-ergonomics/EXECUTION.md
+.planning/milestones/M2-public-api-ergonomics/PROJECT.md
+.planning/milestones/M2-public-api-ergonomics/README.md
+.planning/milestones/M2-public-api-ergonomics/REQUIREMENTS.md
+.planning/milestones/M2-public-api-ergonomics/RESEARCH.md
+.planning/milestones/M2-public-api-ergonomics/RISKS.md
+.planning/milestones/M2-public-api-ergonomics/ROADMAP.md
+.planning/milestones/M2-public-api-ergonomics/STATE.md
+.planning/milestones/M2-public-api-ergonomics/TRACEABILITY.md
+.planning/phases/20-public-api-contract/20-PLAN.md
+.planning/phases/20-public-api-contract/20-SUMMARY.md
+.planning/phases/20-public-api-contract/20-UAT.md
+.planning/phases/20-public-api-contract/20-VERIFICATION.md
+.planning/phases/21-solver-facade/21-PLAN.md
+.planning/phases/22-modeling-ergonomics/22-PLAN.md
+.planning/phases/23-surface-curation/23-PLAN.md
+.planning/phases/24-consumer-qualification/24-PLAN.md
+CHANGELOG.md
+CONTRIBUTING.md
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+MODELING_API.md
+README.md
+SECURITY.md
+assets/roml-logo-v2.png
+assets/roml-logo.svg
+badges/coverage.svg
+deny.toml
+docs/knowledge/current_context.md
+docs/knowledge/sessions/ledger.md
+docs/knowledge/steward_protocol.md
+docs/release/ARCHITECTURE_DECISIONS.md
+docs/release/CODING_AGENT_PROMPT.md
+docs/release/CURRENT_MAIN_DELTA_AUDIT.md
+docs/release/PACKAGING.md
+docs/release/PRINCIPAL_ENGINEERING_AUDIT.md
+docs/release/PUBLIC_API_M2_DISPOSITION.md
+docs/release/RELEASE_CHECKLIST.md
+docs/release/SUPPORT_MATRIX.md
+docs/release/XPRESS_BINDING_DECISION.md
+examples/parameter_update.rs
+examples/simple_lp.rs
+scripts/coverage_badge.py
+scripts/p20-capture-drift.sh
+src/delta.rs
+src/expr/linear.rs
+src/expr/mod.rs
+src/id/arena.rs
+src/id/mod.rs
+src/journal.rs
+src/lib.rs
+src/main.rs
+src/model/changelog.rs
+src/model/coefficient.rs
+src/model/constraint.rs
+src/model/mod.rs
+src/model/objective.rs
+src/model/parameter.rs
+src/model/transaction.rs
+src/model/validation.rs
+src/model/variable.rs
+src/revision.rs
+src/snapshot.rs
+src/solution/mod.rs
+src/solver/backend.rs
+src/solver/callback.rs
+src/solver/conformance.rs
+src/solver/mod.rs
+src/solver/reference.rs
+src/solver/request.rs
+src/solver/session.rs
+src/sync.rs
+src/transaction.rs
+src/value_expr/mod.rs
+tests/backend_contract.rs
+tests/changelog_integration.rs
+tests/delta_content_verification.rs
+tests/differential_harness.rs
+tests/end_to_end_equivalence.rs
+tests/macro_api.rs
+tests/model_characterization.rs
+tests/public_api_compile.rs
+tests/semicontinuous_recovery.rs
+tests/status_negotiation_tests.rs
+tests/sync_characterization.rs
+tests/ui/current_readme_drift.rs
+tests/ui/current_solve_model_method.rs
+tests/ui/target_incremental.rs
+tests/ui/target_quickstart.rs
+tools/steward/steward
+tools/steward/steward_freshness.py
+```
+
 ## Public API inventory
 
-Full `cargo public-api` output is stored verbatim as milestone evidence
-(API-07.5):
+Full `cargo public-api` output is stored as milestone evidence (API-07.5).
+The dumps are **normalized** public-API output, not byte-for-byte verbatim:
+absolute repository paths are replaced with the `$REPO` token so the evidence
+contains no machine-local identity (review item 5). API item lines are
+byte-identical to raw output; only header/path lines differ:
 
 - `docs/release/evidence/M2_P20_public_api_roml.txt` (7431 lines)
-- `docs/release/evidence/M2_P20_public_api_roml_highs.txt` (110 lines)
+- `docs/release/evidence/M2_P20_public_api_roml_highs.txt` (80 lines)
 
 ### `roml` — public item counts (from public-api output)
 
@@ -102,7 +217,7 @@ backend/session types (`BackendSession`, `Synchronization`, `SyncReceipt`,
 `AdapterCursor`, `AdapterHealth`, `SessionHealth`, `SolutionView`). This mixed
 surface is classified per-item in `docs/release/PUBLIC_API_M2_DISPOSITION.md`.
 
-### `roml-highs` — full public surface (110 lines; 42 `pub` items)
+### `roml-highs` — full public surface (80 lines; 42 `pub` items)
 
 Confirmed exports: `HighsSession`, `HighsFixture`, `HighsInt`, `HighsError`
 (= `roml::solver::backend::BackendError` alias). `HighsSession` implements
@@ -116,30 +231,38 @@ session entry point is `HighsSession::try_new()`.
 ## Documentation drift characterization (API-09 evidence)
 
 `README.md` and `MODELING_API.md` document `roml_highs::HighsAdapter` with
-`adapter.solve_model(&mut model)`. Neither exists in production code. The frozen
-fixture is `tests/ui/current_readme_drift.rs` (kept out of the default build —
-files under `tests/ui/` are not auto-discovered — so API-10.1 stays green).
+`adapter.solve_model(&mut model)`. Neither exists in production code. Two
+committed fixtures freeze the drift — both kept out of the default build
+(files under `tests/ui/` are not auto-discovered, so API-10.1 stays green):
 
-Compile of the README fixture body from a `roml-highs` integration-test context:
+- `tests/ui/current_readme_drift.rs` — the documented `HighsAdapter` import
+  path (E0432);
+- `tests/ui/current_solve_model_method.rs` — the documented `solve_model`
+  call against the real public session type `HighsSession` (E0599).
+
+Both failures are reproduced from the committed fixtures by
+`scripts/p20-capture-drift.sh` (temporarily copies each fixture into the
+`roml-highs` integration-test directory, compiles it, asserts the expected
+error code, and removes the copy). Captured output at the verification head:
 
 ```text
+== 1/2: drift fixture (README HighsAdapter) -> expect E0432 ==
 error[E0432]: unresolved import `roml_highs::HighsAdapter`
-  --> roml-highs/tests/zz_current_readme_drift_check.rs:31:5
+  --> roml-highs/tests/zz_p20_drift_capture.rs:31:5
    |
 31 | use roml_highs::HighsAdapter;
    |     ^^^^^^^^^^^^^^^^^^^^^^^^ no `HighsAdapter` in the root
-error: could not compile `roml-highs` (test "zz_current_readme_drift_check")
-```
+error: could not compile `roml-highs` (test "zz_p20_drift_capture") due to 1 previous error
 
-Compile of the `solve_model` call against the real session type:
-
-```text
+== 2/2: solve_model method fixture (HighsSession) -> expect E0599 ==
 error[E0599]: no method named `solve_model` found for struct `HighsSession` in the current scope
-  --> roml-highs/tests/zz_solve_model_method_check.rs:13:28
+  --> roml-highs/tests/zz_p20_solve_model_capture.rs:53:28
    |
-13 |     let solution = adapter.solve_model(&mut model)?;
+53 |     let solution = adapter.solve_model(&mut model)?;
    |                            ^^^^^^^^^^^ method not found in `HighsSession`
-error: could not compile `roml-highs` (test "zz_solve_model_method_check")
+error: could not compile `roml-highs` (test "zz_p20_solve_model_capture") due to 1 previous error
+
+OK: both documented drift failures reproduced from committed fixtures.
 ```
 
 Repository search for production `HighsAdapter` / `solve_model`:
@@ -170,8 +293,17 @@ health, termination status, objective value, and solution availability.
 | Rebuild from snapshot, solve (`price = 3.0`) | r1 | Ready | Optimal | 12.0 | yes |
 | Apply parameter delta (`price 3.0 -> 5.0`), solve | r2 | Ready | Optimal | 20.0 | yes |
 | Apply bound delta (`x` upper 4.0 -> 2.0), solve | r2 | Ready | Optimal | 8.0 | yes |
-| Rejected mismatched-base delta | r1 (unchanged) | RequiresRebuild | — | — | invalidated |
+| Rejected mismatched-base delta | r1 (unchanged) | RequiresRebuild | — | 12.0 (stale) | yes — prior solution stays readable but is stale |
 | Snapshot rebuild (deterministic recovery), solve | r1 | Ready | Optimal | 12.0 | yes |
+
+On a rejected delta the previously computed solution **remains readable**
+through `SolutionView` (the objective still reads 12.0) but is stale relative
+to the advanced model; it is not invalidated. The test
+(`dirty_path_recovers_via_deterministic_snapshot_rebuild`) asserts exactly
+this readable-but-stale state before the rebuild. P21's façade (API-01.5)
+must never report that stale result as current — the invalidation policy on
+the rejected path is a P21 decision (recorded in the phase SUMMARY's Issues
+and M2 STATE.md).
 
 These values are the expected behavior for the P21 `SolverSession<B>` / `Highs`
 façade tests: the parameter delta applies incrementally without a rebuild, and
@@ -181,8 +313,14 @@ the dirty path recovers deterministically via one snapshot rebuild.
 
 | Check | Reason |
 |---|---|
-| `cargo package --list -p roml` (exit 101) | Working tree contains untracked local artifacts (`.planning/`, `graphify-out/`) that are not part of this phase; `cargo package` requires a clean tree. The roml-highs package list succeeds (its crate directory is clean). Expected to pass in a clean checkout. |
 | Doctests reporting 0 passed | All doctests are `ignore`-gated in current main; none are executable. Recorded, not claimed as coverage. |
+
+`cargo package --list -p roml` no longer appears here: it was re-run from a
+clean worktree (review item 4) and passes with exit 0 (99 files). The earlier
+exit-101 was caused by untracked local artifacts (`.planning/config.json`,
+`.planning/graphs/`, `graphify-out/`) in the primary working tree; those
+paths — not the tracked M2 packet — are what `cargo package`'s dirty check
+objected to.
 
 ## Companion P20 artifacts
 

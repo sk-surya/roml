@@ -37,8 +37,8 @@ The phase goal — establish the exact current-main public API behavior and free
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Exact current-main API inventory recorded: base SHA `d1391fb3a58a61d24b5c597aab78e4be7683f894`, toolchain `rustc 1.97.1` / `aarch64-apple-darwin`, full core + HiGHS matrix with exit statuses and test counts, verbatim `cargo public-api` inventories for both crates | ✓ VERIFIED | `docs/release/evidence/M2_P20_BASELINE.md` (lines 16-105); `M2_P20_public_api_roml.txt` (7431 lines, confirmed by wc) and `M2_P20_public_api_roml_highs.txt` (110 lines, confirmed) |
-| 2 | Documented solve API drift characterized: README/MODELING_API `HighsAdapter::solve_model` does not exist in production; failure frozen with captured E0432/E0599 | ✓ VERIFIED | `tests/ui/current_readme_drift.rs`; baseline doc lines 116-154; production grep: zero `HighsAdapter`/`solve_model` in `src/`, `roml-highs/src/` (only stale doc comment `roml-highs/src/ffi.rs:3`); public-api inventories contain zero occurrences; README.md:60,78-79 and MODELING_API.md:26,55,146,160-161,179,188 are the drift source |
+| 1 | Exact current-main API inventory recorded: base SHA `d1391fb3a58a61d24b5c597aab78e4be7683f894`, toolchain `rustc 1.97.1` / `aarch64-apple-darwin`, full core + HiGHS matrix with exit statuses and test counts, normalized `cargo public-api` inventories for both crates (repo paths → `$REPO`) | ✓ VERIFIED | `docs/release/evidence/M2_P20_BASELINE.md` (baseline matrix + inventory sections); `M2_P20_public_api_roml.txt` (7431 lines, confirmed by wc; zero `/Users/` occurrences) and `M2_P20_public_api_roml_highs.txt` (80 lines, confirmed) |
+| 2 | Documented solve API drift characterized: README/MODELING_API `HighsAdapter::solve_model` does not exist in production; failures frozen with captured E0432 (import) and E0599 (method) | ✓ VERIFIED | `tests/ui/current_readme_drift.rs` + `tests/ui/current_solve_model_method.rs`; `scripts/p20-capture-drift.sh` reproduces both errors from the committed fixtures (exit 0; asserts expected codes); baseline doc drift section; production grep: zero `HighsAdapter`/`solve_model` in `src/`, `roml-highs/src/` (only stale doc comment `roml-highs/src/ffi.rs:3`); public-api inventories contain zero occurrences; README.md:60,78-79 and MODELING_API.md:26,55,146,160-161,179,188 are the drift source |
 | 3 | Golden-path target compile contracts frozen against exact target signatures (quickstart + incremental) | ✓ VERIFIED | `tests/ui/target_quickstart.rs:38-48` matches plan verbatim; `tests/ui/target_incremental.rs:35-46` matches plan verbatim; confirmed not auto-discovered (no test binary lists them) |
 | 4 | Compile-pass characterization of the current `roml` prelude surface that compiles and runs today | ✓ VERIFIED | `tests/public_api_compile.rs` — 3/3 tests pass (independently re-run) |
 | 5 | Every public entry point assigned exactly one of five dispositions, covering all 8 required categories, with replacement signatures and deprecation order | ✓ VERIFIED | `docs/release/PUBLIC_API_M2_DISPOSITION.md` — 91 rows; disposition counts: golden path 22, optional syntax sugar 3, advanced backend extension 48, compatibility/deprecated 13, internal exposure to remove 5; all 8 categories present (Sections 1-8); all four macros classified (lines 100-103); replacement signatures (lines 159-181); deprecation order D12 (lines 186-199) |
@@ -54,14 +54,15 @@ The phase goal — establish the exact current-main public API behavior and free
 | Artifact | Expected | Status | Details |
 | -------- | --------- | ------ | ------- |
 | `docs/release/evidence/M2_P20_BASELINE.md` | base SHA, env, matrix, item counts, drift captures, skip reasons | ✓ VERIFIED | 8488 bytes; all claims cross-checked against git/grep |
-| `docs/release/evidence/M2_P20_public_api_roml.txt` | verbatim `cargo public-api -p roml` | ✓ VERIFIED | 7431 lines |
-| `docs/release/evidence/M2_P20_public_api_roml_highs.txt` | verbatim `cargo public-api -p roml-highs` | ✓ VERIFIED | 110 lines; zero HighsAdapter/solve_model |
-| `docs/release/PUBLIC_API_M2_DISPOSITION.md` | per-item disposition, 5 categories, replacements, deprecation order | ✓ VERIFIED | 16960 bytes; 91 items; all 8 plan-required sections |
-| `tests/ui/current_readme_drift.rs` | frozen README drift fixture (non-compiling, not auto-discovered) | ✓ VERIFIED | matches README/MODELING_API documented code |
+| `docs/release/evidence/M2_P20_public_api_roml.txt` | normalized `cargo public-api -p roml` | ✓ VERIFIED | 7431 lines; paths → `$REPO` |
+| `docs/release/evidence/M2_P20_public_api_roml_highs.txt` | normalized `cargo public-api -p roml-highs` | ✓ VERIFIED | 80 lines; zero HighsAdapter/solve_model |
+| `docs/release/PUBLIC_API_M2_DISPOSITION.md` | per-item disposition, 5 categories, replacements, migration strategy, deprecation order | ✓ VERIFIED | 91 items; all 8 plan-required sections; collision migration recorded |
+| `tests/ui/current_readme_drift.rs` | frozen README drift fixture (non-compiling, not auto-discovered) | ✓ VERIFIED | matches README/MODELING_API documented code (E0432) |
+| `tests/ui/current_solve_model_method.rs` | frozen `solve_model`-on-`HighsSession` fixture (E0599) | ✓ VERIFIED | `scripts/p20-capture-drift.sh` exit 0, both error codes reproduced |
 | `tests/ui/target_quickstart.rs` | frozen golden-path target contract | ✓ VERIFIED | verbatim plan form |
 | `tests/ui/target_incremental.rs` | frozen incremental one-`Highs` target contract | ✓ VERIFIED | verbatim plan form |
-| `tests/public_api_compile.rs` | compile-pass current-surface characterization (3 tests) | ✓ VERIFIED | 3/3 pass |
-| `roml-highs/tests/repeated_session_baseline.rs` | repeated-solve protocol baseline (3 tests) | ✓ VERIFIED | 3/3 pass |
+| `tests/public_api_compile.rs` | compile-pass current-surface characterization (3 tests) | ✓ VERIFIED | 3/3 pass; exact `assert_eq!` on active objective |
+| `roml-highs/tests/repeated_session_baseline.rs` | repeated-solve protocol baseline (3 tests) | ✓ VERIFIED | 3/3 pass; asserts stale-readable state on rejected delta |
 
 ### Key Link Verification
 
@@ -87,7 +88,7 @@ The phase goal — establish the exact current-main public API behavior and free
 | Current-surface compile-pass characterization | `cargo test -p roml --test public_api_compile` | 3 passed; 0 failed | ✓ PASS |
 | Repeated-solve protocol (param delta 3.0→5.0 → 20.0; bound delta → 8.0; dirty-path recovery → 12.0) | `cargo test -p roml-highs --test repeated_session_baseline` | 3 passed; 0 failed | ✓ PASS |
 | Formatting clean | `cargo fmt --all -- --check` | exit 0 | ✓ PASS |
-| UI fixtures not auto-discovered (do not break default suites) | `cargo test -p roml --all-targets -- --list` / `-p roml-highs` | no `target_*`/`current_readme`/`drift` test names | ✓ PASS |
+| UI fixtures not auto-discovered (do not break default suites) | `cargo test -p roml --all-targets -- --list` / `-p roml-highs` | no `target_*`/`current_readme`/`current_solve_model`/`drift` test names | ✓ PASS |
 
 Orchestrator's full matrix (`cargo test -p roml --all-targets`: 402 passed; `-p roml-highs --all-targets`: 76 passed; rustdoc `-D warnings` both crates) is consistent with the base matrix plus this phase's new tests (399+3=402, 73+3=76).
 
@@ -100,8 +101,8 @@ N/A — no probes declared in the PLAN/SUMMARY and this is a characterization/ev
 | Requirement | Source Plan | Description | Status | Evidence |
 | ----------- | ---------- | ----------- | ------ | -------- |
 | API-04 (canonical modeling style) | 20-PLAN | add_constraint(spec), minimize/maximize, .le/.ge/.eq/.between, macro disposition | ✓ SATISFIED (characterization portion) | target_quickstart.rs:42,44; target_incremental.rs:39,40; public_api_compile.rs uses .le/.ge/.between; disposition Sections 2-4; behavioral completion is P22/P23 per TRACEABILITY |
-| API-07 (public surface curation) | 20-PLAN | prelude limits, protocol types absent, advanced/backend grouping, raw arenas private, cargo public-api evidence | ✓ SATISFIED (characterization portion) | disposition Section 1 (API-07.2/07.3 moves to `roml::backend`), Section 5 `Generation`/`IdArena` → remove (API-07.4); `M2_P20_public_api_*.txt` stored verbatim (API-07.5) |
-| API-08 (compatibility and migration) | 20-PLAN | replacement-before-deprecation, docs, actionable notes, no backend-contract change in M2 | ✓ SATISFIED (characterization portion) | disposition "Deprecation order (D12...)" lines 186-199 (API-08.1/08.3); zero production changes, no backend contract change (API-08.4); MIGRATION/CHANGELOG documentation is P23 per disposition lines 198-199 |
+| API-07 (public surface curation) | 20-PLAN | prelude limits, protocol types absent, advanced/backend grouping, raw arenas private, cargo public-api evidence | ✓ SATISFIED (characterization portion) | disposition Section 1 (API-07.2/07.3 moves to `roml::backend`), Section 5 `Generation`/`IdArena` → remove (API-07.4); `M2_P20_public_api_*.txt` stored normalized (API-07.5) |
+| API-08 (compatibility and migration) | 20-PLAN | replacement-before-deprecation, docs, actionable notes, no backend-contract change in M2 | ✓ SATISFIED (characterization portion) | disposition "Deprecation order (D12)" and "Signature-collision migration" sections (API-08.1/08.3; concrete per-collision approach for `add_variable`/`set_parameter`/`add_constraint`); zero production changes, no backend contract change (API-08.4); MIGRATION/CHANGELOG documentation is P23 |
 | API-10 (qualification) | 20-PLAN | suites remain green, compile-pass tests, compile-fail tests where practical | ✓ SATISFIED (characterization portion) | baseline matrix (API-10.1) + orchestrator re-run green; `tests/public_api_compile.rs` green (API-10.2); UI fixtures kept out of default build (API-10.1); packed-consumer portions are P24 |
 
 No orphaned requirements: API-04, API-07, API-08, API-10 all appear in the PLAN `requirements` field and are each mapped to evidence.
@@ -122,7 +123,7 @@ None. The four inherited open naming items (compat window, SolveStatus naming, `
 
 The phase's own Gate ("P20 passes when target signatures, public-item dispositions, current drift, protocol behavior, and baseline commands are reviewed") and the SUMMARY's coverage metadata (D1, D2, D3, D5 marked `human_judgment: true`) require human API review of four contract artifacts:
 
-1. **Baseline evidence review** — Confirm the baseline commands, toolchain, base SHA, and test counts in `docs/release/evidence/M2_P20_BASELINE.md` are acceptable per EXECUTION.md evidence standards, and the `cargo package --list -p roml` exit-101 skip (dirty tree from untracked `.planning/`/`graphify-out/`) is acceptable with its recorded reason.
+1. **Baseline evidence review** — Confirm the baseline commands, toolchain, base SHA, and test counts in `docs/release/evidence/M2_P20_BASELINE.md` are acceptable per EXECUTION.md evidence standards. The `cargo package --list -p roml` baseline was completed from a clean worktree after review (exit 0, 99 files); the earlier exit-101 (dirty primary tree from untracked local artifacts) is recorded as context, not as a skip.
 2. **Drift characterization review** — Confirm the captured E0432/E0599 failures match the README/MODELING_API documented `HighsAdapter::solve_model` API and that the UI-fixture characterization approach is correct.
 3. **Target contract signature review** — Confirm the frozen signatures in `tests/ui/target_quickstart.rs` and `tests/ui/target_incremental.rs` match DECISIONS.md and the M2 packet exactly and are not weakened.
 4. **Disposition table review** — Confirm the 91 per-item classifications (one of five dispositions, all 8 required categories) are coherent and the D12 replacement-before-deprecation order is sound.

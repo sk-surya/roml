@@ -63,7 +63,7 @@ requirements-completed: [API-04, API-07, API-08, API-10]
 # Coverage metadata (#1602) — characterization portions of API-04/07/08/10 (TRACEABILITY.md).
 coverage:
   - id: D1
-    description: "Exact current-main public API baseline: base SHA, toolchain, full core+HiGHS matrix with exit statuses and test counts, cargo public-api inventory for roml (7431 lines) and roml-highs (110 lines)."
+    description: "Exact current-main public API baseline: base SHA, toolchain, full core+HiGHS matrix with exit statuses and test counts, normalized cargo public-api inventory for roml (7431 lines) and roml-highs (80 lines)."
     requirement: "API-10"
     verification:
       - kind: other
@@ -150,8 +150,8 @@ status: complete
 
 ## Accomplishments
 
-- Recorded the exact current-main baseline: base SHA `d1391fb`, toolchain (`rustc 1.97.1`, `aarch64-apple-darwin`), full core (399 passed) and HiGHS (73 passed) matrices, and verbatim `cargo public-api` inventories for both crates (API-07.5/API-10.1).
-- Characterized the documentation drift: README/MODELING_API `HighsAdapter::solve_model` does not exist in production code; compile evidence (E0432 unresolved import, E0599 no method) frozen in `tests/ui/current_readme_drift.rs` and the baseline doc.
+- Recorded the exact current-main baseline: base SHA `d1391fb`, toolchain (`rustc 1.97.1`, `aarch64-apple-darwin`), full core (399 passed) and HiGHS (73 passed) matrices, and normalized `cargo public-api` inventories for both crates (API-07.5/API-10.1; absolute repo paths replaced with `$REPO`).
+- Characterized the documentation drift: README/MODELING_API `HighsAdapter::solve_model` does not exist in production code; compile evidence (E0432 unresolved import, E0599 no method) frozen in `tests/ui/current_readme_drift.rs` and `tests/ui/current_solve_model_method.rs`, reproduced by `scripts/p20-capture-drift.sh`.
 - Defined frozen target compile contracts for the golden-path quickstart and incremental one-`Highs` re-solve, exactly as planned, plus a green compile-pass characterization of the current `roml` prelude surface.
 - Classified every public entry point with exactly one of five dispositions, with replacement signatures (D7 builders, `Highs` façade) and a replacement-before-deprecation order (D12/API-08).
 - Baselined repeated-solve `HighsSession` behavior: rebuild→solve (obj 12.0), parameter delta re-solve (obj 20.0), bound delta re-solve (obj 8.0), and deterministic dirty-path snapshot recovery — the expected parity targets for P21.
@@ -172,8 +172,8 @@ Each task committed atomically on `phase-roml-P20-api-contract`:
 ## Files Created
 
 - `docs/release/evidence/M2_P20_BASELINE.md` - Base SHA, environment, full core+HiGHS matrix, public API item counts, drift compile captures, skipped-check reasons, and the repeated-solve behavior table.
-- `docs/release/evidence/M2_P20_public_api_roml.txt` - Verbatim `cargo public-api -p roml` output (7431 lines).
-- `docs/release/evidence/M2_P20_public_api_roml_highs.txt` - Verbatim `cargo public-api -p roml-highs` output (110 lines; confirms no HighsAdapter/solve_model).
+- `docs/release/evidence/M2_P20_public_api_roml.txt` - Normalized `cargo public-api -p roml` output (7431 lines; repo paths replaced with `$REPO`).
+- `docs/release/evidence/M2_P20_public_api_roml_highs.txt` - Normalized `cargo public-api -p roml-highs` output (80 lines; confirms no HighsAdapter/solve_model).
 - `docs/release/PUBLIC_API_M2_DISPOSITION.md` - Per-item disposition table (all 9 required categories) with replacement signatures and deprecation order.
 - `tests/ui/current_readme_drift.rs` - Frozen README `HighsAdapter::solve_model` example (UI fixture, not auto-discovered).
 - `tests/ui/target_quickstart.rs` - Frozen P21/P22 golden-path target contract.
@@ -199,7 +199,7 @@ No auto-fixed bugs were required; the plan executed without Rule 1-4 deviation e
 
 - **`.le` resolving to `Iterator::le`** - In the new HiGHS test, `(x + y).le(4.0)` initially failed with "LinExpr is not an iterator" because `ConstraintExprExt` was not in scope. Resolved by importing the trait.
 - **`deltas_since` error type** - Returns `RevisionError`, not `ModelError`; test functions use `Result<(), Box<dyn std::error::Error>>`.
-- **Stale-solution invalidation on a REJECTED delta (finding for P21)** - Current `HighsSession::synchronize` clears the cached solution on *successful* sync (T-11-18) but leaves `current_solution` readable via `SolutionView` when a delta is *rejected* (mismatched base) while the cursor moves to `RequiresRebuild`. The P20 dirty-path test therefore asserts revision/health recovery and a correct post-rebuild solve rather than invalidation. P21 (API-01.5) must decide whether a rejected/unsupported sync must also invalidate the previously reported solution when the model has advanced past it.
+- **Stale-solution invalidation on a REJECTED delta (finding for P21)** - Current `HighsSession::synchronize` clears the cached solution on *successful* sync (T-11-18) but leaves `current_solution` readable via `SolutionView` when a delta is *rejected* (mismatched base) while the cursor moves to `RequiresRebuild`. The P20 dirty-path test now asserts this readable-but-stale state explicitly (objective still 12.0), then verifies revision/health recovery and a correct post-rebuild solve. P21 (API-01.5) must decide whether a rejected/unsupported sync must also invalidate the previously reported solution when the model has advanced past it.
 
 ## User Setup Required
 
