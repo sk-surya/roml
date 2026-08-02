@@ -1,15 +1,48 @@
-# ROML
+<p align="center">
+  <img src="assets/roml-logo.svg" alt="ROML logo" width="760">
+</p>
 
-![Coverage](badges/coverage.svg)
+<h1 align="center">Rust Optimization Modeling Library</h1>
 
-A pre-release Rust MILP modeling library with incremental parameter-dependent
-coefficients and projection into long-lived solver sessions.
+<p align="center">
+  Parameter-aware MILP modeling in Rust, designed for incremental updates into long-lived solver sessions.
+</p>
 
-**Status:** pre-1.0 hardening. The workspace compiles and passes core tests on
-macOS; cross-platform CI and solver-boundary safety are being established during
-the current release-qualification program. Not yet published to crates.io.
+<p align="center">
+  <a href="https://github.com/sk-surya/roml/actions/workflows/ci-core.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-core.yml/badge.svg?branch=main" alt="Core CI"></a>
+  <a href="https://github.com/sk-surya/roml/actions/workflows/ci-highs.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-highs.yml/badge.svg?branch=main" alt="HiGHS backend CI"></a>
+  <a href="https://github.com/sk-surya/roml/actions/workflows/ci-policy.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-policy.yml/badge.svg?branch=main" alt="Policy checks"></a>
+  <a href="https://github.com/sk-surya/roml/actions/workflows/ci-coverage.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-coverage.yml/badge.svg?branch=main" alt="Coverage CI"></a>
+  <img src="badges/coverage.svg" alt="Line coverage">
+</p>
 
-For a detailed modeling guide, see [MODELING_API.md](MODELING_API.md).
+<p align="center">
+  <img src="https://img.shields.io/badge/MSRV-1.85-2f74c0?logo=rust" alt="Minimum supported Rust version: 1.85">
+  <img src="https://img.shields.io/badge/edition-2021-orange?logo=rust" alt="Rust 2021 edition">
+  <img src="https://img.shields.io/badge/core%20unsafe-forbidden-success" alt="Unsafe code forbidden in the core crate">
+  <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache-2.0 license">
+</p>
+
+ROML tracks parameter dependencies through model coefficients and projects committed
+changes as atomic delta batches into solver backends. The core crate is solver-free;
+solver adapters integrate the model with engines such as HiGHS.
+
+> **Status:** pre-1.0. The core crate and HiGHS backend are continuously tested on
+> Linux, macOS, and Windows, including MSRV, lint, documentation, packaging,
+> dependency-policy, security-audit, and coverage checks. The API may still evolve,
+> and the crates are not yet published to crates.io.
+
+For the complete modeling guide, see [MODELING_API.md](MODELING_API.md).
+
+## Why ROML?
+
+- **Parameter-aware models:** change a parameter once and propagate its dependent
+  coefficients consistently.
+- **Incremental solver sessions:** apply structured model deltas without rebuilding
+  the entire solver state for every solve.
+- **Layered modeling API:** use explicit low-level calls, fluent builders, or macros.
+- **Solver-independent core:** model construction and change tracking do not require
+  a native solver installation.
 
 ## Usage
 
@@ -37,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     constrain!(model, x <= 3.0)?;
     constrain!(model, between: 0.0, y, 3.0)?;
 
-    let obj = set_objective!(model, maximize: price * x + y + 2.0)?;
+    let _obj = set_objective!(model, maximize: price * x + y + 2.0)?;
 
     model.set_parameter(price, 3.0);
     model.commit();
@@ -122,8 +155,7 @@ cargo test -p roml-highs
 
 ## License
 
-License decision pending owner confirmation. The recommended license is
-`MIT OR Apache-2.0`.
+ROML is dual-licensed under `MIT OR Apache-2.0`, at your option.
 
 ## Contributing
 
