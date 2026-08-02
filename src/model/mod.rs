@@ -1767,6 +1767,7 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)] // unit tests exercise the pre-1.0 compatibility surface
     use crate::expr::LinExpr;
 
     use super::*;
