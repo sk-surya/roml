@@ -532,7 +532,10 @@ fn apply_ok(backend: &mut ReferenceBackend, cursor: &mut AdapterCursor, batch: &
 /// snapshot revision and stays Ready.
 fn rebuild_ok(backend: &mut ReferenceBackend, cursor: &mut AdapterCursor, snap: &ModelSnapshot) {
     backend.rebuild(snap, cursor);
-    assert_eq!(cursor.applied_revision, snap.revision, "cursor must track rebuild revision");
+    assert_eq!(
+        cursor.applied_revision, snap.revision,
+        "cursor must track rebuild revision"
+    );
     assert!(cursor.is_ready(), "cursor must be Ready after rebuild");
 }
 
@@ -2007,7 +2010,11 @@ fn dx_semicontinuous_partial_apply() {
     // batch1 and then rebuilding from snap_r2.
     let mut direct_backend = fresh();
     let mut direct_cursor = AdapterCursor::new();
-    rebuild_ok(&mut direct_backend, &mut direct_cursor, &ModelSnapshot::empty(r0));
+    rebuild_ok(
+        &mut direct_backend,
+        &mut direct_cursor,
+        &ModelSnapshot::empty(r0),
+    );
     apply_ok(&mut direct_backend, &mut direct_cursor, &batch1);
     // Rebuild uses snap_r2 — but we consumed it above. Use the stored cursor
     // revision marker. Actually rebuild from a copy: the snapshot is needed
