@@ -7,6 +7,13 @@ authors.workspace = true
 repository.workspace = true
 license.workspace = true
 description = "HiGHS solver backend for roml"
+include = [
+    "Cargo.toml",
+    "build.rs",
+    "src/**",
+    "tests/**",
+    "examples/**",
+]
 
 [dependencies]
 highs-sys = "1.15"
