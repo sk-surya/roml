@@ -18,6 +18,8 @@
 //! also rejected by snapshot rebuild and must surface as an error, never as
 //! a stale or fabricated result.
 
+use std::time::Duration;
+
 use roml::model::{Bounds, Model};
 use roml::prelude::*;
 use roml::SynchronizationMode;
@@ -235,5 +237,46 @@ fn failed_option_validation_leaves_state_unchanged() -> Result<(), Box<dyn std::
     let again = highs.solve(&mut model)?;
     assert!(again.status().is_optimal());
     approx(again.objective_value(), 12.0);
+    Ok(())
+}
+
+/// Options must not leak across solves: HiGHS options persist on the native
+/// session, so each request is self-contained — unspecified options are reset
+/// to HiGHS defaults before the request's explicit values are applied. A
+/// default solve after a configured `solve_with` must report (and run with)
+/// defaults, not the previous time limit/threads.
+#[test]
+fn default_solve_after_solve_with_resets_options() -> Result<(), Box<dyn std::error::Error>> {
+    let (mut model, _x, _y) = quickstart_model();
+    let mut highs = Highs::new()?;
+
+    // Configured solve: time limit + threads are applied and reported.
+    let limited = highs.solve_with(
+        &mut model,
+        SolveOptions::new()
+            .time_limit(Duration::from_secs(60))
+            .threads(1),
+    )?;
+    assert!(limited.status().is_optimal());
+    assert_eq!(
+        limited.metadata().effective_configuration.time_limit_secs,
+        Some(60.0)
+    );
+    assert_eq!(limited.metadata().effective_configuration.threads, Some(1));
+
+    // Default solve: the previous options must not be retained.
+    let again = highs.solve(&mut model)?;
+    assert!(again.status().is_optimal());
+    approx(again.objective_value(), 12.0);
+    assert_eq!(
+        again.metadata().effective_configuration.time_limit_secs,
+        None,
+        "time limit must not leak into a default solve"
+    );
+    assert_eq!(
+        again.metadata().effective_configuration.threads,
+        None,
+        "threads must not leak into a default solve"
+    );
     Ok(())
 }

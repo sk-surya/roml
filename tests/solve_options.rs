@@ -18,31 +18,36 @@ use roml::solver::session::{
 use roml::sync::AdapterHealth;
 use roml::SolverSession;
 
-/// A backend that records the last `SolveRequest` it received and echoes it
-/// back as the effective configuration so negotiation is observable.
-struct RecordingBackend {
+/// Shared recording state: the test keeps the handle so it can observe the
+/// backend's recorded request without reaching into the session's backend
+/// (`SolverSession` exposes only `new`/`solve`/`solve_with`).
+struct RecordingState {
     last_request: Option<SolveRequest>,
-    revision: ModelRevision,
-    health: AdapterHealth,
     solves: usize,
 }
 
+/// A backend that records the last `SolveRequest` it received and echoes it
+/// back as the effective configuration so negotiation is observable.
+struct RecordingBackend {
+    revision: ModelRevision,
+    health: AdapterHealth,
+    state: std::rc::Rc<std::cell::RefCell<RecordingState>>,
+}
+
 impl RecordingBackend {
-    fn new() -> Self {
-        Self {
+    fn new() -> (Self, std::rc::Rc<std::cell::RefCell<RecordingState>>) {
+        let state = std::rc::Rc::new(std::cell::RefCell::new(RecordingState {
             last_request: None,
-            revision: ModelRevision::ZERO,
-            health: AdapterHealth::Ready,
             solves: 0,
-        }
-    }
-    fn last_request(&self) -> &SolveRequest {
-        self.last_request
-            .as_ref()
-            .expect("a solve must have occurred")
-    }
-    fn solves(&self) -> usize {
-        self.solves
+        }));
+        (
+            Self {
+                revision: ModelRevision::ZERO,
+                health: AdapterHealth::Ready,
+                state: state.clone(),
+            },
+            state,
+        )
     }
 }
 
@@ -85,8 +90,10 @@ impl BackendSession for RecordingBackend {
     }
 
     fn solve(&mut self, request: &SolveRequest) -> Result<SolveResult, BackendError> {
-        self.solves += 1;
-        self.last_request = Some(request.clone());
+        let mut state = self.state.borrow_mut();
+        state.solves += 1;
+        state.last_request = Some(request.clone());
+        drop(state);
         let effective = EffectiveConfig {
             lp_algorithm: request.lp_algorithm,
             time_limit_secs: request.time_limit_secs,
@@ -125,21 +132,31 @@ fn build_model() -> Model {
 #[test]
 fn time_limit_builder_sets_seconds() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     session
         .solve_with(
             &mut model,
             SolveOptions::new().time_limit(Duration::from_secs(90)),
         )
         .expect("valid options solve");
-    assert_eq!(session.backend().last_request().time_limit_secs, Some(90.0));
+    assert_eq!(
+        state
+            .borrow()
+            .last_request
+            .as_ref()
+            .unwrap()
+            .time_limit_secs,
+        Some(90.0)
+    );
 }
 
 /// Gap and thread builders map onto their request fields.
 #[test]
 fn gap_and_thread_builders_set_request_fields() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     session
         .solve_with(
             &mut model,
@@ -149,7 +166,8 @@ fn gap_and_thread_builders_set_request_fields() {
                 .threads(4),
         )
         .expect("valid options solve");
-    let req = session.backend().last_request();
+    let state = state.borrow();
+    let req = state.last_request.as_ref().unwrap();
     assert_eq!(req.mip_rel_gap, Some(0.01));
     assert_eq!(req.mip_abs_gap, Some(0.001));
     assert_eq!(req.threads, Some(4));
@@ -159,14 +177,16 @@ fn gap_and_thread_builders_set_request_fields() {
 #[test]
 fn output_and_random_seed_builders_set_request_fields() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     session
         .solve_with(
             &mut model,
             SolveOptions::new().output(false).random_seed(42),
         )
         .expect("valid options solve");
-    let req = session.backend().last_request();
+    let state = state.borrow();
+    let req = state.last_request.as_ref().unwrap();
     assert_eq!(req.enable_output, Some(false));
     assert_eq!(req.random_seed, Some(42));
 }
@@ -175,14 +195,16 @@ fn output_and_random_seed_builders_set_request_fields() {
 #[test]
 fn backend_option_builder_appends_extra_option() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     session
         .solve_with(
             &mut model,
             SolveOptions::new().backend_option("solver", "simplex"),
         )
         .expect("valid options solve");
-    let req = session.backend().last_request();
+    let state = state.borrow();
+    let req = state.last_request.as_ref().unwrap();
     assert!(req
         .extra_options
         .contains(&("solver".to_string(), "simplex".to_string())));
@@ -193,37 +215,40 @@ fn backend_option_builder_appends_extra_option() {
 fn negative_relative_gap_is_rejected_before_sync() {
     let mut model = build_model();
     let rev_before = model.current_revision();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     let err = session
         .solve_with(&mut model, SolveOptions::new().relative_gap(-0.01))
         .expect_err("negative gap must be rejected");
     assert!(matches!(err, SolveError::InvalidOptions(_)));
     assert_eq!(model.current_revision(), rev_before, "model untouched");
-    assert_eq!(session.backend().solves(), 0, "no solve attempted");
+    assert_eq!(state.borrow().solves, 0, "no solve attempted");
 }
 
 /// A NaN relative gap is rejected before synchronization.
 #[test]
 fn nan_relative_gap_is_rejected() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     let err = session
         .solve_with(&mut model, SolveOptions::new().relative_gap(f64::NAN))
         .expect_err("NaN gap must be rejected");
     assert!(matches!(err, SolveError::InvalidOptions(_)));
-    assert_eq!(session.backend().solves(), 0);
+    assert_eq!(state.borrow().solves, 0);
 }
 
 /// A negative absolute gap is rejected before synchronization.
 #[test]
 fn negative_absolute_gap_is_rejected() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     let err = session
         .solve_with(&mut model, SolveOptions::new().absolute_gap(-0.5))
         .expect_err("negative absolute gap must be rejected");
     assert!(matches!(err, SolveError::InvalidOptions(_)));
-    assert_eq!(session.backend().solves(), 0);
+    assert_eq!(state.borrow().solves, 0);
 }
 
 /// Zero and negative thread counts are rejected before synchronization.
@@ -231,12 +256,13 @@ fn negative_absolute_gap_is_rejected() {
 fn non_positive_threads_are_rejected() {
     for threads in [0, -1, -4] {
         let mut model = build_model();
-        let mut session = SolverSession::new(RecordingBackend::new());
+        let (backend, state) = RecordingBackend::new();
+        let mut session = SolverSession::new(backend);
         let err = session
             .solve_with(&mut model, SolveOptions::new().threads(threads))
             .expect_err("non-positive threads must be rejected");
         assert!(matches!(err, SolveError::InvalidOptions(_)), "{threads}");
-        assert_eq!(session.backend().solves(), 0);
+        assert_eq!(state.borrow().solves, 0);
     }
 }
 
@@ -244,7 +270,8 @@ fn non_positive_threads_are_rejected() {
 #[test]
 fn failed_validation_leaves_model_and_backend_unchanged() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let (backend, state) = RecordingBackend::new();
+    let mut session = SolverSession::new(backend);
     let rev_before = model.current_revision();
 
     // First a successful solve advances the model to r1.
@@ -259,7 +286,7 @@ fn failed_validation_leaves_model_and_backend_unchanged() {
         .expect_err("invalid options rejected");
     assert!(matches!(err, SolveError::InvalidOptions(_)));
     assert_eq!(model.current_revision(), rev_before_invalid);
-    assert_eq!(session.backend().solves(), 1, "only the first solve ran");
+    assert_eq!(state.borrow().solves, 1, "only the first solve ran");
 }
 
 /// The effective configuration (including any adjustments/rejections) is
@@ -267,7 +294,7 @@ fn failed_validation_leaves_model_and_backend_unchanged() {
 #[test]
 fn effective_configuration_is_preserved_in_metadata() {
     let mut model = build_model();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let mut session = SolverSession::new(RecordingBackend::new().0);
     let solution = session
         .solve_with(
             &mut model,
@@ -287,7 +314,7 @@ fn effective_configuration_is_preserved_in_metadata() {
 fn default_options_solve_succeeds() {
     let mut model = Model::new();
     model.add_variable(continuous()).unwrap();
-    let mut session = SolverSession::new(RecordingBackend::new());
+    let mut session = SolverSession::new(RecordingBackend::new().0);
     let solution = session
         .solve_with(&mut model, SolveOptions::new())
         .expect("default options are valid");

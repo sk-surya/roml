@@ -17,7 +17,9 @@
 //! committed model revision before solve; and prior-solution invalidation
 //! after mutation (API-01.5).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use roml::delta::ModelOp;
 use roml::id::{ObjId, VarId};
@@ -38,54 +40,27 @@ use roml::SolverSession;
 
 // ── Reference + fault-injecting backend ──────────────────────────────────────
 
-/// A deterministic in-memory backend that mirrors a model's projection and
-/// "solves" by reporting an objective computed from the active objective's
-/// cells at fixed variable values (1.0), plus the objective constant. Fault
-/// knobs inject the recoverable/terminal/dirty behaviors the orchestration
-/// must react to.
-struct TestBackend {
-    name: String,
+/// Shared fault-injection state for [`TestBackend`].
+///
+/// Knobs and observability counters live here (shared with the test via
+/// `Rc<RefCell<..>>`) so tests can flip knobs and read counters without
+/// reaching into the session's backend — `SolverSession` exposes only the
+/// approved `new`/`solve`/`solve_with` interface.
+struct FaultState {
     revision: ModelRevision,
     health: AdapterHealth,
-    var_values: HashMap<VarId, f64>,
-    objectives: HashMap<ObjId, (Sense, f64)>,
-    active_objective: Option<ObjId>,
-    objective_cells: HashMap<ObjId, HashMap<VarId, f64>>,
-
-    // Fault injection.
     reject_next_delta: bool,
+    fail_delta_terminal: bool,
     fail_rebuild: bool,
     solve_fails: bool,
     solve_termination: TerminationStatus,
-
-    // Observability counters.
     rebuilds: usize,
     deltas: usize,
     solves: usize,
     solve_revision_seen: Option<ModelRevision>,
 }
 
-impl TestBackend {
-    fn new() -> Self {
-        Self {
-            name: "TestBackend".to_string(),
-            revision: ModelRevision::ZERO,
-            health: AdapterHealth::Ready,
-            var_values: HashMap::new(),
-            objectives: HashMap::new(),
-            active_objective: None,
-            objective_cells: HashMap::new(),
-            reject_next_delta: false,
-            fail_rebuild: false,
-            solve_fails: false,
-            solve_termination: TerminationStatus::Optimal,
-            rebuilds: 0,
-            deltas: 0,
-            solves: 0,
-            solve_revision_seen: None,
-        }
-    }
-
+impl FaultState {
     fn force_rebuild(&mut self) {
         self.health = AdapterHealth::RequiresRebuild;
     }
@@ -96,6 +71,10 @@ impl TestBackend {
 
     fn set_reject_next_delta(&mut self) {
         self.reject_next_delta = true;
+    }
+
+    fn set_fail_delta_terminal(&mut self) {
+        self.fail_delta_terminal = true;
     }
 
     fn set_fail_rebuild(&mut self) {
@@ -117,6 +96,51 @@ impl TestBackend {
     }
     fn solve_revision_seen(&self) -> Option<ModelRevision> {
         self.solve_revision_seen
+    }
+}
+
+/// A deterministic in-memory backend that mirrors a model's projection and
+/// "solves" by reporting an objective computed from the active objective's
+/// cells at fixed variable values (1.0), plus the objective constant.
+///
+/// Returns `(backend, state)` — the test keeps the shared [`FaultState`]
+/// handle to inject the recoverable/terminal/dirty behaviors the
+/// orchestration must react to and to observe counters.
+struct TestBackend {
+    name: String,
+    var_values: HashMap<VarId, f64>,
+    objectives: HashMap<ObjId, (Sense, f64)>,
+    active_objective: Option<ObjId>,
+    objective_cells: HashMap<ObjId, HashMap<VarId, f64>>,
+    state: Rc<RefCell<FaultState>>,
+}
+
+impl TestBackend {
+    fn new() -> (Self, Rc<RefCell<FaultState>>) {
+        let state = Rc::new(RefCell::new(FaultState {
+            revision: ModelRevision::ZERO,
+            health: AdapterHealth::Ready,
+            reject_next_delta: false,
+            fail_delta_terminal: false,
+            fail_rebuild: false,
+            solve_fails: false,
+            solve_termination: TerminationStatus::Optimal,
+            rebuilds: 0,
+            deltas: 0,
+            solves: 0,
+            solve_revision_seen: None,
+        }));
+        (
+            Self {
+                name: "TestBackend".to_string(),
+                var_values: HashMap::new(),
+                objectives: HashMap::new(),
+                active_objective: None,
+                objective_cells: HashMap::new(),
+                state: state.clone(),
+            },
+            state,
+        )
     }
 
     fn compute_objective_value(&self) -> Option<f64> {
@@ -228,75 +252,102 @@ impl BackendMetadata for TestBackend {
 
 impl SessionHealth for TestBackend {
     fn health(&self) -> AdapterHealth {
-        self.health
+        self.state.borrow().health
     }
     fn revision(&self) -> ModelRevision {
-        self.revision
+        self.state.borrow().revision
     }
 }
 
 impl BackendSession for TestBackend {
     fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
+        // Scoped state borrows: never hold a RefMut across a &mut self call.
         match sync {
             Synchronization::Rebuild(snapshot) => {
-                self.rebuilds += 1;
-                if self.fail_rebuild {
-                    return Err(BackendError::new(
-                        "injected rebuild failure",
-                        ErrorCategory::Internal,
-                        HealthEffect::Recoverable,
-                    ));
+                {
+                    let mut s = self.state.borrow_mut();
+                    s.rebuilds += 1;
+                    if s.fail_rebuild {
+                        return Err(BackendError::new(
+                            "injected rebuild failure",
+                            ErrorCategory::Internal,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
                 }
                 self.project_snapshot(&snapshot);
-                self.revision = snapshot.revision;
-                self.health = AdapterHealth::Ready;
+                let mut s = self.state.borrow_mut();
+                s.revision = snapshot.revision;
+                s.health = AdapterHealth::Ready;
+                Ok(SyncReceipt {
+                    cursor: roml::sync::AdapterCursor {
+                        applied_revision: s.revision,
+                        health: s.health,
+                    },
+                    health: s.health,
+                })
             }
             Synchronization::DeltaBatch(batch) => {
-                if self.reject_next_delta {
-                    self.reject_next_delta = false;
-                    self.health = AdapterHealth::RequiresRebuild;
-                    return Err(BackendError::new(
-                        "injected recoverable delta rejection",
-                        ErrorCategory::InvalidInput,
-                        HealthEffect::Recoverable,
-                    ));
-                }
-                if batch.from != self.revision {
-                    self.health = AdapterHealth::RequiresRebuild;
-                    return Err(BackendError::new(
-                        format!("delta from {} != backend at {}", batch.from, self.revision),
-                        ErrorCategory::InvalidInput,
-                        HealthEffect::Recoverable,
-                    ));
+                {
+                    let mut s = self.state.borrow_mut();
+                    if s.reject_next_delta {
+                        s.reject_next_delta = false;
+                        s.health = AdapterHealth::RequiresRebuild;
+                        return Err(BackendError::new(
+                            "injected recoverable delta rejection",
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
+                    if s.fail_delta_terminal {
+                        s.fail_delta_terminal = false;
+                        s.health = AdapterHealth::Terminal;
+                        return Err(BackendError::new(
+                            "injected terminal delta failure",
+                            ErrorCategory::Internal,
+                            HealthEffect::Terminal,
+                        ));
+                    }
+                    if batch.from != s.revision {
+                        s.health = AdapterHealth::RequiresRebuild;
+                        return Err(BackendError::new(
+                            format!("delta from {} != backend at {}", batch.from, s.revision),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
                 }
                 for op in &batch.operations {
                     self.apply_op(op);
                 }
-                self.deltas += 1;
-                self.revision = batch.to;
-                self.health = AdapterHealth::Ready;
+                let mut s = self.state.borrow_mut();
+                s.deltas += 1;
+                s.revision = batch.to;
+                s.health = AdapterHealth::Ready;
+                Ok(SyncReceipt {
+                    cursor: roml::sync::AdapterCursor {
+                        applied_revision: s.revision,
+                        health: s.health,
+                    },
+                    health: s.health,
+                })
             }
         }
-        Ok(SyncReceipt {
-            cursor: roml::sync::AdapterCursor {
-                applied_revision: self.revision,
-                health: self.health,
-            },
-            health: self.health,
-        })
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
-        self.solves += 1;
-        self.solve_revision_seen = Some(self.revision);
-        if self.solve_fails {
+        let mut s = self.state.borrow_mut();
+        s.solves += 1;
+        s.solve_revision_seen = Some(s.revision);
+        if s.solve_fails {
             return Err(BackendError::new(
                 "injected solve failure",
                 ErrorCategory::Internal,
                 HealthEffect::Recoverable,
             ));
         }
-        let termination = self.solve_termination;
+        let termination = s.solve_termination;
+        drop(s); // compute_objective_value takes &self
         let solution = match termination {
             TerminationStatus::Optimal | TerminationStatus::Feasible => {
                 let mut values: Vec<(VarId, f64)> =
@@ -343,7 +394,8 @@ fn build_constant_model() -> (Model, VarId, VarId) {
 #[test]
 fn first_solve_synchronizes_via_delta_and_reports_revision() {
     let (mut model, _x, _y) = build_constant_model();
-    let mut session = SolverSession::new(TestBackend::new());
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
 
     let solution = session.solve(&mut model).expect("first solve succeeds");
     assert_eq!(solution.status(), SolveStatus::Optimal);
@@ -353,19 +405,19 @@ fn first_solve_synchronizes_via_delta_and_reports_revision() {
     );
     assert_eq!(solution.metadata().model_revision, model.current_revision());
     // Backend revision equals the committed model revision before solve.
-    let backend_rev_at_solve = session
-        .backend_mut()
+    let backend_rev_at_solve = state
+        .borrow()
         .solve_revision_seen()
         .expect("solve must record its revision");
     assert_eq!(backend_rev_at_solve, model.current_revision());
-    assert!(session.last_solution().is_some());
 }
 
 /// A second solve without mutation performs no synchronization and re-solves.
 #[test]
 fn no_change_second_solve_uses_no_sync() {
     let (mut model, _x, _y) = build_constant_model();
-    let mut session = SolverSession::new(TestBackend::new());
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
 
     let first = session.solve(&mut model).unwrap();
     assert_eq!(first.metadata().synchronization, SynchronizationMode::Delta);
@@ -374,8 +426,8 @@ fn no_change_second_solve_uses_no_sync() {
         second.metadata().synchronization,
         SynchronizationMode::NoChange
     );
-    assert_eq!(session.backend_mut().deltas(), 1);
-    assert_eq!(session.backend_mut().solves(), 2);
+    assert_eq!(state.borrow().deltas(), 1);
+    assert_eq!(state.borrow().solves(), 2);
     assert_eq!(second.metadata().model_revision, model.current_revision());
 }
 
@@ -389,7 +441,7 @@ fn parameter_delta_second_solve_is_fresh_and_single_counted() {
     model.add_constraint(x.le(10.0)).unwrap();
     model.maximize(price * x + 5.0).unwrap();
 
-    let mut session = SolverSession::new(TestBackend::new());
+    let mut session = SolverSession::new(TestBackend::new().0);
     let first = session.solve(&mut model).unwrap();
     // Backend x = 1.0, cost = price = 1.0, constant = 5.0 => 1*1 + 5 = 6.
     assert!((first.objective_value().unwrap() - 6.0).abs() < 1e-9);
@@ -414,7 +466,7 @@ fn bound_delta_second_solve_synchronizes_incrementally() {
     model.add_constraint(x.le(10.0)).unwrap();
     model.maximize(x).unwrap();
 
-    let mut session = SolverSession::new(TestBackend::new());
+    let mut session = SolverSession::new(TestBackend::new().0);
     session.solve(&mut model).unwrap();
     model.set_variable_bounds(x, Bounds::new(0.0, 2.0)).unwrap();
     let second = session.solve(&mut model).unwrap();
@@ -429,8 +481,8 @@ fn bound_delta_second_solve_synchronizes_incrementally() {
 #[test]
 fn requires_rebuild_health_recovers_via_snapshot_rebuild() {
     let (mut model, _x, _y) = build_constant_model();
-    let mut backend = TestBackend::new();
-    backend.force_rebuild();
+    let (backend, state) = TestBackend::new();
+    state.borrow_mut().force_rebuild();
     let mut session = SolverSession::new(backend);
 
     let solution = session.solve(&mut model).expect("rebuild recoverable");
@@ -438,9 +490,9 @@ fn requires_rebuild_health_recovers_via_snapshot_rebuild() {
         solution.metadata().synchronization,
         SynchronizationMode::Rebuild
     );
-    assert_eq!(session.backend_mut().rebuilds(), 1);
+    assert_eq!(state.borrow().rebuilds(), 1);
     assert_eq!(
-        session.backend_mut().solve_revision_seen(),
+        state.borrow().solve_revision_seen(),
         Some(model.current_revision())
     );
 }
@@ -449,15 +501,16 @@ fn requires_rebuild_health_recovers_via_snapshot_rebuild() {
 #[test]
 fn terminal_health_returns_error_without_retry_or_solve() {
     let (mut model, _x, _y) = build_constant_model();
-    let mut backend = TestBackend::new();
-    backend.set_terminal();
+    let (backend, state) = TestBackend::new();
+    state.borrow_mut().set_terminal();
     let mut session = SolverSession::new(backend);
 
     let err = session.solve(&mut model).expect_err("terminal must error");
     assert!(matches!(err, SolveError::Synchronization(_)));
-    assert_eq!(session.backend_mut().rebuilds(), 0);
-    assert_eq!(session.backend_mut().solves(), 0);
-    assert_eq!(session.backend_mut().deltas(), 0);
+    assert!(err.is_terminal(), "error must be terminal");
+    assert_eq!(state.borrow().rebuilds(), 0);
+    assert_eq!(state.borrow().solves(), 0);
+    assert_eq!(state.borrow().deltas(), 0);
 }
 
 /// A recoverable delta failure triggers exactly one snapshot rebuild, then a
@@ -465,8 +518,8 @@ fn terminal_health_returns_error_without_retry_or_solve() {
 #[test]
 fn recoverable_delta_failure_triggers_one_rebuild_then_solves() {
     let (mut model, _x, _y) = build_constant_model();
-    let mut backend = TestBackend::new();
-    backend.set_reject_next_delta();
+    let (backend, state) = TestBackend::new();
+    state.borrow_mut().set_reject_next_delta();
     let mut session = SolverSession::new(backend);
 
     let solution = session.solve(&mut model).expect("recovered via rebuild");
@@ -474,8 +527,8 @@ fn recoverable_delta_failure_triggers_one_rebuild_then_solves() {
         solution.metadata().synchronization,
         SynchronizationMode::Rebuild
     );
-    assert_eq!(session.backend_mut().rebuilds(), 1);
-    assert_eq!(session.backend_mut().deltas(), 0);
+    assert_eq!(state.borrow().rebuilds(), 1);
+    assert_eq!(state.borrow().deltas(), 0);
     assert_eq!(solution.metadata().model_revision, model.current_revision());
 }
 
@@ -484,32 +537,43 @@ fn recoverable_delta_failure_triggers_one_rebuild_then_solves() {
 #[test]
 fn at_most_one_rebuild_retry_when_rebuild_also_fails() {
     let (mut model, _x, _y) = build_constant_model();
-    let mut backend = TestBackend::new();
-    backend.set_reject_next_delta();
-    backend.set_fail_rebuild();
+    let (backend, state) = TestBackend::new();
+    state.borrow_mut().set_reject_next_delta();
+    state.borrow_mut().set_fail_rebuild();
     let mut session = SolverSession::new(backend);
 
     let err = session.solve(&mut model).expect_err("must error");
     assert!(matches!(err, SolveError::Synchronization(_)));
-    assert_eq!(
-        session.backend_mut().rebuilds(),
-        1,
-        "exactly one rebuild attempt"
-    );
-    assert_eq!(session.backend_mut().solves(), 0);
+    assert_eq!(state.borrow().rebuilds(), 1, "exactly one rebuild attempt");
+    assert_eq!(state.borrow().solves(), 0);
+}
+
+/// A delta failure with a TERMINAL health effect returns immediately with no
+/// rebuild retry (plan step 3/7: only recoverable/dirty failures retry).
+#[test]
+fn terminal_delta_failure_returns_error_without_rebuild_retry() {
+    let (mut model, _x, _y) = build_constant_model();
+    let (backend, state) = TestBackend::new();
+    state.borrow_mut().set_fail_delta_terminal();
+    let mut session = SolverSession::new(backend);
+
+    let err = session.solve(&mut model).expect_err("terminal must error");
+    assert!(err.is_terminal(), "error must be terminal: {err:?}");
+    assert_eq!(state.borrow().rebuilds(), 0, "no rebuild retry");
+    assert_eq!(state.borrow().solves(), 0, "no solve");
 }
 
 /// A backend ahead of the model is re-synchronized via a snapshot rebuild.
 #[test]
 fn backend_ahead_of_model_triggers_rebuild() {
     let (mut model, _x, _y) = build_constant_model();
-    let backend = TestBackend::new();
+    let (backend, state) = TestBackend::new();
     let mut session = SolverSession::new(backend);
     session.solve(&mut model).unwrap();
 
     // Simulate the backend cursor drifting ahead of the model.
-    session
-        .backend_mut()
+    state
+        .borrow_mut()
         .set_revision_for_test(ModelRevision::from_u64(5));
 
     let second = session.solve(&mut model).expect("rebuild recovers");
@@ -517,21 +581,20 @@ fn backend_ahead_of_model_triggers_rebuild() {
         second.metadata().synchronization,
         SynchronizationMode::Rebuild
     );
-    assert_eq!(session.backend_mut().rebuilds(), 1);
-    assert_eq!(session.backend().revision(), model.current_revision());
+    assert_eq!(state.borrow().rebuilds(), 1);
+    assert_eq!(state.borrow().revision, model.current_revision());
 }
 
-/// A previous solution is invalidated once the model is mutated: the next
-/// solve returns a fresh solution whose metadata revision is the new one, and
-/// the session never surfaces the stale value.
+/// After the model is mutated, the next solve returns a fresh solution from
+/// the new revision — the session never reports the pre-mutation (stale)
+/// result (API-01.5). Stale protection is structural: the only way to obtain
+/// a solution is `solve`, which always re-synchronizes first.
 #[test]
-fn prior_solution_invalidated_after_mutation() {
+fn prior_solution_never_reported_after_mutation() {
     let (mut model, _x, _y) = build_constant_model();
-    let backend = TestBackend::new();
-    let mut session = SolverSession::new(backend);
+    let mut session = SolverSession::new(TestBackend::new().0);
 
     let first = session.solve(&mut model).unwrap();
-    assert!(session.last_solution().is_some());
     let r1 = first.metadata().model_revision;
 
     // Mutate the model: tighten the constraint so a fresh solve differs.
@@ -542,34 +605,30 @@ fn prior_solution_invalidated_after_mutation() {
     let r2 = second.metadata().model_revision;
     assert_ne!(r2, r1, "the model must have advanced");
     assert_eq!(
-        session.last_solution().unwrap().metadata().model_revision,
-        r2,
-        "prior solution must be invalidated after mutation"
+        second.metadata().model_revision,
+        model.current_revision(),
+        "returned solution is from the new revision, never the stale one"
     );
 }
 
-/// A failed synchronization after mutation invalidates the prior solution so
-/// no stale result is ever reported as current (API-01.5).
+/// A failed solve after mutation returns an error — the error path never
+/// surfaces the previously computed solution as current (API-01.5).
 #[test]
-fn failed_solve_invalidates_prior_solution() {
+fn failed_solve_never_surfaces_prior_solution() {
     let (mut model, _x, _y) = build_constant_model();
-    let backend = TestBackend::new();
+    let (backend, state) = TestBackend::new();
     let mut session = SolverSession::new(backend);
     session.solve(&mut model).unwrap();
-    assert!(session.last_solution().is_some());
 
     // Mutate, then make both the delta and the rebuild attempt fail.
     model
         .set_variable_bounds(_x, Bounds::new(0.0, 1.0))
         .unwrap();
-    session.backend_mut().set_reject_next_delta();
-    session.backend_mut().set_fail_rebuild();
+    state.borrow_mut().set_reject_next_delta();
+    state.borrow_mut().set_fail_rebuild();
     let err = session.solve(&mut model).expect_err("solve must fail");
     assert!(matches!(err, SolveError::Synchronization(_)));
-    assert!(
-        session.last_solution().is_none(),
-        "stale solution must not survive a failed solve"
-    );
+    // No solution is returned: the stale result cannot be reported as current.
 }
 
 /// The objective constant reaches the backend on the delta path exactly once:
@@ -578,7 +637,7 @@ fn failed_solve_invalidates_prior_solution() {
 #[test]
 fn objective_constant_is_reported_exactly_once_end_to_end() {
     let (mut model, x, y) = build_constant_model();
-    let mut session = SolverSession::new(TestBackend::new());
+    let mut session = SolverSession::new(TestBackend::new().0);
     let solution = session.solve(&mut model).unwrap();
 
     let facade_value = solution.objective_value().unwrap();
