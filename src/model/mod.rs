@@ -355,10 +355,11 @@ impl Model {
 
     // ========== Constraint Operations ==========
 
-    /// Add a constraint from a [`ConstraintSpec`] (API-04.1, D1).
+    /// Add a constraint from a [`crate::expr::ConstraintSpec`] (API-04.1, D1).
     ///
-    /// Accepts any type that converts into a [`ConstraintSpec`], including raw
-    /// [`ConstraintBounds`] (input-shape compatibility bridge). Fallible (D10).
+    /// Accepts any type that converts into a [`crate::expr::ConstraintSpec`],
+    /// including raw [`ConstraintBounds`] (input-shape compatibility bridge).
+    /// Fallible (D10).
     pub fn add_constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
     where
         S: Into<crate::expr::ConstraintSpec>,
