@@ -39,7 +39,7 @@ impl std::error::Error for SolverError {}
 /// One status type preserved across optimal, feasible-limit, infeasible,
 /// unbounded, limit, interrupted, and numerical outcomes. Operational
 /// failures (license, backend errors, uninterpretable terminations) surface
-/// as [`SolveError`](crate::solver::error::SolveError) instead (API-03.3).
+/// as [`SolveError`] instead (API-03.3).
 ///
 /// `SolverStatus` is a compatibility alias of this type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,8 +71,8 @@ pub enum SolveStatus {
 }
 
 impl SolveStatus {
-    /// Map a backend [`TerminationStatus`] into a [`SolveStatus`] or a
-    /// [`SolveError`].
+    /// Map a backend [`crate::solver::backend::TerminationStatus`] into a
+    /// [`SolveStatus`] or a [`SolveError`].
     ///
     /// Mathematical outcomes map to `Ok(SolveStatus)`. A termination that
     /// means the solve could not be performed or interpreted (`Error`,
