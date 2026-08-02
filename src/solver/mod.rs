@@ -12,6 +12,7 @@ pub mod backend;
 pub mod callback;
 pub mod conformance;
 pub mod error;
+pub mod facade;
 pub mod reference;
 pub mod request;
 pub mod session;
