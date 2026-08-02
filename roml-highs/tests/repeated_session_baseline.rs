@@ -16,21 +16,24 @@
 //! |---|---|---|---|---|
 //! | Rebuild from snapshot | r1 | Ready | Optimal | 12.0 (`price = 3.0`) |
 //! | Apply parameter delta (`price 3.0 -> 5.0`) | r2 | Ready | Optimal | 20.0 |
-//! | Failed delta (mismatched base) | r1 (unchanged) | RequiresRebuild | — | prior solution stays readable but stale |
-//! | Snapshot rebuild (deterministic recovery) | r1 | Ready | Optimal | 12.0 |
+//! | Model advanced to r2; sync rejected (mismatched base) | session r1 | RequiresRebuild | — | 12.0 — r1 solution stays readable but is stale |
+//! | Rebuild from real r2 snapshot (deterministic recovery) | r2 | Ready | Optimal | 20.0 |
 //!
-//! The last two rows are the "unsupported/dirty path": a delta whose base
+//! The last two rows are the "unsupported/dirty path": the canonical model
+//! has advanced to r2, but the session does not know — a delta whose base
 //! revision does not match the cursor (a missed/unsupported incremental
-//! update) is rejected before mutation, the cursor demands a rebuild, and a
-//! deterministic snapshot rebuild restores `Ready` and a correct solve.
+//! update) is rejected before mutation, and the cursor demands a rebuild.
 //!
-//! Characterized current behavior on the rejected delta (asserted in
+//! Characterized current behavior on the rejected sync (asserted in
 //! `dirty_path_recovers_via_deterministic_snapshot_rebuild`): the previously
-//! reported solution REMAINS readable through `SolutionView` — the objective
-//! still reads 12.0 — but it is stale relative to the advanced model. It is
-//! not invalidated. P21's façade must never report that stale result as
-//! current (API-01.5); this baseline records what the session layer does
-//! today so P21 can decide the invalidation policy.
+//! reported r1 solution REMAINS readable through `SolutionView` — the
+//! objective still reads 12.0 — even though the canonical model has advanced
+//! to r2 (whose solve is expected to produce 20.0). It is therefore genuinely
+//! stale, not merely "the r1 solution": it no longer corresponds to the
+//! model's current state. It is not invalidated. P21's façade must never
+//! report that stale result as current (API-01.5); this baseline records
+//! what the session layer does today so P21 can decide the invalidation
+//! policy.
 
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::expr::ConstraintExprExt;
@@ -159,27 +162,41 @@ fn repeated_solve_bound_delta_updates_optimal() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-/// Unsupported/dirty path: a delta whose base revision does not match the
-/// cursor is rejected before mutation, the cursor requires a rebuild, and a
-/// deterministic snapshot rebuild restores `Ready` and a correct solve.
+/// Unsupported/dirty path: the canonical model advances to r2, but a sync
+/// whose base revision does not match the cursor is rejected before mutation.
+/// The session still exposes its r1 solution (readable but stale), the cursor
+/// requires a rebuild, and a deterministic rebuild from the real r2 snapshot
+/// restores `Ready` and solves the advanced model.
 #[test]
 fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (mut model, x, _y, _price) = build_parameterized_model(3.0);
+    let (mut model, x, _y, price) = build_parameterized_model(3.0);
     let r1 = model.commit()?;
 
     let mut session = HighsSession::try_new().expect("HiGHS should be available");
-    let snap = model.take_snapshot()?;
+    let snap_r1 = model.take_snapshot()?;
     session
-        .synchronize(Synchronization::Rebuild(snap.clone()))
+        .synchronize(Synchronization::Rebuild(snap_r1))
         .expect("rebuild should succeed");
     session
         .solve(&SolveRequest::new())
         .expect("first solve succeeds");
     assert_eq!(session.health(), AdapterHealth::Ready);
+    assert_eq!(session.revision(), r1);
+    approx(session.objective_value(), 12.0);
 
-    // A delta batch whose base revision is ahead of the cursor simulates a
-    // missed or unsupported incremental update.
+    // Advance the REAL canonical model to r2 (price 3.0 -> 5.0). The session
+    // does not know yet: it still holds the r1 solution, which is now
+    // genuinely stale — the r2 model solves to 20.0, not 12.0.
+    model.set_parameter(price, 5.0);
+    let r2 = model.commit()?;
+    assert_ne!(r2, r1, "model must have advanced to r2");
+    let snap_r2 = model.take_snapshot()?;
+
+    // Force a failed synchronization: a delta batch whose base revision does
+    // not match the cursor simulates a missed or unsupported incremental
+    // update. (A correct r1->r2 delta would apply cleanly; the rejection is
+    // what exercises the dirty path.)
     let r10 = ModelRevision::from_u64(10);
     let r11 = r10.next().expect("next revision");
     let bad_batch = DeltaBatch::new(
@@ -199,40 +216,41 @@ fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dy
         AdapterHealth::RequiresRebuild,
         "cursor must require a rebuild after a rejected delta"
     );
-    assert_eq!(session.revision(), r1, "revision unchanged after rejection");
+    assert_eq!(session.revision(), r1, "session cursor unchanged at r1");
 
-    // Characterized current behavior: the prior optimal solution REMAINS
-    // readable through SolutionView after the rejected delta — the objective
-    // still reads 12.0 — but it is stale relative to the advanced model
-    // (revision r1 cannot satisfy the model at r11). It is not invalidated.
-    // P21 (API-01.5) must decide that the façade never reports this stale
-    // result as current; this assertion freezes what the session layer does
-    // today as the parity target for that decision.
+    // Characterized current behavior: the r1 solution REMAINS readable
+    // through SolutionView — the objective still reads 12.0 — even though
+    // the canonical model has advanced to r2 (expected objective 20.0). It
+    // is stale relative to the real model, not merely to a synthetic batch.
+    // It is not invalidated. P21 (API-01.5) must decide that the façade
+    // never reports this stale result as current; this assertion freezes
+    // what the session layer does today as the parity target.
     assert_eq!(
         session.objective_value(),
         Some(12.0),
-        "prior solution stays readable (but stale) after a rejected delta"
+        "r1 solution stays readable but is stale (model has advanced to r2)"
     );
     assert!(
         session.value(x).is_some(),
-        "prior variable values also stay readable after a rejected delta"
+        "r1 variable values also stay readable after a rejected sync"
     );
 
-    // Deterministic recovery: rebuild from the snapshot restores Ready and a
-    // correct, non-stale solve.
+    // Deterministic recovery from the REAL r2 snapshot: rebuild restores
+    // Ready, advances the cursor to r2, and solves the advanced model
+    // (price 5.0 -> objective 20.0) — no stale values survive.
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::Rebuild(snap_r2))
         .expect("rebuild after failure should succeed");
     assert_eq!(session.health(), AdapterHealth::Ready);
-    assert_eq!(session.revision(), r1);
+    assert_eq!(session.revision(), r2, "cursor advanced to r2");
 
     let recovered = session
         .solve(&SolveRequest::new())
         .expect("recovered solve");
     assert_eq!(recovered.termination, TerminationStatus::Optimal);
     assert!(recovered.solution.is_some());
-    approx(recovered.solution.as_ref().unwrap().objective_value, 12.0);
-    approx(session.objective_value(), 12.0);
+    approx(recovered.solution.as_ref().unwrap().objective_value, 20.0);
+    approx(session.objective_value(), 20.0);
 
     Ok(())
 }
