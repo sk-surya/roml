@@ -36,10 +36,18 @@ jobs:
       - name: Install native deps (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config
-      - name: Install native deps (Windows)
+      - name: Install cmake (Windows)
+        if: runner.os == 'Windows'
+        uses: jwlawson/actions-setup-cmake@v2
+      - name: Install ninja (Windows, if missing)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install cmake ninja --no-progress
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --no-progress
+          } else {
+            Write-Output "ninja already present: $(ninja --version)"
+          }
       - name: Test roml-highs (bundled)
         run: cargo nextest run -p roml-highs --features bundled
       - name: Run doctests
@@ -99,19 +107,28 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
       - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
-      - name: Build HiGHS from source
+      - name: Set HiGHS install prefix
+        run: echo "HIGHS_PREFIX=$HOME/highs-install" >> "$GITHUB_ENV"
+      - name: Cache HiGHS 1.9.0 install
+        id: highs-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/highs-install
+          key: highs-1.9.0-${{ runner.os }}
+      - name: Build HiGHS 1.9.0 from source
+        if: steps.highs-cache.outputs.cache-hit != 'true'
         run: |
           HIGHS_VERSION=1.9.0
           curl -fsSL "https://github.com/ERGO-Code/HiGHS/archive/refs/tags/v${HIGHS_VERSION}.tar.gz" -o highs.tar.gz
           tar xzf highs.tar.gz
           cd "HiGHS-${HIGHS_VERSION}"
           mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -GNinja
-          ninja && sudo ninja install
-          sudo ldconfig || true
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HIGHS_PREFIX" -GNinja
+          ninja && ninja install
       - name: Test roml-highs (system discovery)
         env:
-          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+          PKG_CONFIG_PATH: ${{ env.HIGHS_PREFIX }}/lib/pkgconfig
+          LD_LIBRARY_PATH: ${{ env.HIGHS_PREFIX }}/lib
         run: cargo nextest run -p roml-highs --no-default-features --features system
 
   package:
