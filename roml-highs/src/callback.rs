@@ -123,17 +123,18 @@ pub(crate) unsafe extern "C" fn callback_trampoline(
         }
 
         kHighsCallbackMipSolution => {
-            // Informational only: a candidate MIP solution was found.
-            if !data_out.is_null() {
-                let cd_out = &*data_out;
-                info!(
-                    "MIP candidate solution: {} vars, obj = {}, primal = {}, dual = {}, gap = {}",
-                    cd_out.mip_solution_size,
-                    cd_out.objective_function_value,
-                    cd_out.mip_primal_bound,
-                    cd_out.mip_dual_bound,
-                    cd_out.mip_gap,
-                );
+            // A candidate MIP solution was found — invoke the handler so it
+            // can inspect the candidate. The returned action is observed but
+            // not acted on: cut/lazy-constraint injection was removed from
+            // this adapter (per the AD-4 cleanup), so only observation and
+            // interruption are supported.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let cb_data = build_callback_data(data_out, state);
+                let _action = state.handler.on_candidate(&cb_data);
+            }));
+
+            if let Err(e) = result {
+                warn!("Panic in MIP solution callback handler: {:?}", e);
             }
         }
 
@@ -207,6 +208,31 @@ pub(crate) fn register_callback(
             let _ = Box::from_raw(state);
         }
         return Err(crate::error::from_native_status(ret, "Highs_setCallback"));
+    }
+
+    // HiGHS requires each callback type to be explicitly enabled with
+    // Highs_startCallback after the callback function is registered.
+    // Without this, HiGHS never invokes the trampoline even though the
+    // function was registered (the MIP callback feature was dead as a
+    // result). Enable the MIP events this adapter handles.
+    // SAFETY: `raw` is a valid HiGHS instance handle.
+    for cb_type in [
+        kHighsCallbackMipLogging,
+        kHighsCallbackMipInterrupt,
+        kHighsCallbackMipSolution,
+        kHighsCallbackMipImprovingSolution,
+        kHighsCallbackMipGetCutPool,
+    ] {
+        let ret = unsafe { Highs_startCallback(raw, cb_type) };
+        if ret != STATUS_OK {
+            // Free the state we already allocated and unregister.
+            // SAFETY: state is the same pointer from Box::into_raw above.
+            unsafe {
+                let _ = Box::from_raw(state);
+                Highs_setCallback(raw, None, std::ptr::null_mut());
+            }
+            return Err(crate::error::from_native_status(ret, "Highs_startCallback"));
+        }
     }
 
     Ok(state)
