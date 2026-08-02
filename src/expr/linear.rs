@@ -314,6 +314,8 @@ pub struct ObjectiveSpec {
     pub sense: Sense,
     /// Objective expression.
     pub expr: LinExpr,
+    /// Optional name for the objective (D6).
+    pub name: Option<String>,
 }
 
 impl ObjectiveSpec {
@@ -325,7 +327,14 @@ impl ObjectiveSpec {
         Self {
             sense,
             expr: expr.into(),
+            name: None,
         }
+    }
+
+    /// Attach a name to this objective specification.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 
@@ -592,10 +601,13 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        // Route through the private primitive, not the public spec API, so the
-        // expr-only path neither round-trips through ConstraintSpec nor
+        // Atomicity (API-06.5): validate before inserting the row, so a stale
+        // variable/parameter cannot leave a dangling constraint behind.
+        self.validate_expression_entities(&expr)?;
+        // Route through the public bounds-only primitive, not the spec API, so
+        // the expr-only path neither round-trips through ConstraintSpec nor
         // captures the generic's spec semantics (M2 disposition migration).
-        let con = self.add_empty_constraint(bounds, None);
+        let con = self.add_empty_constraint(bounds);
         let constant = expr.compile_for_constraint(self, con)?;
 
         // Adjust bounds for constant term: expr <= b becomes (expr - c) <= (b - c)
@@ -611,12 +623,23 @@ impl Model {
     }
 
     /// Add an objective from a fluent objective specification.
+    ///
+    /// Honors the spec's optional name (D6): the objective is inserted with the
+    /// name and left inactive; the caller activates it explicitly or uses
+    /// [`Self::set_objective`].
     pub fn add_objective_spec<S>(&mut self, spec: S) -> Result<(ObjId, f64), ModelError>
     where
         S: Into<ObjectiveSpec>,
     {
         let spec = spec.into();
-        self.add_objective_expr(spec.expr, spec.sense)
+        // Atomicity (API-06.5): validate expression entities before creating
+        // the objective row, so a stale variable/parameter cannot leave a
+        // dangling objective or changelog event behind.
+        self.validate_expression_entities(&spec.expr)?;
+        let obj = self.add_objective_internal(spec.sense, spec.name);
+        let constant = spec.expr.compile_for_objective(self, obj)?;
+        self.set_objective_constant_internal(obj, constant);
+        Ok((obj, constant))
     }
 
     /// Add and activate an objective from a fluent objective specification.
@@ -642,7 +665,9 @@ impl Model {
         E: Into<LinExpr>,
     {
         let expr = expr.into();
-        let obj = self.add_objective(sense);
+        // Atomicity (API-06.5): validate before creating the objective row.
+        self.validate_expression_entities(&expr)?;
+        let obj = self.add_objective_internal(sense, None);
         let constant = expr.compile_for_objective(self, obj)?;
         self.set_objective_constant_internal(obj, constant);
         Ok((obj, constant))

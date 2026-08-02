@@ -68,6 +68,8 @@ pub enum ModelError {
     CoefficientNotFound(CoeffId),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
+    /// Binary bounds must lie within `[0, 1]`.
+    InvalidBinaryBounds,
     /// A numeric value was not finite (NaN or infinite).
     NonFiniteValue(&'static str),
     /// A value was NaN.
@@ -85,6 +87,12 @@ impl std::fmt::Display for ModelError {
             Self::ParameterNotFound(id) => write!(f, "Parameter not found: {:?}", id),
             Self::CoefficientNotFound(id) => write!(f, "Coefficient not found: {:?}", id),
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
+            Self::InvalidBinaryBounds => {
+                write!(
+                    f,
+                    "Invalid binary bounds: binary variable bounds must lie within [0, 1]"
+                )
+            }
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
@@ -205,6 +213,9 @@ impl Model {
         if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
             return Err(ModelError::NonFiniteValue("variable upper bound"));
         }
+        if var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
+            return Err(ModelError::InvalidBinaryBounds);
+        }
         Ok(self.add_variable_internal(bounds, var_type, name))
     }
 
@@ -276,6 +287,18 @@ impl Model {
     /// Get variable bounds.
     pub fn variable_bounds(&self, var: VarId) -> Option<Bounds> {
         self.variables.get(var).map(|d| d.bounds)
+    }
+
+    /// Get a variable's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named variable, `Ok(None)` for a valid
+    /// unnamed variable, and a typed stale-ID error if the variable was
+    /// removed (D10/API-06.3).
+    pub fn variable_name(&self, var: VarId) -> Result<Option<&str>, ModelError> {
+        self.variables
+            .get(var)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::VariableNotFound(var))
     }
 
     /// Set variable bounds.
@@ -385,12 +408,38 @@ impl Model {
     /// Core constraint insertion shared by the spec API and the fluent
     /// expression path: arena insert (with optional name) + changelog, then
     /// expression compilation and bounds adjustment.
+    /// Validate every entity referenced by a linear expression BEFORE any
+    /// mutation (API-06.5): a stale variable or parameter must fail
+    /// atomically instead of leaving a dangling row, objective, or changelog
+    /// event behind (PR #22 review round 1).
+    pub(crate) fn validate_expression_entities(&self, expr: &LinExpr) -> Result<(), ModelError> {
+        if !expr.constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("expression constant"));
+        }
+        for term in &expr.terms {
+            if !self.variables.contains(term.var) {
+                return Err(ModelError::VariableNotFound(term.var));
+            }
+            let value_expr = term.coeff.clone().into_value_expr();
+            for param in value_expr.dependencies() {
+                if !self.parameters.contains(param) {
+                    return Err(ModelError::ParameterNotFound(param));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn add_constraint_spec_impl(
         &mut self,
         spec: crate::expr::ConstraintSpec,
     ) -> Result<ConId, ModelError> {
         let crate::expr::ConstraintSpec { expr, bounds, name } = spec;
-        let con = self.add_empty_constraint(bounds, name);
+        // Atomicity: validate all expression entities before inserting the
+        // row, so a stale variable/parameter cannot leave a dangling
+        // constraint or changelog event behind (API-06.5).
+        self.validate_expression_entities(&expr)?;
+        let con = self.add_empty_constraint_internal(bounds, name);
         let constant = expr.compile_for_constraint(self, con)?;
         if constant.abs() >= f64::EPSILON {
             let adjusted_bounds = ConstraintBounds {
@@ -402,9 +451,18 @@ impl Model {
         Ok(con)
     }
 
+    /// Advanced: insert an empty constraint row with the given bounds.
+    ///
+    /// This is the raw bounds-only row creation primitive (D11-adjacent low-level
+    /// mutation). The canonical path is [`Self::add_constraint`] with a spec.
+    /// No coefficients are created; fill the row with the sparse cell APIs.
+    pub fn add_empty_constraint(&mut self, bounds: ConstraintBounds) -> ConId {
+        self.add_empty_constraint_internal(bounds, None)
+    }
+
     /// Private primitive: insert an empty constraint with the given bounds and
     /// optional name, pushing the changelog event.
-    pub(crate) fn add_empty_constraint(
+    pub(crate) fn add_empty_constraint_internal(
         &mut self,
         bounds: ConstraintBounds,
         name: Option<String>,
@@ -421,6 +479,18 @@ impl Model {
     /// Get the bounds of a constraint, if it exists.
     pub fn constraint_bounds(&self, con: ConId) -> Option<ConstraintBounds> {
         self.constraints.get(con).map(|data| data.bounds)
+    }
+
+    /// Get a constraint's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named constraint, `Ok(None)` for a valid
+    /// unnamed constraint, and a typed stale-ID error if the constraint was
+    /// removed (D10/API-06.3).
+    pub fn constraint_name(&self, con: ConId) -> Result<Option<&str>, ModelError> {
+        self.constraints
+            .get(con)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::ConstraintNotFound(con))
     }
 
     /// Remove a constraint and all its coefficients.
@@ -486,7 +556,26 @@ impl Model {
 
     /// Add a new objective with the given sense.
     pub fn add_objective(&mut self, sense: Sense) -> ObjId {
-        let id = self.objectives.add(sense);
+        self.add_objective_internal(sense, None)
+    }
+
+    /// Advanced: create an inactive objective with an explicit name (D6).
+    ///
+    /// The returned objective is inactive; activate it with
+    /// [`Self::set_active_objective`] and populate it with
+    /// [`Self::set_objective_expr`]. The canonical path is
+    /// [`Self::minimize`] / [`Self::maximize`].
+    pub fn add_objective_named(&mut self, sense: Sense, name: impl Into<String>) -> ObjId {
+        self.add_objective_internal(sense, Some(name.into()))
+    }
+
+    /// Private primitive: insert an objective (optionally named), pushing the
+    /// changelog event. The new objective is inactive by default.
+    pub(crate) fn add_objective_internal(&mut self, sense: Sense, name: Option<String>) -> ObjId {
+        let id = match name {
+            Some(name) => self.objectives.add_named(sense, name),
+            None => self.objectives.add(sense),
+        };
         self.changelog
             .push(Change::ObjectiveAdded { obj: id, sense });
         id
@@ -545,6 +634,18 @@ impl Model {
         self.objectives.get(obj).map(|data| data.constant)
     }
 
+    /// Get an objective's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named objective, `Ok(None)` for a valid
+    /// unnamed objective, and a typed stale-ID error if the objective was
+    /// removed (D10/API-06.3).
+    pub fn objective_name(&self, obj: ObjId) -> Result<Option<&str>, ModelError> {
+        self.objectives
+            .get(obj)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::ObjectiveNotFound(obj))
+    }
+
     /// Set an objective's constant offset, journaling the change when it
     /// differs (API-03.5: the delta path propagates constants to backends).
     pub(crate) fn set_objective_constant_internal(&mut self, obj: ObjId, constant: f64) {
@@ -598,6 +699,18 @@ impl Model {
     /// Get a parameter value.
     pub fn parameter_value(&self, param: ParamId) -> Option<f64> {
         self.parameters.get_value(param)
+    }
+
+    /// Get a parameter's name (D6/API-05.5).
+    ///
+    /// Returns `Ok(Some(name))` for a named parameter, `Ok(None)` for a valid
+    /// unnamed parameter, and a typed stale-ID error if the parameter was
+    /// removed (D10/API-06.3).
+    pub fn parameter_name(&self, param: ParamId) -> Result<Option<&str>, ModelError> {
+        self.parameters
+            .get(param)
+            .map(|d| d.name.as_deref())
+            .ok_or(ModelError::ParameterNotFound(param))
     }
 
     /// Queue a parameter change in the current transaction.
@@ -892,6 +1005,139 @@ impl Model {
         self.add_objective_coefficient(obj, var, value)
     }
 
+    /// Advanced: set the coefficient cell at `(target, variable)` by
+    /// coordinate, replacing any existing canonical cell with `value` (D11).
+    ///
+    /// The scalar `value` becomes the cell's constant expression; any parameter
+    /// dependency of a prior expression at this cell is dropped. The
+    /// canonical-cell invariant (one cell per `(target, variable)`) is
+    /// preserved. Raw [`CoeffId`] operations remain in the advanced surface.
+    ///
+    /// Fallible (D10): stale entities and non-finite values are rejected before
+    /// any mutation.
+    pub fn set_coefficient(
+        &mut self,
+        target: CoefficientTarget,
+        var: VarId,
+        value: f64,
+    ) -> Result<(), ModelError> {
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("coefficient value"));
+        }
+        match target {
+            CoefficientTarget::Constraint(con) => {
+                if !self.constraints.contains(con) {
+                    return Err(ModelError::ConstraintNotFound(con));
+                }
+            }
+            CoefficientTarget::Objective(obj) => {
+                if !self.objectives.contains(obj) {
+                    return Err(ModelError::ObjectiveNotFound(obj));
+                }
+            }
+        }
+        if !self.variables.contains(var) {
+            return Err(ModelError::VariableNotFound(var));
+        }
+
+        let value_expr = ValueExpr::constant(value);
+        if let Some(existing_id) = self.coefficients.for_cell(target, var) {
+            // Replacement compares EXPRESSION semantics, not cached evaluated
+            // values (PR #22 review round 1): only a prior CONSTANT
+            // expression equal to the requested value is a semantic no-op. A
+            // parameter-dependent expression must be replaced even when its
+            // current evaluated value coincides with the requested constant —
+            // otherwise the dependency survives and a later parameter update
+            // silently changes the supposedly replaced coefficient.
+            let existing = self.coefficients.get(existing_id);
+            let old = existing.map(|d| d.cached_value).unwrap_or(value);
+            if let Some(ValueExpr::Constant(c)) = existing.map(|d| &d.value_expr) {
+                if (c - value).abs() < f64::EPSILON {
+                    return Ok(());
+                }
+            }
+            self.coefficients
+                .set_expr(existing_id, value_expr.clone(), value);
+            self.changelog.push(Change::CoefficientValueChanged {
+                coeff: existing_id,
+                var,
+                target,
+                value_expr,
+                old,
+                new: value,
+            });
+        } else {
+            let id = self
+                .coefficients
+                .add(var, target, value_expr.clone(), value);
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value_expr,
+                value,
+            });
+        }
+        Ok(())
+    }
+
+    /// Advanced: algebraically add `value` to the canonical coefficient cell at
+    /// `(target, variable)`, creating it when absent (D11).
+    ///
+    /// Repeated additions keep one canonical cell whose value is the running
+    /// sum. Fallible (D10): stale entities and non-finite values are rejected
+    /// before any mutation.
+    pub fn add_to_coefficient(
+        &mut self,
+        target: CoefficientTarget,
+        var: VarId,
+        value: f64,
+    ) -> Result<(), ModelError> {
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("coefficient value"));
+        }
+        match target {
+            CoefficientTarget::Constraint(con) => {
+                self.add_constraint_coefficient(con, var, ValueExpr::constant(value))?;
+            }
+            CoefficientTarget::Objective(obj) => {
+                self.add_objective_coefficient(obj, var, ValueExpr::constant(value))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Advanced: remove the canonical coefficient cell at `(target, variable)`
+    /// by coordinate (D11).
+    ///
+    /// Removing a coordinate with no cell is a no-op. Fallible (D10): stale
+    /// target entities and variables are rejected.
+    pub fn remove_coefficient_at(
+        &mut self,
+        target: CoefficientTarget,
+        var: VarId,
+    ) -> Result<(), ModelError> {
+        match target {
+            CoefficientTarget::Constraint(con) => {
+                if !self.constraints.contains(con) {
+                    return Err(ModelError::ConstraintNotFound(con));
+                }
+            }
+            CoefficientTarget::Objective(obj) => {
+                if !self.objectives.contains(obj) {
+                    return Err(ModelError::ObjectiveNotFound(obj));
+                }
+            }
+        }
+        if !self.variables.contains(var) {
+            return Err(ModelError::VariableNotFound(var));
+        }
+        if let Some(existing_id) = self.coefficients.for_cell(target, var) {
+            self.remove_coefficient_internal(existing_id);
+        }
+        Ok(())
+    }
+
     /// Remove a coefficient.
     pub fn remove_coefficient(&mut self, coeff: CoeffId) -> Result<(), ModelError> {
         if !self.coefficients.contains(coeff) {
@@ -1148,7 +1394,25 @@ fn format_bound(v: f64) -> String {
     }
 }
 
-fn format_lin_expr(expr: &LinExpr) -> String {
+/// Render a variable's diagnostic label: its name when present, else a stable
+/// `x[N]` debug handle (D6: names are diagnostics with an index fallback).
+fn var_label(model: &Model, var: VarId) -> String {
+    model
+        .variables
+        .get(var)
+        .and_then(|d| d.name.clone())
+        .unwrap_or_else(|| format!("x[{}]", var.index()))
+}
+
+/// Render an entity header label, e.g. `c[0] "capacity"` (named) or `c[0]`.
+fn entity_label(prefix: &str, index: u32, name: &Option<String>) -> String {
+    match name {
+        Some(name) => format!("{prefix}[{index}] \"{name}\""),
+        None => format!("{prefix}[{index}]"),
+    }
+}
+
+fn format_lin_expr(model: &Model, expr: &LinExpr) -> String {
     let terms = expr.terms();
     let constant = expr.get_constant();
 
@@ -1164,28 +1428,29 @@ fn format_lin_expr(expr: &LinExpr) -> String {
         };
         let abs_coeff = coeff.abs();
         let negative = coeff < 0.0;
+        let label = var_label(model, term.var);
 
         if i == 0 {
             if (coeff - 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("x[{}]", term.var.index()));
+                out.push_str(&label);
             } else if (coeff + 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("-x[{}]", term.var.index()));
+                out.push_str(&format!("-{label}"));
             } else {
-                out.push_str(&format!("{coeff}*x[{}]", term.var.index()));
+                out.push_str(&format!("{coeff}*{label}"));
             }
         } else if negative {
             out.push_str(" - ");
             if (abs_coeff - 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("x[{}]", term.var.index()));
+                out.push_str(&label);
             } else {
-                out.push_str(&format!("{abs_coeff}*x[{}]", term.var.index()));
+                out.push_str(&format!("{abs_coeff}*{label}"));
             }
         } else {
             out.push_str(" + ");
             if (abs_coeff - 1.0).abs() < f64::EPSILON {
-                out.push_str(&format!("x[{}]", term.var.index()));
+                out.push_str(&label);
             } else {
-                out.push_str(&format!("{abs_coeff}*x[{}]", term.var.index()));
+                out.push_str(&format!("{abs_coeff}*{label}"));
             }
         }
     }
@@ -1234,12 +1499,8 @@ impl Model {
                 VarType::Binary => "Binary",
             };
             let inactive = if !data.active { " [inactive]" } else { "" };
-            writeln!(
-                out,
-                "    x[{}]: [{lb}, {ub}] {type_s}{inactive}",
-                id.index()
-            )
-            .unwrap();
+            let label = entity_label("x", id.index(), &data.name);
+            writeln!(out, "    {label}: [{lb}, {ub}] {type_s}{inactive}").unwrap();
         }
 
         // Parameters
@@ -1247,7 +1508,8 @@ impl Model {
         let mut params: Vec<_> = self.parameters.iter().collect();
         params.sort_by_key(|(id, _)| id.index());
         for (id, data) in &params {
-            writeln!(out, "    p[{}]: {}", id.index(), data.value).unwrap();
+            let label = entity_label("p", id.index(), &data.name);
+            writeln!(out, "    {label}: {}", data.value).unwrap();
         }
 
         // Constraints
@@ -1260,14 +1522,10 @@ impl Model {
             let inactive = if !data.active { " [inactive]" } else { "" };
             let expr_s = self
                 .constraint_expression(*id)
-                .map(|e| format_lin_expr(&e))
+                .map(|e| format_lin_expr(self, &e))
                 .unwrap_or_else(|_| "?".to_string());
-            writeln!(
-                out,
-                "    c[{}]: {lb} <= {expr_s} <= {ub}{inactive}",
-                id.index()
-            )
-            .unwrap();
+            let label = entity_label("c", id.index(), &data.name);
+            writeln!(out, "    {label}: {lb} <= {expr_s} <= {ub}{inactive}").unwrap();
         }
 
         // Objectives
@@ -1282,9 +1540,10 @@ impl Model {
             let active = if data.active { " [active]" } else { "" };
             let expr_s = self
                 .objective_expression(*id)
-                .map(|e| format_lin_expr(&e))
+                .map(|e| format_lin_expr(self, &e))
                 .unwrap_or_else(|_| "?".to_string());
-            writeln!(out, "    obj[{}]: {sense} {expr_s}{active}", id.index()).unwrap();
+            let label = entity_label("obj", id.index(), &data.name);
+            writeln!(out, "    {label}: {sense} {expr_s}{active}").unwrap();
         }
 
         out
