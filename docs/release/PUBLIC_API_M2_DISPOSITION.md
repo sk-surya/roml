@@ -208,7 +208,7 @@ tested for the chosen window (API-08.2/08.3).
 
 ## Signature-collision migration (Rust has no method overloading)
 
-D12 promises "replacement before deprecation". Four current signatures cannot
+D12 promises "replacement before deprecation". Five current signatures cannot
 coexist with their targets under the same method name, so each needs an
 explicit approach. The packet's accepted assumption — "M2 may make documented
 pre-1.0 breaking changes with migration notes" — applies where noted.
