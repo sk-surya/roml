@@ -29,17 +29,17 @@ description = "Rust Optimization Modeling Library for incremental MILP models"
 # .foundry.toml, badges/, docs/knowledge/) leak into the packed crate. The
 # include list ships exactly the crate's intended files.
 include = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "README.md",
-    "MODELING_API.md",
-    "MIGRATION.md",
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "assets/roml-logo-v2.png",
-    "src/**",
-    "tests/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/MODELING_API.md",
+    "/MIGRATION.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/assets/roml-logo-v2.png",
+    "/src/**",
+    "/tests/**",
 ]
 
 [lints]
