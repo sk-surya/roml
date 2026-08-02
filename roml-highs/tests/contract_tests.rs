@@ -13,7 +13,7 @@
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
-use roml::model::{Bounds, ConstraintBounds, Sense, VarType};
+use roml::model::{continuous, Bounds, ConstraintBounds, Sense, VarType};
 use roml::revision::ModelRevision;
 use roml::snapshot::{CellEntry, ConstraintEntry, ModelSnapshot, ObjectiveEntry, VariableEntry};
 use roml::solver::backend::{ErrorCategory, HealthEffect, TerminationStatus};
@@ -1532,7 +1532,7 @@ fn c12_production_path_objective_coefficient() {
 fn c12_production_path_constraint_coefficient() {
     let mut model = Model::new();
     let x = model.add_var();
-    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    let c = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     model.add_coeff(c, x, 2.0).unwrap();
 
     let _r1 = model.commit().unwrap();
@@ -1551,14 +1551,14 @@ fn c12_production_path_constraint_coefficient() {
 fn c12_production_path_parameter_propagation() {
     let mut model = Model::new();
     let x = model.add_var();
-    let p = model.add_parameter(5.0);
-    let c = model.add_constraint(ConstraintBounds::le(10.0));
+    let p = model.add_parameter(5.0).unwrap();
+    let c = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     model
         .add_constraint_coefficient(c, x, ValueExpr::param(p))
         .unwrap();
 
     let _r1 = model.commit().unwrap();
-    model.set_parameter(p, 3.0);
+    model.set_parameter(p, 3.0).unwrap();
     let _r2 = model.commit().unwrap();
 
     let snapshot = model.take_snapshot().unwrap();
@@ -1609,7 +1609,7 @@ fn c12_production_path_inactive_objective_does_not_corrupt_active() {
 #[test]
 fn c12_production_path_semi_continuous_roundtrip() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
+    let x = model.add_variable(continuous()).unwrap();
     model.set_semicontinuous(x, 1.0).unwrap();
 
     let _r1 = model.commit().unwrap();

@@ -1,14 +1,14 @@
 #![allow(deprecated)]
 use roml::expr::LinExpr;
 use roml::model::{Change, CoefficientTarget};
-use roml::{Bounds, ConstraintBounds, Model, Sense, ValueExpr, VarType};
+use roml::{continuous, Bounds, ConstraintBounds, Model, Sense, ValueExpr, VarType};
 
 #[test]
 fn changelog_captures_mutations() {
     let mut model = Model::new();
 
-    let x = model.add_variable(Bounds::NON_NEGATIVE, VarType::Continuous);
-    let con = model.add_constraint(ConstraintBounds::le(10.0));
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     let obj = model.add_objective(Sense::Minimize);
     model.set_active_objective(obj).unwrap();
 
@@ -23,14 +23,14 @@ fn changelog_captures_mutations() {
     model.set_variable_active(x, false).unwrap();
     model.set_constraint_active(con, false).unwrap();
 
-    let param = model.add_parameter(3.0);
+    let param = model.add_parameter(3.0).unwrap();
     // Adding param-dependent term for same (con, x) cell combines with
     // existing coefficient rather than creating a new one.
     let _ = model
         .add_constraint_coefficient(con, x, ValueExpr::param(param))
         .unwrap();
 
-    model.set_parameter(param, 4.0);
+    model.set_parameter(param, 4.0).unwrap();
 
     let changes = model.drain_changes();
     assert_eq!(changes.len(), 12);
@@ -122,14 +122,14 @@ fn drain_changes_auto_commits_parameters() {
     let mut model = Model::new();
 
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(5.0));
-    let param = model.add_parameter(2.0);
+    let con = model.add_constraint(ConstraintBounds::le(5.0)).unwrap();
+    let param = model.add_parameter(2.0).unwrap();
 
     let coeff = model
         .add_constraint_coefficient(con, x, ValueExpr::param(param))
         .unwrap();
 
-    model.set_parameter(param, 6.0);
+    model.set_parameter(param, 6.0).unwrap();
 
     let changes = model.drain_changes();
     assert_eq!(changes.len(), 5);
@@ -178,11 +178,11 @@ fn indexed_model_with_parameter_arrays() {
 
     // similarly, create a parameter array for energy prices (generate random numbers)
     let rt_energy_price: Vec<_> = (0..5)
-        .map(|_| model.add_parameter(rand::random::<f64>() * 100.0))
+        .map(|_| model.add_parameter(rand::random::<f64>() * 100.0).unwrap())
         .collect();
 
     let rt_energy_price_scaler: Vec<_> = (0..5)
-        .map(|_| model.add_parameter(rand::random::<f64>() * 10.0))
+        .map(|_| model.add_parameter(rand::random::<f64>() * 10.0).unwrap())
         .collect();
 
     // lets create an objective expression that uses these parameters
