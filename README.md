@@ -12,6 +12,8 @@
   <a href="https://github.com/sk-surya/roml/actions/workflows/ci-core.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-core.yml/badge.svg?branch=main" alt="Core CI"></a>
   <a href="https://github.com/sk-surya/roml/actions/workflows/ci-highs.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-highs.yml/badge.svg?branch=main" alt="HiGHS backend CI"></a>
   <a href="https://github.com/sk-surya/roml/actions/workflows/ci-policy.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-policy.yml/badge.svg?branch=main" alt="Policy checks"></a>
+  <a href="https://github.com/sk-surya/roml/actions/workflows/ci-coverage.yml"><img src="https://github.com/sk-surya/roml/actions/workflows/ci-coverage.yml/badge.svg?branch=main" alt="Coverage CI"></a>
+  <img src="badges/coverage.svg" alt="Line coverage">
   <img src="https://img.shields.io/badge/MSRV-1.85-2f74c0?logo=rust" alt="Minimum supported Rust version: 1.85">
   <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache-2.0 license">
 </p>
