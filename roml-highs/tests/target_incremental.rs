@@ -1,38 +1,21 @@
-//! P20 Task 3 — Frozen target contract: incremental re-solve on one `Highs`.
+//! P21 gate — the frozen incremental re-solve contract now compiles and
+//! executes.
 //!
-//! This fixture pins the exact target API for the parameterized incremental
-//! workflow (M2 outcome in the packet README, `DECISIONS.md` D5/D7). One
-//! `Highs` instance is reused across solves; `set_parameter` is fallible; the
-//! second `solve` re-optimizes after the parameter change without any
-//! user-facing `commit`, `synchronize`, snapshot, or cursor calls.
+//! This test is the promoted P20 target contract (previously
+//! `tests/ui/target_incremental.rs`). One `Highs` instance is reused across
+//! solves; `set_parameter` is fallible; the second `solve` re-optimizes
+//! after the parameter change without any user-facing `commit`,
+//! `synchronize`, snapshot, or cursor calls (D5/D7).
 //!
-//! # Why this file is a "UI" fixture, not a default test
-//!
-//! Files under `tests/ui/` are NOT auto-discovered by Cargo, so this
-//! intentionally-non-compiling target contract never breaks
-//! `cargo test --all-targets` (API-10.1).
-//!
-//! # Status
-//!
-//! **Does not compile today.** `Model::new`, `continuous`, `add_variable`,
-//! `parameter`, `add_parameter`, `add_constraint`, `roml_highs::Highs`,
-//! `Highs::new`, `Highs::solve`, and fallible `set_parameter` are P21/P22
-//! work. When they land, this fixture becomes a compile-pass test. Do NOT
-//! weaken these signatures to make the fixture pass early without amending
-//! `DECISIONS.md` and review (plan Task 3).
-//!
-//! # Promote to a compile test
-//!
-//! ```text
-//! cp tests/ui/target_incremental.rs tests/target_incremental_compile.rs
-//! cargo test -p roml --test target_incremental_compile
-//! ```
+//! Do NOT weaken these signatures — they are the M2 contract (plan Task 3).
 
 use roml::prelude::*;
 use roml_highs::Highs;
 
-#[allow(dead_code)]
-fn incremental() -> Result<(), Box<dyn std::error::Error>> {
+/// The M2 incremental workflow: one `Highs`, two solves, a parameter change
+/// in between — synchronization is automatic.
+#[test]
+fn incremental_compiles_and_runs() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::new();
     let x = model.add_variable(continuous())?;
     let price = model.add_parameter(parameter(1.0).named("price"))?;

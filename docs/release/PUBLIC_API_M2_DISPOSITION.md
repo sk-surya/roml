@@ -187,8 +187,10 @@ impl Highs {
 }
 ```
 
-Full target bodies are frozen in `tests/ui/target_quickstart.rs` and
-`tests/ui/target_incremental.rs`.
+Full target bodies are frozen as compile-and-run tests in
+`roml-highs/tests/target_quickstart.rs` and
+`roml-highs/tests/target_incremental.rs` (promoted from the P20
+`tests/ui/` fixtures by P21).
 
 ## Deprecation order (D12: replacement before deprecation)
 
