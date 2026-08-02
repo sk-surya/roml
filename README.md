@@ -158,6 +158,10 @@ lint, documentation, packaging, and policy checks. Breaking changes are
 documented in [`CHANGELOG.md`](CHANGELOG.md) and
 [`MIGRATION.md`](MIGRATION.md).
 
+Known limitation: one `Highs` instance is bound to one `Model` — revisions are
+model-local, so cross-model reuse (solving a second model with the same
+`Highs`) is not supported; create a fresh `Highs` per model.
+
 ## License
 
 `MIT OR Apache-2.0`, at your option. See [SECURITY.md](SECURITY.md) for
