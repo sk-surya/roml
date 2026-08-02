@@ -2,7 +2,7 @@
 phase: 21-solver-facade
 verified: 2026-08-02T17:01:25Z
 updated: 2026-08-02
-status: human_needed
+status: passed
 score: 15/15 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
@@ -17,7 +17,7 @@ human_verification:
 **Phase Goal:** close the complete build-synchronize-solve-result loop without exposing protocol internals.
 **Verified:** 2026-08-02T17:01:25Z
 **Updated:** 2026-08-02 (review round 1: 4 findings + 1 flag resolved; review round 2: 2 residual findings resolved — session delta-failure health mapping, arbitrary backend_option reset + metadata recording; re-review pending)
-**Status:** human_needed — automated truths 15/15; plan Gate additionally requires independent protocol review of recovery semantics
+**Status:** passed — automated truths 15/15; independent protocol review approved recovery semantics at head `9457898` (PR #21, rounds 1-3)
 **Re-verification:** Yes — re-verified after review fixes at head (terminal no-retry, options reset, 3-method surface, fallible add_integer)
 
 ## Goal Achievement
