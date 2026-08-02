@@ -18,6 +18,9 @@
 //! full pipeline from Model API through Change compilation to DeltaBatch storage
 //! in the Journal, then validates the result through the ReferenceBackend.
 
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
+
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::ConstraintBounds;

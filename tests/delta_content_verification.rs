@@ -9,6 +9,8 @@
 //! DeltaBatch operations through `model.deltas_since(revision)`.
 
 #![allow(unused_variables)]
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
 
 use roml::model::CoefficientTarget;
 use roml::{

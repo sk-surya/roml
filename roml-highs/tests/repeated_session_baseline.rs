@@ -35,6 +35,9 @@
 //! what the session layer does today so P21 can decide the invalidation
 //! policy.
 
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
+
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::expr::ConstraintExprExt;
 use roml::id::VarId;

@@ -239,11 +239,29 @@ impl Model {
     }
 
     /// Add a new continuous variable with non-negative bounds.
+    ///
+    /// Deprecated in P23: replaced by [`Self::add_variable`] with the
+    /// [`continuous()`](crate::continuous) definition builder (D7). Kept for
+    /// the pre-1.0 compatibility window and remains tested (API-08.3). See
+    /// `MIGRATION.md` → "Variable and parameter creation".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_variable(continuous())` (D7); see MIGRATION.md -> Variable and parameter creation"
+    )]
     pub fn add_var(&mut self) -> VarId {
         self.add_variable_internal(Bounds::NON_NEGATIVE, VarType::Continuous, None)
     }
 
     /// Add a new binary variable.
+    ///
+    /// Deprecated in P23: replaced by [`Self::add_variable`] with the
+    /// [`binary()`](crate::binary) definition builder (D7). Kept for the
+    /// pre-1.0 compatibility window and remains tested (API-08.3). See
+    /// `MIGRATION.md` → "Variable and parameter creation".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_variable(binary())` (D7); see MIGRATION.md -> Variable and parameter creation"
+    )]
     pub fn add_binary(&mut self) -> VarId {
         self.add_variable_internal(Bounds::BINARY, VarType::Binary, None)
     }
@@ -254,6 +272,16 @@ impl Model {
     /// rejected before any mutation — the compatibility wrapper for
     /// `add_variable(integer().bounds(...))` (see Signature-collision
     /// migration in the P20 disposition).
+    ///
+    /// Deprecated in P23: replaced by
+    /// [`Self::add_variable`](Self::add_variable) with the
+    /// [`integer()`](crate::integer) definition builder plus `.bounds(...)`
+    /// (D7). Kept for the pre-1.0 compatibility window and remains tested
+    /// (API-08.3). See `MIGRATION.md` → "Variable and parameter creation".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_variable(integer().bounds(lower, upper))` (D7); see MIGRATION.md -> Variable and parameter creation"
+    )]
     pub fn add_integer(&mut self, bounds: Bounds) -> Result<VarId, ModelError> {
         if !bounds.is_valid() {
             return Err(ModelError::InvalidBounds);

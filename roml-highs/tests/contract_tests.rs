@@ -10,6 +10,9 @@
 //! Tests use a real HiGHS instance via the `bundled` feature (default). Each
 //! test creates its own [`HighsSession`] via [`HighsSession::try_new()`].
 
+// P23: exercises deprecated raw constructors during the pre-1.0 window.
+#![allow(deprecated)]
+
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
