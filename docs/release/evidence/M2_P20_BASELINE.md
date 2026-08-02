@@ -327,8 +327,10 @@ objected to.
 ## Companion P20 artifacts
 
 - `tests/ui/current_readme_drift.rs` — frozen README drift fixture (Task 2).
-- `tests/ui/target_quickstart.rs`, `tests/ui/target_incremental.rs` — frozen
-  target API contracts (Task 3); expected to become compile-pass tests in P21/P22.
+- `roml-highs/tests/target_quickstart.rs`, `roml-highs/tests/target_incremental.rs` —
+  the frozen target API contracts (Task 3), promoted by P21 to
+  auto-discovered compile-and-run tests (`quickstart_compiles_and_runs`,
+  `incremental_compiles_and_runs`) once `roml_highs::Highs` landed.
 - `tests/public_api_compile.rs` — compile-pass characterization of the current
   `roml` public surface that does compile today (Task 3).
 - `docs/release/PUBLIC_API_M2_DISPOSITION.md` — per-item disposition of the

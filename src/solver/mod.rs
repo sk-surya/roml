@@ -11,9 +11,16 @@
 pub mod backend;
 pub mod callback;
 pub mod conformance;
+pub mod error;
+pub mod facade;
+pub mod options;
 pub mod reference;
 pub mod request;
 pub mod session;
+
+pub use error::SolveError;
+pub use facade::SolverSession;
+pub use options::SolveOptions;
 
 /// Error type for solver operations.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,21 +34,84 @@ impl std::fmt::Display for SolverError {
 
 impl std::error::Error for SolverError {}
 
-/// Legacy solver status — preserved for backward compatibility with Solution.
-/// New code should use `TerminationStatus` instead.
+/// Unified golden-path solve status (API-03.2, D4).
+///
+/// One status type preserved across optimal, feasible-limit, infeasible,
+/// unbounded, limit, interrupted, and numerical outcomes. Operational
+/// failures (license, backend errors, uninterpretable terminations) surface
+/// as [`SolveError`] instead (API-03.3).
+///
+/// `SolverStatus` is a compatibility alias of this type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SolverStatus {
+pub enum SolveStatus {
     #[default]
     Unknown,
+    /// Proven optimal solution.
     Optimal,
+    /// Feasible solution found (not proven optimal — e.g. MIP limit).
     Feasible,
+    /// Proven infeasible.
     Infeasible,
+    /// Proven unbounded.
     Unbounded,
+    /// Proven infeasible or unbounded (solver-preserved ambiguity).
     InfeasibleOrUnbounded,
+    /// Time limit reached.
     TimeLimit,
+    /// Iteration limit reached.
     IterationLimit,
+    /// Node limit reached (MIP).
+    NodeLimit,
+    /// Solver interrupted (e.g. callback).
+    Interrupted,
+    /// Numerical difficulties prevented a reliable solve.
+    Numerical,
+    /// The solve terminated in an uninterpretable solver error state.
     Error,
 }
+
+impl SolveStatus {
+    /// Map a backend [`crate::solver::backend::TerminationStatus`] into a
+    /// [`SolveStatus`] or a [`SolveError`].
+    ///
+    /// Mathematical outcomes map to `Ok(SolveStatus)`. A termination that
+    /// means the solve could not be performed or interpreted (`Error`,
+    /// `Unknown`) maps to `Err(SolveError::Status(..))` (API-03.3). The match
+    /// is exhaustive — no wildcard arm — so a new backend status cannot be
+    /// silently dropped.
+    pub fn from_termination(
+        termination: crate::solver::backend::TerminationStatus,
+    ) -> Result<SolveStatus, crate::solver::error::SolveError> {
+        use crate::solver::backend::TerminationStatus::{
+            Error, Feasible, Infeasible, InfeasibleOrUnbounded, Interrupted, IterationLimit,
+            NodeLimit, NumericalIssue, Optimal, TimeLimit, Unbounded, Unknown,
+        };
+        use crate::solver::error::SolveError;
+        match termination {
+            Optimal => Ok(SolveStatus::Optimal),
+            Feasible => Ok(SolveStatus::Feasible),
+            Infeasible => Ok(SolveStatus::Infeasible),
+            Unbounded => Ok(SolveStatus::Unbounded),
+            InfeasibleOrUnbounded => Ok(SolveStatus::InfeasibleOrUnbounded),
+            TimeLimit => Ok(SolveStatus::TimeLimit),
+            IterationLimit => Ok(SolveStatus::IterationLimit),
+            NodeLimit => Ok(SolveStatus::NodeLimit),
+            Interrupted => Ok(SolveStatus::Interrupted),
+            NumericalIssue => Ok(SolveStatus::Numerical),
+            Error => Err(SolveError::Status(Error)),
+            Unknown => Err(SolveError::Status(Unknown)),
+        }
+    }
+
+    /// True when the solve proved optimality.
+    pub fn is_optimal(self) -> bool {
+        self == SolveStatus::Optimal
+    }
+}
+
+/// Compatibility alias for the unified [`SolveStatus`] (M2 open item 2:
+/// `SolveStatus` replaces `SolverStatus`, shipped as an alias first).
+pub type SolverStatus = SolveStatus;
 
 /// Legacy solver algorithm selection — preserved for backward compatibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

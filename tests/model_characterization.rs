@@ -47,7 +47,7 @@ fn variable_creation_defaults() {
 #[test]
 fn variable_bounds_get_set() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
     assert_eq!(model.variable_bounds(x), Some(Bounds::new(0.0, 10.0)));
 
     model
@@ -59,7 +59,7 @@ fn variable_bounds_get_set() {
 #[test]
 fn variable_bounds_unchanged_returns_ok() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
 
     // Setting the same bounds is a no-op
     model
@@ -191,10 +191,12 @@ fn remove_nonexistent_variable_errors() {
 fn constraint_creation_le_ge_eq_range() {
     let mut model = Model::new();
 
-    let c1 = model.add_constraint(ConstraintBounds::le(10.0));
-    let c2 = model.add_constraint(ConstraintBounds::ge(5.0));
-    let c3 = model.add_constraint(ConstraintBounds::eq(7.0));
-    let c4 = model.add_constraint(ConstraintBounds::range(0.0, 10.0));
+    let c1 = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
+    let c2 = model.add_constraint(ConstraintBounds::ge(5.0)).unwrap();
+    let c3 = model.add_constraint(ConstraintBounds::eq(7.0)).unwrap();
+    let c4 = model
+        .add_constraint(ConstraintBounds::range(0.0, 10.0))
+        .unwrap();
 
     assert_eq!(model.num_constraints(), 4);
 
@@ -225,7 +227,7 @@ fn constraint_creation_le_ge_eq_range() {
 #[test]
 fn constraint_bounds_modification() {
     let mut model = Model::new();
-    let con = model.add_constraint(ConstraintBounds::le(10.0));
+    let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
 
     model
         .set_constraint_bounds(con, ConstraintBounds::range(5.0, 20.0))
@@ -243,7 +245,7 @@ fn constraint_bounds_modification() {
 fn constraint_coefficient_add_and_remove() {
     let mut model = Model::new();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     let coeff = model.add_coeff(con, x, 2.0).unwrap();
     assert_eq!(model.num_coefficients(), 1);
@@ -256,9 +258,9 @@ fn constraint_coefficient_add_and_remove() {
 #[test]
 fn constraint_coefficient_with_parameter() {
     let mut model = Model::new();
-    let p = model.add_parameter(3.0);
+    let p = model.add_parameter(3.0).unwrap();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     let coeff = model
         .add_constraint_coefficient(con, x, ValueExpr::param(p))
@@ -301,7 +303,7 @@ fn constraint_expression_constant_adjusts_bounds() {
 #[test]
 fn constraint_activity_toggle() {
     let mut model = Model::new();
-    let con = model.add_constraint(ConstraintBounds::le(10.0));
+    let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     model.set_constraint_active(con, false).unwrap();
 
     let changes = model.drain_changes();
@@ -315,7 +317,7 @@ fn constraint_activity_toggle() {
 #[test]
 fn remove_nonexistent_constraint_errors() {
     let mut model = Model::new();
-    let con = model.add_constraint(ConstraintBounds::le(10.0));
+    let con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     model.remove_constraint(con).unwrap();
     assert_eq!(
         model.remove_constraint(con),
@@ -453,7 +455,7 @@ fn remove_nonexistent_objective_errors() {
 #[test]
 fn parameter_create_and_query() {
     let mut model = Model::new();
-    let p = model.add_parameter(42.0);
+    let p = model.add_parameter(42.0).unwrap();
     assert_eq!(model.num_parameters(), 1);
     assert_eq!(model.parameter_value(p), Some(42.0));
 }
@@ -461,9 +463,9 @@ fn parameter_create_and_query() {
 #[test]
 fn parameter_set_and_commit() {
     let mut model = Model::new();
-    let p = model.add_parameter(1.0);
+    let p = model.add_parameter(1.0).unwrap();
 
-    model.set_parameter(p, 5.0);
+    model.set_parameter(p, 5.0).unwrap();
     // Not committed yet -- value unchanged
     assert_eq!(model.parameter_value(p), Some(1.0));
 
@@ -474,16 +476,16 @@ fn parameter_set_and_commit() {
 #[test]
 fn parameter_change_propagates_to_coefficients() {
     let mut model = Model::new();
-    let p = model.add_parameter(10.0);
+    let p = model.add_parameter(10.0).unwrap();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     let coeff = model
         .add_constraint_coefficient(con, x, 2.0 * ValueExpr::param(p))
         .unwrap();
     assert!((model.coefficient(coeff).unwrap().cached_value - 20.0).abs() < f64::EPSILON);
 
-    model.set_parameter(p, 5.0);
+    model.set_parameter(p, 5.0).unwrap();
     let _ = model.commit();
     assert!((model.coefficient(coeff).unwrap().cached_value - 10.0).abs() < f64::EPSILON);
 }
@@ -491,18 +493,18 @@ fn parameter_change_propagates_to_coefficients() {
 #[test]
 fn parameter_transaction_batching() {
     let mut model = Model::new();
-    let p1 = model.add_parameter(1.0);
-    let p2 = model.add_parameter(2.0);
+    let p1 = model.add_parameter(1.0).unwrap();
+    let p2 = model.add_parameter(2.0).unwrap();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     let coeff = model
         .add_constraint_coefficient(con, x, ValueExpr::param(p1) * ValueExpr::param(p2))
         .unwrap();
     assert!((model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
 
-    model.set_parameter(p1, 3.0);
-    model.set_parameter(p2, 4.0);
+    model.set_parameter(p1, 3.0).unwrap();
+    model.set_parameter(p2, 4.0).unwrap();
     assert!(model.has_uncommitted());
     // Not committed -- values unchanged
     assert!((model.coefficient(coeff).unwrap().cached_value - 2.0).abs() < f64::EPSILON);
@@ -515,9 +517,9 @@ fn parameter_transaction_batching() {
 #[test]
 fn parameter_rollback() {
     let mut model = Model::new();
-    let p = model.add_parameter(1.0);
+    let p = model.add_parameter(1.0).unwrap();
 
-    model.set_parameter(p, 99.0);
+    model.set_parameter(p, 99.0).unwrap();
     assert!(model.has_uncommitted());
 
     model.rollback();
@@ -528,8 +530,8 @@ fn parameter_rollback() {
 #[test]
 fn drain_changes_auto_commits_parameters() {
     let mut model = Model::new();
-    let p = model.add_parameter(1.0);
-    model.set_parameter(p, 5.0);
+    let p = model.add_parameter(1.0).unwrap();
+    model.set_parameter(p, 5.0).unwrap();
 
     // drain_changes auto-commits, so the changelog should contain the update
     let changes = model.drain_changes();
@@ -548,7 +550,7 @@ fn drain_changes_auto_commits_parameters() {
 fn duplicate_coefficient_for_same_cell() {
     let mut model = Model::new();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     // Add two coefficients for the same (constraint, variable) pair
     let _c1 = model.add_coeff(con, x, 2.0).unwrap();
@@ -586,32 +588,42 @@ fn duplicate_coefficient_in_objective() {
 // =========================================================================
 
 #[test]
-fn nan_bounds_are_accepted_by_default() {
+fn nan_variable_bounds_are_rejected() {
     let mut model = Model::new();
-    // Current behavior: no bounds validation on add_variable
-    let x = model.add_variable(Bounds::new(f64::NAN, 0.0), VarType::Continuous);
-    let bounds = model.variable_bounds(x).unwrap();
-    assert!(bounds.lower.is_nan());
-    assert_eq!(bounds.upper, 0.0);
+    // P21 brought the D7 `add_variable(VariableDef)` entry point forward with
+    // fallible validation (D10/API-06.2): NaN bounds are rejected before any
+    // mutation instead of being accepted unchecked.
+    let before = model.num_variables();
+    let err = model
+        .add_variable(continuous().bounds(f64::NAN, 0.0))
+        .expect_err("NaN variable bounds must be rejected");
+    assert_eq!(err, ModelError::InvalidBounds);
+    assert_eq!(model.num_variables(), before, "no mutation on rejection");
 }
 
 #[test]
 fn nan_constraint_bounds_accepted() {
     let mut model = Model::new();
     // Current behavior: no bounds validation on add_constraint
-    let _con = model.add_constraint(ConstraintBounds::le(f64::NAN));
+    let _con = model
+        .add_constraint(ConstraintBounds::le(f64::NAN))
+        .unwrap();
     assert_eq!(model.num_constraints(), 1);
 }
 
 #[test]
 fn infinite_bound_variable() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::UNBOUNDED, VarType::Continuous);
+    let x = model
+        .add_variable(continuous().bounds(f64::NEG_INFINITY, f64::INFINITY))
+        .unwrap();
     let b = model.variable_bounds(x).unwrap();
     assert!(b.lower == f64::NEG_INFINITY);
     assert!(b.upper == f64::INFINITY);
 
-    let _con = model.add_constraint(ConstraintBounds::le(f64::INFINITY));
+    let _con = model
+        .add_constraint(ConstraintBounds::le(f64::INFINITY))
+        .unwrap();
     assert_eq!(model.num_constraints(), 1);
 }
 
@@ -645,7 +657,7 @@ fn remove_variable_cascades_to_coefficients() {
     let mut model = Model::new();
     let x = model.add_var();
     let y = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     model.add_coeff(con, x, 2.0).unwrap();
     model.add_coeff(con, y, 3.0).unwrap();
@@ -663,8 +675,8 @@ fn remove_variable_cascades_to_coefficients() {
 fn remove_constraint_cascades_to_coefficients() {
     let mut model = Model::new();
     let x = model.add_var();
-    let c1 = model.add_constraint(ConstraintBounds::le(100.0));
-    let c2 = model.add_constraint(ConstraintBounds::le(50.0));
+    let c1 = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
+    let c2 = model.add_constraint(ConstraintBounds::le(50.0)).unwrap();
 
     model.add_coeff(c1, x, 2.0).unwrap();
     model.add_coeff(c2, x, 3.0).unwrap();
@@ -705,7 +717,7 @@ fn cross_model_con_id_is_stale() {
     let mut model_a = Model::new();
     let mut model_b = Model::new();
 
-    let con = model_a.add_constraint(ConstraintBounds::le(10.0));
+    let con = model_a.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     assert_eq!(
         model_b.set_constraint_bounds(con, ConstraintBounds::le(20.0)),
         Err(ModelError::ConstraintNotFound(con))
@@ -729,7 +741,7 @@ fn cross_model_param_id_is_stale() {
     let mut model_a = Model::new();
     let model_b = Model::new();
 
-    let p = model_a.add_parameter(42.0);
+    let p = model_a.add_parameter(42.0).unwrap();
     assert_eq!(model_b.parameter_value(p), None);
 }
 
@@ -738,7 +750,7 @@ fn add_coeff_to_nonexistent_var_errors() {
     let mut model = Model::new();
     let x = model.add_var();
     model.remove_variable(x).unwrap();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
 
     assert_eq!(
         model.add_coeff(con, x, 1.0),
@@ -750,7 +762,7 @@ fn add_coeff_to_nonexistent_var_errors() {
 fn add_coeff_to_nonexistent_constraint_errors() {
     let mut model = Model::new();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     model.remove_constraint(con).unwrap();
 
     assert_eq!(
@@ -763,7 +775,7 @@ fn add_coeff_to_nonexistent_constraint_errors() {
 fn remove_nonexistent_coefficient_errors() {
     let mut model = Model::new();
     let x = model.add_var();
-    let con = model.add_constraint(ConstraintBounds::le(100.0));
+    let con = model.add_constraint(ConstraintBounds::le(100.0)).unwrap();
     let coeff = model.add_coeff(con, x, 1.0).unwrap();
     model.remove_coefficient(coeff).unwrap();
 
@@ -780,7 +792,7 @@ fn remove_nonexistent_coefficient_errors() {
 #[test]
 fn set_semicontinuous_raises_lower_bound() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(0.0, 100.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(0.0, 100.0)).unwrap();
 
     model.set_semicontinuous(x, 10.0).unwrap();
     assert_eq!(model.variable_bounds(x), Some(Bounds::new(10.0, 100.0)));
@@ -797,7 +809,7 @@ fn set_semicontinuous_raises_lower_bound() {
 #[test]
 fn set_semicontinuous_rejects_lower_above_upper() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(0.0, 10.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
 
     assert_eq!(
         model.set_semicontinuous(x, 20.0),
@@ -821,7 +833,7 @@ fn set_semicontinuous_on_nonexistent_var_fails() {
 #[test]
 fn set_semicontinuous_low_lower_emits_change_without_bounds_update() {
     let mut model = Model::new();
-    let x = model.add_variable(Bounds::new(5.0, 100.0), VarType::Continuous);
+    let x = model.add_variable(continuous().bounds(5.0, 100.0)).unwrap();
 
     // lower (3.0) <= current_lower (5.0) -- bounds are unchanged
     model.set_semicontinuous(x, 3.0).unwrap();
@@ -883,7 +895,7 @@ fn changelog_sequence_increments() {
     let mut model = Model::new();
     let seq0 = model.changelog_sequence();
     let _x = model.add_var();
-    let _con = model.add_constraint(ConstraintBounds::le(10.0));
+    let _con = model.add_constraint(ConstraintBounds::le(10.0)).unwrap();
     let _ = model.drain_changes();
     let seq1 = model.changelog_sequence();
     assert!(seq1 > seq0);

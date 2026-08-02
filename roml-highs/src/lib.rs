@@ -19,13 +19,29 @@
 //! - `solution`: Status mapping and solution extraction.
 //! - `callback`: Callback bridge for MIP lazy constraints/interrupts.
 //! - `index_map`: Dense index bookkeeping (kept from original adapter).
+//! - `facade`: The golden-path [`Highs`] façade (D3).
 //!
 //! # Quick Start
 //!
-//! ```rust,ignore
-//! use roml_highs::HighsSession;
+//! Use the [`Highs`] façade — synchronization is automatic:
 //!
-//! let session = HighsSession::try_new().expect("Failed to create HiGHS session");
+//! ```rust
+//! use roml::prelude::*;
+//! use roml_highs::Highs;
+//!
+//! # fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut model = Model::named("production");
+//! let x = model.add_variable(continuous().named("x"))?;
+//! let y = model.add_variable(integer().bounds(0.0, 10.0).named("y"))?;
+//! model.add_constraint((x + y).le(4.0).named("capacity"))?;
+//! model.maximize(3.0 * x + y)?;
+//!
+//! let mut highs = Highs::new()?;
+//! let solution = highs.solve(&mut model)?;
+//! assert!(solution.status().is_optimal());
+//! # Ok(())
+//! # }
+//! # run().unwrap();
 //! ```
 //!
 //! # Build Configuration
@@ -42,6 +58,7 @@ compile_error!("features `bundled` and `system` are mutually exclusive; activate
 mod bindings;
 mod callback;
 mod error;
+mod facade;
 mod index_map;
 mod lifecycle;
 mod projection;
@@ -49,6 +66,7 @@ mod session;
 mod solution;
 
 pub use error::HighsError;
+pub use facade::Highs;
 pub use lifecycle::HighsSession;
 
 /// Re-export key types from `highs-sys` for caller convenience.

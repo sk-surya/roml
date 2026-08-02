@@ -93,6 +93,13 @@ pub enum ModelOp {
     /// Set the optimization sense of an objective.
     SetObjectiveSense { obj: ObjId, sense: Sense },
 
+    /// Set the constant offset of an objective.
+    ///
+    /// Propagated on the incremental path so objective constants reach the
+    /// backend exactly once (API-03.5); the rebuild path carries them in the
+    /// snapshot's objective entries.
+    SetObjectiveConstant { obj: ObjId, constant: f64 },
+
     /// Set a parameter value (for solvers that need to know parameters).
     SetParameter { param: ParamId, value: f64 },
 
