@@ -584,6 +584,14 @@ impl std::ops::Neg for LinExpr {
 
 impl Model {
     /// Add a constraint from a fluent constraint specification.
+    ///
+    /// Deprecated in P23: the canonical mutation is [`Self::add_constraint`]
+    /// (API-04.1, D1). This alias is kept for the pre-1.0 compatibility window
+    /// and remains tested (API-08.3). See `MIGRATION.md` → "Constraints".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_constraint(spec)` (API-04.1); see MIGRATION.md -> Constraints"
+    )]
     pub fn constrain<S>(&mut self, spec: S) -> Result<ConId, ModelError>
     where
         S: Into<ConstraintSpec>,
@@ -592,11 +600,20 @@ impl Model {
     }
 
     /// Add a constraint from a fluent constraint specification.
+    ///
+    /// Deprecated in P23: the canonical mutation is [`Self::add_constraint`]
+    /// (API-04.1, D1). This redundant alias is kept for the pre-1.0
+    /// compatibility window and remains tested (API-08.3). See
+    /// `MIGRATION.md` → "Constraints".
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `Model::add_constraint(spec)` (API-04.1); see MIGRATION.md -> Constraints"
+    )]
     pub fn constraint<S>(&mut self, spec: S) -> Result<ConId, ModelError>
     where
         S: Into<ConstraintSpec>,
     {
-        self.constrain(spec)
+        self.add_constraint(spec)
     }
 
     /// Add a constraint from a linear expression.
@@ -755,6 +772,7 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)] // unit tests exercise the pre-1.0 compatibility surface
     use super::*;
     use crate::continuous;
     use crate::id::Generation;

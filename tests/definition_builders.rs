@@ -182,7 +182,7 @@ fn add_constraint_with_named_spec_compiles() {
 fn constrain_route_still_compiles() {
     let mut model = Model::new();
     let x: Variable = model.add_variable(continuous()).expect("var");
-    let con = model.constrain((x).ge(1.0)).expect("constrain works");
+    let con = model.add_constraint((x).ge(1.0)).expect("constraint works");
     assert_eq!(model.num_constraints(), 1);
     assert_eq!(
         model.constraint_bounds(con),

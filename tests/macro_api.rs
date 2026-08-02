@@ -1,3 +1,10 @@
+//! P23: this file intentionally exercises the effectful macros
+//! (`constrain!`, `set_objective!`) and the `Model::constrain` /
+//! `Model::set_objective` aliases that P23 deprecates, proving they still
+//! work during the pre-1.0 deprecation window (API-08.3).
+
+#![allow(deprecated)]
+
 use roml::{constrain, constraint, objective, set_objective, ConstraintBounds, Model};
 
 #[test]

@@ -62,7 +62,7 @@ fn build_parameterized_model(price_value: f64) -> (Model, VarId, VarId, roml::id
     let y = model.add_var();
     let price = model.add_parameter(price_value).unwrap();
     model
-        .constrain((x + y).le(4.0))
+        .add_constraint((x + y).le(4.0))
         .expect("constraint should build");
     model
         .maximize(price * x + y)
