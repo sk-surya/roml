@@ -7,6 +7,7 @@
 //! removed/stale entities (API-05, API-06).
 
 use roml::id::{ConId, Generation, ObjId, ParamId, VarId};
+use roml::model::ConstraintBounds;
 use roml::prelude::*;
 
 fn fake_var() -> VarId {

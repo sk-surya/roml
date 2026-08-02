@@ -12,6 +12,7 @@
 //! method-first style that already compiles (see README's method-based
 //! example). Keep this file green.
 
+use roml::model::ConstraintBounds;
 use roml::prelude::*;
 
 /// The README's documented method-based workflow compiles and runs today.

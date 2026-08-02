@@ -37,6 +37,7 @@ use roml::solver::session::{
 };
 use roml::sync::AdapterHealth;
 use roml::SolverSession;
+use roml::SynchronizationMode;
 
 // ── Reference + fault-injecting backend ──────────────────────────────────────
 

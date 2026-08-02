@@ -177,13 +177,40 @@ macro_rules! set_objective {
 	};
 }
 
-/// Common imports for the fluent modeling API.
+/// Common imports for the fluent modeling API (P23 curated default surface).
+///
+/// This is the intentional default for ordinary model authors (API-07.1): it
+/// covers model, expression, definition, solver, solution, and error types.
+/// Protocol and backend-extension types are deliberately ABSENT from this
+/// prelude (API-07.2); framework and backend authors reach them through
+/// [`advanced`](crate::advanced).
+///
+/// ```compile_fail
+/// use roml::prelude::*;
+///
+/// // API-07.2: these protocol/backend-extension types must NOT resolve from
+/// // the default prelude. If any of them compile here, the negative
+/// // inventory has regressed and this doctest (correctly) fails.
+/// fn _absent(
+///     _: DeltaBatch,
+///     _: ModelOp,
+///     _: ModelRevision,
+///     _: ModelSnapshot,
+///     _: Change,
+///     _: CoeffId,
+///     _: AdapterCursor,
+///     _: AdapterHealth,
+///     _: Synchronization,
+///     _: BackendSession,
+///     _: SyncReceipt,
+/// ) {
+/// }
+/// ```
 pub mod prelude {
     pub use crate::{
-        binary, constrain, continuous, integer, parameter, set_objective, Bounds, Change, CoeffId,
-        ConId, Constraint, ConstraintBounds, ConstraintExprExt, ConstraintSpec, LinExpr, Model,
-        ModelError, ObjId, Objective, ObjectiveExprExt, ObjectiveSpec, ParamId, Parameter,
-        ParameterDef, Sense, Solution, SolveError, SolveMetadata, SolveOptions, SolveStatus,
-        SolverError, SynchronizationMode, ValueExpr, VarId, VarType, Variable, VariableDef,
+        binary, constraint, continuous, integer, parameter, Bounds, Constraint, ConstraintExprExt,
+        ConstraintSpec, LinExpr, Model, ModelError, Objective, ObjectiveExprExt, ObjectiveSpec,
+        Parameter, ParameterDef, Sense, Solution, SolveError, SolveOptions, SolveStatus, VarType,
+        Variable, VariableDef,
     };
 }
