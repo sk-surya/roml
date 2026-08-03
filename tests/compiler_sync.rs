@@ -278,6 +278,7 @@ fn compiled_delta_carries_exact_from_to_ids_and_maps_ops() {
         .compile_delta(
             &batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &full_capabilities(),
         )
@@ -357,6 +358,7 @@ fn compiled_delta_rejects_stale_from_compilation() {
         .compile_delta(
             &batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &full_capabilities(),
         )
@@ -404,6 +406,7 @@ fn compile_delta_gates_bounds_ops_on_incremental_bounds() {
         .compile_delta(
             &bounds_batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &caps_without(BackendFeature::IncrementalBounds),
         )
@@ -433,6 +436,7 @@ fn compile_delta_gates_bounds_ops_on_incremental_bounds() {
         .compile_delta(
             &row_bounds_batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &caps_without(BackendFeature::IncrementalBounds),
         )
@@ -479,6 +483,7 @@ fn compile_delta_gates_cell_ops_on_incremental_coefficients() {
         .compile_delta(
             &set_cell_batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &caps_without(BackendFeature::IncrementalCoefficients),
         )
@@ -506,6 +511,7 @@ fn compile_delta_gates_cell_ops_on_incremental_coefficients() {
         .compile_delta(
             &remove_cell_batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &caps_without(BackendFeature::IncrementalCoefficients),
         )
@@ -531,6 +537,7 @@ fn compile_delta_gates_cell_ops_on_incremental_coefficients() {
         .compile_delta(
             &obj_cell_batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &caps_without(BackendFeature::IncrementalCoefficients),
         )
@@ -538,6 +545,93 @@ fn compile_delta_gates_cell_ops_on_incremental_coefficients() {
     assert!(
         matches!(err, CompileError::UnsupportedFeature(ref f) if f == "IncrementalCoefficients"),
         "expected UnsupportedFeature(IncrementalCoefficients), got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2c. Source-instance guard (WR-4, D28)
+// ---------------------------------------------------------------------------
+
+/// WR-4: a `CompilationSession` must not silently compile state for a DIFFERENT
+/// model instance. `compile_snapshot` rejects a snapshot whose source instance
+/// differs from the recorded one, so cross-model session reuse cannot
+/// miscompile (D28).
+#[test]
+fn compile_snapshot_rejects_cross_model_source_instance() {
+    let model_a = linear_model();
+    let snapshot_a = model_a.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    session
+        .compile_snapshot(
+            model_a.instance(),
+            &snapshot_a,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .expect("first snapshot must compile");
+
+    // A DIFFERENT, unrelated model instance.
+    let model_b = linear_model();
+    assert_ne!(
+        model_a.instance(),
+        model_b.instance(),
+        "independent models must have distinct instance ids"
+    );
+    let snapshot_b = model_b.take_snapshot().unwrap();
+    let err = session
+        .compile_snapshot(
+            model_b.instance(),
+            &snapshot_b,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::RebuildRequired(_)),
+        "cross-model snapshot compile must be rejected, got {err:?}"
+    );
+}
+
+/// WR-4: `compile_delta` rejects a delta whose source instance differs from the
+/// session's recorded one — a single `SolverSession` reused across two models
+/// at overlapping revisions must never compile the second model's deltas
+/// against the first model's compiled base (D28).
+#[test]
+fn compile_delta_rejects_cross_model_source_instance() {
+    let model_a = linear_model();
+    let snapshot_a = model_a.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model_a.instance(),
+            &snapshot_a,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .unwrap();
+
+    // A delta (r → next) carrying a DIFFERENT model's instance id.
+    let model_b = linear_model();
+    assert_ne!(
+        model_a.instance(),
+        model_b.instance(),
+        "independent models must have distinct instance ids"
+    );
+    let rev = model_a.current_revision();
+    let next = rev.next().unwrap();
+    let batch = DeltaBatch::new(rev, next, vec![]).unwrap();
+    let err = session
+        .compile_delta(
+            &batch,
+            base.compilation_id,
+            model_b.instance(),
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::RebuildRequired(_)),
+        "cross-model delta compile must be rejected, got {err:?}"
     );
 }
 
@@ -575,6 +669,7 @@ fn rebuild_on_uncertainty_for_non_incremental_ops() {
         .compile_delta(
             &batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &full_capabilities(),
         )
@@ -639,6 +734,7 @@ fn a31_delta_consumes_ops_for_updates_to_pre_existing_constraints() {
         .compile_delta(
             &batch,
             base.compilation_id,
+            model.instance(),
             &CompilationPolicy::Auto,
             &full_capabilities(),
         )

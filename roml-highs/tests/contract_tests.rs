@@ -117,7 +117,13 @@ impl TestCompiler {
             .current_compilation()
             .expect("test delta requires a compiled base");
         self.session
-            .compile_delta(batch, from, &CompilationPolicy::Auto, &test_capabilities())
+            .compile_delta(
+                batch,
+                from,
+                self.instance,
+                &CompilationPolicy::Auto,
+                &test_capabilities(),
+            )
             .expect("test delta must compile")
     }
 }
@@ -146,6 +152,7 @@ fn compile_base_and_delta(
         .compile_delta(
             batch,
             compiled_base.compilation_id,
+            instance,
             &CompilationPolicy::Auto,
             &test_capabilities(),
         )
@@ -434,6 +441,7 @@ fn c3_incremental_delta() {
     let result = compiler.session.compile_delta(
         &activity_batch,
         from,
+        compiler.instance,
         &CompilationPolicy::Auto,
         &test_capabilities(),
     );
@@ -1975,6 +1983,7 @@ fn c13_semicontinuous_rejected_before_any_mutation() {
     let result = compiler.session.compile_delta(
         &batch,
         from,
+        compiler.instance,
         &CompilationPolicy::Auto,
         &test_capabilities(),
     );
@@ -2440,6 +2449,7 @@ fn c19_delta_set_objective_cell_on_constraint_target_rejected() {
     let result = compiler.session.compile_delta(
         &batch,
         from,
+        compiler.instance,
         &CompilationPolicy::Auto,
         &test_capabilities(),
     );

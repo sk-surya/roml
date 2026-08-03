@@ -144,6 +144,18 @@ impl CompilationSession {
         _policy: &CompilationPolicy,
         capabilities: &BackendCapabilitySet,
     ) -> Result<BackendSnapshot, CompileError> {
+        // WR-4 (D28): the session's compiled base belongs to ONE model instance.
+        // Reusing the session across a DIFFERENT model must be rejected, never
+        // silently miscompiled against the recorded instance's dense ids.
+        if let Some(recorded) = self.source_instance {
+            if recorded != source_instance {
+                return Err(CompileError::RebuildRequired(format!(
+                    "source instance {source_instance:?} != recorded compiled-base \
+                     instance {recorded:?}; cross-model session reuse requires a rebuild"
+                )));
+            }
+        }
+
         // SM-04.4: an unqualified feature is rejected, never silently ignored.
         let has_integer = snapshot
             .variables
@@ -298,9 +310,19 @@ impl CompilationSession {
     /// Compile a canonical delta into a [`BackendDeltaBatch`].
     ///
     /// The caller passes the exact `from_compilation` the batch must apply on
-    /// top of (the backend's current compiled state id). Every emitted batch
-    /// carries exact from/to compilation ids and revisions (B2), and allocates
-    /// a fresh `CompilationId` for the target state (D28).
+    /// top of (the backend's current compiled state id) and the incoming
+    /// model's `source_instance`. Every emitted batch carries exact from/to
+    /// compilation ids and revisions (B2), and allocates a fresh
+    /// `CompilationId` for the target state (D28).
+    ///
+    /// # Source-instance guard (WR-4, D28)
+    ///
+    /// The compiled base belongs to ONE model instance. A delta whose
+    /// `source_instance` differs from the recorded one is rejected with
+    /// [`CompileError::RebuildRequired`], so a `SolverSession` reused across two
+    /// different models can never silently compile the second model's deltas
+    /// against the first model's compiled base (cross-model session reuse must
+    /// not miscompile).
     ///
     /// Any op the identity compiler cannot prove incrementally equivalent
     /// returns [`CompileError::RebuildRequired`] and **no** `BackendDeltaBatch`
@@ -310,9 +332,22 @@ impl CompilationSession {
         &mut self,
         delta: &DeltaBatch,
         from_compilation: CompilationId,
+        source_instance: ModelInstanceId,
         _policy: &CompilationPolicy,
         capabilities: &BackendCapabilitySet,
     ) -> Result<BackendDeltaBatch, CompileError> {
+        // WR-4 (D28): the session's compiled base belongs to ONE model instance.
+        // Reusing the session across a DIFFERENT model must be rejected, never
+        // silently miscompiled against the recorded instance's dense ids.
+        if let Some(recorded) = self.source_instance {
+            if recorded != source_instance {
+                return Err(CompileError::RebuildRequired(format!(
+                    "source instance {source_instance:?} != recorded compiled-base \
+                     instance {recorded:?}; cross-model session reuse requires a rebuild"
+                )));
+            }
+        }
+
         let current = self
             .current
             .as_ref()

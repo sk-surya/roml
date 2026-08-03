@@ -106,7 +106,13 @@ impl Compiler {
             .current_compilation()
             .expect("conformance delta requires a compiled base");
         self.session
-            .compile_delta(batch, from, &CompilationPolicy::Auto, &self.capabilities)
+            .compile_delta(
+                batch,
+                from,
+                self.source_instance,
+                &CompilationPolicy::Auto,
+                &self.capabilities,
+            )
             .expect("conformance delta must compile")
     }
 }
