@@ -39,7 +39,7 @@ use roml::advanced::{
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::objective::Sense;
 use roml::model::variable::VarType;
-use roml::solver::backend::BackendError;
+use roml::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -191,33 +191,60 @@ pub(crate) fn rebuild_from_backend_snapshot(
         obj_offsets.insert(o.id, o.constant);
         let costs: HashMap<CompiledVariableId, f64> = o.coefficients.iter().copied().collect();
         obj_costs.insert(o.id, costs);
-        if let roml::advanced::EntityOrigin::UserObjective(obj) = snapshot
-            .origin_map
-            .objective_origin(o.id)
-            .expect("every compiled objective has a recorded origin")
-        {
-            compiled_to_user_objective.insert(o.id, *obj);
+        // WR-5: a missing origin is a typed `BackendError`, never a panic —
+        // `BackendSnapshot` has all-`pub` fields, so a malformed snapshot can
+        // reach the FFI projection directly (bypassing builder finalization).
+        match snapshot.origin_map.objective_origin(o.id) {
+            Some(roml::advanced::EntityOrigin::UserObjective(obj)) => {
+                compiled_to_user_objective.insert(o.id, *obj);
+            }
+            Some(_) => {} // non-user origin (construct/overlay): no user objective
+            None => {
+                return Err(BackendError::new(
+                    format!(
+                        "every compiled objective must have a recorded origin; missing for {o:?}"
+                    ),
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ));
+            }
         }
     }
 
     // Step 6: Rebuild compiled->user variable/constraint maps from the origin
     // map (every compiled entity has a recorded origin — D5).
     for v in &snapshot.variables {
-        if let roml::advanced::EntityOrigin::UserVariable(var) = snapshot
-            .origin_map
-            .variable_origin(v.id)
-            .expect("every compiled variable has a recorded origin")
-        {
-            compiled_to_user_variable.insert(v.id, *var);
+        // WR-5: a missing origin is a typed `BackendError`, never a panic.
+        match snapshot.origin_map.variable_origin(v.id) {
+            Some(roml::advanced::EntityOrigin::UserVariable(var)) => {
+                compiled_to_user_variable.insert(v.id, *var);
+            }
+            Some(_) => {} // non-user origin (construct/overlay): no user variable
+            None => {
+                return Err(BackendError::new(
+                    format!(
+                        "every compiled variable must have a recorded origin; missing for {v:?}"
+                    ),
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ));
+            }
         }
     }
     for r in &snapshot.linear_rows {
-        if let roml::advanced::EntityOrigin::UserConstraint(con) = snapshot
-            .origin_map
-            .constraint_origin(r.id)
-            .expect("every compiled row has a recorded origin")
-        {
-            compiled_to_user_constraint.insert(r.id, *con);
+        // WR-5: a missing origin is a typed `BackendError`, never a panic.
+        match snapshot.origin_map.constraint_origin(r.id) {
+            Some(roml::advanced::EntityOrigin::UserConstraint(con)) => {
+                compiled_to_user_constraint.insert(r.id, *con);
+            }
+            Some(_) => {} // non-user origin (construct/overlay): no user constraint
+            None => {
+                return Err(BackendError::new(
+                    format!("every compiled row must have a recorded origin; missing for {r:?}"),
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ));
+            }
         }
     }
 
@@ -647,5 +674,85 @@ mod tests {
         assert_eq!(normalize_bound(0.0, inf), 0.0);
         assert_eq!(normalize_bound(5.5, inf), 5.5);
         assert_eq!(normalize_bound(-3.0, inf), -3.0);
+    }
+
+    /// WR-5: a `BackendSnapshot` with all-`pub` fields can be constructed
+    /// directly, bypassing `BackendSnapshotBuilder::finalize`'s origin
+    /// completeness check. The FFI projection must return a typed
+    /// `BackendError` for an origin-less entry — never panic via `.expect()`.
+    #[test]
+    fn rebuild_from_snapshot_rejects_origin_less_entry_with_error_not_panic() {
+        use crate::index_map::IndexMap;
+        use crate::lifecycle::HighsSession;
+        use roml::advanced::{BackendSnapshotBuilder, CompiledVariable, EntityOrigin, OriginMap};
+        use roml::id::Generation;
+        use roml::model::Bounds;
+        use roml::revision::ModelRevision;
+        use roml::solver::backend::ErrorCategory;
+        use roml::Model;
+
+        let session = HighsSession::try_new().expect("HiGHS should be available");
+        let instance = Model::new().instance();
+        let compiled_var = CompiledVariable {
+            id: CompiledVariableId(0),
+            bounds: Bounds::new(0.0, 1.0),
+            var_type: VarType::Continuous,
+            name: None,
+        };
+        let mut origin_map = OriginMap::new();
+        origin_map.insert_variable(
+            compiled_var.id,
+            EntityOrigin::UserVariable(VarId::new(0, Generation::new())),
+        );
+        let builder = BackendSnapshotBuilder::new(instance, ModelRevision::ZERO)
+            .origin_map(origin_map)
+            .objective_policy(CompiledObjectivePolicy::None)
+            .add_variable(compiled_var);
+        let mut snapshot = builder.finalize().expect("valid snapshot must build");
+
+        // Strip the origin map to simulate a malformed snapshot reaching the
+        // FFI projection directly (bypassing the builder's completeness check).
+        snapshot.origin_map = OriginMap::new();
+
+        let mut col_map = IndexMap::new();
+        let mut row_map = IndexMap::new();
+        let mut c2u_var = HashMap::new();
+        let mut c2u_con = HashMap::new();
+        let mut c2u_obj = HashMap::new();
+        let mut var_bounds = HashMap::new();
+        let mut con_bounds = HashMap::new();
+        let mut obj_costs = HashMap::new();
+        let mut obj_senses = HashMap::new();
+        let mut obj_offsets = HashMap::new();
+        let mut active_obj = None;
+
+        let result = rebuild_from_backend_snapshot(
+            session.raw,
+            &snapshot,
+            &mut col_map,
+            &mut row_map,
+            &mut c2u_var,
+            &mut c2u_con,
+            &mut c2u_obj,
+            session.inf,
+            &mut var_bounds,
+            &mut con_bounds,
+            &mut obj_costs,
+            &mut obj_senses,
+            &mut obj_offsets,
+            &mut active_obj,
+        );
+        let err =
+            result.expect_err("origin-less snapshot entry must produce a typed error, not a panic");
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "an origin-less entry is invalid input"
+        );
+        assert!(
+            err.message.contains("origin"),
+            "the error must name the missing origin, got: {}",
+            err.message
+        );
     }
 }
