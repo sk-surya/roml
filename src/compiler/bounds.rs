@@ -116,6 +116,16 @@ pub enum BoundError {
         /// The parameter whose value is non-finite.
         parameter: ParamId,
     },
+    /// A construct references a parameter absent from the analyzed snapshot
+    /// (F5).
+    ///
+    /// The bridge must NEVER default a missing parameter to zero — a silently
+    /// wrong interval endpoint is worse than a typed rejection. Snapshot-based
+    /// analysis returns this when a referenced parameter has no entry.
+    MissingParameter {
+        /// The parameter that has no snapshot entry.
+        parameter: ParamId,
+    },
     /// Interval arithmetic produced NaN from finite inputs.
     ArithmeticNan,
     /// The function kind has no interval analysis (M3 implements linear only).
@@ -137,6 +147,9 @@ impl std::fmt::Display for BoundError {
             Self::NonFiniteConstant => write!(f, "non-finite constant term"),
             Self::NonFiniteParameterValue { parameter } => {
                 write!(f, "non-finite value for parameter {parameter:?}")
+            }
+            Self::MissingParameter { parameter } => {
+                write!(f, "missing parameter {parameter:?} (never defaulted to zero — F5)")
             }
             Self::ArithmeticNan => write!(f, "interval arithmetic produced NaN"),
             Self::UnsupportedFunctionKind => {
@@ -198,8 +211,10 @@ impl BoundAnalyzer {
     ///
     /// A variable absent from the snapshot is treated as free (conservative:
     /// an unbounded interval can only produce an `UnboundedBigM`, never an
-    /// unsafe finite M); a parameter absent from the snapshot evaluates to
-    /// zero.
+    /// unsafe finite M). A parameter absent from the snapshot is a typed
+    /// [`BoundError::MissingParameter`] (F5) — a missing parameter is never
+    /// defaulted to zero, because a silently wrong interval endpoint is worse
+    /// than a typed rejection.
     pub fn interval_of_snapshot(
         &self,
         function: &ScalarFunction,
@@ -221,6 +236,15 @@ impl BoundAnalyzer {
                 .map(|e| e.value)
                 .unwrap_or(0.0)
         };
+        // F5: verify every referenced parameter is present in the snapshot
+        // BEFORE analysis — a missing parameter is a typed error, never a
+        // silent default of zero.
+        let ScalarFunction::Linear(expr) = function;
+        for p in expr.parameter_dependencies() {
+            if !snapshot.parameters.iter().any(|e| e.id == p) {
+                return Err(BoundError::MissingParameter { parameter: p });
+            }
+        }
         self.interval_of(function, variable_bounds, parameter_values)
     }
 
@@ -642,6 +666,19 @@ pub(crate) fn bound_big_m_implied_snapshot(
             .map(|e| e.bounds)
             .unwrap_or(Bounds::UNBOUNDED)
     };
+    // F5: a parameter referenced by the function but absent from the snapshot
+    // is a typed error (surfaced as `InvalidBigM` naming the construct), never
+    // a silent default of zero.
+    let ScalarFunction::Linear(expr) = function;
+    for p in expr.parameter_dependencies() {
+        if !snapshot.parameters.iter().any(|e| e.id == p) {
+            return Err(CompileError::InvalidBigM {
+                construct,
+                expression: expression.to_string(),
+                reason: format!("missing parameter {p:?} (never defaulted to zero — F5)"),
+            });
+        }
+    }
     let parameter_values = |p: ParamId| {
         snapshot
             .parameters

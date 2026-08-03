@@ -34,19 +34,25 @@ use crate::compiler::backend_ir::{
     CompiledConstraintId, CompiledLinearRow, CompiledObjective, CompiledObjectiveId,
     CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, RecipeFingerprint,
 };
-use crate::compiler::bridge::{BridgeContext, BridgeOutput};
+use crate::compiler::bridge::{BridgeContext, BridgeDependency, BridgeOutput};
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::{EntityOrigin, OriginMap};
 use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
-use crate::construct::{ConstructKind, FormulationPreference};
+use crate::construct::{
+    derive_parameter_dependencies, derive_variable_dependencies, Construct, ConstructKind,
+    FormulationPreference, ProductOperand,
+};
 use crate::delta::{DeltaBatch, ModelOp};
+use crate::expr::{LinExpr, TermCoeff};
+use crate::function::{ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::identity::ModelInstanceId;
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::{Bounds, ConstraintBounds, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
+use crate::value_expr::ValueExpr;
 
 /// Per-family checked atomic counter state for one compiled state.
 #[derive(Clone)]
@@ -78,6 +84,15 @@ struct CurrentCompilation {
     /// can emit the `SetObjectivePolicy(None)` transition at the compile
     /// boundary — the batch must be self-contained (A31, CR-02).
     objective_policy: CompiledObjectivePolicy,
+    /// The bridge dependency graph of the active constructs (F1).
+    ///
+    /// Every active construct's generated bridge artifact depends on a set of
+    /// user variables and parameters (recorded by the bridges as
+    /// [`BridgeDependency`] and completed centrally here). A dependency-
+    /// affecting delta (`SetParameter`, `SetVariableBounds`,
+    /// `RemoveVariable`, variable type/activity changes) forces a
+    /// `RebuildRequired` — the construct artifact can go stale otherwise.
+    construct_dependencies: Vec<BridgeDependency>,
 }
 
 /// The identity compiler for one solver/backend (design §8).
@@ -362,12 +377,22 @@ impl CompilationSession {
             .iter()
             .map(|p| (p.id, p.value))
             .collect();
+
+        // F5: preflight every ACTIVE construct's variable and parameter
+        // references against the snapshot BEFORE any bridge generates rows — a
+        // missing reference is a typed error (a variable absent from the
+        // compiled snapshot, or a parameter absent from the evaluated map, is
+        // NEVER silently defaulted to zero), and evaluated construct
+        // coefficients/thresholds are validated finite in the same pass.
+        preflight_constructs(snapshot, &variable_ids, &parameter_values)?;
+
         let mut next_variable_index = variables.len() as u32;
         let mut next_row_index = rows.len() as u32;
         let mut construct_variables: Vec<CompiledVariable> = Vec::new();
         let mut construct_rows: Vec<CompiledLinearRow> = Vec::new();
         let mut construct_origins = OriginMap::new();
         let mut construct_decisions: Vec<FormulationDecision> = Vec::new();
+        let mut construct_dependencies: Vec<BridgeDependency> = Vec::new();
 
         for entry in &snapshot.constructs {
             if !entry.active {
@@ -439,6 +464,23 @@ impl CompilationSession {
             };
             next_variable_index += output.variables.len() as u32;
             next_row_index += output.rows.len() as u32;
+            // F1: persist the bridge dependency graph — never drop the
+            // captured `BridgeDependency`s. Completed centrally so every
+            // variable/parameter the formulation references is attributed
+            // (a dependency-affecting delta then forces a rebuild).
+            construct_dependencies.extend(output.dependencies);
+            for var in derive_variable_dependencies(&entry.kind) {
+                let dep = BridgeDependency::Variable(var);
+                if !construct_dependencies.contains(&dep) {
+                    construct_dependencies.push(dep);
+                }
+            }
+            for param in derive_parameter_dependencies(&entry.kind) {
+                let dep = BridgeDependency::Parameter(param);
+                if !construct_dependencies.contains(&dep) {
+                    construct_dependencies.push(dep);
+                }
+            }
             construct_variables.extend(output.variables);
             construct_rows.extend(output.rows);
             construct_origins.merge(output.origin_map);
@@ -502,6 +544,7 @@ impl CompilationSession {
             next_row_index: compiled.linear_rows.len() as u32,
             next_objective_index: compiled.objectives.len() as u32,
             objective_policy,
+            construct_dependencies,
         });
 
         Ok(compiled)
@@ -925,6 +968,7 @@ impl CompilationSession {
                 // the parameter op preserves the M2 incremental parameter
                 // behavior through the compiled path (the F-B1 conservative
                 // rebuild list is narrowed here by this provable equivalence).
+                //
                 ModelOp::SetParameter { .. } => {}
                 ModelOp::SetSemiContinuousBound { .. } => {
                     return Err(CompileError::RebuildRequired(
@@ -969,8 +1013,177 @@ impl CompilationSession {
             next_row_index: w.next_row_index,
             next_objective_index: w.next_objective_index,
             objective_policy: w.objective_policy,
+            // Constructs cannot be added/removed incrementally (those ops
+            // rebuild), so the dependency graph is unchanged by a delta.
+            construct_dependencies: current.construct_dependencies.clone(),
         });
 
         Ok(batch)
     }
+}
+
+// ===========================================================================
+// F5: construct reference preflight
+// ===========================================================================
+
+/// Evaluate one `ValueExpr` coefficient/threshold against the snapshot's
+/// parameter map, surfacing a missing parameter or a non-finite result as a
+/// typed error (F5) — never a silent default of zero.
+fn eval_value_expr_checked(
+    value: &ValueExpr,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<f64, CompileError> {
+    let evaluated = value
+        .eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
+        .map_err(|parameter| CompileError::MissingConstructParameter {
+            construct,
+            parameter,
+        })?;
+    if !evaluated.is_finite() {
+        return Err(CompileError::InvalidBigM {
+            construct,
+            expression: format!("evaluated coefficient/threshold {value:?}"),
+            reason: format!("non-finite evaluated value {evaluated}"),
+        });
+    }
+    Ok(evaluated)
+}
+
+/// Validate every parameterized coefficient (and the constant) of a linear
+/// expression is finite when evaluated against the snapshot (F5).
+fn validate_lin_expr_finiteness(
+    expr: &LinExpr,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    if !expr.constant.is_finite() {
+        return Err(CompileError::InvalidBigM {
+            construct,
+            expression: "constant term".to_string(),
+            reason: format!("non-finite constant {}", expr.constant),
+        });
+    }
+    for term in &expr.terms {
+        if let TermCoeff::Expr(value) = &term.coeff {
+            eval_value_expr_checked(value, construct, parameter_values)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate every parameterized coefficient of a scalar function is finite
+/// when evaluated against the snapshot (F5).
+fn validate_scalar_function_finiteness(
+    function: &ScalarFunction,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    match function {
+        ScalarFunction::Linear(expr) => {
+            validate_lin_expr_finiteness(expr, construct, parameter_values)
+        }
+    }
+}
+
+/// Validate every set threshold is finite when evaluated against the snapshot
+/// (F5).
+fn validate_scalar_set_finiteness(
+    set: &ScalarSet,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    match set {
+        ScalarSet::LessEqual(upper) => {
+            eval_value_expr_checked(upper, construct, parameter_values)?;
+        }
+        ScalarSet::GreaterEqual(lower) => {
+            eval_value_expr_checked(lower, construct, parameter_values)?;
+        }
+        ScalarSet::EqualTo(value) => {
+            eval_value_expr_checked(value, construct, parameter_values)?;
+        }
+        ScalarSet::Interval { lower, upper } => {
+            eval_value_expr_checked(lower, construct, parameter_values)?;
+            eval_value_expr_checked(upper, construct, parameter_values)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate every parameterized coefficient/threshold of one construct is
+/// finite when evaluated against the snapshot (F5).
+fn validate_construct_finiteness(
+    kind: &ConstructKind,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    match kind {
+        ConstructKind::Indicator(payload) => {
+            validate_scalar_function_finiteness(&payload.function, construct, parameter_values)?;
+            validate_scalar_set_finiteness(&payload.set, construct, parameter_values)
+        }
+        ConstructKind::Reification(payload) => {
+            validate_scalar_function_finiteness(&payload.function, construct, parameter_values)?;
+            validate_scalar_set_finiteness(&payload.set, construct, parameter_values)
+        }
+        ConstructKind::Boolean(_) | ConstructKind::Cardinality(_) => Ok(()),
+        ConstructKind::MinMax(payload) => {
+            for op in &payload.operands {
+                validate_lin_expr_finiteness(op, construct, parameter_values)?;
+            }
+            Ok(())
+        }
+        ConstructKind::AbsoluteValue(payload) => {
+            validate_lin_expr_finiteness(&payload.expression, construct, parameter_values)
+        }
+        ConstructKind::BinaryProduct(payload) => {
+            for op in [&payload.left, &payload.right] {
+                if let ProductOperand::Linear(expr) = op {
+                    validate_lin_expr_finiteness(expr, construct, parameter_values)?;
+                }
+            }
+            Ok(())
+        }
+        #[cfg(test)]
+        ConstructKind::Fixture(_) => Ok(()),
+    }
+}
+
+/// F5: preflight every ACTIVE construct's variable and parameter references
+/// against the compiled snapshot BEFORE any bridge generates rows.
+///
+/// A variable referenced by a construct but absent from the compiled snapshot
+/// is a typed [`CompileError::MissingConstructReference`]; a parameter absent
+/// from the evaluated map is a typed [`CompileError::MissingConstructParameter`]
+/// — a missing parameter is NEVER defaulted to zero. Evaluated construct
+/// coefficients/thresholds are validated finite in the same pass.
+fn preflight_constructs(
+    snapshot: &ModelSnapshot,
+    variable_ids: &HashMap<VarId, CompiledVariableId>,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    for entry in &snapshot.constructs {
+        if !entry.active {
+            continue;
+        }
+        for var in derive_variable_dependencies(&entry.kind) {
+            if !variable_ids.contains_key(&var) {
+                return Err(CompileError::MissingConstructReference {
+                    construct: entry.id,
+                    variable: var,
+                });
+            }
+        }
+        for param in derive_parameter_dependencies(&entry.kind) {
+            if !parameter_values.contains_key(&param) {
+                return Err(CompileError::MissingConstructParameter {
+                    construct: entry.id,
+                    parameter: param,
+                });
+            }
+        }
+        validate_construct_finiteness(&entry.kind, entry.id, parameter_values)?;
+    }
+    Ok(())
 }

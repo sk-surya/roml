@@ -33,7 +33,9 @@ pub mod reification;
 
 use std::collections::HashMap;
 
-use crate::id::ParamId;
+use crate::expr::LinExpr;
+use crate::function::ScalarFunction;
+use crate::id::{ParamId, VarId};
 use crate::identity::{ConstructId, IdentityOverflow};
 
 pub use absolute::{AbsoluteValueConstraint, AbsoluteValueVariant};
@@ -245,6 +247,79 @@ impl ConstructStore {
     pub fn iter(&self) -> impl Iterator<Item = (Construct, &ConstructData)> {
         self.arena.iter().map(|(id, data)| (*id, data))
     }
+}
+
+/// Collect the distinct variable ids referenced by a linear expression.
+fn lin_expr_variables(expr: &LinExpr) -> Vec<VarId> {
+    let mut vars: Vec<VarId> = expr.terms.iter().map(|t| t.var).collect();
+    vars.sort();
+    vars.dedup();
+    vars
+}
+
+/// Collect the distinct variable ids referenced by a scalar function.
+fn scalar_function_variables(function: &ScalarFunction) -> Vec<VarId> {
+    match function {
+        ScalarFunction::Linear(expr) => lin_expr_variables(expr),
+    }
+}
+
+/// Derive the variable dependencies of a construct payload (F1).
+///
+/// The variables whose domain/removal can change the construct's generated
+/// bridge artifact: every user variable the construct's formulation references
+/// (activator/output, function/operand variables, binary operands). The
+/// compiler persists these as [`crate::compiler::bridge::BridgeDependency`]s
+/// and forces a rebuild when a dependency-affecting delta touches one.
+pub(crate) fn derive_variable_dependencies(kind: &ConstructKind) -> Vec<VarId> {
+    let mut vars: Vec<VarId> = match kind {
+        ConstructKind::Indicator(payload) => {
+            let mut v = vec![payload.activator];
+            v.extend(scalar_function_variables(&payload.function));
+            v
+        }
+        ConstructKind::Reification(payload) => {
+            let mut v = vec![payload.activator];
+            v.extend(scalar_function_variables(&payload.function));
+            v
+        }
+        ConstructKind::Boolean(payload) => match &payload.kind {
+            BooleanKind::Implication {
+                antecedent,
+                consequent,
+            } => vec![*antecedent, *consequent],
+            BooleanKind::Equivalence { left, right } => vec![*left, *right],
+            BooleanKind::Any { variables } | BooleanKind::All { variables } => variables.clone(),
+        },
+        ConstructKind::Cardinality(payload) => payload.variables.clone(),
+        ConstructKind::MinMax(payload) => {
+            let mut v = vec![payload.output];
+            for op in &payload.operands {
+                v.extend(lin_expr_variables(op));
+            }
+            v
+        }
+        ConstructKind::AbsoluteValue(payload) => {
+            let mut v = vec![payload.output];
+            v.extend(lin_expr_variables(&payload.expression));
+            v
+        }
+        ConstructKind::BinaryProduct(payload) => {
+            let mut v = vec![payload.output];
+            for op in [&payload.left, &payload.right] {
+                match op {
+                    ProductOperand::Binary(var) => v.push(*var),
+                    ProductOperand::Linear(expr) => v.extend(lin_expr_variables(expr)),
+                }
+            }
+            v
+        }
+        #[cfg(test)]
+        ConstructKind::Fixture(_) => Vec::new(),
+    };
+    vars.sort();
+    vars.dedup();
+    vars
 }
 
 /// Derive the parameter dependencies of a construct payload (design §7).
