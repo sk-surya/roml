@@ -1592,6 +1592,44 @@ fn rebuild_resets_revision_and_state() {
     assert_eq!(cursor.applied_revision, r2);
 }
 
+/// IN-05: a canonical `ReferenceBackend::rebuild` folds a fixed variable's
+/// persistent fixing into its effective bounds (SM-05.3), matching the
+/// incremental `apply_op(SetVariableFixing)` path — a canonical rebuild of a
+/// fixed model no longer loses the fixing (declared bounds only), so the
+/// canonical rebuild-vs-delta commuting square holds for fixed models.
+#[test]
+fn rebuild_folds_persistent_fixing_into_effective_bounds() {
+    let mut model = roml::Model::new();
+    let x = model
+        .add_variable(roml::model::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    model.commit().unwrap();
+    model.fix(x, 4.0).unwrap();
+    model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+    assert!(
+        snapshot
+            .variables
+            .iter()
+            .find(|v| v.id == x)
+            .expect("variable in snapshot")
+            .fixing
+            .is_some(),
+        "the snapshot must carry the persistent fixing"
+    );
+
+    let (mut backend, mut cursor) = empty_backend();
+    rebuild_from_snapshot(&mut backend, &mut cursor, &snapshot);
+
+    let (bounds, _var_type, _active) = backend.variables.get(&x).expect("variable present");
+    assert_eq!(
+        *bounds,
+        Bounds::new(4.0, 4.0),
+        "a canonical rebuild must fold the persistent fixing into effective bounds \
+         (matching apply_op(SetVariableFixing))"
+    );
+}
+
 #[test]
 fn rebuild_with_full_snapshot() {
     let rev = ModelRevision::ZERO.next().unwrap();

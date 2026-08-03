@@ -368,8 +368,18 @@ impl ReferenceBackend {
         self.objective_constants.clear();
 
         for v in &snapshot.variables {
-            self.variables
-                .insert(v.id, (v.bounds, v.var_type, v.active));
+            // IN-05: fold the persistent fixing into the effective bounds
+            // (SM-05.3: a fixing compiles as equal lower/upper bounds), matching
+            // the incremental `apply_op(SetVariableFixing)` path. `VariableEntry`
+            // carries the fixing so a rebuild can reconstruct it — the canonical
+            // rebuild-vs-delta commuting square must hold for fixed models. The
+            // active flag stays a separate field (the canonical backend does not
+            // fold activity into bounds, unlike the compiled snapshot fold).
+            let bounds = match &v.fixing {
+                Some(fixing) => Bounds::new(fixing.value, fixing.value),
+                None => v.bounds,
+            };
+            self.variables.insert(v.id, (bounds, v.var_type, v.active));
             if let Some(lower) = v.semicontinuous_lower {
                 self.semicontinuous.insert(v.id, lower);
             }
