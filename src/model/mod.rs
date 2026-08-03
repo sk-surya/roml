@@ -1238,6 +1238,13 @@ impl Model {
         self.objectives.active()
     }
 
+    /// Get an objective's optimization sense (P27 Task 9 overlay compiler:
+    /// objective-lock degradation rows follow the objective's sense, design
+    /// §15.2). Returns `None` for a stale/removed objective.
+    pub fn objective_sense(&self, obj: ObjId) -> Option<Sense> {
+        self.objectives.get(obj).map(|data| data.sense)
+    }
+
     /// Get the constant offset for an objective.
     pub fn objective_constant(&self, obj: ObjId) -> Option<f64> {
         self.objectives.get(obj).map(|data| data.constant)

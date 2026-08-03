@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod advanced;
+pub mod assignment;
 pub mod compiler;
 // P25 (F3): the construct arena and its fixture scaffolding are crate-private.
 // `Construct`/`ConstructId` and `FormulationPreference` are re-exported
@@ -37,6 +38,9 @@ pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
+pub use assignment::{
+    AssignmentError, ContinuousLock, LockSelector, PrimalAssignment, SolutionLock,
+};
 pub use construct::{Construct, FormulationPreference};
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
@@ -60,6 +64,9 @@ pub use solution::{
 };
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
+};
+pub use solver::overlay::{
+    CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };
 pub use solver::request::{
     ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult, SolveSolution,
