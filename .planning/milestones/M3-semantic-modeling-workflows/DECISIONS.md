@@ -24,13 +24,13 @@
 
 **Consequence:** `LinExpr` remains the ergonomic linear expression, not the permanent universal expression type.
 
-## D4 — Model lineage protects reusable artifacts
+## D4 — Lineage governs reusable assignment compatibility
 
-**Decision:** assignments and solutions carry an opaque model lineage in addition to revision/entity IDs.
+**Decision:** assignments and solutions carry an opaque model lineage in addition to revision/entity information.
 
-**Reason:** independent models can contain coincidentally equal generational IDs.
+**Reason:** independent models can contain coincidentally equal generational IDs, while clones should be able to reuse assignments when descendant entity handles remain valid.
 
-**Consequence:** clones preserve lineage; cross-process serialized identity remains out of scope.
+**Consequence:** clones preserve lineage; assignment application validates lineage, entity generation, and value/domain compatibility. Cross-process serialized identity remains out of scope.
 
 ## D5 — Generated entities use separate identities
 
@@ -70,7 +70,7 @@
 
 **Reason:** objective ordering and degradation tolerances define the optimization problem rather than merely solver tuning.
 
-**Consequence:** sequential fallback uses solve-overlay objective locks.
+**Consequence:** backend IR carries an explicit compiled objective policy; sequential fallback uses solve-overlay objective locks.
 
 ## D10 — Typed capability registry replaces flat growth
 
@@ -86,7 +86,7 @@
 
 **Reason:** hidden expansion is unreviewable and makes solver comparisons unreliable.
 
-**Consequence:** bridge recipes have deterministic fingerprints.
+**Consequence:** bridge recipes have deterministic fingerprints, but those fingerprints are not stale-state authority.
 
 ## D12 — Big-M requires proof
 
@@ -128,15 +128,15 @@
 
 ## D17 — IIS and feasibility relaxation are separate
 
-**Decision:** infeasibility analysis reports conflicting members; feasibility relaxation proposes/executes weighted changes. They use separate APIs.
+**Decision:** infeasibility analysis reports conflicting members; feasibility relaxation proposes or executes weighted changes. They use separate APIs.
 
 **Reason:** they answer different questions and have different backend guarantees.
 
 ## D18 — IIS reports state guarantees precisely
 
-**Decision:** reports include analysis kind, scope, minimality claim, completion status, backend/version, and revision.
+**Decision:** reports include analysis kind, scope, minimality claim, completion status, backend/version, model instance/revision, and exact compilation identity.
 
-**Reason:** solver APIs differ; ROML must not label an LP-relaxation conflict as an original-MIP IIS.
+**Reason:** solver APIs differ; ROML must not label an LP-relaxation conflict as an original-MIP IIS or map conflict IDs through a stale compilation.
 
 ## D19 — Native IIS means official backend support
 
@@ -197,3 +197,11 @@
 **Decision:** existing `Model`, `LinExpr`, `Highs::solve`, `solve_with`, and `Solution` golden-path usage remains source-compatible unless an executable contradiction is documented and approved.
 
 **Reason:** M3 should add power without reopening settled ordinary ergonomics.
+
+## D28 — Exact state uses instance and compilation IDs, not hashes
+
+**Decision:** every live model clone receives a distinct `ModelInstanceId`; every compiled backend state receives a distinct opaque `CompilationId`. Deterministic recipe fingerprints/digests may support evidence and caching but never authorize result, overlay, or analysis mapping.
+
+**Reason:** two clones can preserve lineage and have equal revision numbers while containing different canonical states, and finite hashes are not exact identity.
+
+**Consequence:** canonical state is identified by `(ModelInstanceId, ModelRevision)`. Backend results, overlay receipts, conflict data, and origin maps must agree on exact `CompilationId` before use.
