@@ -157,3 +157,118 @@ Baseline comparison: `roml` grew from 675 to 706 passing tests (+31 = 15 integra
 - `feat(compiler): add safe bridge infrastructure` — Task 15 implementation + tests + evidence (single coherent unit).
 
 ---
+
+## Task 16 — Add indicators, reification, Boolean, and cardinality
+
+**Phase:** P32  **Requirements:** SM-01.3, SM-02.3, SM-02.5, SM-13.4 (exercised); advances SM-12.1/SM-12.2/SM-12.5/SM-12.8 (full SM-12 closure remains the Task 17 follow-up plan)
+**Status:** complete — committed as `feat(model): add logical semantic constructs`.
+
+### TDD — RED failures (recorded before implementation)
+
+`cargo test -p roml --test common_constructs indicator` failed to compile against the Task 15 tree — `roml::construct` was still `pub(crate)`, the payload types did not exist, and the `Model::add_*` builders were absent. Expected failure, recorded verbatim:
+
+```text
+error[E0603]: module `construct` is private
+  --> tests/common_constructs.rs:20:11
+   |
+20 | use roml::construct::{
+   |           ^^^^^^^^^ private module
+note: the module `construct` is defined here
+  --> src/lib.rs:22:1
+   |
+22 | pub(crate) mod construct;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+`roml-highs/tests/formulation_equivalence.rs` likewise failed to compile (missing payload types/builders).
+
+### Implementation
+
+- **A30 public-surface step (mandatory plan bullet):**
+  - `src/lib.rs` — `pub(crate) mod construct;` → `pub mod construct;`; crate-root re-exports `ConstructKind`, `ConstructEntry`, and the four payload types plus the payload-kind enums (`IndicatorDirection`, `BooleanKind`, `CardinalityKind`). `Construct`/`FormulationPreference` re-exports kept; the `#[non_exhaustive]` extension boundary on `ConstructKind` stays (A30).
+  - **Stay crate-private:** the `Fixture` variant; `FixturePayload` (fields `pub(crate)`, `pub(crate)` constructor `FixturePayload::new` keeps the in-crate `#[cfg(test)]` `fixture()` helper working); `Model::add_construct_fixture`/`Model::construct` (both `pub(crate)`). `ConstructData` was additionally made `pub(crate)` (it is P25 internal scaffolding, A30).
+  - `cargo public-api -p roml` — **15983 → 17536 items** (+1553 additive). `Fixture`, `FixturePayload`, `add_construct_fixture`, `ConstructData`, and `ConstructKind::Fixture` are ABSENT from the output (verified by `grep`).
+- **`src/construct/{indicator,reification,boolean,cardinality}.rs` (create)** — design §7 payloads:
+  - `IndicatorConstraint { activator: VarId, direction, function, set }` with `IndicatorDirection { WhenOne, WhenZero }` (one-way implication).
+  - `ReificationConstraint { activator: VarId, function, set, separation_tolerance: Option<f64>, proven_integrality: bool }` — the reification result binary variable is created by the builder and stored in `activator` (design §16.2).
+  - `BooleanConstraint { kind }` with `BooleanKind { Implication, Equivalence, Any, All }`.
+  - `CardinalityConstraint { variables: Vec<VarId>, kind, k: usize }` with `CardinalityKind { Exactly, AtMost, AtLeast }`.
+- **`src/construct/mod.rs`** — four `ConstructKind` variants; `derive_parameter_dependencies` extended (indicator/reification defer to the constrained function's derived dependencies); the `Fixture` variant and `FixturePayload` stay crate-private.
+- **`src/model/mod.rs`** — public builders `add_indicator`, `add_reify`, `add_boolean`, `add_cardinality`, each returning `Result<Construct, ModelError>`, accepting an optional per-construct `FormulationPreference` (A29 single authority — stored on the `ConstructEntry`), validating the four invalid-input classes, and recording `Change::ConstructAdded` with the exact payload + preference. `add_reify` creates the reification result binary variable (a failed reify leaks no variable).
+- **Validation rejections (SM-12.2/SM-12.5):** non-binary activators and Boolean/cardinality inputs → `ModelError::NonBinaryVariable(VarId)`; duplicate cardinality inputs → `ModelError::DuplicateCardinalityVariable(VarId)`; invalid `k` (negative, non-integral, or above the input length) → `ModelError::InvalidCardinalityK { k, reason }`; continuous exact reification without separation → `ModelError::ContinuousReificationWithoutSeparation`; non-finite/non-positive separation → `ModelError::InvalidReificationSeparation(f64)`.
+- **`src/compiler/origin.rs`** — `GeneratedRole` per-construct role variants: `IndicatorImplicationRow`, `IndicatorNative`, `ReificationImplicationRow`, `ReificationComplement`, `BooleanImplicationRow`, `BooleanEquivalenceRow`, `BooleanAnyRow`, `BooleanAllRow`, `CardinalityRow` (`#[non_exhaustive]` stays).
+- **`src/compiler/capability.rs`** — `FeatureSupport::bridge(limitations)` (SM-04.2); `BackendCapabilitySet::is_bridge`; additive `BackendFeature::{Reification, Boolean, Cardinality}` variants.
+- **`src/compiler/bounds.rs`** — `bound_big_m_implied_snapshot` crate convenience returning the finite M plus the `BoundTrace` provenance sources (SM-13.5 evidence).
+- **`src/compiler/bridge/mod.rs`** — `BridgeContext` (construct, snapshot, user→compiled variable map, evaluated parameters, effective policy, capabilities), `ConstructPath`, `select_path` (design §8.1), `function_coefficients`, `resolve_variable`, `combine_coefficients`, `eval_bound`.
+- **`src/compiler/bridge/{indicator,reification,boolean,cardinality}.rs` (create)** — the four exact bridges:
+  - indicator: qualified native `BackendFeature::Indicator` selection (Auto) or the exact finite-bound one-way Big-M rows; M derived via `BoundAnalyzer` (never a default constant — D12); missing finite M → `CompileError::UnboundedBigM`.
+  - reification: exactly two implication rows (forward + complement); unit gap only from proven integrality; explicit separation tolerance honored (D14).
+  - boolean: exact linear rows for implication/equivalence/any/all (no auxiliaries).
+  - cardinality: exact linear row for exactly/at-most/at-least-k (no auxiliaries).
+- **`src/compiler/session.rs`** — `compile_snapshot` iterates active constructs in the snapshot's deterministic construct-id order, dispatches each to the matching bridge under the effective policy (global narrowed by the per-construct `FormulationPreference`), merges generated variables/rows/origins/decisions into the compiled snapshot, and surfaces typed errors on unbounded (`UnboundedBigM`) / unsupported (`UnsupportedFeature`) / dangling-reference (`MissingConstructReference`).
+- **`src/compiler/backend_ir.rs`** — `BackendSnapshotBuilder::add_formulation_decisions`; **`src/compiler/report.rs`** — `CompilationReport::new` appends the extra decisions after the objective-policy decision.
+- **`src/compiler/mod.rs`** — `CompileError::MissingConstructReference { construct, variable }` (design §19 family — a construct referencing a removed variable is a typed error, never a dropped coefficient).
+- **`src/advanced.rs`** — re-exports the four payload types + kind enums + `ConstructEntry`/`ConstructKind` for framework/backend authors.
+- **`roml-highs/src/session.rs`** — `highs_capability_set` declares `BackendFeature::{Indicator, Reification, Boolean, Cardinality}` as `SupportLevel::Bridge` (exact ROML formulations, P32's first bridge declarations — SM-04.2) with NO qualified native claim (SM-04.3).
+- **Tests** — `tests/common_constructs.rs` (28 integration tests) and `roml-highs/tests/formulation_equivalence.rs` (3 HiGHS tests) plus one in-crate bridge-declaration test in `roml-highs/src/session.rs`.
+
+### Per-construct evidence (TRACEABILITY.md)
+
+| Construct | Semantic definition | Accepted domain | Rejected domain | Native | Bridge | Origin roles | Reference formulation |
+|---|---|---|---|---|---|---|---|
+| Indicator | `WhenOne`: `z=1 ⇒ f∈S`; `WhenZero`: `z=0 ⇒ f∈S` (one-way) | binary activator; le/ge/eq/interval sets | continuous/integer activator | qualified `BackendFeature::Indicator` (Auto) | exact finite-bound one-way Big-M row(s) | `IndicatorNative` / `IndicatorImplicationRow` | `f + M z ≤ rhs + M` / `f − M z ≥ rhs − M` (M from bounds) |
+| Reification | `b=1 ⟺ f∈S` (two implications) | binary activator (created by builder); le/ge thresholds | eq/interval sets (typed build-time rejection); continuous without separation | none (always bridge) | forward + complement rows | `ReificationImplicationRow`, `ReificationComplement` | `f + M1 b ≤ rhs + M1`; `f + M2 b ≥ rhs + sep` (unit gap iff proven integral) |
+| Boolean | implication / equivalence / any / all | binary vars | non-binary vars | none (always bridge) | exact linear rows | `Boolean{Implication,Equivalence,Any,All}Row` | `a − b ≤ 0`; `a − b ≤ 0 ∧ b − a ≤ 0`; `Σ v ≥ 1`; `Σ v ≥ n` |
+| Cardinality | exactly/at-most/at-least-k | binary vars, duplicate-free, `0 ≤ k ≤ len` | duplicates, non-binary, invalid `k` | none (always bridge) | exact linear row | `CardinalityRow` | `Σ v = k` / `≤ k` / `≥ k` |
+
+Unsupported/unbounded failure behavior: missing finite M → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4); `NativeRequired` without native → `CompileError::UnsupportedFeature`; no native and no bridge under `Auto` → `CompileError::UnsupportedFeature`; dangling construct reference → `CompileError::MissingConstructReference`. No silent relaxation exists (D13/D12). Randomized solver equivalence is covered by the small-binary-domain feasible-set enumeration (semantic/reference/native/portable equality) in `tests/common_constructs.rs` and by the HiGHS `roml-highs/tests/formulation_equivalence.rs` suites.
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test common_constructs indicator` | 0 — **9 passed; 0 failed** |
+| `cargo test -p roml-highs --test formulation_equivalence indicator` | 0 — **1 passed; 0 failed** |
+
+### Full verification
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `cargo test -p roml --test common_constructs` | 0 | **28 passed; 0 failed** |
+| `cargo test -p roml --all-targets` | 0 | **734 passed; 0 failed; 0 ignored** (baseline 706 + 28 new) |
+| `cargo test -p roml-highs --all-targets` | 0 | **118 passed; 0 failed** (baseline 114 + 4 new) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+| `cargo public-api -p roml` | 0 | **15983 → 17536 items** (+1553 additive) |
+
+### Public API diff (A30)
+
+`cargo public-api -p roml` grew by **1553 items** (15123 → 15983 at Task 15 → 17536 at Task 16). Additions include:
+
+- `roml::construct::{ConstructKind, ConstructEntry, IndicatorConstraint, ReificationConstraint, BooleanConstraint, CardinalityConstraint, IndicatorDirection, BooleanKind, CardinalityKind}` and their inherent/derived impls.
+- `roml::Model::add_indicator`, `add_reify`, `add_boolean`, `add_cardinality`.
+- `roml::model::ModelError::{NonBinaryVariable, DuplicateCardinalityVariable, InvalidCardinalityK, ContinuousReificationWithoutSeparation, InvalidReificationSeparation, UnsupportedReificationSet, EmptyConstructInput}`.
+- `roml::compiler::capability::{FeatureSupport::bridge, BackendCapabilitySet::is_bridge, BackendFeature::{Reification, Boolean, Cardinality}}`.
+- `roml::compiler::origin::GeneratedRole` per-construct variants.
+- `roml::compiler::CompileError::MissingConstructReference`.
+- `roml::advanced` re-exports.
+
+**MUST-NOT items verified absent:** `Fixture`, `FixturePayload`, `add_construct_fixture`, `ConstructData`, and the `ConstructKind::Fixture` variant do NOT appear in the `cargo public-api -p roml` output (grep count 0).
+
+### Deviations
+
+1. **`ReificationConstraint.activator` field added.** The plan's payload description lists "scalar-function-in-set relation, separation tolerance, proven-integrality flag" but a reification construct cannot compile without referencing its binary result variable. Per design §16.2 (`reify` creates and returns the indicator variable), `add_reify` creates a fresh binary variable and stores it in the payload as `activator`. The builder returns the `Construct` handle (per the plan's interface contract); the binary variable is reachable through the payload in canonical snapshots.
+2. **`add_cardinality` takes `k: f64` (validated), stored as `usize`.** The plan requires typed rejections for negative, non-integral, AND above-length `k`. A `usize` parameter would make negative/non-integral `k` unrepresentable, so the builder takes `f64`, validates (finite, non-negative, integral, ≤ length), and stores `k: usize` in the payload.
+3. **Native indicator selection emits the exact finite-bound row (role `IndicatorNative` + decision).** The P26 backend IR has no native-constraint representation (`BackendConstraint` is an empty enum and `BackendSnapshot.native_constraints` is always empty), and the plan forbids a compiler-contract amendment without review. So a qualified native `BackendFeature::Indicator` selection is recorded as a `FormulationDecision` (`indicator.representation = "native indicator"`) and the emitted exact row carries the `IndicatorNative` role; the emitted IR is the exact one-way row. A true native-constraint emission would require a `BackendConstraint` variant (documented; none of the P32 backends declare native Indicator, so the gap is unreachable in practice).
+4. **Reification of equality/interval relations is a typed build-time rejection.** The P32 two-implication reification contract covers `le`/`ge` thresholds; equality/interval reification needs a disjunctive complement (an auxiliary binary), which lands beyond P32's scope. `add_reify` returns `ModelError::UnsupportedReificationSet`.
+5. **`BackendFeature::{Reification, Boolean, Cardinality}` added.** The design §8.2 capability enumeration lists only `Indicator` among the logical constructs, but the plan requires HiGHS to declare "the logical-construct features" as `SupportLevel::Bridge`. The three additive variants (the enum is `#[non_exhaustive]`) give each construct a distinct feature for capability gating / `NativeRequired` rejection.
+6. **`ConstructData` made `pub(crate)` (A30).** The plan's crate-private list names `FixturePayload`, `ConstructData`, `add_construct_fixture`; making the whole module public surfaced `ConstructData`, so it was tightened to `pub(crate)` to satisfy A30's "absent from public-api" requirement.
+
+### Commit trail
+
+- `feat(model): add logical semantic constructs` — Task 16 implementation + tests + evidence (single coherent unit).
+
+---

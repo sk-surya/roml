@@ -20,7 +20,7 @@ use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 
 use super::origin::OriginMap;
-use super::report::CompilationReport;
+use super::report::{CompilationReport, FormulationDecision};
 use super::CompileError;
 
 /// Allocate the next id from `counter`, returning a typed error on overflow.
@@ -802,6 +802,7 @@ pub struct BackendSnapshotBuilder {
     objectives: Vec<CompiledObjective>,
     objective_policy: Option<CompiledObjectivePolicy>,
     origin_map: OriginMap,
+    formulation_decisions: Vec<FormulationDecision>,
 }
 
 impl BackendSnapshotBuilder {
@@ -816,6 +817,7 @@ impl BackendSnapshotBuilder {
             objectives: Vec::new(),
             objective_policy: None,
             origin_map: OriginMap::new(),
+            formulation_decisions: Vec::new(),
         }
     }
 
@@ -850,6 +852,13 @@ impl BackendSnapshotBuilder {
     /// default).
     pub fn objective_policy(mut self, policy: CompiledObjectivePolicy) -> Self {
         self.objective_policy = Some(policy);
+        self
+    }
+
+    /// Append extra formulation decisions (P32/P33 bridge per-construct
+    /// decisions) to the compiled report.
+    pub fn add_formulation_decisions(mut self, decisions: Vec<FormulationDecision>) -> Self {
+        self.formulation_decisions.extend(decisions);
         self
     }
 
@@ -892,6 +901,7 @@ impl BackendSnapshotBuilder {
             &self.linear_rows,
             &self.objectives,
             &objective_policy,
+            self.formulation_decisions,
         );
 
         Ok(BackendSnapshot {

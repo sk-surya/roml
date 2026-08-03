@@ -6,26 +6,37 @@
 //!
 //! Design §7 declares nine construct kinds (`Indicator`, `Reification`,
 //! `MinMax`, `AbsoluteValue`, `Boolean`, `Cardinality`, `BinaryProduct`,
-//! `PiecewiseLinear`, `SoftConstraint`) as the extension surface. P25 declares
-//! [`ConstructKind`] and its `#[non_exhaustive]` extension boundary but stores
-//! only the crate-private [`FixturePayload`] until the per-construct modules
-//! land in P30/P32/P33 (P25 scope note: P25 must not pre-implement their
-//! formulations).
+//! `PiecewiseLinear`, `SoftConstraint`) as the extension surface. P25 declared
+//! [`ConstructKind`] and its `#[non_exhaustive]` extension boundary and stored
+//! only the crate-private [`FixturePayload`]. P32 Task 16 activates the four
+//! logical-construct variants (`Indicator`, `Reification`, `Boolean`,
+//! `Cardinality`) with exact semantic payloads; the remaining variants land in
+//! P30/P32/P33 follow-up plans.
 //!
-//! # Crate-private in P25 (F3)
+//! # Public exports (A30, P32)
 //!
-//! The whole module is `pub(crate)` in P25: [`ConstructKind`],
-//! [`ConstructEntry`], [`FixturePayload`], and [`ConstructData`] are the
-//! internal construct scaffolding and are NOT exported publicly. The public
-//! exports are [`Construct`]/[`ConstructId`] and [`FormulationPreference`]
-//! (re-exported from the crate root). The per-construct variants and
-//! `ConstructKind`/`ConstructEntry` become public exports in P32 when the real
-//! per-construct payloads exist.
+//! P32 Task 16 activates the real per-construct variants, so the module and
+//! [`ConstructKind`]/[`ConstructEntry`] become **public** exports (A30). The
+//! `Fixture` variant, [`FixturePayload`], and the fixture-only builders stay
+//! crate-private: [`FixturePayload`]'s fields are private and it exposes a
+//! `pub(crate)` constructor so the in-crate `#[cfg(test)]` fixture helper keeps
+//! working. The `#[non_exhaustive]` extension boundary on [`ConstructKind`]
+//! stays (A30).
+
+pub mod boolean;
+pub mod cardinality;
+pub mod indicator;
+pub mod reification;
 
 use std::collections::HashMap;
 
 use crate::id::ParamId;
 use crate::identity::{ConstructId, IdentityOverflow};
+
+pub use boolean::{BooleanConstraint, BooleanKind};
+pub use cardinality::{CardinalityConstraint, CardinalityKind};
+pub use indicator::{IndicatorConstraint, IndicatorDirection};
+pub use reification::ReificationConstraint;
 
 /// A canonical semantic construct handle (design §7).
 pub type Construct = ConstructId;
@@ -36,28 +47,49 @@ pub type Construct = ConstructId;
 /// (`Indicator`, `Reification`, `MinMax`, `AbsoluteValue`, `Boolean`,
 /// `Cardinality`, `BinaryProduct`, `PiecewiseLinear`, `SoftConstraint`) are
 /// the declared extension surface and land with the per-construct modules in
-/// P30/P32/P33. P25 stores only the fixture payload and pre-implements no
+/// P30/P32/P33. P32 Task 16 activates the four logical-construct variants; the
+/// `Fixture` variant remains crate-private (A30) and pre-implements no
 /// formulation.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConstructKind {
-    /// P25-only fixture payload used by the construct lifecycle tests.
-    ///
-    /// Replaced by the design §7 payload variants as per-construct modules land.
+    /// Indicator: a one-way implication over a binary activator (design §16.1).
+    Indicator(IndicatorConstraint),
+    /// Reification: `b = 1 ⟺ function ∈ set` (design §16.2).
+    Reification(ReificationConstraint),
+    /// Boolean: implication/equivalence/any/all over binary variables (design §16.4).
+    Boolean(BooleanConstraint),
+    /// Cardinality: exactly/at-most/at-least-k over binary variables (design §16.4).
+    Cardinality(CardinalityConstraint),
+    /// P32-only crate-private fixture payload used by the in-crate construct
+    /// lifecycle tests (A30 — never exported).
     #[doc(hidden)]
     Fixture(FixturePayload),
 }
 
-/// P25 fixture payload for construct lifecycle testing.
+/// P32-only crate-private fixture payload for the in-crate construct lifecycle
+/// tests (A30).
 ///
-/// Minimal and intentionally solver-free; carries no formulation.
+/// Minimal and intentionally solver-free; carries no formulation. The type is
+/// `#[doc(hidden)]` and its fields are `pub(crate)` (not exported publicly —
+/// external code cannot construct or read the fixture scaffolding); the
+/// `pub(crate)` constructor keeps the in-crate `#[cfg(test)]` fixture helper
+/// working.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixturePayload {
-    /// A distinguishing key.
-    pub key: String,
-    /// A numeric value.
-    pub value: f64,
+    /// A distinguishing key (crate-visible only — A30).
+    pub(crate) key: String,
+    /// A numeric value (crate-visible only — A30).
+    pub(crate) value: f64,
+}
+
+impl FixturePayload {
+    /// Build a fixture payload (crate-private — A30).
+    #[allow(dead_code)]
+    pub(crate) fn new(key: String, value: f64) -> Self {
+        Self { key, value }
+    }
 }
 
 /// A construct entry in canonical state (design §7).
@@ -74,7 +106,7 @@ pub struct ConstructEntry {
     /// Threaded through `Change::ConstructAdded`/`ModelOp::AddConstruct` and
     /// the snapshot/delta reconstruction paths so P26 can honor
     /// Auto/Portable/NativeRequired from canonical snapshots/deltas. The
-    /// [`ConstructData`] arena reads preference exclusively from this entry
+    /// construct arena reads preference exclusively from this entry
     /// (single authority).
     pub preference: FormulationPreference,
 }
@@ -94,8 +126,12 @@ pub enum FormulationPreference {
 }
 
 /// Internal construct data held by the arena.
+///
+/// Crate-private (A30): the construct arena is internal scaffolding; external
+/// consumers reach constructs through the public builders and the
+/// [`ConstructEntry`] in canonical snapshots/deltas.
 #[derive(Clone, Debug)]
-pub struct ConstructData {
+pub(crate) struct ConstructData {
     /// The canonical construct entry (single authority for kind, activity, and
     /// formulation preference — F4).
     pub entry: ConstructEntry,
@@ -188,6 +224,10 @@ impl ConstructStore {
 /// is invariant-checked against this derivation (P25 Task 4).
 pub(crate) fn derive_parameter_dependencies(kind: &ConstructKind) -> Vec<ParamId> {
     match kind {
+        ConstructKind::Indicator(payload) => payload.parameter_dependencies(),
+        ConstructKind::Reification(payload) => payload.parameter_dependencies(),
+        ConstructKind::Boolean(_) => Vec::new(),
+        ConstructKind::Cardinality(_) => Vec::new(),
         ConstructKind::Fixture(_) => Vec::new(),
     }
 }

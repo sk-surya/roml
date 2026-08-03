@@ -41,8 +41,9 @@ pub type Objective = crate::id::ObjId;
 pub type Parameter = crate::id::ParamId;
 
 use crate::construct::{
-    derive_parameter_dependencies, Construct, ConstructEntry, ConstructKind, ConstructStore,
-    FixturePayload, FormulationPreference,
+    derive_parameter_dependencies, BooleanKind, CardinalityKind, Construct, ConstructEntry,
+    ConstructKind, ConstructStore, FixturePayload, FormulationPreference, IndicatorConstraint,
+    IndicatorDirection, ReificationConstraint,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -57,6 +58,8 @@ use crate::solution::Solution;
 // Legacy import removed.
 
 use crate::value_expr::ValueExpr;
+
+use std::collections::HashSet;
 
 use log::warn;
 
@@ -83,6 +86,32 @@ pub enum ModelError {
     NonFiniteValue(&'static str),
     /// A value was NaN.
     NaNValue(&'static str),
+    /// A logical construct required a binary variable but received a
+    /// non-binary one (continuous or integer) (SM-12.2).
+    NonBinaryVariable(VarId),
+    /// A cardinality construct received the same binary variable more than
+    /// once (SM-12.5).
+    DuplicateCardinalityVariable(VarId),
+    /// A cardinality construct received an invalid `k` (negative, non-integral,
+    /// or greater than the input length) (SM-12.5).
+    InvalidCardinalityK {
+        /// The offending `k` value.
+        k: f64,
+        /// Why the value is invalid.
+        reason: &'static str,
+    },
+    /// Continuous exact reification without an explicit separation tolerance
+    /// (SM-12.2, D14).
+    ContinuousReificationWithoutSeparation,
+    /// A reification separation tolerance was non-finite or non-positive
+    /// (SM-12.2, D14).
+    InvalidReificationSeparation(f64),
+    /// Reification currently supports `le`/`ge` threshold relations only;
+    /// equality/interval relations need a disjunctive complement not in the
+    /// P32 two-implication contract.
+    UnsupportedReificationSet,
+    /// A construct input list was empty (Boolean any/all, cardinality).
+    EmptyConstructInput,
     /// Revision counter overflow.
     RevisionOverflow,
     /// An opaque identity counter was exhausted (ids never wrap).
@@ -109,6 +138,35 @@ impl std::fmt::Display for ModelError {
             }
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
+            Self::NonBinaryVariable(id) => {
+                write!(
+                    f,
+                    "a binary variable is required here, got non-binary {id:?}"
+                )
+            }
+            Self::DuplicateCardinalityVariable(id) => {
+                write!(f, "cardinality input contains a duplicate variable {id:?}")
+            }
+            Self::InvalidCardinalityK { k, reason } => {
+                write!(f, "invalid cardinality k = {k}: {reason}")
+            }
+            Self::ContinuousReificationWithoutSeparation => write!(
+                f,
+                "continuous exact reification requires an explicit separation tolerance \
+                 (D14); the unit gap is inferred only for proven-integer expressions"
+            ),
+            Self::InvalidReificationSeparation(s) => {
+                write!(
+                    f,
+                    "invalid reification separation tolerance {s}: must be finite and > 0"
+                )
+            }
+            Self::UnsupportedReificationSet => write!(
+                f,
+                "reification currently supports le/ge threshold relations only (P32 \
+                 two-implication contract)"
+            ),
+            Self::EmptyConstructInput => write!(f, "construct input list must not be empty"),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -398,7 +456,187 @@ impl Model {
         payload: FixturePayload,
         preference: FormulationPreference,
     ) -> Result<Construct, ModelError> {
-        let kind = ConstructKind::Fixture(payload);
+        self.add_construct(ConstructKind::Fixture(payload), Some(preference))
+    }
+
+    /// Add an indicator construct (design §16.1, packet Task 16).
+    ///
+    /// `direction` selects the one-way implication: `WhenOne` means
+    /// `activator = 1 ⇒ relation`, `WhenZero` means `activator = 0 ⇒ relation`.
+    /// The activator must be a binary variable (a continuous or integer
+    /// activator is a typed [`ModelError::NonBinaryVariable`]). The optional
+    /// per-construct [`FormulationPreference`] narrows the global compilation
+    /// policy (A29 single authority — stored on the [`ConstructEntry`]).
+    pub fn add_indicator(
+        &mut self,
+        activator: VarId,
+        direction: IndicatorDirection,
+        relation: impl Into<FunctionConstraint>,
+        preference: Option<FormulationPreference>,
+    ) -> Result<Construct, ModelError> {
+        self.require_binary(activator)?;
+        let fc = relation.into();
+        let payload = IndicatorConstraint {
+            activator,
+            direction,
+            function: fc.function,
+            set: fc.set,
+        };
+        self.add_construct(ConstructKind::Indicator(payload), preference)
+    }
+
+    /// Add a reification construct (design §16.2, packet Task 16).
+    ///
+    /// `relation` is reified to a binary `b = 1 ⟺ relation`. Continuous exact
+    /// reification requires an explicit `separation` tolerance (D14); when
+    /// `separation` is `None` the unit gap is inferred only when the expression
+    /// is proven integer-valued (all variables integer/binary with integral
+    /// constant coefficients). The optional per-construct
+    /// [`FormulationPreference`] narrows the global compilation policy.
+    pub fn add_reify(
+        &mut self,
+        relation: impl Into<FunctionConstraint>,
+        separation: Option<f64>,
+        preference: Option<FormulationPreference>,
+    ) -> Result<Construct, ModelError> {
+        if let Some(tol) = separation {
+            if !tol.is_finite() || tol <= 0.0 {
+                return Err(ModelError::InvalidReificationSeparation(tol));
+            }
+        }
+        let fc = relation.into();
+        let proven = self.expression_is_proven_integral(&fc.function);
+        if separation.is_none() && !proven {
+            return Err(ModelError::ContinuousReificationWithoutSeparation);
+        }
+        // P32 reification is the two-implication threshold contract (le/ge).
+        // Equality/interval reification needs a disjunctive complement — a
+        // typed build-time rejection, never a silent relaxation.
+        match &fc.set {
+            ScalarSet::LessEqual(_) | ScalarSet::GreaterEqual(_) => {}
+            ScalarSet::EqualTo(_) | ScalarSet::Interval { .. } => {
+                return Err(ModelError::UnsupportedReificationSet);
+            }
+        }
+        // The reification result is a fresh binary variable the construct owns
+        // (design §16.2: `reify` creates and returns the indicator variable).
+        let activator = self.add_variable_internal(Bounds::BINARY, VarType::Binary, None);
+        let payload = ReificationConstraint {
+            activator,
+            function: fc.function,
+            set: fc.set,
+            separation_tolerance: separation,
+            proven_integrality: proven,
+        };
+        self.add_construct(ConstructKind::Reification(payload), preference)
+    }
+
+    /// Add a Boolean construct (design §16.4, packet Task 16).
+    ///
+    /// `kind` selects implication, equivalence, any (at-least-one), or all
+    /// (all-ones) over binary variables. Every referenced variable must be
+    /// binary. The optional per-construct [`FormulationPreference`] narrows the
+    /// global compilation policy.
+    pub fn add_boolean(
+        &mut self,
+        kind: BooleanKind,
+        preference: Option<FormulationPreference>,
+    ) -> Result<Construct, ModelError> {
+        match &kind {
+            BooleanKind::Implication {
+                antecedent,
+                consequent,
+            } => {
+                self.require_binary(*antecedent)?;
+                self.require_binary(*consequent)?;
+            }
+            BooleanKind::Equivalence { left, right } => {
+                self.require_binary(*left)?;
+                self.require_binary(*right)?;
+            }
+            BooleanKind::Any { variables } | BooleanKind::All { variables } => {
+                if variables.is_empty() {
+                    return Err(ModelError::EmptyConstructInput);
+                }
+                for &v in variables {
+                    self.require_binary(v)?;
+                }
+            }
+        }
+        self.add_construct(
+            ConstructKind::Boolean(crate::construct::BooleanConstraint { kind }),
+            preference,
+        )
+    }
+
+    /// Add a cardinality construct (design §16.4, packet Task 16).
+    ///
+    /// Exactly/at-most/at-least `k` of `variables` are `1`. `k` is validated:
+    /// it must be finite, non-negative, integral, and no greater than the input
+    /// length (typed [`ModelError::InvalidCardinalityK`] otherwise); the input
+    /// list must be non-empty, all-binary, and duplicate-free (typed errors).
+    /// The optional per-construct [`FormulationPreference`] narrows the global
+    /// compilation policy.
+    pub fn add_cardinality(
+        &mut self,
+        variables: impl IntoIterator<Item = VarId>,
+        kind: CardinalityKind,
+        k: f64,
+        preference: Option<FormulationPreference>,
+    ) -> Result<Construct, ModelError> {
+        let variables: Vec<VarId> = variables.into_iter().collect();
+        if variables.is_empty() {
+            return Err(ModelError::EmptyConstructInput);
+        }
+        let mut seen = HashSet::new();
+        for &v in &variables {
+            if !seen.insert(v) {
+                return Err(ModelError::DuplicateCardinalityVariable(v));
+            }
+            self.require_binary(v)?;
+        }
+        if !k.is_finite() {
+            return Err(ModelError::InvalidCardinalityK {
+                k,
+                reason: "k must be finite",
+            });
+        }
+        if k < 0.0 {
+            return Err(ModelError::InvalidCardinalityK {
+                k,
+                reason: "k must be non-negative",
+            });
+        }
+        if (k - k.round()).abs() > 1e-9 {
+            return Err(ModelError::InvalidCardinalityK {
+                k,
+                reason: "k must be an integer",
+            });
+        }
+        let kk = k.round() as usize;
+        if kk > variables.len() {
+            return Err(ModelError::InvalidCardinalityK {
+                k,
+                reason: "k exceeds the input length",
+            });
+        }
+        let payload = crate::construct::CardinalityConstraint {
+            variables,
+            kind,
+            k: kk,
+        };
+        self.add_construct(ConstructKind::Cardinality(payload), preference)
+    }
+
+    /// Shared construct-add: allocate the arena entry, record the
+    /// self-contained `Change::ConstructAdded` (A29: payload + preference single
+    /// authority), and return the stable generation-safe handle.
+    fn add_construct(
+        &mut self,
+        kind: ConstructKind,
+        preference: Option<FormulationPreference>,
+    ) -> Result<Construct, ModelError> {
+        let preference = preference.unwrap_or(FormulationPreference::Auto);
         let construct = self
             .constructs
             .add(kind.clone(), preference)
@@ -411,6 +649,43 @@ impl Model {
             active: true,
         });
         Ok(construct)
+    }
+
+    /// Require `var` to exist and be a binary variable (SM-12.2).
+    fn require_binary(&self, var: VarId) -> Result<(), ModelError> {
+        match self.variables.get(var).map(|d| d.var_type) {
+            Some(VarType::Binary) => Ok(()),
+            Some(_) => Err(ModelError::NonBinaryVariable(var)),
+            None => Err(ModelError::VariableNotFound(var)),
+        }
+    }
+
+    /// Whether `function` is proven integer-valued over its domain (D14).
+    ///
+    /// All referenced variables must be binary/integer and every coefficient
+    /// (including the constant term) must be an integral constant. A
+    /// parameterized coefficient is conservatively NOT proven integral.
+    fn expression_is_proven_integral(&self, function: &ScalarFunction) -> bool {
+        match function {
+            ScalarFunction::Linear(expr) => {
+                let constant_ok = expr.constant.is_finite()
+                    && (expr.constant - expr.constant.round()).abs() < 1e-9;
+                constant_ok
+                    && expr
+                        .terms
+                        .iter()
+                        .all(|term| match term.coeff.as_constant() {
+                            Some(v) => v.is_finite() && (v - v.round()).abs() < 1e-9,
+                            None => false,
+                        })
+                    && expr.terms.iter().all(|term| {
+                        matches!(
+                            self.variables.get(term.var).map(|d| d.var_type),
+                            Some(VarType::Binary) | Some(VarType::Integer)
+                        )
+                    })
+            }
+        }
     }
 
     /// Read a construct entry by id.
@@ -2760,10 +3035,7 @@ mod construct_tests {
     use super::*;
 
     fn fixture(key: &str, value: f64) -> FixturePayload {
-        FixturePayload {
-            key: key.to_string(),
-            value,
-        }
+        FixturePayload::new(key.to_string(), value)
     }
 
     #[test]

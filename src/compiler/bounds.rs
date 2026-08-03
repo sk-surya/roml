@@ -600,6 +600,54 @@ where
     }
 }
 
+/// Derive the one-sided Big-M for `function` against `rhs` directly from a
+/// canonical snapshot's declared variable bounds and evaluated parameter
+/// values (a crate-internal convenience the P32 bridges use). Returns the
+/// finite M together with the [`BoundTrace`] provenance sources so a bridge can
+/// record the SM-13.5 bound-evidence report entry.
+pub(crate) fn bound_big_m_implied_snapshot(
+    analyzer: &BoundAnalyzer,
+    construct: Construct,
+    expression: &str,
+    function: &ScalarFunction,
+    side: BigMImplication,
+    rhs: f64,
+    snapshot: &ModelSnapshot,
+) -> Result<(f64, Vec<BoundSource>), CompileError> {
+    if !rhs.is_finite() {
+        return Err(CompileError::InvalidBigM {
+            construct,
+            expression: expression.to_string(),
+            reason: "non-finite rhs".to_string(),
+        });
+    }
+    let variable_bounds = |v: VarId| {
+        snapshot
+            .variables
+            .iter()
+            .find(|e| e.id == v)
+            .map(|e| e.bounds)
+            .unwrap_or(Bounds::UNBOUNDED)
+    };
+    let parameter_values = |p: ParamId| {
+        snapshot
+            .parameters
+            .iter()
+            .find(|e| e.id == p)
+            .map(|e| e.value)
+            .unwrap_or(0.0)
+    };
+    let trace = analyzer
+        .interval_of(function, variable_bounds, parameter_values)
+        .map_err(|e| CompileError::InvalidBigM {
+            construct,
+            expression: expression.to_string(),
+            reason: e.to_string(),
+        })?;
+    let m = derived_big_m(construct, expression, &trace.result, side, rhs)?;
+    Ok((m, trace.sources))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

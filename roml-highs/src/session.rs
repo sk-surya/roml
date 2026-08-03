@@ -504,12 +504,29 @@ const M2_NATIVE_FEATURES: [BackendFeature; 5] = [
     BackendFeature::IncrementalCoefficients,
 ];
 
-/// Every M3 feature that P26 does **not** qualify as native for HiGHS.
+/// The M3 features P32 qualifies as exact ROML **bridge** support for HiGHS
+/// (SM-04.2).
+///
+/// HiGHS has no qualified native `Indicator` (SM-04.3: no official-header
+/// audit), and no native reification/Boolean/cardinality primitives; P32
+/// declares these as exact ROML portable formulations (`SupportLevel::Bridge`).
+/// `Auto` compilation prefers a qualified native primitive, otherwise this
+/// exact bridge; `NativeRequired` rejects a bridge-only feature.
+const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 4] = [
+    BackendFeature::Indicator,
+    BackendFeature::Reification,
+    BackendFeature::Boolean,
+    BackendFeature::Cardinality,
+];
+
+/// Every M3 feature that P26/P32 does **not** qualify as native or bridge for
+/// HiGHS.
 ///
 /// These are declared `Unsupported` (SM-04.4): request/compilation paths gate
 /// on them and reject or rebuild rather than silently proceeding. The list
-/// matches the plan Task 6 bullet verbatim.
-const UNQUALIFIED_M3_FEATURES: [BackendFeature; 12] = [
+/// matches the plan Task 6 bullet verbatim minus the P32 bridge-supported
+/// logical-construct features.
+const UNQUALIFIED_M3_FEATURES: [BackendFeature; 11] = [
     BackendFeature::MipStart,
     BackendFeature::PartialMipStart,
     BackendFeature::MultipleMipStarts,
@@ -517,7 +534,6 @@ const UNQUALIFIED_M3_FEATURES: [BackendFeature; 12] = [
     BackendFeature::InitialBasis,
     BackendFeature::Iis,
     BackendFeature::FeasibilityRelaxation,
-    BackendFeature::Indicator,
     BackendFeature::Sos1,
     BackendFeature::Sos2,
     BackendFeature::NativePiecewiseLinear,
@@ -542,6 +558,20 @@ pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabi
                 minimum_version: Some(version.clone()),
                 notes: vec![
                     "declared against the runtime HiGHS version (pinned highs-sys 1.15.0; CI system floor 1.9.0)".to_string(),
+                ],
+                ..FeatureLimitations::default()
+            }),
+        );
+    }
+
+    for feature in BRIDGE_SUPPORTED_M3_FEATURES {
+        set.set(
+            feature,
+            FeatureSupport::bridge(FeatureLimitations {
+                minimum_version: Some(version.clone()),
+                notes: vec![
+                    "P32 declares exact ROML bridge support (no qualified native claim; SM-04.3)"
+                        .to_string(),
                 ],
                 ..FeatureLimitations::default()
             }),
@@ -992,6 +1022,28 @@ mod tests {
                 SupportLevel::Unsupported,
                 "feature {:?} level",
                 feature
+            );
+        }
+    }
+
+    #[test]
+    fn highs_capability_set_declares_p32_bridge_support_without_native_claims() {
+        let set = highs_capability_set(1, 15, 0);
+
+        // P32's first bridge declarations: the logical-construct features are
+        // exact ROML bridges (SM-04.2) with NO qualified native claim (SM-04.3).
+        for feature in BRIDGE_SUPPORTED_M3_FEATURES {
+            let support = set
+                .support(feature)
+                .unwrap_or_else(|| panic!("feature {feature:?} must be declared"));
+            assert_eq!(
+                support.level,
+                SupportLevel::Bridge,
+                "{feature:?} must be declared as an exact ROML bridge (P32)"
+            );
+            assert!(
+                !set.supports(feature),
+                "{feature:?} must NOT claim unqualified native support (SM-04.3)"
             );
         }
     }
