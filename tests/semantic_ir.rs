@@ -11,7 +11,9 @@
 //! generation-safe construct arena survives add/clone/snapshot/activity/
 //! remove/rebuild (design §7, SM-01.3, SM-01.6).
 
-use roml::construct::{Construct, ConstructEntry, ConstructKind, FixturePayload, FormulationPreference};
+use roml::construct::{
+    Construct, ConstructEntry, ConstructKind, FixturePayload, FormulationPreference,
+};
 use roml::{
     continuous, ConstraintExprExt, FunctionConstraint, IntoScalarFunction, Model, ModelError,
     ModelRevision, ScalarFunction, ScalarSet, ValueExpr,
@@ -474,7 +476,9 @@ fn construct_metadata_usable_via_entity_ref() {
         description: Some("a construct".to_string()),
         ..EntityMetadata::default()
     };
-    model.set_metadata(EntityRef::Construct(k), meta.clone()).unwrap();
+    model
+        .set_metadata(EntityRef::Construct(k), meta.clone())
+        .unwrap();
     assert_eq!(
         model.metadata(EntityRef::Construct(k)),
         Some(&meta),

@@ -8,16 +8,16 @@
 
 use std::collections::HashSet;
 
-use roml::{
-    continuous, ConstraintExprExt, EntityMetadata, EntityRef, Model, ModelRevision, ModelSource,
-    SolveMetadata, SolverSession,
-};
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
 use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult, SolveSolution};
 use roml::solver::session::{
     BackendMetadata, BackendSession, SessionHealth, SyncReceipt, Synchronization,
 };
 use roml::sync::{AdapterCursor, AdapterHealth};
+use roml::{
+    continuous, ConstraintExprExt, EntityMetadata, EntityRef, Model, ModelRevision, ModelSource,
+    SolveMetadata, SolverSession,
+};
 
 #[test]
 fn independent_models_never_share_lineage_or_instance() {
@@ -99,7 +99,9 @@ fn metadata_round_trips_per_entity() {
     };
 
     // Variable metadata round-trips in full.
-    model.set_metadata(EntityRef::Variable(x), meta.clone()).unwrap();
+    model
+        .set_metadata(EntityRef::Variable(x), meta.clone())
+        .unwrap();
     assert_eq!(model.metadata(EntityRef::Variable(x)), Some(&meta));
 
     // Other entities are independent until set.
@@ -274,9 +276,7 @@ fn real_solve_binds_model_lineage_and_instance_into_metadata() {
     model.maximize(x).unwrap();
 
     let mut session = SolverSession::new(LineageTestBackend::new());
-    let solution = session
-        .solve(&mut model)
-        .expect("reference solve succeeds");
+    let solution = session.solve(&mut model).expect("reference solve succeeds");
     assert_eq!(
         solution.metadata().model_lineage,
         model.lineage(),
