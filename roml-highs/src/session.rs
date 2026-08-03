@@ -39,7 +39,9 @@ use crate::compiler::{apply_backend_delta, rebuild_from_backend_snapshot};
 use crate::error::{check_highs_status, from_native_status};
 use crate::lifecycle::HighsSession;
 use crate::solution::{extract_solution, map_termination_status};
-use roml::advanced::{CompileError, CompiledConstraintId, CompiledVariableId};
+use roml::advanced::{
+    CompileError, CompiledConstraintId, CompiledEntityRegistry, CompiledVariableId,
+};
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
 };
@@ -79,6 +81,18 @@ impl BackendSession for HighsSession {
                     "Rebuilding HiGHS session from compiled backend snapshot at revision {}",
                     revision
                 );
+
+                // F5: reject a malformed snapshot (dangling references) before
+                // any native mutation — the snapshot has all-pub fields and can
+                // bypass builder finalization.
+                if let Err(e) = snapshot.validate() {
+                    self.cursor.mark_rebuild();
+                    return Err(BackendError::new(
+                        format!("compiled snapshot failed preflight validation: {e}"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::RequiresRebuild,
+                    ));
+                }
 
                 let result = rebuild_from_backend_snapshot(
                     self.raw,
@@ -174,6 +188,23 @@ impl BackendSession for HighsSession {
                     );
                     self.cursor.mark_rebuild();
                     return Err(e);
+                }
+
+                // F5: preflight-validate every op's referenced IDs against the
+                // session's held compiled state BEFORE applying any op — a
+                // malformed batch never partially mutates the native model.
+                let registry = CompiledEntityRegistry {
+                    variables: self.col_map.iter().map(|(id, _)| id).collect(),
+                    rows: self.row_map.iter().map(|(id, _)| id).collect(),
+                    objectives: self.compiled_to_user_objective.keys().copied().collect(),
+                };
+                if let Err(e) = batch.validate(&registry) {
+                    self.cursor.mark_rebuild();
+                    return Err(BackendError::new(
+                        format!("compiled delta failed preflight validation: {e}"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::Recoverable,
+                    ));
                 }
 
                 let result = apply_backend_delta(
@@ -818,13 +849,15 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 mod tests {
     use super::*;
     use roml::advanced::{
-        BackendDeltaBatch, BackendOp, BackendSnapshot, CompilationId, CompilationPolicy,
-        CompilationSession, CompiledObjectiveId, CompiledObjectiveLevel, CompiledObjectivePolicy,
-        CompiledWeightedObjective,
+        BackendDeltaBatch, BackendOp, BackendSnapshot, BackendSnapshotBuilder, CompilationId,
+        CompilationPolicy, CompilationSession, CompiledLinearRow, CompiledObjectiveId,
+        CompiledObjectiveLevel, CompiledObjectivePolicy, CompiledVariable, CompiledVariableId,
+        CompiledWeightedObjective, EntityOrigin, OriginMap,
     };
     use roml::compiler::capability::SupportLevel;
     use roml::delta::{DeltaBatch, ModelOp};
-    use roml::model::{continuous, Bounds, VarType};
+    use roml::id::Generation;
+    use roml::model::{continuous, Bounds, ConstraintBounds, VarType};
     use roml::snapshot::ModelSnapshot;
     use roml::{ConstraintExprExt, Model};
 
@@ -1186,6 +1219,99 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(err.category, ErrorCategory::Unsupported);
+        assert_eq!(
+            highs.current_compilation, None,
+            "a rejected rebuild must not establish a compiled state"
+        );
+    }
+
+    // ── F5: preflight validation of snapshots and deltas ─────────────────────
+
+    /// F5: a compiled delta op referencing a compiled variable not present in
+    /// the session's held state is rejected by the preflight validator with a
+    /// typed `InvalidInput` error BEFORE any native mutation, and the session's
+    /// compiled state does not advance.
+    #[test]
+    fn compiled_delta_with_unknown_variable_reference_is_rejected() {
+        let (_model, mut highs, mut delta, base_id) = weighted_lexicographic_fixture();
+        delta.operations = vec![BackendOp::SetVariableBounds {
+            variable: CompiledVariableId(999),
+            bounds: Bounds::new(0.0, 1.0),
+        }];
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => {
+                panic!(
+                    "an op referencing an unknown compiled variable must be rejected, not skipped"
+                )
+            }
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "a dangling reference is invalid input"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(base_id),
+            "a rejected batch must not advance the session's compiled state"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::RequiresRebuild,
+            "a rejected batch leaves the session rebuild-required"
+        );
+    }
+
+    /// F5: a snapshot whose row coefficient references a compiled variable
+    /// absent from the snapshot is rejected by the preflight validator when
+    /// rebuilding — no silent omission of the coefficient.
+    #[test]
+    fn compiled_rebuild_with_unknown_variable_coefficient_is_rejected() {
+        let source_instance = Model::new().instance();
+        let row = CompiledLinearRow {
+            id: CompiledConstraintId(0),
+            bounds: ConstraintBounds::le(10.0),
+            coefficients: vec![(CompiledVariableId(5), 1.0)],
+            name: None,
+        };
+        let mut origin_map = OriginMap::new();
+        origin_map.insert_variable(
+            CompiledVariableId(0),
+            EntityOrigin::UserVariable(VarId::new(0, Generation::new())),
+        );
+        origin_map.insert_constraint(
+            CompiledConstraintId(0),
+            EntityOrigin::UserConstraint(ConId::new(0, Generation::new())),
+        );
+        let snapshot = BackendSnapshotBuilder::new(source_instance, ModelRevision::ZERO)
+            .origin_map(origin_map)
+            .objective_policy(CompiledObjectivePolicy::None)
+            .add_variable(CompiledVariable {
+                id: CompiledVariableId(0),
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+                name: None,
+            })
+            .add_linear_row(row)
+            .finalize()
+            .expect("builder finalization checks origins, not coefficient references");
+
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        let err = match highs.synchronize(Synchronization::CompiledRebuild(snapshot)) {
+            Ok(_) => {
+                panic!(
+                    "a snapshot row coefficient referencing an unknown variable must be rejected"
+                )
+            }
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "a dangling snapshot reference is invalid input"
+        );
         assert_eq!(
             highs.current_compilation, None,
             "a rejected rebuild must not establish a compiled state"

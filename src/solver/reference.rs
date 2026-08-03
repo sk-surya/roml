@@ -18,7 +18,8 @@ use std::collections::HashMap;
 
 use crate::compiler::backend_ir::{
     BackendDeltaBatch, BackendOp, BackendSnapshot, CompilationId, CompiledConstraintId,
-    CompiledObjectiveId, CompiledObjectivePolicy, CompiledVariableId,
+    CompiledEntityRef, CompiledEntityRegistry, CompiledObjectiveId, CompiledObjectivePolicy,
+    CompiledVariableId,
 };
 use crate::compiler::CompileError;
 use crate::delta::{DeltaBatch, ModelOp};
@@ -475,7 +476,15 @@ impl ReferenceBackend {
 
     /// Rebuild the compiled state from a [`BackendSnapshot`] (deterministic
     /// full compiled projection).
-    pub fn rebuild_compiled(&mut self, snapshot: &BackendSnapshot) {
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`CompileError::InvalidReference`] when the snapshot
+    /// contains a dangling reference (F5) — before any native state is
+    /// mutated.
+    pub fn rebuild_compiled(&mut self, snapshot: &BackendSnapshot) -> Result<(), CompileError> {
+        // F5: reject a malformed snapshot before clearing/reconstructing state.
+        snapshot.validate()?;
         self.compiled_variables.clear();
         self.compiled_rows.clear();
         self.compiled_objectives.clear();
@@ -495,6 +504,7 @@ impl ReferenceBackend {
         self.compiled_objective_policy = snapshot.objective_policy.clone();
         self.current_compilation = Some(snapshot.compilation_id);
         self.compiled_revision = snapshot.source_revision;
+        Ok(())
     }
 
     /// Apply a compiled delta batch to the compiled state.
@@ -502,6 +512,10 @@ impl ReferenceBackend {
     /// The batch's `from_compilation` must equal the current compiled state's
     /// id (D28): a stale batch is rejected with
     /// [`CompileError::StaleCompilation`] before any op is applied.
+    ///
+    /// F5: every op's referenced IDs are preflight-validated against the
+    /// current compiled state BEFORE any op is applied, so a malformed batch
+    /// never partially mutates the compiled state.
     pub fn apply_compiled_delta(&mut self, batch: &BackendDeltaBatch) -> Result<(), CompileError> {
         let actual = self.current_compilation.ok_or_else(|| {
             CompileError::RebuildRequired("reference backend has no compiled base".into())
@@ -513,8 +527,15 @@ impl ReferenceBackend {
             });
         }
 
+        let registry = CompiledEntityRegistry {
+            variables: self.compiled_variables.keys().copied().collect(),
+            rows: self.compiled_rows.keys().copied().collect(),
+            objectives: self.compiled_objectives.keys().copied().collect(),
+        };
+        batch.validate(&registry)?;
+
         for op in &batch.operations {
-            self.apply_compiled_op(op);
+            self.apply_compiled_op(op)?;
         }
 
         self.current_compilation = Some(batch.to_compilation);
@@ -523,12 +544,18 @@ impl ReferenceBackend {
     }
 
     /// Apply a single compiled backend op to the compiled state.
-    pub fn apply_compiled_op(&mut self, op: &BackendOp) {
+    ///
+    /// F5: an op referencing a compiled entity that does not exist is a typed
+    /// [`CompileError::InvalidReference`], never a silent skip.
+    pub fn apply_compiled_op(&mut self, op: &BackendOp) -> Result<(), CompileError> {
         match op {
             BackendOp::AddVariable(v) => {
                 self.compiled_variables.insert(v.id, (v.bounds, v.var_type));
             }
             BackendOp::RemoveVariable(id) => {
+                if !self.compiled_variables.contains_key(id) {
+                    return Err(invalid_variable(*id));
+                }
                 self.compiled_variables.remove(id);
                 // Mirror the canonical `apply_op(ModelOp::RemoveVariable)`
                 // cleanup (CR-01): purge every `(CompiledVariableId, f64)`
@@ -544,44 +571,74 @@ impl ReferenceBackend {
                 }
             }
             BackendOp::SetVariableBounds { variable, bounds } => {
-                if let Some(entry) = self.compiled_variables.get_mut(variable) {
-                    entry.0 = *bounds;
-                }
+                let entry = self
+                    .compiled_variables
+                    .get_mut(variable)
+                    .ok_or_else(|| invalid_variable(*variable))?;
+                entry.0 = *bounds;
             }
             BackendOp::AddLinearRow(r) => {
+                for (cid, _) in &r.coefficients {
+                    if !self.compiled_variables.contains_key(cid) {
+                        return Err(invalid_variable(*cid));
+                    }
+                }
                 self.compiled_rows
                     .insert(r.id, (r.bounds, r.coefficients.clone()));
             }
             BackendOp::RemoveLinearRow(id) => {
+                if !self.compiled_rows.contains_key(id) {
+                    return Err(invalid_row(*id));
+                }
                 self.compiled_rows.remove(id);
             }
             BackendOp::SetLinearRowBounds { constraint, bounds } => {
-                if let Some(entry) = self.compiled_rows.get_mut(constraint) {
-                    entry.0 = *bounds;
-                }
+                let entry = self
+                    .compiled_rows
+                    .get_mut(constraint)
+                    .ok_or_else(|| invalid_row(*constraint))?;
+                entry.0 = *bounds;
             }
             BackendOp::SetLinearCoefficient {
                 constraint,
                 variable,
                 value,
             } => {
-                if let Some(entry) = self.compiled_rows.get_mut(constraint) {
-                    upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+                if !self.compiled_variables.contains_key(variable) {
+                    return Err(invalid_variable(*variable));
                 }
+                let entry = self
+                    .compiled_rows
+                    .get_mut(constraint)
+                    .ok_or_else(|| invalid_row(*constraint))?;
+                upsert_compiled_coefficient(&mut entry.1, *variable, *value);
             }
             BackendOp::RemoveLinearCoefficient {
                 constraint,
                 variable,
             } => {
-                if let Some(entry) = self.compiled_rows.get_mut(constraint) {
-                    entry.1.retain(|(v, _)| v != variable);
+                if !self.compiled_variables.contains_key(variable) {
+                    return Err(invalid_variable(*variable));
                 }
+                let entry = self
+                    .compiled_rows
+                    .get_mut(constraint)
+                    .ok_or_else(|| invalid_row(*constraint))?;
+                entry.1.retain(|(v, _)| v != variable);
             }
             BackendOp::AddObjective(o) => {
+                for (cid, _) in &o.coefficients {
+                    if !self.compiled_variables.contains_key(cid) {
+                        return Err(invalid_variable(*cid));
+                    }
+                }
                 self.compiled_objectives
                     .insert(o.id, (o.sense, o.coefficients.clone(), o.constant));
             }
             BackendOp::RemoveObjective(id) => {
+                if !self.compiled_objectives.contains_key(id) {
+                    return Err(invalid_objective(*id));
+                }
                 self.compiled_objectives.remove(id);
                 // CR-02: defensively clear the compiled objective policy when it
                 // references the removed id — matching the canonical
@@ -598,32 +655,48 @@ impl ReferenceBackend {
                 variable,
                 value,
             } => {
-                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
-                    upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+                if !self.compiled_variables.contains_key(variable) {
+                    return Err(invalid_variable(*variable));
                 }
+                let entry = self
+                    .compiled_objectives
+                    .get_mut(objective)
+                    .ok_or_else(|| invalid_objective(*objective))?;
+                upsert_compiled_coefficient(&mut entry.1, *variable, *value);
             }
             BackendOp::RemoveObjectiveCoefficient {
                 objective,
                 variable,
             } => {
-                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
-                    entry.1.retain(|(v, _)| v != variable);
+                if !self.compiled_variables.contains_key(variable) {
+                    return Err(invalid_variable(*variable));
                 }
+                let entry = self
+                    .compiled_objectives
+                    .get_mut(objective)
+                    .ok_or_else(|| invalid_objective(*objective))?;
+                entry.1.retain(|(v, _)| v != variable);
             }
             BackendOp::SetObjectiveConstant { objective, value } => {
-                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
-                    entry.2 = *value;
-                }
+                let entry = self
+                    .compiled_objectives
+                    .get_mut(objective)
+                    .ok_or_else(|| invalid_objective(*objective))?;
+                entry.2 = *value;
             }
             BackendOp::SetObjectiveSense { objective, sense } => {
-                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
-                    entry.0 = *sense;
-                }
+                let entry = self
+                    .compiled_objectives
+                    .get_mut(objective)
+                    .ok_or_else(|| invalid_objective(*objective))?;
+                entry.0 = *sense;
             }
             BackendOp::SetObjectivePolicy(policy) => {
+                validate_policy_references(policy, &self.compiled_objectives)?;
                 self.compiled_objective_policy = policy.clone();
             }
         }
+        Ok(())
     }
 
     /// Produce a deterministic normalized view of the compiled state.
@@ -663,6 +736,59 @@ impl ReferenceBackend {
             objective_policy: self.compiled_objective_policy.clone(),
         }
     }
+}
+
+/// F5: a typed `InvalidReference` error for an unknown compiled variable.
+fn invalid_variable(id: CompiledVariableId) -> CompileError {
+    CompileError::InvalidReference {
+        entity: CompiledEntityRef::Variable(id),
+    }
+}
+
+/// F5: a typed `InvalidReference` error for an unknown compiled row.
+fn invalid_row(id: CompiledConstraintId) -> CompileError {
+    CompileError::InvalidReference {
+        entity: CompiledEntityRef::Constraint(id),
+    }
+}
+
+/// F5: a typed `InvalidReference` error for an unknown compiled objective.
+fn invalid_objective(id: CompiledObjectiveId) -> CompileError {
+    CompileError::InvalidReference {
+        entity: CompiledEntityRef::Objective(id),
+    }
+}
+
+/// F5: reject an objective policy that references a compiled objective absent
+/// from the backend's compiled state — a dangling policy is a typed error.
+#[allow(clippy::type_complexity)]
+fn validate_policy_references(
+    policy: &CompiledObjectivePolicy,
+    objectives: &HashMap<CompiledObjectiveId, (Sense, Vec<(CompiledVariableId, f64)>, f64)>,
+) -> Result<(), CompileError> {
+    match policy {
+        CompiledObjectivePolicy::None => {}
+        CompiledObjectivePolicy::Single(id) => {
+            if !objectives.contains_key(id) {
+                return Err(invalid_objective(*id));
+            }
+        }
+        CompiledObjectivePolicy::Weighted(items) => {
+            for item in items {
+                if !objectives.contains_key(&item.objective) {
+                    return Err(invalid_objective(item.objective));
+                }
+            }
+        }
+        CompiledObjectivePolicy::Lexicographic(items) => {
+            for item in items {
+                if !objectives.contains_key(&item.objective) {
+                    return Err(invalid_objective(item.objective));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Upsert one `(CompiledVariableId, f64)` coefficient into a deterministic

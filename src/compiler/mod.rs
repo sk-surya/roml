@@ -67,6 +67,16 @@ pub enum CompileError {
     /// snapshot.
     InvalidObjectivePolicy(CompiledObjectiveId),
 
+    /// A compiled-IR reference points at an entity that does not exist in the
+    /// target compiled state (F5): a row/objective coefficient references a
+    /// compiled variable absent from the snapshot/registry, or a delta op
+    /// references an unknown compiled entity. Malformed backend IR is a typed
+    /// error — never a silent skip.
+    InvalidReference {
+        /// The referenced compiled entity that could not be resolved.
+        entity: CompiledEntityRef,
+    },
+
     /// The delta could not be proven incrementally equivalent — a
     /// deterministic rebuild is required (design §18, D22).
     ///
@@ -102,6 +112,9 @@ impl std::fmt::Display for CompileError {
                 f,
                 "objective policy references a non-compiled objective: {id:?}"
             ),
+            Self::InvalidReference { entity } => {
+                write!(f, "compiled IR references an unknown entity: {entity:?}")
+            }
             Self::RebuildRequired(reason) => {
                 write!(
                     f,
