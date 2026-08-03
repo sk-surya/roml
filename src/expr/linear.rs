@@ -792,10 +792,7 @@ impl Model {
     /// [`Self::constraint_expression`] and the snapshot/delta reconstructions).
     /// Used by [`Model::constraint_function`](crate::Model::constraint_function)
     /// to populate the symbolic view of the semantic IR.
-    pub(crate) fn constraint_symbolic_terms(
-        &self,
-        con: ConId,
-    ) -> Vec<(VarId, ValueExpr)> {
+    pub(crate) fn constraint_symbolic_terms(&self, con: ConId) -> Vec<(VarId, ValueExpr)> {
         let mut terms: Vec<(VarId, ValueExpr)> = self
             .coefficients
             .for_constraint(con)
