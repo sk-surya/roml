@@ -426,17 +426,51 @@ pub struct CompiledEntityRegistry {
 }
 
 impl BackendSnapshot {
-    /// Validate internal reference integrity (F5): every row and objective
-    /// coefficient references a compiled variable present in this snapshot,
-    /// and the objective policy references only compiled objectives present in
-    /// this snapshot. Returns a typed [`CompileError::InvalidReference`] on any
-    /// dangling reference — malformed backend IR is rejected, never silently
-    /// skipped.
+    /// Validate a snapshot's structural integrity (F2/F5):
     ///
-    /// `BackendSnapshot` has all-`pub` fields and can be constructed directly
-    /// (bypassing [`BackendSnapshotBuilder::finalize`]), so backends run this
-    /// before reconstructing native state from a snapshot.
+    /// - (F2) every compiled-id family is UNIQUE and DENSE (`0..len`) — a
+    ///   duplicate id is a typed [`CompileError::DuplicateEntity`], a gap or an
+    ///   id beyond the count a [`CompileError::NonDenseCompilation`];
+    /// - (F2) every variable/row/objective has a recorded origin (D5, SM-02.5)
+    ///   — otherwise [`CompileError::MissingOrigin`];
+    /// - (F5) every row and objective coefficient references a compiled
+    ///   variable present in this snapshot, and the objective policy
+    ///   references only compiled objectives present in this snapshot —
+    ///   otherwise a typed [`CompileError::InvalidReference`].
+    ///
+    /// Malformed backend IR is rejected, never silently skipped. `BackendSnapshot`
+    /// has all-`pub` fields and can be constructed directly (bypassing
+    /// [`BackendSnapshotBuilder::finalize`]), so backends run this before
+    /// reconstructing native state from a snapshot.
     pub fn validate(&self) -> Result<(), CompileError> {
+        // F2(a): compiled ids must be UNIQUE within each family — dense
+        // deterministic allocation (SM-02.4) never reuses an id.
+        // F2(b): compiled ids must be DENSE (`0..len` per family) — a gap or
+        // an id beyond the count is malformed backend IR.
+        let variable_ids: Vec<u32> = self.variables.iter().map(|v| v.id.0).collect();
+        let row_ids: Vec<u32> = self.linear_rows.iter().map(|r| r.id.0).collect();
+        let objective_ids: Vec<u32> = self.objectives.iter().map(|o| o.id.0).collect();
+        validate_id_family(&variable_ids, |id| {
+            CompiledEntityRef::Variable(CompiledVariableId(id))
+        })?;
+        validate_id_family(&row_ids, |id| {
+            CompiledEntityRef::Constraint(CompiledConstraintId(id))
+        })?;
+        validate_id_family(&objective_ids, |id| {
+            CompiledEntityRef::Objective(CompiledObjectiveId(id))
+        })?;
+
+        // F2(c): every compiled entity must carry an origin (D5, SM-02.5) —
+        // re-checked here because `BackendSnapshot` has all-`pub` fields and
+        // can be constructed directly, bypassing builder finalization.
+        if let Some(entity) = self
+            .origin_map
+            .missing_origins(&self.variables, &self.linear_rows, &self.objectives)
+            .first()
+        {
+            return Err(CompileError::MissingOrigin { entity: *entity });
+        }
+
         let variables: BTreeSet<CompiledVariableId> = self.variables.iter().map(|v| v.id).collect();
 
         for row in &self.linear_rows {
@@ -466,6 +500,35 @@ impl BackendSnapshot {
         }
         Ok(())
     }
+}
+
+/// F2: verify one compiled-id family is unique and dense (`0..len`).
+///
+/// Deterministic: the ids are sorted, then checked for adjacent duplicates (a
+/// duplicate is a typed [`CompileError::DuplicateEntity`]) and for the exact
+/// `0..len` sequence (a gap or an id beyond the count is a typed
+/// [`CompileError::NonDenseCompilation`]).
+fn validate_id_family(
+    ids: &[u32],
+    to_entity: impl Fn(u32) -> CompiledEntityRef,
+) -> Result<(), CompileError> {
+    let mut sorted: Vec<u32> = ids.to_vec();
+    sorted.sort_unstable();
+    for pair in sorted.windows(2) {
+        if pair[0] == pair[1] {
+            return Err(CompileError::DuplicateEntity {
+                entity: to_entity(pair[0]),
+            });
+        }
+    }
+    for (i, id) in sorted.iter().enumerate() {
+        if *id as usize != i {
+            return Err(CompileError::NonDenseCompilation {
+                entity: to_entity(*id),
+            });
+        }
+    }
+    Ok(())
 }
 
 impl BackendDeltaBatch {
@@ -1111,7 +1174,7 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::compiler::origin::EntityOrigin;
-    use crate::id::{Generation, VarId};
+    use crate::id::{ConId, Generation, VarId};
 
     /// Test-only id family (mirrors `TestOverflowId` in `src/identity.rs`,
     /// IN-02) so the family-level overflow branch is exercised without racing
@@ -1319,5 +1382,102 @@ mod tests {
             origins,
         );
         assert!(batch.validate(&existing).is_ok());
+    }
+
+    // ── F2: unique dense ids + origin completeness in snapshot validation ────
+
+    /// F2(a): a snapshot with a duplicate compiled variable id is rejected —
+    /// dense compiled ids are unique by construction.
+    #[test]
+    fn snapshot_validate_rejects_duplicate_variable_ids() {
+        let instance = crate::identity::ModelInstanceId::allocate().unwrap();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        let snapshot = BackendSnapshotBuilder::new(instance, ModelRevision::ZERO)
+            .origin_map(origins)
+            .objective_policy(CompiledObjectivePolicy::None)
+            .add_variable(test_var(0))
+            .add_variable(test_var(0))
+            .finalize()
+            .expect("builder finalization does not check id uniqueness");
+        assert!(matches!(
+            snapshot.validate(),
+            Err(CompileError::DuplicateEntity {
+                entity: CompiledEntityRef::Variable(CompiledVariableId(0))
+            })
+        ));
+    }
+
+    /// F2(b): a snapshot with a gap in its compiled ids (0 and 2, missing 1) is
+    /// rejected — compiled ids are deterministically dense (0..len per family).
+    #[test]
+    fn snapshot_validate_rejects_non_dense_ids() {
+        let instance = crate::identity::ModelInstanceId::allocate().unwrap();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        origins.insert_variable(CompiledVariableId(2), var_origin());
+        let snapshot = BackendSnapshotBuilder::new(instance, ModelRevision::ZERO)
+            .origin_map(origins)
+            .objective_policy(CompiledObjectivePolicy::None)
+            .add_variable(test_var(0))
+            .add_variable(test_var(2))
+            .finalize()
+            .expect("builder finalization does not check density");
+        assert!(matches!(
+            snapshot.validate(),
+            Err(CompileError::NonDenseCompilation {
+                entity: CompiledEntityRef::Variable(CompiledVariableId(2))
+            })
+        ));
+    }
+
+    /// F2(c): a snapshot whose origin map is missing an entry for a compiled
+    /// entity is rejected (D5/SM-02.5) — re-checked for directly-constructed
+    /// snapshots.
+    #[test]
+    fn snapshot_validate_rejects_missing_origin() {
+        let instance = crate::identity::ModelInstanceId::allocate().unwrap();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        let mut snapshot = BackendSnapshotBuilder::new(instance, ModelRevision::ZERO)
+            .origin_map(origins)
+            .objective_policy(CompiledObjectivePolicy::None)
+            .add_variable(test_var(0))
+            .finalize()
+            .expect("valid snapshot must build");
+        // Strip the origin map to simulate a directly-constructed snapshot.
+        snapshot.origin_map = OriginMap::new();
+        assert!(matches!(
+            snapshot.validate(),
+            Err(CompileError::MissingOrigin {
+                entity: CompiledEntityRef::Variable(CompiledVariableId(0))
+            })
+        ));
+    }
+
+    /// F2: a valid snapshot (unique dense ids, complete origins, no dangling
+    /// references) passes validation — the compiler's own snapshots stay green.
+    #[test]
+    fn snapshot_validate_accepts_valid_compiler_snapshot() {
+        let instance = crate::identity::ModelInstanceId::allocate().unwrap();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        origins.insert_constraint(
+            CompiledConstraintId(0),
+            EntityOrigin::UserConstraint(ConId::new(0, Generation::new())),
+        );
+        let snapshot = BackendSnapshotBuilder::new(instance, ModelRevision::ZERO)
+            .origin_map(origins)
+            .objective_policy(CompiledObjectivePolicy::None)
+            .add_variable(test_var(0))
+            .add_linear_row(CompiledLinearRow {
+                id: CompiledConstraintId(0),
+                bounds: ConstraintBounds::le(10.0),
+                coefficients: vec![(CompiledVariableId(0), 1.0)],
+                name: None,
+            })
+            .finalize()
+            .expect("valid snapshot must build");
+        assert!(snapshot.validate().is_ok());
     }
 }
