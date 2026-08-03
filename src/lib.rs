@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod advanced;
+pub mod construct;
 pub mod delta;
 pub mod expr;
 pub mod function;
@@ -31,6 +32,7 @@ pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
+pub use construct::{Construct, ConstructEntry, ConstructKind, FormulationPreference};
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use function::{

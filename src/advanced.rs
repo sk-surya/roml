@@ -47,6 +47,10 @@ pub use crate::snapshot::{
     VariableEntry,
 };
 
+/// Canonical semantic snapshot/delta entries (P25).
+pub use crate::construct::ConstructEntry;
+pub use crate::function::FunctionEntry;
+
 /// Adapter cursors, health, and synchronization coordination.
 pub use crate::sync::{AdapterCursor, AdapterHealth, ApplyError, ApplyOutcome, SyncCoordinator};
 

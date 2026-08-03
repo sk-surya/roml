@@ -60,7 +60,8 @@ All commands below ran on the platform above with the toolchain above at the bas
 |---|---|---|
 | 1 | `8ebbf8a` | `test(m3): capture semantic modeling baseline` |
 | 2 | `217aa0c` | `feat(model): add lineage instance and metadata` |
-| 3 | `(pending — filled at commit)` | `feat(model): add linear function-in-set semantics` |
+| 3 | `c19c608` | `feat(model): add linear function-in-set semantics` |
+| 4 | `(pending — filled at commit)` | `feat(model): add canonical construct lifecycle` |
 
 ## Public interfaces
 
@@ -80,6 +81,16 @@ All commands below ran on the platform above with the toolchain above at the bas
 - `src/metadata.rs` — `ModelSource { module, file, line, external_key }`, `EntityMetadata { description, group, tags, source }` (each `Clone, Debug, Default, PartialEq, Eq`), `EntityRef { Variable, Constraint, Objective, Parameter, Construct }` (`Clone, Copy, Debug, PartialEq, Eq, Hash`; the `Construct` variant becomes usable when the Task 4 arena lands) (design §5).
 - `Model` — manual `Default` (allocates fresh lineage + instance) and `Clone` (preserves lineage, allocates new instance) replacing `#[derive(Default, Clone)]`; public `lineage()`, `instance()`, `set_metadata()`, `metadata()`, `remove_metadata()`; metadata store keyed by `EntityRef`, canonical but non-solver-affecting (revision does not advance).
 - `SolveMetadata` — adds `model_lineage: ModelLineageId` and `model_instance: ModelInstanceId`; `Default` allocates fresh ids (SM-02.7).
+
+### Task 4 — canonical construct lifecycle
+
+- `src/construct/mod.rs` — `pub type Construct = ConstructId`; `#[non_exhaustive] ConstructKind` (P25 carries only the `#[doc(hidden)] Fixture(FixturePayload)` variant; design §7 declares the `Indicator`/`Reification`/`MinMax`/`AbsoluteValue`/`Boolean`/`Cardinality`/`BinaryProduct`/`PiecewiseLinear`/`SoftConstraint` extension surface, landing with the per-construct modules in P30/P32/P33); `ConstructEntry { id, kind, active }`; `FormulationPreference { Auto, Portable, NativeRequired }`; the generation-safe `ConstructStore` (checked atomic ids, removal invalidates ids, stale ids rejected with typed errors).
+- `Model` — `add_construct_fixture`, `construct`, `set_construct_active`, `remove_construct`, `num_constructs`, `construct_parameter_dependencies`; the construct arena is cloned with the model (same ids + activity).
+- `src/model/changelog.rs` — self-contained `Change::ConstructAdded/ConstructRemoved/ConstructActivityChanged`.
+- `src/delta.rs` — `ModelOp::AddConstruct/RemoveConstruct/SetConstructActive`; `DeltaBatch.constructs` reconstructed from ops.
+- `src/snapshot.rs` — `ModelSnapshot.constructs` populated by `Model::take_snapshot` from the arena.
+- `EntityRef::Construct` is now usable (construct metadata round-trips; invariant checks reference live constructs).
+- `ModelError::ConstructNotFound` and `ModelError::IdentityOverflow` added (typed errors).
 
 ## Focused verification
 
@@ -157,21 +168,64 @@ The `ModelSnapshot`/`DeltaBatch` `functions` field addition required a mechanica
 - SM-01.4: snapshots and deltas carry reconstructed semantic function/set entries; every transitional legacy field is invariant-checked.
 - SM-01.5: ordinary `LinExpr` and builder APIs remain the canonical linear path (characterization still green).
 
+### Task 4 — canonical construct lifecycle
+
+`tests/semantic_ir.rs` construct section (7 tests, total 15 in the file). RED recorded first: the initial run failed to compile (missing `roml::construct` module, `add_construct_fixture`/`construct`/`set_construct_active`/`remove_construct`/`num_constructs`, `ModelSnapshot.constructs`/`DeltaBatch.constructs`, `ModelError::ConstructNotFound`), confirming the tests target not-yet-implemented behavior.
+
+```text
+running 15 tests
+test construct_metadata_usable_via_entity_ref ... ok
+test construct_activity_toggling_reflected_in_snapshot ... ok
+test construct_clone_preserves_ids_and_activity ... ok
+test construct_snapshot_and_delta_round_trip ... ok
+test construct_add_returns_stable_id_and_payload_round_trips ... ok
+test construct_remove_invalidates_id_and_stale_ids_rejected ... ok
+test construct_store_survives_rebuild ... ok
+test delta_carries_semantic_function_entries ... ok
+test model_invariants_verify_legacy_fields_against_semantic_view ... ok
+test snapshot_carries_semantic_function_entries ... ok
+test function_constraint_is_constructible_from_spec ... ok
+test ge_eq_between_convert_to_canonical_sets ... ok
+test into_scalar_function_converts_lin_expr ... ok
+test le_converts_to_linear_function_and_less_equal_set ... ok
+test ordinary_builder_round_trips_through_coefficient_index ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored
+```
+
+Every construct fixture survives add / clone (same ids + activity) / snapshot / delta / activity toggle / remove (stale id rejected with typed `ConstructNotFound`) / rebuild (fresh model restored from snapshot carries equal construct content), SM-01.3/SM-01.6.
+
 ## Native/backend evidence
 
-<!-- P25 touches no native surface; recorded here when applicable. -->
+P25 introduces no native/backend surface. Construct `ModelOp` variants are explicit no-op arms in the ReferenceBackend and HiGHS projection (SM-01.6: no backend index/handle enters canonical state; M3 v1 does not compile constructs).
 
 ## Failure/recovery evidence
 
-<!-- Filled per task. -->
+- Stale construct ids are rejected with typed `ModelError::ConstructNotFound` (never silently ignored, D10): `construct`, `set_construct_active`, and `remove_construct` on a removed id all fail; `remove_construct` of an already-removed id fails rather than no-op.
+- Metadata on a removed construct is caught by `validate_invariants` (dead-construct reference violation).
+- `cargo test -p roml --all-targets` and `cargo test -p roml-highs --all-targets` pass after the `ModelSnapshot`/`DeltaBatch` field additions (the ~34 roml-highs test snapshot literals were updated mechanically; no behavior changed).
 
 ## Public API and packaging
 
-<!-- Filled at the phase boundary after Task 4. -->
+Post-P25 `cargo public-api -p roml` capture: `docs/release/evidence/M3_P25_public_api_roml_final.txt` (12302 lines; baseline 10737). Diff: **+1571 added / −6 removed** (the six "removed" lines are `Model::clone`/`Model::default` moving from derived to manual impls — the methods remain public with identical signatures, confirmed by `tests/public_api_compile.rs` and the full suite; SM-15.1 M2 surface preserved).
+
+New public types (root + module paths): `ModelLineageId`, `ModelInstanceId`, `ConstructId`, `IdentityOverflow`, `EntityMetadata`, `EntityRef`, `ModelSource`, `ScalarFunction`, `ScalarSet`, `FunctionConstraint`, `FunctionEntry`, `IntoScalarFunction`, `Construct`, `ConstructKind`, `ConstructEntry`, `FormulationPreference`. New methods on `Model`: `lineage`, `instance`, `set_metadata`, `metadata`, `remove_metadata`, `constraint_function`, `add_construct_fixture`, `construct`, `set_construct_active`, `remove_construct`, `num_constructs`, `construct_parameter_dependencies`. `ModelSnapshot`/`DeltaBatch` gain `functions` and `constructs` fields. `ModelError` gains `ConstructNotFound` and `IdentityOverflow`.
+
+Package list unchanged in composition: `cargo package --list -p roml` still 70 files (`src/construct/**`, `src/function/**`, `src/identity.rs`, `src/metadata.rs` added under the existing `include` filter).
 
 ## Deviations and decisions
 
-<!-- Filled per task. -->
+### Auto-fixed issues (Rules 1–3)
+
+1. **[Rule 3] `SolveMetadata` call sites** (Task 2) — `src/solver/facade.rs` and `tests/status_mapping.rs` constructed `SolveMetadata` without the new lineage/instance fields; fixed with `..SolveMetadata::default()`.
+2. **[Rule 3] `ModelSnapshot`/`DeltaBatch` field additions ripple** (Tasks 3, 4) — adding `functions`/`constructs` fields broke struct literals in `src/solver/conformance.rs` and ~34 `roml-highs/tests/{behavior_tests,solve_observables_tests,contract_tests}.rs` snapshot fixtures; all updated with `functions: vec![]`/`constructs: vec![]`. No roml-highs behavior changed.
+3. **[Rule 3] `ModelOp` construct variants** (Task 4) — adding `AddConstruct`/`RemoveConstruct`/`SetConstructActive` broke the exhaustive matches in `src/solver/reference.rs` and `roml-highs/src/projection.rs`; added explicit no-op arms (SM-01.6).
+
+### Design interpretations
+
+1. **`ConstructKind` in P25 carries only the fixture variant.** Design §7 declares nine payload variants (`Indicator`, ..., `SoftConstraint`) whose payload types are defined by the per-construct modules (P30/P32/P33). P25 declares the `#[non_exhaustive]` boundary and the design §7 extension surface in rustdoc but stores only the private `Fixture(FixturePayload)` variant — honoring the P25 scope note ("must not pre-implement their formulations") and the acceptance criterion (`#[non_exhaustive] ConstructKind`).
+2. **`LinExpr`/`Term`/`TermCoeff` gained `PartialEq`** (Task 3) — required by `ScalarFunction`'s `PartialEq` per design §6; additive, no behavior change.
+3. **Delta `functions`/`constructs` are reconstructed views** (not stored second authorities) — the coefficient index and construct arena remain the single authorities (SM-01.1); `DeltaBatch::new` and the snapshot projection derive the semantic entries deterministically, and every transitional legacy field is invariant-checked.
 
 ## Reviewer findings
 
@@ -179,8 +233,11 @@ The `ModelSnapshot`/`DeltaBatch` `functions` field addition required a mechanica
 
 ## Residual risks
 
-<!-- Filled per task. -->
+- `cargo test -p roml --all-targets` reports **585 passed; 0 failed; 0 ignored**; `roml-highs` **100 passed; 0 failed; 0 ignored**.
+- Construct `ModelOp` ops are no-ops in the ReferenceBackend/HiGHS adapters — constructs are canonical entities only; compilation to backend rows is deferred to the compiler phase (P26+). SM-01.6 holds: no backend index/handle/Big-M/overlay in canonical state.
+- `cargo package --list -p roml` captures the include-filtered 70-file list; the `roml-mosek`/`roml-xpress` adapters remain known-broken against the current facade (pre-existing, out of scope — matching M2 convention).
+- The public-API capture files are normalized (`$REPO` token); raw `cargo public-api` output may differ in absolute paths.
 
 ## Gate result
 
-<!-- Filled at the P25 phase boundary. -->
+<!-- Filled at the P25 phase boundary after Task 4 (independent review). -->

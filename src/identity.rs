@@ -48,12 +48,6 @@ macro_rules! define_opaque_id {
             /// Allocate a fresh opaque id. The first issued id is 1; zero is
             /// reserved and never issued. Returns [`IdentityOverflow`] on
             /// counter exhaustion instead of wrapping.
-            //
-            // `ConstructId::allocate` is consumed by the construct arena in
-            // P25 Task 4; the other two are consumed by `Model` and
-            // `SolveMetadata`. Until Task 4 lands, silence the dead-code
-            // warning for the not-yet-consumed family.
-            #[allow(dead_code)]
             pub(crate) fn allocate() -> Result<Self, IdentityOverflow> {
                 static COUNTER: AtomicU64 = AtomicU64::new(0);
                 allocate_id(&COUNTER).map(Self)

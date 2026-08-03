@@ -40,6 +40,10 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
+use crate::construct::{
+    derive_parameter_dependencies, Construct, ConstructEntry, ConstructKind, ConstructStore,
+    FixturePayload, FormulationPreference,
+};
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
@@ -69,6 +73,8 @@ pub enum ModelError {
     ParameterNotFound(ParamId),
     /// The specified coefficient was not found.
     CoefficientNotFound(CoeffId),
+    /// The specified construct was not found (stale/removed construct id).
+    ConstructNotFound(Construct),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
     /// Binary bounds must lie within `[0, 1]`.
@@ -79,6 +85,8 @@ pub enum ModelError {
     NaNValue(&'static str),
     /// Revision counter overflow.
     RevisionOverflow,
+    /// An opaque identity counter was exhausted (ids never wrap).
+    IdentityOverflow,
 }
 
 impl std::fmt::Display for ModelError {
@@ -89,6 +97,9 @@ impl std::fmt::Display for ModelError {
             Self::ObjectiveNotFound(id) => write!(f, "Objective not found: {:?}", id),
             Self::ParameterNotFound(id) => write!(f, "Parameter not found: {:?}", id),
             Self::CoefficientNotFound(id) => write!(f, "Coefficient not found: {:?}", id),
+            Self::ConstructNotFound(id) => {
+                write!(f, "Construct not found (stale or removed): {id:?}")
+            }
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
             Self::InvalidBinaryBounds => {
                 write!(
@@ -99,6 +110,9 @@ impl std::fmt::Display for ModelError {
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
+            Self::IdentityOverflow => {
+                write!(f, "identity counter exhausted (ids never wrap)")
+            }
         }
     }
 }
@@ -164,6 +178,8 @@ pub struct Model {
     instance: ModelInstanceId,
     /// Canonical but non-solver-affecting entity metadata (design §5).
     metadata: std::collections::HashMap<EntityRef, EntityMetadata>,
+    /// The generation-safe construct arena (design §7, P25 Task 4).
+    constructs: ConstructStore,
 }
 
 impl Default for Model {
@@ -185,6 +201,7 @@ impl Default for Model {
             lineage: ModelLineageId::allocate().expect("model lineage counter exhausted"),
             instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
             metadata: std::collections::HashMap::new(),
+            constructs: ConstructStore::new(),
         }
     }
 }
@@ -208,6 +225,8 @@ impl Clone for Model {
             lineage: self.lineage,
             instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
             metadata: self.metadata.clone(),
+            // Constructs survive clone with the same ids, kinds, and activity.
+            constructs: self.constructs.clone(),
         }
     }
 }
@@ -321,6 +340,98 @@ impl Model {
             function: ScalarFunction::Linear(expr),
             set: ScalarSet::from(bounds),
         })
+    }
+
+    // ========== Construct Operations ==========
+
+    /// Add a canonical semantic construct from a P25 fixture payload
+    /// (design §7, P25 Task 4).
+    ///
+    /// This is the P25-only entry point exercised by the construct lifecycle
+    /// tests. The per-construct builder APIs (`add_indicator`, `add_minmax`,
+    /// ...) land with the per-construct modules in P30/P32/P33. The returned
+    /// [`Construct`] is stable and generation-safe; removal invalidates it.
+    ///
+    /// Fallible (D10): a construct id counter exhaustion returns a typed
+    /// error rather than wrapping.
+    pub fn add_construct_fixture(
+        &mut self,
+        payload: FixturePayload,
+        preference: FormulationPreference,
+    ) -> Result<Construct, ModelError> {
+        let kind = ConstructKind::Fixture(payload);
+        let construct = self
+            .constructs
+            .add(kind.clone(), preference)
+            .map_err(|_| ModelError::IdentityOverflow)?;
+        // Constructs start active (design §7).
+        self.changelog.push(Change::ConstructAdded {
+            construct,
+            kind,
+            active: true,
+        });
+        Ok(construct)
+    }
+
+    /// Read a construct entry by id.
+    ///
+    /// Returns a typed error for a stale/removed id (D10).
+    pub fn construct(&self, id: Construct) -> Result<&ConstructEntry, ModelError> {
+        self.constructs
+            .get(id)
+            .map(|d| &d.entry)
+            .ok_or(ModelError::ConstructNotFound(id))
+    }
+
+    /// Set a construct's activity.
+    ///
+    /// Fallible (D10): a stale/removed construct id is rejected.
+    pub fn set_construct_active(&mut self, id: Construct, active: bool) -> Result<(), ModelError> {
+        let data = self
+            .constructs
+            .get_mut(id)
+            .ok_or(ModelError::ConstructNotFound(id))?;
+        if data.entry.active != active {
+            data.entry.active = active;
+            self.changelog.push(Change::ConstructActivityChanged {
+                construct: id,
+                active,
+            });
+        }
+        Ok(())
+    }
+
+    /// Remove a construct, invalidating its id (design §7).
+    ///
+    /// Fallible (D10): a stale/removed construct id is rejected; removing an
+    /// already-removed id fails rather than being a no-op.
+    pub fn remove_construct(&mut self, id: Construct) -> Result<(), ModelError> {
+        if !self.constructs.contains(id) {
+            return Err(ModelError::ConstructNotFound(id));
+        }
+        self.constructs.remove(id);
+        self.changelog
+            .push(Change::ConstructRemoved { construct: id });
+        Ok(())
+    }
+
+    /// The number of live constructs.
+    pub fn num_constructs(&self) -> usize {
+        self.constructs.len()
+    }
+
+    /// Parameter dependencies of a construct, derived from its payload.
+    ///
+    /// The stored cache is invariant-checked against the payload derivation in
+    /// `validate_invariants`.
+    pub fn construct_parameter_dependencies(
+        &self,
+        id: Construct,
+    ) -> Result<&[ParamId], ModelError> {
+        self.constructs
+            .get(id)
+            .map(|d| d.parameter_dependencies.as_slice())
+            .ok_or(ModelError::ConstructNotFound(id))
     }
 
     // ========== Variable Operations ==========
@@ -1468,7 +1579,7 @@ impl Model {
             .collect();
 
         let revision = self.coordinator.revision();
-        let snapshot = crate::snapshot::take_snapshot(
+        let mut snapshot = crate::snapshot::take_snapshot(
             revision,
             &variables,
             &constraints,
@@ -1489,6 +1600,16 @@ impl Model {
                 );
             }
         }
+
+        // Canonical semantic construct entries from the arena (design §7,
+        // P25 Task 4). Sorted by id for deterministic output.
+        let mut constructs: Vec<ConstructEntry> = self
+            .constructs
+            .iter()
+            .map(|(_, data)| data.entry.clone())
+            .collect();
+        constructs.sort_by_key(|c| c.id);
+        snapshot.constructs = constructs;
 
         Ok(snapshot)
     }
@@ -1622,6 +1743,28 @@ impl Model {
                         "constraint {con:?} legacy bounds diverge from semantic set (bounds {data:?}, function {fc:?})"
                     ));
                 }
+            }
+        }
+
+        // 9. Construct store integrity (P25 Task 4, design §7):
+        //    - every construct metadata entry references a live construct;
+        //    - the cached parameter-dependency list equals a re-derivation
+        //      from the payload (invariant proving cache correctness).
+        for entity in self.metadata.keys() {
+            if let EntityRef::Construct(construct) = entity {
+                if !self.constructs.contains(*construct) {
+                    violations.push(format!(
+                        "construct metadata references dead construct {construct:?}"
+                    ));
+                }
+            }
+        }
+        for (id, data) in self.constructs.iter() {
+            let derived = derive_parameter_dependencies(&data.entry.kind);
+            if derived != data.parameter_dependencies {
+                violations.push(format!(
+                    "construct {id:?} parameter-dependency cache diverges from payload derivation"
+                ));
             }
         }
 
@@ -1968,6 +2111,19 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::ActiveObjectiveChanged { new, .. } => Ok(ModelOp::SetActiveObjective { obj: new }),
         Change::ParameterValueChanged { param, new, .. } => {
             Ok(ModelOp::SetParameter { param, value: new })
+        }
+        Change::ConstructAdded {
+            construct,
+            kind,
+            active,
+        } => Ok(ModelOp::AddConstruct {
+            construct,
+            kind,
+            active,
+        }),
+        Change::ConstructRemoved { construct } => Ok(ModelOp::RemoveConstruct { construct }),
+        Change::ConstructActivityChanged { construct, active } => {
+            Ok(ModelOp::SetConstructActive { construct, active })
         }
     }
 }

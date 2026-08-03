@@ -847,6 +847,11 @@ pub(crate) fn apply_delta_batch(
                     param
                 );
             }
+            // P25 Task 4: constructs are canonical entities, not backend rows
+            // (SM-01.6). The HiGHS adapter does not compile them yet.
+            ModelOp::AddConstruct { .. }
+            | ModelOp::RemoveConstruct { .. }
+            | ModelOp::SetConstructActive { .. } => {}
         }
     }
 
