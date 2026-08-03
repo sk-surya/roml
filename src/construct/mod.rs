@@ -26,7 +26,6 @@ use std::collections::HashMap;
 
 use crate::id::ParamId;
 use crate::identity::{ConstructId, IdentityOverflow};
-use crate::metadata::EntityMetadata;
 
 /// A canonical semantic construct handle (design §7).
 pub type Construct = ConstructId;
@@ -102,13 +101,6 @@ pub struct ConstructData {
     pub entry: ConstructEntry,
     /// Derived parameter dependencies of the payload.
     pub parameter_dependencies: Vec<ParamId>,
-    /// Entity metadata (also reachable through
-    /// [`EntityRef::Construct`](crate::metadata::EntityRef::Construct)).
-    ///
-    /// P25 (F5): crate-private scaffolding with no readers — the model-level
-    /// metadata map is the single authority, so F5 removes this field.
-    #[allow(dead_code)]
-    pub metadata: EntityMetadata,
 }
 
 /// The generation-safe construct arena (design §7).
@@ -152,7 +144,6 @@ impl ConstructStore {
                     preference,
                 },
                 parameter_dependencies,
-                metadata: EntityMetadata::default(),
             },
         );
         Ok(id)
