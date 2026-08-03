@@ -765,6 +765,76 @@ fn indicator_unqualified_feature_is_unsupported() {
 }
 
 #[test]
+fn boolean_unqualified_feature_is_unsupported() {
+    // WR-01: no native and no bridge declaration for `Boolean` → typed
+    // UnsupportedFeature under Auto (SM-04.4 — never silently compiled).
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    model
+        .add_boolean(
+            BooleanKind::Implication {
+                antecedent: a,
+                consequent: b,
+            },
+            None,
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Auto, &full_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "boolean construct against a capability set with no Boolean support must reject, got {err:?}"
+    );
+}
+
+#[test]
+fn cardinality_unqualified_feature_is_unsupported() {
+    // WR-01: no native and no bridge declaration for `Cardinality` → typed
+    // UnsupportedFeature under Auto (SM-04.4 — never silently compiled).
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    model
+        .add_cardinality(vec![a, b], CardinalityKind::AtMost, 1.0, None)
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Auto, &full_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "cardinality construct against a capability set with no Cardinality support must reject, got {err:?}"
+    );
+}
+
+#[test]
+fn boolean_and_cardinality_reject_under_native_required() {
+    // WR-01: under NativeRequired the bridges are not exact native support, so
+    // a Boolean/Cardinality construct must be rejected even though a bridge is
+    // declared (the bridge path is not native).
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    model
+        .add_boolean(BooleanKind::Equivalence { left: a, right: b }, None)
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::NativeRequired, &bridge_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "NativeRequired without native Boolean must reject, got {err:?}"
+    );
+
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    model
+        .add_cardinality(vec![a, b], CardinalityKind::AtMost, 1.0, None)
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::NativeRequired, &bridge_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "NativeRequired without native Cardinality must reject, got {err:?}"
+    );
+}
+
+#[test]
 fn indicator_insufficient_bounds_returns_unbounded_big_m() {
     let mut model = Model::new();
     let z = model.add_variable(binary()).unwrap();
