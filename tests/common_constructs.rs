@@ -2915,6 +2915,11 @@ fn f4_assert_gating(build: impl Fn(&mut Model)) {
             false,
         ),
         (
+            CompilationPolicy::Portable,
+            &full_caps() as &BackendCapabilitySet,
+            false,
+        ),
+        (
             CompilationPolicy::NativeRequired,
             &native_construct_caps() as &BackendCapabilitySet,
             false,
