@@ -122,9 +122,16 @@ impl TestCompiler {
     }
 }
 
-/// Compile a delta that follows a rebuild of `base` (the delta's `from`
-/// revision must equal `base.revision`), producing a `BackendDeltaBatch`.
-fn compile_delta_after(base: &ModelSnapshot, batch: &DeltaBatch) -> BackendDeltaBatch {
+/// Compile `base` into a fresh compiled state AND `batch` into a delta chained
+/// from THAT SAME compiled state, returning both. A session that establishes
+/// `compiled_base` via `CompiledRebuild` then holds exactly the
+/// `from_compilation` the delta requires — the exact `CompilationId` is the
+/// only stale-state authority (D28, WR-1), so the base and its deltas must come
+/// from ONE compilation chain, never from separate one-shot sessions.
+fn compile_base_and_delta(
+    base: &ModelSnapshot,
+    batch: &DeltaBatch,
+) -> (BackendSnapshot, BackendDeltaBatch) {
     let mut session = CompilationSession::new();
     let instance = Model::new().instance();
     let compiled_base = session
@@ -135,14 +142,28 @@ fn compile_delta_after(base: &ModelSnapshot, batch: &DeltaBatch) -> BackendDelta
             &test_capabilities(),
         )
         .expect("base snapshot must compile");
-    session
+    let compiled_delta = session
         .compile_delta(
             batch,
             compiled_base.compilation_id,
             &CompilationPolicy::Auto,
             &test_capabilities(),
         )
-        .expect("test delta must compile")
+        .expect("test delta must compile");
+    (compiled_base, compiled_delta)
+}
+
+/// Establish `base` as a compiled rebuild on `session`, then apply `batch`
+/// chained from that SAME base (D28/WR-1: the delta's `from_compilation` must
+/// match the base the session holds).
+fn rebuild_then_apply_delta(session: &mut HighsSession, base: &ModelSnapshot, batch: &DeltaBatch) {
+    let (compiled_base, compiled_delta) = compile_base_and_delta(base, batch);
+    session
+        .synchronize(Synchronization::CompiledRebuild(compiled_base))
+        .expect("compiled base rebuild should succeed");
+    session
+        .synchronize(Synchronization::CompiledDeltaBatch(compiled_delta))
+        .expect("compiled delta should succeed");
 }
 
 /// Generate a fresh [`VarId`] for testing.
@@ -496,11 +517,9 @@ fn c4_commuting_square() {
         constructs: vec![],
     };
 
-    // Session A: rebuild from r0, then apply delta r0->r1.
-    session_a
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap_r0)))
-        .expect("Session A: rebuild from r0 should succeed");
-
+    // Session A: rebuild from r0, then apply delta r0->r1. The base and the
+    // delta are compiled in ONE chain so the delta's `from_compilation` matches
+    // the base the session holds (D28/WR-1).
     let delta = DeltaBatch::new(
         r0,
         r1,
@@ -511,12 +530,7 @@ fn c4_commuting_square() {
         }],
     )
     .expect("DeltaBatch r0->r1 should be valid");
-
-    session_a
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap_r0, &delta,
-        )))
-        .expect("Session A: delta apply should succeed");
+    rebuild_then_apply_delta(&mut session_a, &snap_r0, &delta);
 
     // Snapshot at r1 (includes the constraint coefficient).
     let snap_r1 = ModelSnapshot {
@@ -773,10 +787,31 @@ fn c6_objective_switch() {
         constructs: vec![],
     };
 
+    // The r0→r1 switch delta is compiled chained from the SAME compiled base
+    // as the rebuild, so its `from_compilation` matches the session (D28/WR-1).
+    let o_max = obj_id(1);
+    let r1 = r0.next().unwrap();
+    let switch_batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddObjective {
+                obj: o_max,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o_max), v0),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                constant: 0.0,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o_max) },
+        ],
+    )
+    .unwrap();
+    let (compiled_base, compiled_switch) = compile_base_and_delta(&snapshot, &switch_batch);
     session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
-            &snapshot,
-        )))
+        .synchronize(Synchronization::CompiledRebuild(compiled_base))
         .expect("Rebuild should succeed");
 
     // Solve 1: minimize — x should be at 0.
@@ -795,31 +830,9 @@ fn c6_objective_switch() {
         obj1
     );
 
-    // Add maximize objective and activate it (r0->r1).
-    let o_max = obj_id(1);
-    let r1 = r0.next().unwrap();
+    // Apply the pre-compiled maximize switch (r0->r1).
     session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snapshot,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![
-                    ModelOp::AddObjective {
-                        obj: o_max,
-                        sense: Sense::Maximize,
-                    },
-                    ModelOp::SetObjectiveCell {
-                        cell_key: (CoefficientTarget::Objective(o_max), v0),
-                        value_expr: ValueExpr::constant(1.0),
-                        evaluated_value: 1.0,
-                        constant: 0.0,
-                    },
-                    ModelOp::SetActiveObjective { obj: Some(o_max) },
-                ],
-            )
-            .unwrap(),
-        )))
+        .synchronize(Synchronization::CompiledDeltaBatch(compiled_switch))
         .expect("Add+switch to maximize should succeed");
 
     // Solve 2: maximize — x should be at 10.
@@ -1805,25 +1818,21 @@ fn c13_active_objective_sense_change() {
         functions: vec![],
         constructs: vec![],
     };
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
-        .unwrap();
-
-    // Apply SetObjectiveSense: Minimize → Maximize.
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::SetObjectiveSense {
-                    obj,
-                    sense: Sense::Maximize,
-                }],
-            )
-            .unwrap(),
-        )))
-        .unwrap();
+    // Apply SetObjectiveSense: Minimize → Maximize (base and delta in one
+    // compilation chain — D28/WR-1).
+    rebuild_then_apply_delta(
+        &mut session,
+        &snap,
+        &DeltaBatch::new(
+            r0,
+            r1,
+            vec![ModelOp::SetObjectiveSense {
+                obj,
+                sense: Sense::Maximize,
+            }],
+        )
+        .unwrap(),
+    );
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -1883,27 +1892,23 @@ fn c13_set_objective_cell_on_inactive_objective() {
         functions: vec![],
         constructs: vec![],
     };
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
-        .unwrap();
-
-    // SetObjectiveCell on INACTIVE obj2 with cost 100 — must stay cache-only.
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::SetObjectiveCell {
-                    cell_key: (CoefficientTarget::Objective(obj2), v),
-                    value_expr: ValueExpr::constant(100.0),
-                    evaluated_value: 100.0,
-                    constant: 0.0,
-                }],
-            )
-            .unwrap(),
-        )))
-        .unwrap();
+    // SetObjectiveCell on INACTIVE obj2 with cost 100 — must stay cache-only
+    // (base and delta in one compilation chain — D28/WR-1).
+    rebuild_then_apply_delta(
+        &mut session,
+        &snap,
+        &DeltaBatch::new(
+            r0,
+            r1,
+            vec![ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(obj2), v),
+                value_expr: ValueExpr::constant(100.0),
+                evaluated_value: 100.0,
+                constant: 0.0,
+            }],
+        )
+        .unwrap(),
+    );
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2039,25 +2044,21 @@ fn c13_inactive_objective_sense_change() {
         functions: vec![],
         constructs: vec![],
     };
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
-        .unwrap();
-
-    // Change inactive obj2 sense — cache-only.
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::SetObjectiveSense {
-                    obj: obj2,
-                    sense: Sense::Maximize,
-                }],
-            )
-            .unwrap(),
-        )))
-        .unwrap();
+    // Change inactive obj2 sense — cache-only (base and delta in one
+    // compilation chain — D28/WR-1).
+    rebuild_then_apply_delta(
+        &mut session,
+        &snap,
+        &DeltaBatch::new(
+            r0,
+            r1,
+            vec![ModelOp::SetObjectiveSense {
+                obj: obj2,
+                sense: Sense::Maximize,
+            }],
+        )
+        .unwrap(),
+    );
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2199,12 +2200,6 @@ fn c16_delta_add_integer_variable_respects_integrality() {
     let o = obj_id(0);
     let r1 = r0.next().unwrap();
 
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
-            &ModelSnapshot::empty(r0),
-        )))
-        .unwrap();
-
     let batch = DeltaBatch::new(
         r0,
         r1,
@@ -2237,12 +2232,10 @@ fn c16_delta_add_integer_variable_respects_integrality() {
         ],
     )
     .unwrap();
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &ModelSnapshot::empty(r0),
-            &batch,
-        )))
-        .unwrap();
+    // The empty r0 base and the integer-variable delta are compiled in ONE
+    // chain, so the delta's `from_compilation` matches the base the session
+    // holds (D28/WR-1).
+    rebuild_then_apply_delta(&mut session, &ModelSnapshot::empty(r0), &batch);
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2294,25 +2287,21 @@ fn c17_delta_set_cell_objective_updates_native_cost() {
         functions: vec![],
         constructs: vec![],
     };
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
-        .unwrap();
-
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::SetCell {
-                    cell_key: (CoefficientTarget::Objective(o), v),
-                    value_expr: ValueExpr::constant(5.0),
-                    evaluated_value: 5.0,
-                }],
-            )
-            .unwrap(),
-        )))
-        .unwrap();
+    // Base and delta in one compilation chain (D28/WR-1).
+    rebuild_then_apply_delta(
+        &mut session,
+        &snap,
+        &DeltaBatch::new(
+            r0,
+            r1,
+            vec![ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(5.0),
+                evaluated_value: 5.0,
+            }],
+        )
+        .unwrap(),
+    );
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2362,23 +2351,19 @@ fn c18_delta_remove_cell_objective_clears_cost() {
         functions: vec![],
         constructs: vec![],
     };
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
-        .unwrap();
-
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::RemoveCell {
-                    cell_key: (CoefficientTarget::Objective(o), v),
-                }],
-            )
-            .unwrap(),
-        )))
-        .unwrap();
+    // Base and delta in one compilation chain (D28/WR-1).
+    rebuild_then_apply_delta(
+        &mut session,
+        &snap,
+        &DeltaBatch::new(
+            r0,
+            r1,
+            vec![ModelOp::RemoveCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+            }],
+        )
+        .unwrap(),
+    );
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2501,26 +2486,22 @@ fn c20_delta_set_objective_cell_on_active_objective_applies_immediately() {
         functions: vec![],
         constructs: vec![],
     };
-    session
-        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
-        .unwrap();
-
-    session
-        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
-            &snap,
-            &DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::SetObjectiveCell {
-                    cell_key: (CoefficientTarget::Objective(o), v),
-                    value_expr: ValueExpr::constant(5.0),
-                    evaluated_value: 5.0,
-                    constant: 2.0,
-                }],
-            )
-            .unwrap(),
-        )))
-        .unwrap();
+    // Base and delta in one compilation chain (D28/WR-1).
+    rebuild_then_apply_delta(
+        &mut session,
+        &snap,
+        &DeltaBatch::new(
+            r0,
+            r1,
+            vec![ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o), v),
+                value_expr: ValueExpr::constant(5.0),
+                evaluated_value: 5.0,
+                constant: 2.0,
+            }],
+        )
+        .unwrap(),
+    );
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);

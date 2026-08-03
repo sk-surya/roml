@@ -19,7 +19,9 @@ use log::info;
 use crate::bindings;
 use crate::callback::CallbackState;
 use crate::index_map::IndexMap;
-use roml::advanced::{CompiledConstraintId, CompiledObjectiveId, CompiledVariableId};
+use roml::advanced::{
+    CompilationId, CompiledConstraintId, CompiledObjectiveId, CompiledVariableId,
+};
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::objective::Sense;
 use roml::solver::backend::{BackendError, TerminationStatus};
@@ -75,6 +77,13 @@ pub struct HighsSession {
 
     /// Compiled objective id → user objective (solution mapping, SM-02.5).
     pub(crate) compiled_to_user_objective: HashMap<CompiledObjectiveId, ObjId>,
+
+    /// The exact compiled id of the session's current compiled state
+    /// (D28/SM-03.9): the ONLY stale-state authority for compiled deltas. Set
+    /// from a `CompiledRebuild`'s snapshot id and each accepted batch's
+    /// `to_compilation`; a `CompiledDeltaBatch` whose `from_compilation` does
+    /// not match is rejected before any op is applied (WR-1).
+    pub(crate) current_compilation: Option<CompilationId>,
 
     /// Solution from the most recent solve, if available.
     pub(crate) current_solution: Option<SolveSolution>,
@@ -193,6 +202,7 @@ impl HighsSession {
             compiled_to_user_variable: HashMap::new(),
             compiled_to_user_constraint: HashMap::new(),
             compiled_to_user_objective: HashMap::new(),
+            current_compilation: None,
             current_solution: None,
             last_status: None,
             callback_state: None,
