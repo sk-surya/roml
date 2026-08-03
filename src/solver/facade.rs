@@ -6,6 +6,7 @@
 //!   constructs golden-path solutions directly;
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
+use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::CompilationPolicy;
 use crate::compiler::session::CompilationSession;
 use crate::id::ObjId;
@@ -38,6 +39,7 @@ use crate::compiler::capability::{
 /// Mathematical terminations map to `Ok(Solution)` (with no primal values when
 /// the backend returned none, e.g. infeasible); uninterpretable terminations
 /// (`Error`, `Unknown`) map to `Err(SolveError::Status)` (API-03.3).
+#[allow(clippy::too_many_arguments)]
 pub fn normalize_result(
     result: &SolveResult,
     model_revision: ModelRevision,
@@ -46,6 +48,7 @@ pub fn normalize_result(
     synchronization: SynchronizationMode,
     model_lineage: ModelLineageId,
     model_instance: ModelInstanceId,
+    compilation_id: CompilationId,
 ) -> Result<Solution, SolveError> {
     let status = SolveStatus::from_termination(result.termination)?;
 
@@ -63,6 +66,10 @@ pub fn normalize_result(
             // every real solve report ids unequal to the solved model.
             model_lineage,
             model_instance,
+            // F2 (SM-03.9): the exact `CompilationId` of the compiled state
+            // the backend solved. `SolveMetadata::default()` allocates a fresh
+            // unrelated id, so the backend's id is threaded explicitly.
+            compilation_id,
         });
 
     if let Some(value) = result.solution.as_ref().and_then(|s| s.objective_value) {
@@ -261,10 +268,25 @@ where
             .solve(&request)
             .map_err(|e| SolveError::from_backend(false, e))?;
 
+        // F2 (SM-03.9): the exact `CompilationId` is the only stale-state
+        // authority. The backend must report the compiled state the façade
+        // synchronized to (the compiler's current compiled state). A result
+        // tagged with a DIFFERENT id means the solve ran against some other
+        // compiled state — reject it as a typed error, never accept it
+        // silently.
+        let expected = self.compiler.current_compilation();
+        if expected != Some(result.compilation_id) {
+            return Err(SolveError::CompilationMismatch {
+                expected,
+                actual: result.compilation_id,
+            });
+        }
+
         // 9. Normalize and attach metadata. The solved model's lineage and
         // instance ids are bound here (CR-02, SM-02.7) — there is no separate
         // model-binds-solution step; normalize_result must never fall back to
-        // fresh default ids.
+        // fresh default ids. F2 threads the result's exact `CompilationId`
+        // into the metadata.
         let active_objective = model.active_objective();
         let solution = normalize_result(
             &result,
@@ -274,6 +296,7 @@ where
             sync_mode,
             model.lineage(),
             model.instance(),
+            result.compilation_id,
         )?;
 
         Ok(solution)
@@ -482,6 +505,7 @@ mod tests {
                 dual_values: Some(vec![(make_con(0), 0.5)]),
                 reduced_costs: Some(vec![(make_var(0), 0.0)]),
             }),
+            compilation_id: CompilationId::allocate().unwrap(),
         }
     }
 
@@ -500,6 +524,7 @@ mod tests {
             SynchronizationMode::Rebuild,
             lineage,
             instance,
+            CompilationId::allocate().unwrap(),
         )
         .expect("optimal must normalize");
 
@@ -537,6 +562,7 @@ mod tests {
                 dual_values: None,
                 reduced_costs: None,
             }),
+            compilation_id: CompilationId::allocate().unwrap(),
         };
         let solution = normalize_result(
             &result,
@@ -546,6 +572,7 @@ mod tests {
             SynchronizationMode::NoChange,
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
+            CompilationId::allocate().unwrap(),
         )
         .expect("feasible must normalize");
         assert_eq!(solution.status(), SolveStatus::Feasible);
@@ -564,6 +591,7 @@ mod tests {
             effective_configuration: EffectiveConfig::default(),
             termination: TerminationStatus::Infeasible,
             solution: None,
+            compilation_id: CompilationId::allocate().unwrap(),
         };
         let solution = normalize_result(
             &result,
@@ -573,6 +601,7 @@ mod tests {
             SynchronizationMode::NoChange,
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
+            CompilationId::allocate().unwrap(),
         )
         .expect("infeasible must normalize to Ok(Solution)");
         assert_eq!(solution.status(), SolveStatus::Infeasible);
@@ -588,6 +617,7 @@ mod tests {
                 effective_configuration: EffectiveConfig::default(),
                 termination,
                 solution: None,
+                compilation_id: CompilationId::allocate().unwrap(),
             };
             let err = normalize_result(
                 &result,
@@ -597,6 +627,7 @@ mod tests {
                 SynchronizationMode::NoChange,
                 ModelLineageId::allocate().unwrap(),
                 ModelInstanceId::allocate().unwrap(),
+                CompilationId::allocate().unwrap(),
             )
             .expect_err("uninterpretable termination must error");
             assert!(
@@ -632,6 +663,7 @@ mod tests {
                     dual_values: None,
                     reduced_costs: None,
                 }),
+                compilation_id: CompilationId::allocate().unwrap(),
             };
             let solution = normalize_result(
                 &result,
@@ -641,6 +673,7 @@ mod tests {
                 SynchronizationMode::NoChange,
                 model.lineage(),
                 model.instance(),
+                CompilationId::allocate().unwrap(),
             )
             .expect("optimal must normalize");
 

@@ -252,6 +252,19 @@ impl BackendSession for HighsSession {
     fn solve(&mut self, request: &SolveRequest) -> Result<SolveResult, BackendError> {
         info!("Solving with HiGHS");
 
+        // F2 (SM-03.9): the result must carry the exact `CompilationId` of the
+        // compiled state this session holds (set by `synchronize`). A solve
+        // before any compiled synchronization is a caller bug — typed error,
+        // never a fabricated id.
+        let compilation_id = self.current_compilation.ok_or_else(|| {
+            BackendError::new(
+                "solve called before any compiled synchronization; the session holds no \
+                 compiled state (F2, SM-03.9)",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+
         // Step 1: Negotiate solve options.
         let effective_config = negotiate_options(self.raw, request)?;
 
@@ -338,6 +351,7 @@ impl BackendSession for HighsSession {
             effective_configuration: effective_config,
             termination: status,
             solution,
+            compilation_id,
         })
     }
 

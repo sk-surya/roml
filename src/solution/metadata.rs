@@ -4,6 +4,7 @@
 //! which backend produced it, at which model revision, with which effective
 //! configuration, and how the model was synchronized into the backend.
 
+use crate::compiler::backend_ir::CompilationId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::revision::ModelRevision;
 use crate::solver::request::EffectiveConfig;
@@ -40,6 +41,10 @@ pub struct SolveMetadata {
     pub model_lineage: ModelLineageId,
     /// The instance of the model this solution was produced from.
     pub model_instance: ModelInstanceId,
+    /// The exact `CompilationId` of the compiled state this solution was
+    /// produced from (F2, SM-03.9): the compiled backend state the solver
+    /// solved, threaded through [`crate::solver::facade::normalize_result`].
+    pub compilation_id: CompilationId,
 }
 
 impl Default for SolveMetadata {
@@ -52,6 +57,7 @@ impl Default for SolveMetadata {
             // Each default allocates fresh opaque ids (no zero sentinel).
             model_lineage: ModelLineageId::allocate().expect("solve lineage counter exhausted"),
             model_instance: ModelInstanceId::allocate().expect("solve instance counter exhausted"),
+            compilation_id: CompilationId::allocate().expect("compilation id counter exhausted"),
         }
     }
 }

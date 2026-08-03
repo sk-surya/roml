@@ -4,6 +4,7 @@
 //! than stored in canonical `Model` state. A request is either applied,
 //! adjusted, or rejected — never silently ignored.
 
+use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature};
 use crate::solver::LpAlgorithm;
 
@@ -91,6 +92,13 @@ pub struct SolveResult {
 
     /// Solution data, if available.
     pub solution: Option<SolveSolution>,
+
+    /// The exact `CompilationId` of the compiled state the backend solved
+    /// (F2, SM-03.9). The backends set it from the compiled state they hold;
+    /// the façade verifies it equals the compilation it synchronized to and
+    /// rejects a mismatch as a typed error, never accepting a result produced
+    /// from a different compiled state.
+    pub compilation_id: CompilationId,
 }
 
 /// The configuration that was actually applied by the solver.

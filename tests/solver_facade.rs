@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use roml::advanced::{
-    BackendOp, BackendSnapshot, CompiledObjectiveId, CompiledObjectivePolicy, CompiledVariableId,
-    EntityOrigin, OriginMap,
+    BackendOp, BackendSnapshot, CompilationId, CompiledObjectiveId, CompiledObjectivePolicy,
+    CompiledVariableId, EntityOrigin, OriginMap,
 };
 use roml::delta::ModelOp;
 use roml::id::{ObjId, VarId};
@@ -63,6 +63,13 @@ struct FaultState {
     deltas: usize,
     solves: usize,
     solve_revision_seen: Option<ModelRevision>,
+    /// The exact `CompilationId` the backend holds after the most recent
+    /// compiled synchronization (F2 / SM-03.9).
+    current_compilation: Option<CompilationId>,
+    /// When set, `solve` reports this `CompilationId` instead of the backend's
+    /// real held compilation — simulates a backend returning a result tagged
+    /// with the wrong compiled state (F2 mismatch rejection).
+    report_wrong_compilation: Option<CompilationId>,
 }
 
 impl FaultState {
@@ -138,6 +145,8 @@ impl TestBackend {
             deltas: 0,
             solves: 0,
             solve_revision_seen: None,
+            current_compilation: None,
+            report_wrong_compilation: None,
         }));
         (
             Self {
@@ -497,6 +506,7 @@ impl BackendSession for TestBackend {
                 let mut s = self.state.borrow_mut();
                 s.revision = snapshot.source_revision;
                 s.health = AdapterHealth::Ready;
+                s.current_compilation = Some(snapshot.compilation_id);
                 Ok(SyncReceipt {
                     cursor: roml::sync::AdapterCursor {
                         applied_revision: s.revision,
@@ -546,6 +556,7 @@ impl BackendSession for TestBackend {
                 s.deltas += 1;
                 s.revision = batch.to_revision;
                 s.health = AdapterHealth::Ready;
+                s.current_compilation = Some(batch.to_compilation);
                 Ok(SyncReceipt {
                     cursor: roml::sync::AdapterCursor {
                         applied_revision: s.revision,
@@ -569,6 +580,16 @@ impl BackendSession for TestBackend {
             ));
         }
         let termination = s.solve_termination;
+        // F2 (SM-03.9): the result carries the exact `CompilationId` of the
+        // compiled state the backend solved. The fault knob lets a test tag a
+        // result with a WRONG id so the façade's mismatch rejection is
+        // exercised.
+        let compilation_id = match s.report_wrong_compilation {
+            Some(forged) => forged,
+            None => s
+                .current_compilation
+                .expect("a solve must follow a compiled synchronization"),
+        };
         drop(s); // compute_objective_value takes &self
         let solution = match termination {
             TerminationStatus::Optimal | TerminationStatus::Feasible => {
@@ -588,6 +609,7 @@ impl BackendSession for TestBackend {
             effective_configuration: EffectiveConfig::default(),
             termination,
             solution,
+            compilation_id,
         })
     }
 
@@ -979,4 +1001,115 @@ fn objective_constant_is_reported_exactly_once_end_to_end() {
     );
     assert_eq!(solution.value(x), Some(1.0));
     assert_eq!(solution.value(y), Some(1.0));
+}
+
+// ── F2: CompilationId through SolveResult / Solution metadata (SM-03.9) ───────
+
+/// Compile an unrelated snapshot to obtain a `CompilationId` guaranteed to
+/// differ from any backend-held compiled state (F2 mismatch test).
+fn forged_compilation_id() -> CompilationId {
+    use roml::advanced::{CompilationPolicy, CompilationSession};
+    use roml::compiler::capability::{
+        BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
+    };
+    let mut caps = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        caps.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    let mut cs = CompilationSession::new();
+    let empty_model = Model::new();
+    let snapshot = empty_model.take_snapshot().unwrap();
+    let compiled = cs
+        .compile_snapshot(
+            empty_model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &caps,
+        )
+        .expect("an empty snapshot must compile");
+    compiled.compilation_id
+}
+
+/// F2 (SM-03.9): a normal solve's `Solution.metadata().compilation_id` equals
+/// the exact `CompilationId` of the compiled state the backend solved, and is
+/// stable across no-change solves while a mutation allocates a fresh compiled
+/// state id.
+#[test]
+fn solution_metadata_carries_compilation_id_and_is_stable_across_solves() {
+    let (mut model, x, _y) = build_constant_model();
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
+
+    let first = session.solve(&mut model).unwrap();
+    let held = state
+        .borrow()
+        .current_compilation
+        .expect("the backend must hold a compiled state after sync");
+    assert_eq!(
+        first.metadata().compilation_id,
+        held,
+        "the solution's compilation id must equal the compiled state's id"
+    );
+    assert!(first.value(x).is_some());
+
+    // A no-change second solve re-solves the SAME compiled state: the id is
+    // stable across solves.
+    let second = session.solve(&mut model).unwrap();
+    assert_eq!(
+        second.metadata().compilation_id,
+        first.metadata().compilation_id,
+        "no-change solves reuse the same compiled state id"
+    );
+
+    // A mutation compiles a NEW delta -> a NEW compiled state id.
+    model.set_variable_bounds(x, Bounds::new(0.0, 1.0)).unwrap();
+    let third = session.solve(&mut model).unwrap();
+    assert_ne!(
+        third.metadata().compilation_id,
+        first.metadata().compilation_id,
+        "a mutation must allocate a fresh compiled state id"
+    );
+    assert_eq!(
+        third.metadata().compilation_id,
+        state.borrow().current_compilation.unwrap()
+    );
+}
+
+/// F2 (SM-03.9): the façade rejects a result tagged with a `CompilationId`
+/// that does not match the compiled state it just synchronized to — a typed
+/// error, never a silently accepted result from a different compiled state.
+#[test]
+fn facade_rejects_result_tagged_with_wrong_compilation_id() {
+    let (mut model, _x, _y) = build_constant_model();
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
+    session.solve(&mut model).unwrap();
+
+    let forged = forged_compilation_id();
+    assert_ne!(
+        forged,
+        state.borrow().current_compilation.unwrap(),
+        "the forged id must differ from the backend's held compiled state"
+    );
+
+    state.borrow_mut().report_wrong_compilation = Some(forged);
+    let err = session
+        .solve(&mut model)
+        .expect_err("a mismatched compilation id must be rejected");
+    assert!(
+        matches!(err, SolveError::CompilationMismatch { .. }),
+        "expected CompilationMismatch, got {err:?}"
+    );
 }

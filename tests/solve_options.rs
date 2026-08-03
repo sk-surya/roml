@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use roml::advanced::CompilationId;
 use roml::prelude::*;
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
@@ -31,6 +32,9 @@ struct RecordingState {
 struct RecordingBackend {
     revision: ModelRevision,
     health: AdapterHealth,
+    /// The exact `CompilationId` of the compiled state held after the most
+    /// recent compiled synchronization (F2 / SM-03.9).
+    current_compilation: Option<CompilationId>,
     state: std::rc::Rc<std::cell::RefCell<RecordingState>>,
 }
 
@@ -44,6 +48,7 @@ impl RecordingBackend {
             Self {
                 revision: ModelRevision::ZERO,
                 health: AdapterHealth::Ready,
+                current_compilation: None,
                 state: state.clone(),
             },
             state,
@@ -80,9 +85,11 @@ impl BackendSession for RecordingBackend {
             }
             Synchronization::CompiledRebuild(snapshot) => {
                 self.revision = snapshot.source_revision;
+                self.current_compilation = Some(snapshot.compilation_id);
             }
             Synchronization::CompiledDeltaBatch(batch) => {
                 self.revision = batch.to_revision;
+                self.current_compilation = Some(batch.to_compilation);
             }
         }
         self.health = AdapterHealth::Ready;
@@ -118,6 +125,9 @@ impl BackendSession for RecordingBackend {
                 dual_values: None,
                 reduced_costs: None,
             }),
+            compilation_id: self
+                .current_compilation
+                .expect("a solve must follow a compiled synchronization"),
         })
     }
 
