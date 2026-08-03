@@ -252,8 +252,19 @@ where
             // re-synchronize via a snapshot rebuild.
             self.rebuild_from_snapshot(model)?;
             sync_mode = SynchronizationMode::Rebuild;
+        } else if self.compiler.current_compilation().is_none() {
+            // 6a. (F4): backend_rev == committed BUT the compiler holds no
+            // compiled base — a fresh backend at revision ZERO and a
+            // revision-ZERO model (e.g. an untouched `Model::new()`). The
+            // no-sync path would send the model straight to solve against a
+            // backend with no compiled state ("no compiled synchronization").
+            // Force the snapshot-rebuild path so the compiled base is
+            // established before solve.
+            self.rebuild_from_snapshot(model)?;
+            sync_mode = SynchronizationMode::Rebuild;
         }
-        // 6. backend_rev == committed -> no synchronization.
+        // 6. backend_rev == committed && the compiler holds a compiled base ->
+        //    no synchronization.
 
         // Post-synchronization invariant: the backend must be Ready and
         // exactly at the committed revision before any solve.
