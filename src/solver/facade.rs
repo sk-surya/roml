@@ -288,15 +288,21 @@ where
     ) -> Result<(), SolveError> {
         // Establish the compiled base when the compiler has not yet compiled
         // anything. A fresh backend (revision ZERO) is exactly the empty
-        // compiled state, so the compiler compiles the empty snapshot as its
-        // base WITHOUT sending a rebuild to the backend — the backend is
-        // already at that empty state, and sending a rebuild would count as a
-        // spurious rebuild-retry. This lets the first solve flow through
-        // compiled deltas (Delta sync mode). If the backend is already ahead
-        // and no base exists, a rebuild is required.
-        if self.compiler.current_compilation().is_none() {
+        // native state, so the compiler compiles the empty snapshot as its
+        // base. The base is then SENT to the backend (as a `CompiledRebuild`)
+        // before the first delta, so the backend records the exact
+        // `CompilationId` it must validate deltas against (D28, WR-1). The
+        // uniform contract: a backend always holds a compiled base before it
+        // receives a `CompiledDeltaBatch` — there is no "un-sent empty base"
+        // special case (a reference-contract backend rejects a delta whose base
+        // it never received). The base-establishment rebuild is NOT a rebuild
+        // retry: API-02.3's one-retry bound counts only the error-recovery
+        // rebuild, and this happens on the ordinary delta path. If the backend
+        // is already ahead and no base exists, a rebuild is required.
+        let establish_base = self.compiler.current_compilation().is_none();
+        let base_snapshot = if establish_base {
             if backend_rev == ModelRevision::ZERO {
-                self.compile_snapshot_for(model, &ModelSnapshot::empty(backend_rev))?;
+                Some(self.compile_snapshot_for(model, &ModelSnapshot::empty(backend_rev))?)
             } else {
                 return Err(SolveError::Synchronization(BackendError::new(
                     "no compiled base for the backend revision; rebuild required",
@@ -304,7 +310,9 @@ where
                     HealthEffect::RequiresRebuild,
                 )));
             }
-        }
+        } else {
+            None
+        };
 
         let cursor = AdapterCursor {
             applied_revision: backend_rev,
@@ -351,6 +359,15 @@ where
             compiled_batches.push(compiled);
         }
 
+        // Now mutate the backend — compile-before-mutation is complete. Send
+        // the newly established compiled base (if any) before the deltas that
+        // chain from it, so the backend can validate each delta's exact
+        // `from_compilation` (D28, WR-1).
+        if let Some(base) = base_snapshot {
+            self.backend
+                .synchronize(Synchronization::CompiledRebuild(base))
+                .map_err(|e| SolveError::from_backend(true, e))?;
+        }
         for compiled in compiled_batches {
             self.backend
                 .synchronize(Synchronization::CompiledDeltaBatch(compiled))

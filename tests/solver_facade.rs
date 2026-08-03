@@ -626,6 +626,16 @@ fn first_solve_synchronizes_via_delta_and_reports_revision() {
         SynchronizationMode::Delta
     );
     assert_eq!(solution.metadata().model_revision, model.current_revision());
+    // WR-2 explicit contract: the first solve establishes the compiled EMPTY
+    // base in the backend (exactly one base-establishment rebuild, NOT a
+    // rebuild retry) and then flows the r0→r1 deltas — the backend always
+    // holds a compiled base before receiving a CompiledDeltaBatch (D28).
+    assert_eq!(
+        state.borrow().rebuilds(),
+        1,
+        "first solve establishes the compiled empty base in the backend"
+    );
+    assert_eq!(state.borrow().deltas(), 1, "first solve applies the delta");
     // Backend revision equals the committed model revision before solve.
     let backend_rev_at_solve = state
         .borrow()
@@ -749,7 +759,10 @@ fn recoverable_delta_failure_triggers_one_rebuild_then_solves() {
         solution.metadata().synchronization,
         SynchronizationMode::Rebuild
     );
-    assert_eq!(state.borrow().rebuilds(), 1);
+    // One base-establishment rebuild (the compiled empty base is now sent to
+    // the backend — WR-2) plus exactly ONE error-recovery rebuild (the
+    // API-02.3 retry bound is unchanged).
+    assert_eq!(state.borrow().rebuilds(), 2);
     assert_eq!(state.borrow().deltas(), 0);
     assert_eq!(solution.metadata().model_revision, model.current_revision());
 }
@@ -766,7 +779,10 @@ fn at_most_one_rebuild_retry_when_rebuild_also_fails() {
 
     let err = session.solve(&mut model).expect_err("must error");
     assert!(matches!(err, SolveError::Synchronization(_)));
-    assert_eq!(state.borrow().rebuilds(), 1, "exactly one rebuild attempt");
+    // One base-establishment rebuild (WR-2) plus exactly ONE failed retry
+    // rebuild — the API-02.3 retry bound (at most one retry) is unchanged;
+    // there is no retry loop.
+    assert_eq!(state.borrow().rebuilds(), 2);
     assert_eq!(state.borrow().solves(), 0);
 }
 
@@ -781,7 +797,13 @@ fn terminal_delta_failure_returns_error_without_rebuild_retry() {
 
     let err = session.solve(&mut model).expect_err("terminal must error");
     assert!(err.is_terminal(), "error must be terminal: {err:?}");
-    assert_eq!(state.borrow().rebuilds(), 0, "no rebuild retry");
+    // The base-establishment rebuild (WR-2) is not a retry: a TERMINAL delta
+    // failure still returns immediately with NO error-recovery rebuild.
+    assert_eq!(
+        state.borrow().rebuilds(),
+        1,
+        "only the base-establishment rebuild"
+    );
     assert_eq!(state.borrow().solves(), 0, "no solve");
 }
 
@@ -803,7 +825,9 @@ fn backend_ahead_of_model_triggers_rebuild() {
         second.metadata().synchronization,
         SynchronizationMode::Rebuild
     );
-    assert_eq!(state.borrow().rebuilds(), 1);
+    // One base-establishment rebuild on the first solve (WR-2) plus the
+    // backend-ahead re-synchronization rebuild on the second solve.
+    assert_eq!(state.borrow().rebuilds(), 2);
     assert_eq!(state.borrow().revision, model.current_revision());
 }
 
