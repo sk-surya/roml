@@ -218,14 +218,17 @@ pub enum ModelOp {
 /// - Operations are ordered and deterministic
 /// - The batch is self-contained (adapters need no model access)
 ///
-/// # Semantic function/set entries (P25 Task 3)
+/// # Semantic function/set entries (P25 Task 3, F2 contract)
 ///
 /// The batch also carries [`functions`](Self::functions): the canonical
-/// semantic function-in-set entries for constraints added by this batch,
-/// *reconstructed* deterministically from the batch's legacy operations
-/// (`AddConstraint` bounds + `SetCell` cells). The coefficient index remains
-/// the single coefficient authority (SM-01.1) — these entries are a derived
-/// view, and each transitional legacy field is guarded by an invariant check.
+/// semantic function-in-set entries for constraints **added** by this batch
+/// with their final folded bounds (`SetConstraintBounds` folds, per CR-01),
+/// **minus** constraints removed by this batch. Updates to pre-existing
+/// functions ride the underlying ops; full before/after semantic entries for
+/// pre-existing functions are deferred until recipe-level incremental
+/// equivalence is proven (design §8). The coefficient index remains the single
+/// coefficient authority (SM-01.1) — these entries are a derived view, and
+/// each transitional legacy field is guarded by an invariant check.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeltaBatch {
     /// The revision before this batch is applied.
@@ -239,6 +242,15 @@ pub struct DeltaBatch {
 
     /// Canonical semantic function-in-set entries reconstructed from the
     /// batch's `AddConstraint`/`SetCell` operations (P25 Task 3, SM-01.4).
+    ///
+    /// # Contract (F2)
+    ///
+    /// The view of constraints ADDED by this batch with their final folded
+    /// bounds (`SetConstraintBounds` folds, per CR-01), minus constraints
+    /// removed by this batch. Updates to pre-existing functions ride the
+    /// underlying ops; full before/after semantic entries for pre-existing
+    /// functions are deferred until recipe-level incremental equivalence is
+    /// proven (design §8).
     pub functions: Vec<FunctionEntry>,
 
     /// Canonical semantic construct entries reconstructed from the batch's
@@ -291,6 +303,17 @@ impl DeltaBatch {
 /// Reconstruct the canonical semantic function-in-set entries carried by a
 /// batch from its legacy `AddConstraint`/`SetCell` operations (P25 Task 3).
 ///
+/// # Delta contract (F2)
+///
+/// `functions` is the view of constraints **added** by this batch with their
+/// final folded bounds (`SetConstraintBounds` folds, per CR-01), **minus**
+/// constraints removed by this batch (an `AddConstraint` followed by a
+/// `RemoveConstraint` for the same `con` contributes no entry). Updates to
+/// pre-existing functions ride the underlying ops
+/// (`SetCell`/`SetConstraintBounds`/`RemoveConstraint`); full before/after
+/// semantic entries for pre-existing functions are deferred until recipe-level
+/// incremental equivalence is proven (design §8).
+///
 /// The coefficient index is the single coefficient authority (SM-01.1): each
 /// added constraint's linear function is rebuilt from the `SetCell` cells and
 /// its set from the `AddConstraint` bounds. The transitional legacy fields
@@ -300,6 +323,14 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
     let mut entries = Vec::new();
     for op in operations {
         if let ModelOp::AddConstraint { con, bounds } = op {
+            // F2 (a): a constraint added AND removed within the same batch is
+            // not part of this batch's `functions` view.
+            if operations
+                .iter()
+                .any(|o| matches!(o, ModelOp::RemoveConstraint { con: c } if c == con))
+            {
+                continue;
+            }
             // The linear function is rebuilt from the constraint's `SetCell`
             // cells, with terms sorted by var so the reconstructed term order
             // is deterministic (WR-01) and agrees with the canonical
