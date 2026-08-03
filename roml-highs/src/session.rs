@@ -642,15 +642,24 @@ impl OverlaySession for HighsSession {
         &mut self,
         overlay: &CompiledOverlay,
     ) -> Result<OverlayApplyReceipt, BackendError> {
-        // Exact-id stale rejection before mutation (D28 / SM-03.9).
-        let actual = self.current_compilation.ok_or_else(|| {
-            BackendError::new(
-                "the HiGHS session has no compiled base to apply the overlay on top of",
-                ErrorCategory::InvalidInput,
-                HealthEffect::RequiresRebuild,
-            )
-        })?;
+        // Exact-id stale rejection before mutation (D28 / SM-03.9). CR-02:
+        // EVERY early-return error path inside apply_overlay marks the cursor
+        // `RequiresRebuild` — the facade never trusts the backend to have
+        // self-marked, and a partially applied overlay is never silently
+        // reused (SM-07.4, D7).
+        let actual = match self.current_compilation {
+            Some(compilation) => compilation,
+            None => {
+                self.cursor.mark_rebuild();
+                return Err(BackendError::new(
+                    "the HiGHS session has no compiled base to apply the overlay on top of",
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ));
+            }
+        };
         if actual != overlay.base_compilation {
+            self.cursor.mark_rebuild();
             return Err(BackendError::new(
                 format!(
                     "stale overlay base: the overlay requires compilation {:?}, but the session \
@@ -676,24 +685,32 @@ impl OverlaySession for HighsSession {
         for op in &overlay.operations {
             match op {
                 OverlayOp::SetTemporaryVariableBounds { variable, bounds } => {
-                    let idx = self
-                        .col_map
-                        .get(*variable)
-                        .ok_or_else(|| missing_variable(*variable))?;
-                    let prior = self
-                        .var_bounds
-                        .get(variable)
-                        .copied()
-                        .ok_or_else(|| missing_variable(*variable))?;
+                    let idx = match self.col_map.get(*variable) {
+                        Some(idx) => idx,
+                        None => {
+                            self.cursor.mark_rebuild();
+                            return Err(missing_variable(*variable));
+                        }
+                    };
+                    let prior = match self.var_bounds.get(variable).copied() {
+                        Some(prior) => prior,
+                        None => {
+                            self.cursor.mark_rebuild();
+                            return Err(missing_variable(*variable));
+                        }
+                    };
                     let lb = normalize_bound(bounds.lower, self.inf);
                     let ub = normalize_bound(bounds.upper, self.inf);
                     // SAFETY: raw is valid; idx is a live native column.
                     unsafe {
-                        check_highs_status(
+                        if let Err(e) = check_highs_status(
                             Highs_changeColBounds(self.raw, idx, lb, ub),
                             self.raw,
                             "Highs_changeColBounds (overlay temporary bound)",
-                        )?;
+                        ) {
+                            self.cursor.mark_rebuild();
+                            return Err(e);
+                        }
                     }
                     // Record the FIRST prior bound only — a later overlay op on
                     // the same variable must not overwrite the base capture.
@@ -709,10 +726,13 @@ impl OverlaySession for HighsSession {
                         // F5: a coefficient referencing a compiled variable not
                         // present in the held state is a typed error, not a
                         // silent skip.
-                        let col = self
-                            .col_map
-                            .get(*cid)
-                            .ok_or_else(|| missing_variable(*cid))?;
+                        let col = match self.col_map.get(*cid) {
+                            Some(col) => col,
+                            None => {
+                                self.cursor.mark_rebuild();
+                                return Err(missing_variable(*cid));
+                            }
+                        };
                         indices.push(col);
                         values.push(*value);
                     }
@@ -742,6 +762,7 @@ impl OverlaySession for HighsSession {
                 // RemoveTemporaryRow is a rollback-only op; apply does not
                 // produce it.
                 OverlayOp::RemoveTemporaryRow { row } => {
+                    self.cursor.mark_rebuild();
                     return Err(BackendError::new(
                         format!("apply_overlay does not accept RemoveTemporaryRow ({row:?})"),
                         ErrorCategory::InvalidInput,
@@ -749,7 +770,7 @@ impl OverlaySession for HighsSession {
                     ));
                 }
                 OverlayOp::SetObjectivePolicy(policy) => {
-                    project_objective_policy(
+                    if let Err(e) = project_objective_policy(
                         self.raw,
                         policy,
                         &self.col_map,
@@ -758,13 +779,17 @@ impl OverlaySession for HighsSession {
                         &self.obj_senses,
                         &self.obj_offsets,
                         &mut self.active_obj,
-                    )?;
+                    ) {
+                        self.cursor.mark_rebuild();
+                        return Err(e);
+                    }
                     self.compiled_objective_policy = policy.clone();
                 }
                 // `OverlayOp` is `#[non_exhaustive]` (P27 contract): a FUTURE
                 // op variant this projection does not understand is a hard
                 // typed error — never a silent no-op.
                 _ => {
+                    self.cursor.mark_rebuild();
                     return Err(BackendError::unsupported(
                         "overlay op variant not supported by this projection",
                     ));
@@ -2046,6 +2071,70 @@ mod tests {
             highs.current_compilation,
             Some(held),
             "a rejected stale overlay must not change the session's compiled state"
+        );
+    }
+
+    /// CR-02: a MID-apply failure (op 2 fails after op 1 already mutated the
+    /// native model) must mark the session `RequiresRebuild` — a subsequent
+    /// plain solve then forces a full rebuild instead of silently solving
+    /// against the half-overlaid native state on the no-sync fast path.
+    #[test]
+    fn highs_mid_apply_failure_marks_requires_rebuild() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.maximize(x + y).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let c_base = base.compilation_id;
+
+        // Compile a VALID single-temp-fixing overlay, then append a SECOND op
+        // that references an unknown compiled variable: op 1 (x -> [2,2])
+        // mutates the native model, then op 2 fails. This is exactly CR-02's
+        // "op N fails after ops 1..N-1 mutated".
+        let overlay =
+            SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![], vec![], vec![]).unwrap();
+        let mut compiled = compile_overlay(&model, &compiler, &overlay, None)
+            .expect("overlay compiles against the exact base");
+        assert_eq!(compiled.base_compilation, c_base);
+        compiled
+            .operations
+            .push(OverlayOp::SetTemporaryVariableBounds {
+                variable: CompiledVariableId(999),
+                bounds: Bounds::new(3.0, 3.0),
+            });
+
+        let err = highs
+            .apply_overlay(&compiled)
+            .expect_err("the second op must fail apply");
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "an unknown compiled variable is invalid input"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::RequiresRebuild,
+            "a mid-apply failure must mark the session RequiresRebuild so the \
+             half-overlaid native state is never silently reused"
+        );
+        assert_eq!(
+            highs.health(),
+            AdapterHealth::RequiresRebuild,
+            "health() must reflect the marked cursor"
         );
     }
 }

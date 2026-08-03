@@ -1279,6 +1279,7 @@ fn run_overlay_scenario(
         let mut s = state.borrow_mut();
         s.fail_solve = false;
         s.fail_apply = false;
+        s.fail_apply_mid = false;
         s.fail_rollback = false;
         s.fail_verify = false;
         s.report_wrong_compilation = None;
@@ -1371,6 +1372,63 @@ fn injected_apply_failure_never_leaks() {
     );
 }
 
+/// CR-02: a MID-apply failure (the second overlay op fails after the first
+/// already mutated the backend) leaves the session `RequiresRebuild`, and a
+/// subsequent plain solve FORCES a rebuild — the no-sync fast path never
+/// silently reuses the half-overlaid state. The façade defensively forces the
+/// rebuild even though the backend self-marked too.
+#[test]
+fn injected_mid_apply_failure_forces_rebuild_not_no_sync_reuse() {
+    let (mut model, _compiler, x, _y, _obj) = overlay_fixture();
+    let (backend, state) = OverlayTestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let _ = session.solve(&mut model).expect("base solve succeeds");
+    let rev = model.current_revision();
+
+    let overlay = {
+        state.borrow_mut().fail_apply_mid = true;
+        trivial_overlay(x)
+    };
+    let result = session.solve_with_overlay(&mut model, SolveOptions::default(), &overlay, None);
+    assert!(
+        matches!(result, Err(SolveError::Rollback(_))),
+        "a mid-apply failure surfaces as SolveError::Rollback, got {result:?}"
+    );
+    assert_eq!(
+        model.current_revision(),
+        rev,
+        "canonical revision must be unchanged"
+    );
+    assert_eq!(
+        state.borrow().health,
+        AdapterHealth::RequiresRebuild,
+        "a mid-apply failure must leave the session RequiresRebuild"
+    );
+
+    // Clear the fault: the next plain solve MUST force a rebuild (never a
+    // silent no-sync reuse of the half-overlaid state) and reproduce a fresh
+    // rebuild.
+    let rebuilds_before = state.borrow().rebuilds;
+    state.borrow_mut().fail_apply_mid = false;
+    let clean = session
+        .solve(&mut model)
+        .expect("clean solve after mid-apply failure");
+    let rebuilds_after = state.borrow().rebuilds;
+    assert!(
+        rebuilds_after > rebuilds_before,
+        "a solve after a mid-apply failure must force a rebuild ({} -> {})",
+        rebuilds_before,
+        rebuilds_after
+    );
+    let (fresh_obj, _) = fresh_solve(&mut model.clone());
+    assert_eq!(clean.objective_value(), fresh_obj);
+    assert_eq!(
+        state.borrow().health,
+        AdapterHealth::Ready,
+        "the forced rebuild must leave the session Ready"
+    );
+}
+
 /// Solve-stage failure: the backend's solve fails -> `SolveError::Solve`.
 #[test]
 fn injected_solve_failure_never_leaks() {
@@ -1443,6 +1501,12 @@ struct OverlayFaultState {
     solves: usize,
     fail_solve: bool,
     fail_apply: bool,
+    /// CR-02: fail the overlay apply AFTER the first op mutated the backend
+    /// (the injected bad op references an unknown compiled variable). The
+    /// session must end RequiresRebuild and a subsequent plain solve must
+    /// force a rebuild — never a silent no-sync reuse of the half-overlaid
+    /// state.
+    fail_apply_mid: bool,
     fail_rollback: bool,
     fail_verify: bool,
     report_wrong_compilation: Option<CompilationId>,
@@ -1458,6 +1522,7 @@ impl Default for OverlayFaultState {
             solves: 0,
             fail_solve: false,
             fail_apply: false,
+            fail_apply_mid: false,
             fail_rollback: false,
             fail_verify: false,
             report_wrong_compilation: None,
@@ -1480,6 +1545,12 @@ struct OverlayTestBackend {
     objective_cells: HashMap<roml::ObjId, HashMap<roml::VarId, f64>>,
     active_objective: Option<roml::ObjId>,
     typed_caps: BackendCapabilitySet,
+    /// IN-03: the temporary bounds of the currently-applied overlay, keyed by
+    /// user variable. `solve` clamps its deterministic unit `var_values` to
+    /// these bounds, so an overlay-bounds leak changes the reported objective
+    /// and the failure-injection matrix actually catches it (a solve that
+    /// ignores overlay bounds cannot detect a bounds leak).
+    overlay_bounds: HashMap<roml::VarId, Bounds>,
 }
 
 impl OverlayTestBackend {
@@ -1496,18 +1567,23 @@ impl OverlayTestBackend {
                 objective_cells: HashMap::new(),
                 active_objective: None,
                 typed_caps: full_typed_capabilities(),
+                overlay_bounds: HashMap::new(),
             },
             state,
         )
     }
 
-    fn compute_objective_value(&self) -> Option<f64> {
+    /// IN-03: compute the objective against an explicit value map (the clamped
+    /// overlay-solve values), so a leak of the overlay's temporary bounds into
+    /// `solve` changes the reported objective and the failure-injection matrix
+    /// catches it.
+    fn compute_objective_value(&self, values: &HashMap<roml::VarId, f64>) -> Option<f64> {
         let obj = self.active_objective?;
         let constant = self.objectives.get(&obj).map(|(_, c)| *c).unwrap_or(0.0);
         let cells = self.objective_cells.get(&obj).cloned().unwrap_or_default();
         let sum: f64 = cells
             .iter()
-            .map(|(var, cost)| *cost * self.var_values.get(var).copied().unwrap_or(0.0))
+            .map(|(var, cost)| *cost * values.get(var).copied().unwrap_or(0.0))
             .sum();
         Some(sum + constant)
     }
@@ -1752,9 +1828,23 @@ impl BackendSession for OverlayTestBackend {
                 .expect("a solve must follow a compiled synchronization"),
         };
         drop(s);
+        // IN-03: clamp the deterministic unit values to the applied overlay's
+        // temporary bounds so an overlay-bounds leak changes the objective and
+        // the matrix's "clean solve == fresh rebuild" assertions catch it.
+        let clamped: HashMap<roml::VarId, f64> = self
+            .var_values
+            .iter()
+            .map(|(var, v)| {
+                let value = match self.overlay_bounds.get(var) {
+                    Some(b) => (*v).max(b.lower).min(b.upper),
+                    None => *v,
+                };
+                (*var, value)
+            })
+            .collect();
         let solution = SolveSolution {
-            variable_values: self.var_values.iter().map(|(var, v)| (*var, *v)).collect(),
-            objective_value: self.compute_objective_value(),
+            variable_values: clamped.iter().map(|(var, v)| (*var, *v)).collect(),
+            objective_value: self.compute_objective_value(&clamped),
             dual_values: None,
             reduced_costs: None,
         };
@@ -1786,8 +1876,49 @@ impl OverlaySession for OverlayTestBackend {
                 HealthEffect::RequiresRebuild,
             ));
         }
+        let inject_mid = s.fail_apply_mid;
         drop(s);
-        let receipt = self.inner.apply_overlay(overlay)?;
+
+        // CR-02 mid-apply injection: append a bogus op (an unknown compiled
+        // variable) AFTER the real overlay ops, so the apply fails after op 1
+        // already mutated the backend — exactly "op N fails after ops
+        // 1..N-1 mutated".
+        let mut mid_overlay: Option<roml::advanced::CompiledOverlay> = None;
+        if inject_mid {
+            let mut mutated = overlay.clone();
+            mutated
+                .operations
+                .push(OverlayOp::SetTemporaryVariableBounds {
+                    variable: CompiledVariableId(u32::MAX),
+                    bounds: Bounds::new(1.0, 1.0),
+                });
+            mid_overlay = Some(mutated);
+        }
+        let overlay_ref = mid_overlay.as_ref().unwrap_or(overlay);
+
+        let receipt = match self.inner.apply_overlay(overlay_ref) {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                // CR-02: a partial apply must leave the session
+                // RequiresRebuild — never a Ready session silently reusing the
+                // half-overlaid state.
+                self.state.borrow_mut().health = AdapterHealth::RequiresRebuild;
+                return Err(e);
+            }
+        };
+
+        // IN-03: record the overlay's temporary bounds so `solve` honors them
+        // (clamping its unit values); a bounds leak then changes the objective.
+        let mut overlay_bounds = HashMap::new();
+        for op in &overlay.operations {
+            if let OverlayOp::SetTemporaryVariableBounds { variable, bounds } = op {
+                if let Some(var) = self.compiled_to_user_variable.get(variable) {
+                    overlay_bounds.insert(*var, *bounds);
+                }
+            }
+        }
+        self.overlay_bounds = overlay_bounds;
+
         let mut s = self.state.borrow_mut();
         s.current_compilation = Some(overlay.compilation_id);
         Ok(receipt)
@@ -1813,6 +1944,11 @@ impl OverlaySession for OverlayTestBackend {
         } = &outcome
         {
             s.current_compilation = Some(*restored_compilation);
+        }
+        // IN-03: a Clean rollback restores the base solve state — the overlay
+        // bounds must not leak into the next plain solve.
+        if matches!(outcome, OverlayRollbackOutcome::Clean { .. }) {
+            self.overlay_bounds.clear();
         }
         Ok(outcome)
     }
