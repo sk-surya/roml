@@ -139,5 +139,11 @@ Full detail (RED failures, per-construct evidence table, verification matrix, A3
 
 | # | SHA | Message |
 |---|---|---|
-| 3 | (this commit) | `feat(model): add logical semantic constructs` |
-| 4 | (this commit) | `docs(32): summarize Task 16 evidence and deviations` |
+| 3 | `5f4d972` | `feat(model): add logical semantic constructs` |
+| 4 | `55f429d` | `docs(32): summarize Task 16 evidence and deviations` |
+
+## Self-Check: PASSED
+
+- Created files verified: all four payload modules, all four bridge modules, `tests/common_constructs.rs`, `roml-highs/tests/formulation_equivalence.rs`, and the evidence file are present in commit `5f4d972`.
+- Commits verified: `5f4d972` (feat) and `55f429d` (docs) exist in the worktree history.
+- Verification matrix: roml 734 tests / highs 118 tests / both clippy lanes clean / both doc lanes clean / fmt clean / `cargo public-api -p roml` 17536 items with `Fixture`/`FixturePayload`/`add_construct_fixture`/`ConstructData` absent.
