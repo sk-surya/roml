@@ -436,3 +436,14 @@ Verified and fixed with TDD on the branch:
 5. **F5 — synthetic solutions fabricate CompilationId** (`a7dd0d6`): `SolveMetadata.compilation_id`/`SolveResult.compilation_id` are `Option<CompilationId>` (pre-release field-type change); `Default` → `None`; `normalize_result` sets `Some(actual)`; the façade treats a `None` from a real backend as a mismatch; synthetic `Solution::new`/`from_values` carry `None`. Tests: default has None, synthetic has None, real solves carry Some, mismatch rejection still enforced.
 
 Re-verification: all findings RESOLVED; `cargo test -p roml --all-targets` **669 pass**, `roml-highs` **111 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged.
+
+### Fifth review round — blocking independent review (PR #28, delta envelope)
+
+Narrow exact-identity closure, verified and fixed in `fb212e9`:
+1. **Identical from/to compilation rejected** — `BackendDeltaBatch::validate` now rejects `from_compilation == to_compilation` at the top, before any op simulation or registry work (`CompileError::InvalidDeltaEnvelope`), so a mutated batch can no longer retain the old exact identity (D28).
+2. **Non-advancing revisions rejected** — `from_revision >= to_revision` is invalid; a batch must advance the canonical model revision.
+3. **Rejection before mutation, cursor unchanged** — both backends preflight before any native mutation and advance `current_compilation`/`compiled_revision`/cursor only on `Ok`; the reference and HiGHS tests assert the cursor/compilation identity is unchanged after a rejected envelope apply, and a valid envelope still advances both.
+
+Tests (9): `delta_validate_rejects_identical_from_to_compilation`, `delta_validate_rejects_non_advancing_revision`, `delta_validate_accepts_advancing_envelope` (unit); `dx_compiled_delta_rejects_identical_from_to_compilation`, `dx_compiled_delta_rejects_non_advancing_revision`, `dx_compiled_delta_valid_envelope_advances_compilation_and_revision` (reference); `compiled_delta_rejects_identical_from_to_compilation_without_advancing`, `compiled_delta_rejects_non_advancing_revision_without_advancing`, `compiled_delta_valid_envelope_still_applies_and_advances` (HiGHS). `DeltaBatch::new` already requires from < to and the compiler allocates fresh `to_compilation` ids, so legitimately-compiled deltas pass.
+
+Re-verification: `cargo test -p roml --all-targets` **675 pass**, `roml-highs` **114 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged.
