@@ -208,6 +208,6 @@ All Task 5 acceptance criteria met:
 
 | # | SHA | Message |
 |---|---|---|
-| 1 | *(recorded in the phase commit-trail update)* | `feat(compiler): define backend IR and compilation identity` |
+| 1 | `cc743a8` | `feat(compiler): define backend IR and compilation identity` |
 
 <!-- Phase-level gate result (P26 boundary) filled after Task 7 review passes. -->
