@@ -15,8 +15,9 @@
 //! suites in `src/compiler/bounds.rs` and `src/compiler/bridge/mod.rs`,
 //! because there is NO public way to obtain a canonical `Construct` handle
 //! until Task 16's public builders land (`add_construct_fixture` is
-//! crate-private per A30). This mirrors the F3 precedent documented in
-//! `tests/semantic_ir.rs` ("construct-lifecycle tests moved IN-CRATE").
+//! `#[cfg(test)]`-gated test-only scaffolding per A30). This mirrors the F3
+//! precedent documented in `tests/semantic_ir.rs` ("construct-lifecycle tests
+//! moved IN-CRATE").
 
 use roml::compiler::bounds::{BoundAnalyzer, BoundError, BoundSource, BoundTrace, Interval};
 use roml::expr::{LinExpr, TermCoeff};

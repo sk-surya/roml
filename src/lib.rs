@@ -17,9 +17,9 @@ pub mod advanced;
 pub mod compiler;
 // A30 (P32): the real per-construct variants land in P32 Task 16, so the
 // construct module and `ConstructKind`/`ConstructEntry` become PUBLIC exports.
-// The `Fixture` variant, `FixturePayload`, and `add_construct_fixture` /
-// `Model::construct` stay crate-private; the `#[non_exhaustive]` boundary
-// stays.
+// The `Fixture` variant, `FixturePayload`, and `add_construct_fixture` are
+// `#[cfg(test)]`-gated test-only scaffolding (absent from the public API
+// surface in non-test builds); the `#[non_exhaustive]` boundary stays.
 pub mod construct;
 pub mod delta;
 pub mod expr;
