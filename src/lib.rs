@@ -39,9 +39,10 @@ pub mod value_expr;
 
 // Re-export commonly used types for public API
 pub use construct::{
-    BooleanConstraint, BooleanKind, CardinalityConstraint, CardinalityKind, Construct,
-    ConstructEntry, ConstructKind, FormulationPreference, IndicatorConstraint, IndicatorDirection,
-    ReificationConstraint,
+    AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
+    BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
+    FormulationPreference, IndicatorConstraint, IndicatorDirection, MinMaxConstraint,
+    MinMaxRelation, MinMaxSense, ProductOperand, ReificationConstraint,
 };
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};

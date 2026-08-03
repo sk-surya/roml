@@ -9,7 +9,9 @@
 
 use roml::compiler::capability::CompilationPolicy;
 use roml::compiler::session::CompilationSession;
-use roml::construct::{BooleanKind, CardinalityKind, IndicatorDirection};
+use roml::construct::{
+    BooleanKind, CardinalityKind, IndicatorDirection, MinMaxRelation, MinMaxSense,
+};
 use roml::id::VarId;
 use roml::prelude::*;
 use roml::solver::backend::TerminationStatus;
@@ -61,6 +63,35 @@ fn highs_feasible_assignments(
     }
     out.sort();
     out
+}
+
+/// Whether HiGHS finds the model with the given (var, value) fixes feasible
+/// under `policy` (each fix is an ordinary equality constraint on a clone).
+fn highs_feasible_for_fixes(
+    base: &Model,
+    fixes: &[(VarId, f64)],
+    policy: CompilationPolicy,
+) -> bool {
+    let mut probe = base.clone();
+    for &(var, value) in fixes {
+        probe
+            .add_constraint((LinExpr::from(var)).eq(value))
+            .unwrap();
+    }
+    let snapshot = probe.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let compiled = session
+        .compile_snapshot(probe.instance(), &snapshot, &policy, &highs_caps())
+        .expect("snapshot must compile against HiGHS bridge capabilities");
+
+    let mut highs = HighsSession::try_new().expect("bundled HiGHS available");
+    highs
+        .synchronize(Synchronization::CompiledRebuild(compiled))
+        .expect("sync must succeed");
+    let result = highs
+        .solve(&SolveRequest::new())
+        .expect("solve must succeed");
+    matches!(result.termination, TerminationStatus::Optimal)
 }
 
 fn semantic_feasible(n: usize, predicate: impl Fn(&[u8]) -> bool) -> Vec<Vec<u8>> {
@@ -164,5 +195,87 @@ fn boolean_and_cardinality_highs_feasible_sets_match_semantic() {
     assert_eq!(
         semantic, portable,
         "Portable feasible set must equal the semantic set"
+    );
+}
+
+#[test]
+fn minmax_highs_exact_feasible_sets_match_semantic() {
+    // Exact max over two binary operands: HiGHS finds the probe feasible iff
+    // y == max(x1,x2). Enumerates the (x1,x2,y) domain via fixed probes.
+    let mut model = Model::new();
+    let x1 = model.add_variable(binary()).unwrap();
+    let x2 = model.add_variable(binary()).unwrap();
+    let (_, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+
+    let mut mismatches = Vec::new();
+    for a in 0..2 {
+        for b in 0..2 {
+            for yv in 0..2 {
+                let semantic = (yv as f64) == (a.max(b) as f64);
+                let auto = highs_feasible_for_fixes(
+                    &model,
+                    &[(x1, a as f64), (x2, b as f64), (y, yv as f64)],
+                    CompilationPolicy::Auto,
+                );
+                let portable = highs_feasible_for_fixes(
+                    &model,
+                    &[(x1, a as f64), (x2, b as f64), (y, yv as f64)],
+                    CompilationPolicy::Portable,
+                );
+                if auto != semantic || portable != semantic {
+                    mismatches.push((a, b, yv, semantic, auto, portable));
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "exact-max HiGHS feasible set differs from semantic: {mismatches:?}"
+    );
+
+    // Exact min mirror.
+    let mut model = Model::new();
+    let x1 = model.add_variable(binary()).unwrap();
+    let x2 = model.add_variable(binary()).unwrap();
+    let (_, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Min,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+
+    let mut mismatches = Vec::new();
+    for a in 0..2 {
+        for b in 0..2 {
+            for yv in 0..2 {
+                let semantic = (yv as f64) == (a.min(b) as f64);
+                let auto = highs_feasible_for_fixes(
+                    &model,
+                    &[(x1, a as f64), (x2, b as f64), (y, yv as f64)],
+                    CompilationPolicy::Auto,
+                );
+                let portable = highs_feasible_for_fixes(
+                    &model,
+                    &[(x1, a as f64), (x2, b as f64), (y, yv as f64)],
+                    CompilationPolicy::Portable,
+                );
+                if auto != semantic || portable != semantic {
+                    mismatches.push((a, b, yv, semantic, auto, portable));
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "exact-min HiGHS feasible set differs from semantic: {mismatches:?}"
     );
 }

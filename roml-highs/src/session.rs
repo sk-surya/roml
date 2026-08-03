@@ -507,16 +507,20 @@ const M2_NATIVE_FEATURES: [BackendFeature; 5] = [
 /// The M3 features P32 qualifies as exact ROML **bridge** support for HiGHS
 /// (SM-04.2).
 ///
-/// HiGHS has no qualified native `Indicator` (SM-04.3: no official-header
-/// audit), and no native reification/Boolean/cardinality primitives; P32
-/// declares these as exact ROML portable formulations (`SupportLevel::Bridge`).
-/// `Auto` compilation prefers a qualified native primitive, otherwise this
-/// exact bridge; `NativeRequired` rejects a bridge-only feature.
-const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 4] = [
+/// HiGHS has no qualified native indicator/minmax/abs/product primitives
+/// (SM-04.3: no official-header audit), and no native reification/Boolean/
+/// cardinality primitives; P32 declares these as exact ROML portable
+/// formulations (`SupportLevel::Bridge`). `Auto` compilation prefers a
+/// qualified native primitive, otherwise this exact bridge; `NativeRequired`
+/// rejects a bridge-only feature.
+const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 7] = [
     BackendFeature::Indicator,
     BackendFeature::Reification,
     BackendFeature::Boolean,
     BackendFeature::Cardinality,
+    BackendFeature::MinMax,
+    BackendFeature::AbsoluteValue,
+    BackendFeature::BinaryProduct,
 ];
 
 /// Every M3 feature that P26/P32 does **not** qualify as native or bridge for

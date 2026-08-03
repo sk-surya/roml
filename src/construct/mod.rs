@@ -23,9 +23,12 @@
 //! working. The `#[non_exhaustive]` extension boundary on [`ConstructKind`]
 //! stays (A30).
 
+pub mod absolute;
 pub mod boolean;
 pub mod cardinality;
 pub mod indicator;
+pub mod minmax;
+pub mod product;
 pub mod reification;
 
 use std::collections::HashMap;
@@ -33,9 +36,12 @@ use std::collections::HashMap;
 use crate::id::ParamId;
 use crate::identity::{ConstructId, IdentityOverflow};
 
+pub use absolute::{AbsoluteValueConstraint, AbsoluteValueVariant};
 pub use boolean::{BooleanConstraint, BooleanKind};
 pub use cardinality::{CardinalityConstraint, CardinalityKind};
 pub use indicator::{IndicatorConstraint, IndicatorDirection};
+pub use minmax::{MinMaxConstraint, MinMaxRelation, MinMaxSense};
+pub use product::{BinaryProductConstraint, ProductOperand};
 pub use reification::ReificationConstraint;
 
 /// A canonical semantic construct handle (design §7).
@@ -61,6 +67,14 @@ pub enum ConstructKind {
     Boolean(BooleanConstraint),
     /// Cardinality: exactly/at-most/at-least-k over binary variables (design §16.4).
     Cardinality(CardinalityConstraint),
+    /// Min/max: exact or one-sided epigraph/hypograph over linear operands
+    /// (design §16.3, P32 Task 17a).
+    MinMax(MinMaxConstraint),
+    /// Absolute value / positive part / clamp (design §16.3, P32 Task 17b).
+    AbsoluteValue(AbsoluteValueConstraint),
+    /// Binary product: binary-binary or binary-times-bounded-linear (design
+    /// §16.5, P32 Task 17c).
+    BinaryProduct(BinaryProductConstraint),
     /// P32-only crate-private fixture payload used by the in-crate construct
     /// lifecycle tests (A30 — never exported).
     #[doc(hidden)]
@@ -228,6 +242,9 @@ pub(crate) fn derive_parameter_dependencies(kind: &ConstructKind) -> Vec<ParamId
         ConstructKind::Reification(payload) => payload.parameter_dependencies(),
         ConstructKind::Boolean(_) => Vec::new(),
         ConstructKind::Cardinality(_) => Vec::new(),
+        ConstructKind::MinMax(payload) => payload.parameter_dependencies(),
+        ConstructKind::AbsoluteValue(payload) => payload.parameter_dependencies(),
+        ConstructKind::BinaryProduct(payload) => payload.parameter_dependencies(),
         ConstructKind::Fixture(_) => Vec::new(),
     }
 }

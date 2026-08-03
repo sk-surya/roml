@@ -90,6 +90,37 @@ pub enum GeneratedRole {
     BooleanAllRow,
     /// A cardinality row (exactly/at-most/at-least `k`).
     CardinalityRow,
+    /// A max-epigraph row (`x_i <= y`, zero binaries — P32 Task 17a).
+    MinMaxEpigraphRow,
+    /// A min-hypograph row (`x_i >= y`, zero binaries — P32 Task 17a).
+    MinMaxHypographRow,
+    /// An exact min/max selector row (P32 Task 17a).
+    MinMaxSelectorRow,
+    /// An exact min/max selector binary (one per operand, sum = 1 — P32 Task 17a).
+    MinMaxSelectorBinary,
+    /// An exact absolute-value decomposition row (`z = p + n`, `p - n = x`).
+    AbsoluteValueDecompositionRow,
+    /// The exact absolute-value/positive-part nonnegativity row (`p <= M_p·b`).
+    AbsoluteValuePositivePartRow,
+    /// The exact absolute-value/positive-part negative-part row (`n <= M_n·(1-b)`).
+    AbsoluteValueNegativePartRow,
+    /// The exact absolute-value selector binary (`b`).
+    AbsoluteValueSelectorBinary,
+    /// A clamp inner max-selector row (P32 Task 17b).
+    ClampInnerSelectorRow,
+    /// A clamp inner max-selector binary (P32 Task 17b).
+    ClampInnerSelectorBinary,
+    /// A clamp outer min-selector row (P32 Task 17b).
+    ClampOuterSelectorRow,
+    /// A clamp outer min-selector binary (P32 Task 17b).
+    ClampOuterSelectorBinary,
+    /// A binary-binary product row (P32 Task 17c).
+    BinaryProductRow,
+    /// A binary-times-bounded-linear product row (P32 Task 17c).
+    BinaryProductLinearRow,
+    /// The binary-times-linear product's bound row (`w >= L·b` / `w <= U·b`,
+    /// P32 Task 17c).
+    BinaryProductBoundRow,
 }
 
 /// The origin of a generated compiled entity (design §4.4, §5; D5).

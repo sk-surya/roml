@@ -16,6 +16,7 @@
 pub(crate) mod boolean;
 pub(crate) mod cardinality;
 pub(crate) mod indicator;
+pub(crate) mod minmax;
 pub(crate) mod reification;
 
 use std::collections::HashMap;
