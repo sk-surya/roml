@@ -43,6 +43,8 @@ pub type Parameter = crate::id::ParamId;
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
+use crate::identity::{ModelInstanceId, ModelLineageId};
+use crate::metadata::{EntityMetadata, EntityRef};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::Solution;
@@ -121,7 +123,14 @@ impl std::error::Error for ModelError {}
 /// - Only one objective can be active at a time
 /// - Parameter changes propagate to all dependent coefficients
 /// - All mutations are logged for solver consumption
-#[derive(Clone, Debug, Default)]
+///
+/// # Identity and metadata (P25)
+///
+/// Every model carries an opaque [`ModelLineageId`] and [`ModelInstanceId`]
+/// (design §4). `Clone` preserves lineage but allocates a new instance id
+/// (SM-02.7). Entity metadata is keyed by [`EntityRef`] and is canonical but
+/// non-solver-affecting: metadata changes never advance the revision.
+#[derive(Debug)]
 pub struct Model {
     /// Variable storage.
     pub(crate) variables: VariableStore,
@@ -147,6 +156,59 @@ pub struct Model {
 
     /// Synchronization coordinator for revisioned delta batch management.
     pub(crate) coordinator: crate::sync::SyncCoordinator,
+
+    /// The lineage identity of this model (design §4.1). Shared by clones.
+    lineage: ModelLineageId,
+    /// The instance identity of this live model object (design §4.2).
+    instance: ModelInstanceId,
+    /// Canonical but non-solver-affecting entity metadata (design §5).
+    metadata: std::collections::HashMap<EntityRef, EntityMetadata>,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            variables: VariableStore::default(),
+            constraints: ConstraintStore::default(),
+            objectives: ObjectiveStore::default(),
+            parameters: ParameterStore::default(),
+            coefficients: CoefficientIndex::default(),
+            changelog: ChangeLog::default(),
+            transaction: Transaction::default(),
+            name: None,
+            constants: ModelConstants::default(),
+            semicontinuous_lower: std::collections::HashMap::new(),
+            coordinator: crate::sync::SyncCoordinator::default(),
+            // A fresh model allocates fresh lineage and instance ids. Zero is
+            // reserved, so `Model::new` never collides with a sentinel.
+            lineage: ModelLineageId::allocate().expect("model lineage counter exhausted"),
+            instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl Clone for Model {
+    fn clone(&self) -> Self {
+        Self {
+            variables: self.variables.clone(),
+            constraints: self.constraints.clone(),
+            objectives: self.objectives.clone(),
+            parameters: self.parameters.clone(),
+            coefficients: self.coefficients.clone(),
+            changelog: self.changelog.clone(),
+            transaction: self.transaction.clone(),
+            name: self.name.clone(),
+            constants: self.constants.clone(),
+            semicontinuous_lower: self.semicontinuous_lower.clone(),
+            coordinator: self.coordinator.clone(),
+            // Clone preserves lineage but allocates a NEW instance id
+            // (SM-02.7, D28: a derived Clone would silently copy the instance).
+            lineage: self.lineage,
+            instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
+            metadata: self.metadata.clone(),
+        }
+    }
 }
 
 /// Model-level constants used by algebraic introspection (slack and violation
@@ -197,6 +259,45 @@ impl Model {
     /// Create a new named model (P22 target constructor).
     pub fn named(name: impl Into<String>) -> Self {
         Self::with_name(name)
+    }
+
+    // ========== Lineage, Instance, and Metadata ==========
+
+    /// The lineage identity of this model (design §4.1, SM-02.1).
+    ///
+    /// Independent models receive distinct lineages; [`Clone`](Self::clone)
+    /// preserves the lineage. Lineage governs assignment reuse compatibility
+    /// across clones.
+    pub fn lineage(&self) -> ModelLineageId {
+        self.lineage
+    }
+
+    /// The instance identity of this live model object (design §4.2, SM-02.7).
+    ///
+    /// Every live model has a distinct instance id; cloning allocates a new
+    /// instance while preserving the lineage, so divergent clones with equal
+    /// revisions are never confused.
+    pub fn instance(&self) -> ModelInstanceId {
+        self.instance
+    }
+
+    /// Attach metadata to an entity.
+    ///
+    /// Metadata is canonical but non-solver-affecting: it never advances the
+    /// model revision or emits a solver-facing change (EXECUTION.md
+    /// "Incremental semantics", design §5).
+    pub fn set_metadata(&mut self, entity: EntityRef, metadata: EntityMetadata) {
+        self.metadata.insert(entity, metadata);
+    }
+
+    /// Read the metadata attached to an entity, if any.
+    pub fn metadata(&self, entity: EntityRef) -> Option<&EntityMetadata> {
+        self.metadata.get(&entity)
+    }
+
+    /// Remove the metadata attached to an entity, returning it if present.
+    pub fn remove_metadata(&mut self, entity: EntityRef) -> Option<EntityMetadata> {
+        self.metadata.remove(&entity)
     }
 
     // ========== Variable Operations ==========

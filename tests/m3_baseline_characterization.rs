@@ -19,9 +19,8 @@
 #![allow(deprecated)] // exercises the pre-1.0 compatibility surface
 
 use roml::{
-    continuous, Bounds, ConstraintBounds, ConstraintExprExt, Model, ModelError, ModelRevision,
-    ModelSnapshot, ObjectiveExprExt, Sense, SolutionBuilder, SolveMetadata, SolveStatus,
-    SynchronizationMode, ValueExpr,
+    continuous, ConstraintBounds, ConstraintExprExt, Model, ModelError, ModelRevision,
+    ModelSnapshot, Sense, SolutionBuilder, SolveMetadata, SolveStatus, SynchronizationMode,
 };
 
 // =========================================================================
@@ -84,8 +83,8 @@ fn fluent_linear_modeling() {
 fn deterministic_snapshot_round_trip() {
     let mut model = Model::new();
     let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
-    let c = model.add_constraint((x).le(5.0)).unwrap();
-    let obj = model.maximize(x).unwrap();
+    let _c = model.add_constraint((x).le(5.0)).unwrap();
+    let _obj = model.maximize(x).unwrap();
     let r1 = model.commit().unwrap();
 
     // Two snapshots from the same state are byte-equal.
@@ -226,7 +225,7 @@ fn one_rebuild_retry_recovers_post_update_state() {
     let mut model = Model::new();
     let p = model.add_parameter(2.0).unwrap();
     let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
-    let c = model.add_constraint((p * x).le(20.0)).unwrap();
+    let _c = model.add_constraint((p * x).le(20.0)).unwrap();
     let r1 = model.commit().unwrap();
 
     // Session is current at r1; the pre-update snapshot is the "clean" state.

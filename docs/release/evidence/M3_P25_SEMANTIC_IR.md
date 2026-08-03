@@ -58,11 +58,17 @@ All commands below ran on the platform above with the toolchain above at the bas
 
 | Task | Commit | Message |
 |---|---|---|
-| 1 | `(pending — filled at commit)` | `test(m3): capture semantic modeling baseline` |
+| 1 | `8ebbf8a` | `test(m3): capture semantic modeling baseline` |
+| 2 | `(pending — filled at commit)` | `feat(model): add lineage instance and metadata` |
 
 ## Public interfaces
 
-<!-- Filled per task. -->
+### Task 2 — identity, metadata, and Model lineage/instance
+
+- `src/identity.rs` — `ModelLineageId(u64)`, `ModelInstanceId(u64)`, `ConstructId(u64)` (opaque; `Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord`), allocated by checked per-family atomic counters with zero reserved; overflow returns typed `IdentityOverflow` (design §4).
+- `src/metadata.rs` — `ModelSource { module, file, line, external_key }`, `EntityMetadata { description, group, tags, source }` (each `Clone, Debug, Default, PartialEq, Eq`), `EntityRef { Variable, Constraint, Objective, Parameter, Construct }` (`Clone, Copy, Debug, PartialEq, Eq, Hash`; the `Construct` variant becomes usable when the Task 4 arena lands) (design §5).
+- `Model` — manual `Default` (allocates fresh lineage + instance) and `Clone` (preserves lineage, allocates new instance) replacing `#[derive(Default, Clone)]`; public `lineage()`, `instance()`, `set_metadata()`, `metadata()`, `remove_metadata()`; metadata store keyed by `EntityRef`, canonical but non-solver-affecting (revision does not advance).
+- `SolveMetadata` — adds `model_lineage: ModelLineageId` and `model_instance: ModelInstanceId`; `Default` allocates fresh ids (SM-02.7).
 
 ## Focused verification
 
@@ -86,9 +92,27 @@ Command: `cargo test -p roml --test m3_baseline_characterization -- --nocapture`
 
 This is characterization, not a red/green feature test — it passes on the untouched tree and must keep passing as P25 extends canonical state (SM-01.5 / SM-15.1).
 
-## Full verification
+### Task 2 — lineage, instance identity, and metadata
 
-<!-- Filled per task. -->
+`tests/lineage_metadata.rs` (5 tests). RED recorded first: the initial run failed to compile (missing `ModelLineageId`/`EntityRef`/`EntityMetadata` types and `Model::lineage`/`Model::instance`/metadata accessors), confirming the test targets not-yet-implemented behavior.
+
+```text
+running 5 tests
+test independent_models_never_share_lineage_or_instance ... ok
+test clone_preserves_lineage_but_allocates_new_instance ... ok
+test solve_metadata_records_every_state_id ... ok
+test lineage_and_instance_ids_are_unique_across_many_models ... ok
+test metadata_round_trips_per_entity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored
+```
+
+Command: `cargo test -p roml --test lineage_metadata` (exit 0). Full suite `cargo test -p roml --all-targets` (exit 0) and `cargo clippy -p roml --all-targets -- -D warnings` (exit 0) both pass.
+
+- SM-02.1: independent models never share lineage; clones preserve lineage.
+- SM-02.7: every live model has a distinct instance; clone allocates a new instance while preserving lineage.
+- SM-02.3: metadata (description/group/tags/source) round-trips per entity; metadata changes do not advance the revision.
+- SM-02.2 foundation: lineage is the reuse-compatibility identity.
 
 ## Native/backend evidence
 

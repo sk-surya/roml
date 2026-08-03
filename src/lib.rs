@@ -17,7 +17,9 @@ pub mod advanced;
 pub mod delta;
 pub mod expr;
 pub mod id;
+pub mod identity;
 pub(crate) mod journal;
+pub mod metadata;
 pub mod model;
 pub mod revision;
 pub mod snapshot;
@@ -31,6 +33,8 @@ pub mod value_expr;
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
+pub use identity::{ConstructId, IdentityOverflow, ModelInstanceId, ModelLineageId};
+pub use metadata::{EntityMetadata, EntityRef, ModelSource};
 pub use model::changelog::Change;
 pub use model::{
     binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, Model,
