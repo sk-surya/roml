@@ -453,11 +453,42 @@ fn construct_metadata_usable_via_entity_ref() {
         description: Some("a construct".to_string()),
         ..EntityMetadata::default()
     };
-    model.set_metadata(EntityRef::Construct(k), meta.clone());
+    model.set_metadata(EntityRef::Construct(k), meta.clone()).unwrap();
     assert_eq!(
         model.metadata(EntityRef::Construct(k)),
         Some(&meta),
         "EntityRef::Construct is usable now (design §4.4)"
     );
     assert!(model.validate_invariants().is_ok());
+}
+
+/// WR-06: removing a construct must cascade its metadata, so the valid
+/// attach-metadata-then-remove sequence does not trip `validate_invariants`
+/// with an orphaned construct-metadata entry.
+#[test]
+fn construct_remove_cascades_metadata_and_invariants_pass() {
+    use roml::{EntityMetadata, EntityRef};
+    let mut model = Model::new();
+    let k = model
+        .add_construct_fixture(fixture("meta", 1.0), FormulationPreference::Auto)
+        .unwrap();
+    model
+        .set_metadata(
+            EntityRef::Construct(k),
+            EntityMetadata {
+                description: Some("doomed".to_string()),
+                ..EntityMetadata::default()
+            },
+        )
+        .unwrap();
+
+    model.remove_construct(k).unwrap();
+    assert!(
+        model.metadata(EntityRef::Construct(k)).is_none(),
+        "construct metadata cascaded on removal"
+    );
+    assert!(
+        model.validate_invariants().is_ok(),
+        "no orphaned construct metadata after removal"
+    );
 }

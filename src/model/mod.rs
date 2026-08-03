@@ -306,8 +306,35 @@ impl Model {
     /// Metadata is canonical but non-solver-affecting: it never advances the
     /// model revision or emits a solver-facing change (EXECUTION.md
     /// "Incremental semantics", design §5).
-    pub fn set_metadata(&mut self, entity: EntityRef, metadata: EntityMetadata) {
+    ///
+    /// Fallible (D10, WR-05): a stale/removed entity id is rejected with the
+    /// entity's typed `*NotFound` error — metadata is never stored against a
+    /// dead entity. The entity stores are the liveness authority.
+    pub fn set_metadata(
+        &mut self,
+        entity: EntityRef,
+        metadata: EntityMetadata,
+    ) -> Result<(), ModelError> {
+        match entity {
+            EntityRef::Variable(var) if !self.variables.contains(var) => {
+                return Err(ModelError::VariableNotFound(var));
+            }
+            EntityRef::Constraint(con) if !self.constraints.contains(con) => {
+                return Err(ModelError::ConstraintNotFound(con));
+            }
+            EntityRef::Objective(obj) if !self.objectives.contains(obj) => {
+                return Err(ModelError::ObjectiveNotFound(obj));
+            }
+            EntityRef::Parameter(param) if !self.parameters.contains(param) => {
+                return Err(ModelError::ParameterNotFound(param));
+            }
+            EntityRef::Construct(construct) if !self.constructs.contains(construct) => {
+                return Err(ModelError::ConstructNotFound(construct));
+            }
+            _ => {}
+        }
         self.metadata.insert(entity, metadata);
+        Ok(())
     }
 
     /// Read the metadata attached to an entity, if any.
@@ -410,6 +437,10 @@ impl Model {
             return Err(ModelError::ConstructNotFound(id));
         }
         self.constructs.remove(id);
+        // WR-06: cascade construct metadata so the valid attach-metadata-then-
+        // remove sequence does not trip `validate_invariants` with an orphaned
+        // construct-metadata entry.
+        self.metadata.remove(&EntityRef::Construct(id));
         self.changelog
             .push(Change::ConstructRemoved { construct: id });
         Ok(())
@@ -546,6 +577,8 @@ impl Model {
         }
 
         self.variables.remove(var);
+        // WR-05: cascade metadata so add/remove churn leaves no orphaned entry.
+        self.metadata.remove(&EntityRef::Variable(var));
         self.changelog.push(Change::VariableRemoved { var });
         Ok(())
     }
@@ -814,6 +847,8 @@ impl Model {
         }
 
         self.constraints.remove(con);
+        // WR-05: cascade metadata so add/remove churn leaves no orphaned entry.
+        self.metadata.remove(&EntityRef::Constraint(con));
         self.changelog.push(Change::ConstraintRemoved { con });
         Ok(())
     }
@@ -906,6 +941,8 @@ impl Model {
         }
 
         self.objectives.remove(obj);
+        // WR-05: cascade metadata so add/remove churn leaves no orphaned entry.
+        self.metadata.remove(&EntityRef::Objective(obj));
         self.changelog.push(Change::ObjectiveRemoved { obj });
         Ok(())
     }

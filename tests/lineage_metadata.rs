@@ -99,20 +99,22 @@ fn metadata_round_trips_per_entity() {
     };
 
     // Variable metadata round-trips in full.
-    model.set_metadata(EntityRef::Variable(x), meta.clone());
+    model.set_metadata(EntityRef::Variable(x), meta.clone()).unwrap();
     assert_eq!(model.metadata(EntityRef::Variable(x)), Some(&meta));
 
     // Other entities are independent until set.
     assert!(model.metadata(EntityRef::Constraint(c)).is_none());
 
     // Constraint: partial metadata with default-derived remainder.
-    model.set_metadata(
-        EntityRef::Constraint(c),
-        EntityMetadata {
-            description: Some("row".to_string()),
-            ..EntityMetadata::default()
-        },
-    );
+    model
+        .set_metadata(
+            EntityRef::Constraint(c),
+            EntityMetadata {
+                description: Some("row".to_string()),
+                ..EntityMetadata::default()
+            },
+        )
+        .unwrap();
     let c_meta = model.metadata(EntityRef::Constraint(c)).unwrap();
     assert_eq!(c_meta.description.as_deref(), Some("row"));
     assert!(c_meta.group.is_none());
@@ -120,13 +122,15 @@ fn metadata_round_trips_per_entity() {
     assert!(c_meta.source.is_none());
 
     // Objective: group only.
-    model.set_metadata(
-        EntityRef::Objective(obj),
-        EntityMetadata {
-            group: Some("objg".to_string()),
-            ..EntityMetadata::default()
-        },
-    );
+    model
+        .set_metadata(
+            EntityRef::Objective(obj),
+            EntityMetadata {
+                group: Some("objg".to_string()),
+                ..EntityMetadata::default()
+            },
+        )
+        .unwrap();
     assert_eq!(
         model
             .metadata(EntityRef::Objective(obj))
@@ -137,7 +141,9 @@ fn metadata_round_trips_per_entity() {
     );
 
     // Parameter: full default round-trips.
-    model.set_metadata(EntityRef::Parameter(p), EntityMetadata::default());
+    model
+        .set_metadata(EntityRef::Parameter(p), EntityMetadata::default())
+        .unwrap();
     assert_eq!(
         model.metadata(EntityRef::Parameter(p)),
         Some(&EntityMetadata::default())
@@ -146,7 +152,9 @@ fn metadata_round_trips_per_entity() {
     // Metadata changes are canonical but non-solver-affecting: the revision
     // and changelog must not advance (EXECUTION.md "Incremental semantics").
     let revision_before = model.current_revision();
-    model.set_metadata(EntityRef::Variable(x), EntityMetadata::default());
+    model
+        .set_metadata(EntityRef::Variable(x), EntityMetadata::default())
+        .unwrap();
     assert_eq!(
         model.current_revision(),
         revision_before,
@@ -278,5 +286,77 @@ fn real_solve_binds_model_lineage_and_instance_into_metadata() {
         solution.metadata().model_instance,
         model.instance(),
         "solution instance must be the solved model's instance"
+    );
+}
+
+/// WR-05: `set_metadata` must reject a stale/removed entity with a typed error
+/// instead of silently storing orphaned metadata (the entity stores are the
+/// liveness authority).
+#[test]
+fn set_metadata_rejects_stale_entities() {
+    use roml::ModelError;
+    let mut model = Model::new();
+    let meta = EntityMetadata::default();
+
+    let x = model.add_variable(continuous()).unwrap();
+    model.remove_variable(x).unwrap();
+    assert!(matches!(
+        model.set_metadata(EntityRef::Variable(x), meta.clone()),
+        Err(ModelError::VariableNotFound(_))
+    ));
+
+    let y = model.add_variable(continuous()).unwrap();
+    let c = model.add_constraint((y).le(5.0)).unwrap();
+    model.remove_constraint(c).unwrap();
+    assert!(matches!(
+        model.set_metadata(EntityRef::Constraint(c), meta.clone()),
+        Err(ModelError::ConstraintNotFound(_))
+    ));
+
+    let obj = model.maximize(y).unwrap();
+    model.remove_objective(obj).unwrap();
+    assert!(matches!(
+        model.set_metadata(EntityRef::Objective(obj), meta.clone()),
+        Err(ModelError::ObjectiveNotFound(_))
+    ));
+}
+
+/// WR-05: removing an entity cascades its metadata, leaving no orphaned
+/// entries behind (add/remove churn cannot grow the metadata map without
+/// bound).
+#[test]
+fn removing_entity_cascades_metadata() {
+    let mut model = Model::new();
+
+    let x = model.add_variable(continuous()).unwrap();
+    model
+        .set_metadata(EntityRef::Variable(x), EntityMetadata::default())
+        .unwrap();
+    assert!(model.metadata(EntityRef::Variable(x)).is_some());
+    model.remove_variable(x).unwrap();
+    assert!(
+        model.metadata(EntityRef::Variable(x)).is_none(),
+        "variable metadata cascaded on removal"
+    );
+
+    let y = model.add_variable(continuous()).unwrap();
+    let c = model.add_constraint((y).le(5.0)).unwrap();
+    model
+        .set_metadata(EntityRef::Constraint(c), EntityMetadata::default())
+        .unwrap();
+    model.remove_constraint(c).unwrap();
+    assert!(
+        model.metadata(EntityRef::Constraint(c)).is_none(),
+        "constraint metadata cascaded on removal"
+    );
+
+    let obj = model.maximize(y).unwrap();
+    model
+        .set_metadata(EntityRef::Objective(obj), EntityMetadata::default())
+        .unwrap();
+    model.remove_objective(obj).unwrap();
+    assert!(
+        model.metadata(EntityRef::Objective(obj)).is_none(),
+        "objective metadata cascaded on removal"
     );
 }
