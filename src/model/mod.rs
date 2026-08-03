@@ -387,14 +387,19 @@ impl Model {
     /// Add a canonical semantic construct from a P25 fixture payload
     /// (design §7, P25 Task 4).
     ///
-    /// This is the P25-only entry point exercised by the construct lifecycle
-    /// tests. The per-construct builder APIs (`add_indicator`, `add_minmax`,
-    /// ...) land with the per-construct modules in P30/P32/P33. The returned
-    /// [`Construct`] is stable and generation-safe; removal invalidates it.
+    /// Crate-private (F3): the fixture payload is P25-internal scaffolding.
+    /// The public per-construct builder APIs (`add_indicator`, `add_minmax`,
+    /// ...) land with the per-construct modules in P30/P32/P33, at which point
+    /// [`ConstructKind`]/[`ConstructEntry`] become public exports. The
+    /// returned [`Construct`] is stable and generation-safe; removal
+    /// invalidates it.
     ///
     /// Fallible (D10): a construct id counter exhaustion returns a typed
     /// error rather than wrapping.
-    pub fn add_construct_fixture(
+    ///
+    /// P25 (F3): exercised only by the in-crate construct lifecycle tests.
+    #[allow(dead_code)]
+    pub(crate) fn add_construct_fixture(
         &mut self,
         payload: FixturePayload,
         preference: FormulationPreference,
@@ -415,8 +420,12 @@ impl Model {
 
     /// Read a construct entry by id.
     ///
-    /// Returns a typed error for a stale/removed id (D10).
-    pub fn construct(&self, id: Construct) -> Result<&ConstructEntry, ModelError> {
+    /// Crate-private (F3): `ConstructEntry` is not part of the public surface
+    /// until P32. Returns a typed error for a stale/removed id (D10).
+    ///
+    /// P25 (F3): exercised only by the in-crate construct lifecycle tests.
+    #[allow(dead_code)]
+    pub(crate) fn construct(&self, id: Construct) -> Result<&ConstructEntry, ModelError> {
         self.constructs
             .get(id)
             .map(|d| &d.entry)
@@ -2734,5 +2743,238 @@ mod tests {
 
         // combined value: 2.0 + 3.0 = 5.0
         assert!((model.coefficient(id1).unwrap().cached_value - 5.0).abs() < 1e-9);
+    }
+}
+
+// ── Construct lifecycle (P25 Task 4, design §7) ────────────────────────────
+//
+// Moved IN-CRATE from tests/semantic_ir.rs (F3): these exercise the
+// crate-private fixture scaffolding (`FixturePayload`, `ConstructKind::Fixture`,
+// `add_construct_fixture`, `Model::construct`, and the pub(crate) snapshot /
+// delta `.constructs` fields), which is not part of the public surface until
+// P32.
+#[cfg(test)]
+mod construct_tests {
+    // `ConstructKind` is single-variant (`Fixture`) in P25. The tests keep the
+    // defensive `if let ... else panic!` shape for P32's variant expansion, so
+    // the pattern is currently irrefutable.
+    #![allow(irrefutable_let_patterns)]
+
+    use super::*;
+
+    fn fixture(key: &str, value: f64) -> FixturePayload {
+        FixturePayload {
+            key: key.to_string(),
+            value,
+        }
+    }
+
+    #[test]
+    fn construct_add_returns_stable_id_and_payload_round_trips() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("cap", 100.0), FormulationPreference::Auto)
+            .unwrap();
+
+        let entry = model.construct(k).unwrap();
+        assert_eq!(entry.id, k, "add returns the stable construct id");
+        assert!(entry.active, "constructs start active");
+        if let ConstructKind::Fixture(p) = &entry.kind {
+            assert_eq!(p.key, "cap");
+            assert_eq!(p.value, 100.0);
+        } else {
+            panic!("expected fixture payload");
+        }
+    }
+
+    #[test]
+    fn construct_clone_preserves_ids_and_activity() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("cap", 50.0), FormulationPreference::Portable)
+            .unwrap();
+        model.set_construct_active(k, false).unwrap();
+
+        let cloned = model.clone();
+        let entry = cloned.construct(k).unwrap();
+        assert_eq!(entry.id, k, "clone preserves the construct id");
+        assert!(!entry.active, "clone preserves activity");
+        if let ConstructKind::Fixture(p) = &entry.kind {
+            assert_eq!(p.value, 50.0);
+        }
+        assert_eq!(cloned.num_constructs(), model.num_constructs());
+    }
+
+    #[test]
+    fn construct_snapshot_and_delta_round_trip() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("on", 1.0), FormulationPreference::Auto)
+            .unwrap();
+        let r1 = model.commit().unwrap();
+
+        // Snapshot carries every construct entry.
+        let snap = model.take_snapshot().unwrap();
+        assert_eq!(snap.constructs.len(), 1);
+        assert_eq!(snap.constructs[0].id, k);
+        assert!(snap.constructs[0].active);
+
+        // Delta carries the added construct entry.
+        let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+        let batch = batches
+            .iter()
+            .find(|b| b.to == r1)
+            .expect("construct-add batch present");
+        assert_eq!(batch.constructs.len(), 1);
+        assert_eq!(batch.constructs[0].id, k);
+
+        // Deterministic snapshot round-trip.
+        assert_eq!(snap, model.take_snapshot().unwrap());
+    }
+
+    #[test]
+    fn construct_activity_toggling_reflected_in_snapshot() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("t", 2.0), FormulationPreference::NativeRequired)
+            .unwrap();
+        model.set_construct_active(k, false).unwrap();
+
+        let snap = model.take_snapshot().unwrap();
+        assert!(
+            !snap.constructs[0].active,
+            "inactive construct reflected in snapshot"
+        );
+    }
+
+    #[test]
+    fn construct_remove_invalidates_id_and_stale_ids_rejected() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("gone", 7.0), FormulationPreference::Auto)
+            .unwrap();
+        assert_eq!(model.num_constructs(), 1);
+
+        model.remove_construct(k).unwrap();
+        assert_eq!(model.num_constructs(), 0);
+
+        // Stale id is rejected with a typed error.
+        match model.construct(k) {
+            Err(ModelError::ConstructNotFound(id)) => assert_eq!(id, k),
+            other => panic!("expected ConstructNotFound, got {other:?}"),
+        }
+        assert!(model.set_construct_active(k, true).is_err());
+        assert!(model.remove_construct(k).is_err());
+    }
+
+    #[test]
+    fn construct_store_survives_rebuild() {
+        let mut model = Model::new();
+        model
+            .add_construct_fixture(fixture("a", 1.0), FormulationPreference::Auto)
+            .unwrap();
+        let k2 = model
+            .add_construct_fixture(fixture("b", 2.0), FormulationPreference::Portable)
+            .unwrap();
+        model.set_construct_active(k2, false).unwrap();
+
+        // Snapshot captures the construct store.
+        let snap = model.take_snapshot().unwrap();
+        assert_eq!(snap.constructs.len(), 2);
+
+        // Rebuild: a fresh empty model restored from the snapshot carries the
+        // same construct content (kind + activity), with fresh ids.
+        let mut rebuilt = Model::new();
+        // Track each rebuilt entry's fresh id so the reconstruction can be
+        // looked up by id instead of relying on order coincidence (IN-03).
+        let mut rebuilt_ids: Vec<(ConstructEntry, Construct)> = Vec::new();
+        for entry in &snap.constructs {
+            let payload = if let ConstructKind::Fixture(p) = &entry.kind {
+                p.clone()
+            } else {
+                panic!("expected fixture payload");
+            };
+            let id = rebuilt
+                .add_construct_fixture(payload, FormulationPreference::Auto)
+                .unwrap();
+            if !entry.active {
+                rebuilt.set_construct_active(id, false).unwrap();
+            }
+            rebuilt_ids.push((entry.clone(), id));
+        }
+        assert_eq!(rebuilt.num_constructs(), 2);
+
+        // Rebuilding from the same snapshot reproduces equal construct content:
+        // look each rebuilt entry up by its fresh id and assert the full
+        // `ConstructEntry` (kind + activity) matches the original (IN-03).
+        let rebuilt_snap = rebuilt.take_snapshot().unwrap();
+        assert_eq!(rebuilt_snap.constructs.len(), snap.constructs.len());
+        for (original, new_id) in &rebuilt_ids {
+            let rebuilt_entry = rebuilt_snap
+                .constructs
+                .iter()
+                .find(|e| e.id == *new_id)
+                .expect("rebuilt construct present in snapshot");
+            assert_eq!(
+                rebuilt_entry.kind, original.kind,
+                "rebuilt construct kind must match the original"
+            );
+            assert_eq!(
+                rebuilt_entry.active, original.active,
+                "rebuilt construct activity must match the original"
+            );
+        }
+    }
+
+    #[test]
+    fn construct_metadata_usable_via_entity_ref() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("meta", 1.0), FormulationPreference::Auto)
+            .unwrap();
+
+        let meta = EntityMetadata {
+            description: Some("a construct".to_string()),
+            ..EntityMetadata::default()
+        };
+        model
+            .set_metadata(EntityRef::Construct(k), meta.clone())
+            .unwrap();
+        assert_eq!(
+            model.metadata(EntityRef::Construct(k)),
+            Some(&meta),
+            "EntityRef::Construct is usable now (design §4.4)"
+        );
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    /// WR-06: removing a construct must cascade its metadata, so the valid
+    /// attach-metadata-then-remove sequence does not trip `validate_invariants`
+    /// with an orphaned construct-metadata entry.
+    #[test]
+    fn construct_remove_cascades_metadata_and_invariants_pass() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("meta", 1.0), FormulationPreference::Auto)
+            .unwrap();
+        model
+            .set_metadata(
+                EntityRef::Construct(k),
+                EntityMetadata {
+                    description: Some("doomed".to_string()),
+                    ..EntityMetadata::default()
+                },
+            )
+            .unwrap();
+
+        model.remove_construct(k).unwrap();
+        assert!(
+            model.metadata(EntityRef::Construct(k)).is_none(),
+            "construct metadata cascaded on removal"
+        );
+        assert!(
+            model.validate_invariants().is_ok(),
+            "no orphaned construct metadata after removal"
+        );
     }
 }

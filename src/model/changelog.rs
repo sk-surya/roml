@@ -218,6 +218,11 @@ pub enum Change {
         /// The added construct's stable identity.
         construct: Construct,
         /// The construct's exact semantic type.
+        ///
+        /// P25 (F3): `ConstructKind` is crate-private scaffolding; the field
+        /// is hidden from the public docs and unusable by external consumers
+        /// (they cannot name the type). It becomes a public export in P32.
+        #[doc(hidden)]
         kind: ConstructKind,
         /// Whether the construct is active (constructs start active).
         active: bool,
