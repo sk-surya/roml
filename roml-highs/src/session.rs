@@ -876,7 +876,13 @@ mod tests {
         )
         .unwrap();
         let delta = session_b
-            .compile_delta(&batch, empty.compilation_id, &policy, &caps)
+            .compile_delta(
+                &batch,
+                empty.compilation_id,
+                model.instance(),
+                &policy,
+                &caps,
+            )
             .expect("delta must compile against the other base");
         assert_ne!(
             delta.from_compilation, base.compilation_id,

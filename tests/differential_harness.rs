@@ -2344,7 +2344,7 @@ fn dx_fixed_seed_compiled_delta_equals_compiled_rebuild() {
     let mut from_compilation = compiled_empty.compilation_id;
     for batch in &batches {
         let compiled_delta = session_b
-            .compile_delta(batch, from_compilation, &policy, &caps)
+            .compile_delta(batch, from_compilation, source_instance, &policy, &caps)
             .expect("primitive linear delta must compile");
         assert_eq!(
             compiled_delta.from_compilation, from_compilation,
@@ -2515,13 +2515,25 @@ fn dx_compiled_remove_variable_purges_coefficients_and_holds_square() {
     backend_b.rebuild_compiled(&compiled_empty);
 
     let delta1 = session_b
-        .compile_delta(&batch1, compiled_empty.compilation_id, &policy, &caps)
+        .compile_delta(
+            &batch1,
+            compiled_empty.compilation_id,
+            source_instance,
+            &policy,
+            &caps,
+        )
         .expect("batch1 must compile incrementally");
     backend_b
         .apply_compiled_delta(&delta1)
         .expect("batch1 must apply");
     let delta2 = session_b
-        .compile_delta(&batch2, delta1.to_compilation, &policy, &caps)
+        .compile_delta(
+            &batch2,
+            delta1.to_compilation,
+            source_instance,
+            &policy,
+            &caps,
+        )
         .expect("batch2 (RemoveVariable) must compile incrementally");
     backend_b
         .apply_compiled_delta(&delta2)
@@ -2655,13 +2667,25 @@ fn dx_compiled_remove_active_objective_clears_policy_and_holds_square() {
     backend_b.rebuild_compiled(&compiled_empty);
 
     let delta1 = session_b
-        .compile_delta(&batch1, compiled_empty.compilation_id, &policy, &caps)
+        .compile_delta(
+            &batch1,
+            compiled_empty.compilation_id,
+            source_instance,
+            &policy,
+            &caps,
+        )
         .expect("batch1 must compile incrementally");
     backend_b
         .apply_compiled_delta(&delta1)
         .expect("batch1 must apply");
     let delta2 = session_b
-        .compile_delta(&batch2, delta1.to_compilation, &policy, &caps)
+        .compile_delta(
+            &batch2,
+            delta1.to_compilation,
+            source_instance,
+            &policy,
+            &caps,
+        )
         .expect("batch2 (RemoveObjective) must compile incrementally");
     backend_b
         .apply_compiled_delta(&delta2)

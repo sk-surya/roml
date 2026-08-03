@@ -113,7 +113,13 @@ impl TestCompiler {
             .current_compilation()
             .expect("test delta requires a compiled base");
         self.session
-            .compile_delta(batch, from, &CompilationPolicy::Auto, &test_capabilities())
+            .compile_delta(
+                batch,
+                from,
+                self.instance,
+                &CompilationPolicy::Auto,
+                &test_capabilities(),
+            )
             .expect("test delta must compile")
     }
 }

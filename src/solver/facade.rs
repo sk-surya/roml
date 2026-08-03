@@ -346,6 +346,7 @@ where
                 .compile_delta(
                     batch,
                     from_compilation,
+                    model.instance(),
                     &CompilationPolicy::Auto,
                     &capabilities,
                 )
