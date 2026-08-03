@@ -50,7 +50,7 @@ use roml::advanced::{
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
 };
-use roml::id::{ConId, VarId};
+use roml::id::{ConId, ObjId, VarId};
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
 use roml::solver::callback::CallbackHandler;
@@ -626,6 +626,12 @@ pub(crate) struct HighsOverlayState {
     /// The native row/column counts at apply (rollback's clean target).
     base_row_count: HighsInt,
     base_col_count: HighsInt,
+    /// IN-01: the FULL base native bound state (compiled id -> native
+    /// (lb, ub)) captured at apply, so `verify_overlay_clean` can prove every
+    /// bound (not just the row/col counts) is restored exactly.
+    base_var_bounds: HashMap<CompiledVariableId, (f64, f64)>,
+    /// IN-01: the base active native objective captured at apply.
+    base_active_obj: Option<ObjId>,
 }
 
 impl OverlaySession for HighsSession {
@@ -680,6 +686,11 @@ impl OverlaySession for HighsSession {
             // SAFETY: self.raw is a valid HiGHS instance handle.
             base_row_count: unsafe { Highs_getNumRow(self.raw) },
             base_col_count: unsafe { Highs_getNumCol(self.raw) },
+            // IN-01: capture the FULL base native state so the post-rollback
+            // verification can prove the bounds/objective are restored exactly
+            // (not just the row/col counts).
+            base_var_bounds: self.var_bounds.clone(),
+            base_active_obj: self.active_obj,
         };
 
         for op in &overlay.operations {
@@ -916,9 +927,18 @@ impl OverlaySession for HighsSession {
         // SAFETY: raw is a valid HiGHS instance handle; getters do not mutate.
         let rows = unsafe { Highs_getNumRow(self.raw) };
         let cols = unsafe { Highs_getNumCol(self.raw) };
+        // IN-01: also compare the FULL native bound state, the active native
+        // objective, and the compiled objective policy against the captured
+        // base — a rollback that restored wrong bound values or wrong objective
+        // costs while keeping the same row/col counts must NOT pass
+        // verification. (The reference backend's `verify_overlay_clean` already
+        // compares the full normalized compiled view.)
         if self.current_compilation != Some(state.base_compilation)
             || rows != state.base_row_count
             || cols != state.base_col_count
+            || self.var_bounds != state.base_var_bounds
+            || self.active_obj != state.base_active_obj
+            || self.compiled_objective_policy != state.prior_policy
         {
             self.cursor.mark_rebuild();
             return Err(BackendError::new(
@@ -2071,6 +2091,78 @@ mod tests {
             highs.current_compilation,
             Some(held),
             "a rejected stale overlay must not change the session's compiled state"
+        );
+    }
+
+    /// IN-01: `verify_overlay_clean` compares the FULL native bound/objective
+    /// state against the captured base — a rollback that restored the row/col
+    /// counts but left a wrong bound value (here: a variable the overlay never
+    /// touched) must fail verification. (Before this fix only the row/col
+    /// counts and the compilation id were compared.)
+    #[test]
+    fn highs_verify_overlay_clean_detects_wrong_bound_state() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.maximize(x + y).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+
+        // Apply + rollback a real overlay (temp fixing x = 2.0) -> Clean.
+        let overlay =
+            SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![], vec![], vec![]).unwrap();
+        let compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+        let receipt = highs.apply_overlay(&compiled).expect("apply must succeed");
+        let outcome = highs
+            .rollback_overlay(&receipt)
+            .expect("rollback must succeed");
+        assert!(
+            matches!(outcome, OverlayRollbackOutcome::Clean { .. }),
+            "a fully applied overlay must roll back Clean, got {outcome:?}"
+        );
+
+        // Corrupt a bound for a variable the overlay never touched: the native
+        // row/col counts and the compilation id are unchanged, but the held
+        // bound state diverges from the captured base.
+        let y_idx = highs
+            .col_map
+            .get(CompiledVariableId(1))
+            .expect("compiled variable 1 (y) present");
+        unsafe {
+            check_highs_status(
+                Highs_changeColBounds(highs.raw, y_idx, 1.0, 1.0),
+                highs.raw,
+                "corrupt y bound",
+            )
+            .expect("native corruption applies");
+        }
+        highs.var_bounds.insert(CompiledVariableId(1), (1.0, 1.0));
+
+        let err = highs
+            .verify_overlay_clean()
+            .expect_err("a wrong bound value must fail post-rollback verification (IN-01)");
+        assert_eq!(
+            err.category,
+            ErrorCategory::Internal,
+            "post-rollback verification failure is internal"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::RequiresRebuild,
+            "a failed verification must mark the session RequiresRebuild"
         );
     }
 
