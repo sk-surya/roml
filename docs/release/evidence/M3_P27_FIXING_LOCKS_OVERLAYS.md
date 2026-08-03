@@ -422,3 +422,11 @@ All four ROADMAP gate clauses are now evidenced end-to-end:
 | # | SHA | Message |
 |---|---|---|
 | 1 | `9d7a597` | `feat(solve): add reversible solve overlays` |
+
+## Reviewer findings (phase boundary review, standard depth)
+
+2 criticals + 4 warnings + 5 infos — all fixed with TDD and re-verified RESOLVED:
+- CR-01 non-finite values passed validate_for/validate_value_in_domain and reached Highs_changeColBounds as NaN — fixed `ef37cee` (`AssignmentError::NonFiniteValue`, finiteness guard first; overlay temp-fixing/lock values rejected at compile).
+- CR-02 mid-apply overlay failure left HiGHS half-overlaid with Ready health — fixed `cd8b406` (RequiresRebuild on every apply_overlay early-return path + facade defensively force_rebuild_on_next_sync on any apply failure; strengthened failure-injection matrix with OverlayTestBackend honoring overlay bounds).
+- WR-01 Within-band locks intersect the declared domain (never loosen) `65221b7`; WR-02 inactive-variable bounds fold identically in delta and rebuild (`RebuildRequired` + `[0,0]` fold) `8cf1d64`; WR-03 overlay rows resolve from compiled objective terms `f1a778c`; WR-04 reference apply staged transactionally `ac2c048`; IN-01..05 `0def316`..`2dbf779` (rollback verification breadth, tolerance validation, leak-detectable test backend, rollback-reason logging, fixing folded into canonical rebuild).
+Re-verification: `cargo test -p roml --all-targets` **743 pass**, `roml-highs` **118 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged. (Note: WR-03's original repro did not reproduce — `objective_expression` uses evaluated cells — but the prescribed compiled-base resolution was implemented with a regression test.)
