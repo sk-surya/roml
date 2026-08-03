@@ -37,7 +37,7 @@ Must include:
 - public API diff;
 - invariant-checker results.
 
-Closes: SM-01.1–SM-01.6, SM-02.1–SM-02.3, SM-02.7, foundations of SM-02.5 and SM-15.1.
+Closes: SM-01.1–SM-01.3, SM-01.5, SM-01.6, foundations of SM-01.4 (semantic constructs in P25; objective policies P31); SM-02.1, SM-02.3, SM-02.7, foundations of SM-02.2 (validation mechanism P27) and SM-02.5; SM-15.1 foundations.
 
 ### P26 evidence
 
