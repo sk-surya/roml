@@ -272,3 +272,97 @@ Unsupported/unbounded failure behavior: missing finite M → `CompileError::Unbo
 - `feat(model): add logical semantic constructs` — Task 16 implementation + tests + evidence (single coherent unit).
 
 ---
+
+## Plan 02 — Task 17a: Add exact min/max and one-sided epigraph/hypograph relations
+
+**Phase:** P32 (Plan 02)  **Requirements:** SM-12.3, SM-12.8; exercises SM-13.2/13.4/13.5
+**Status:** complete — committed as `feat(model): add exact min/max and one-sided relations`.
+
+### Scope
+
+Task 17a (the algebraic-construct tracer) lands the min/max construct family: `MinMaxConstraint` with `MinMaxSense { Min, Max }` and `MinMaxRelation { Exact, Epigraph, Hypograph }`, the `Model::add_minmax` builder (stable `Construct` + output-variable handle, SM-12.8), the zero-binary max-epigraph / min-hypograph rows, the bounded exact selector bridge with finite derived M values, and the construct-aware `UnboundedBigM` for unbounded exact operands. Clause-level scope statement: SM-12.1/12.2/12.5 (logical constructs) stay closed by Plan 01 Task 16; SM-12.4/12.6/12.7 land in Tasks 17b/17c; SM-13 full closure remains P33 (this task exercises SM-13.2/13.4/13.5 only).
+
+### TDD — RED failures (recorded before implementation)
+
+The new min/max tests in `tests/common_constructs.rs` referenced `roml::construct::{MinMaxSense, MinMaxRelation}` and `Model::add_minmax`, none of which existed on the Task 16 tree. Expected failure, recorded verbatim:
+
+```text
+error[E0433]: failed to resolve: could not find `MinMaxSense` in `construct`
+  --> tests/common_constructs.rs:22:5
+   |
+22 |     MinMaxRelation, MinMaxSense,
+   |                       ^^^^^^^^^^^ could not find `MinMaxSense` in `construct`
+```
+
+`roml-highs/tests/formulation_equivalence.rs` likewise failed to compile (missing `add_minmax`).
+
+### Implementation
+
+- **`src/construct/minmax.rs` (create)** — `MinMaxConstraint { operands: Vec<LinExpr>, output: VarId, sense, relation }` with `MinMaxSense { Min, Max }` and `MinMaxRelation { Exact, Epigraph, Hypograph }` (design §16.3 identifiers). The output variable is created by the builder and stored in the payload (top-level construct origin — the output is the construct's canonical result). `parameter_dependencies` collects every operand's parameter deps (F1).
+- **`src/model/mod.rs`** — `add_minmax(operands, sense, relation, preference)` returns `(Construct, VarId)` (SM-12.8); rejects `< 2` operands (`MinMaxTooFewOperands`), trivially-satisfiable `Min`+`Epigraph` / `Max`+`Hypograph` (`TriviallySatisfiableMinMax`), and non-finite/stale operands (via `validate_expression_entities`). Output-variable bounds reflect the relation: exact → `[l_min, u_max]`, max-epigraph → `[l_min, +inf)`, min-hypograph → `(-inf, u_max]`, using `BoundAnalyzer` intervals over the model's declared bounds.
+- **`src/compiler/bridge/minmax.rs` (create)** — the exact bridge (design §16.3, §8.5):
+  - max epigraph: rows `x_i <= y` per operand, zero binaries, `MinMaxEpigraphRow` roles;
+  - min hypograph: rows `x_i >= y` per operand, zero binaries, `MinMaxHypographRow` roles;
+  - exact max: `y >= x_i`, binary `z_i` per operand with `sum z = 1`, `y <= x_i + M_i(1-z_i)` with finite derived `M_i = u_max - l_i` (`u_max = max_j u_j`);
+  - exact min: the mirror selector with `M_i = u_i - l_min` (`l_min = min_j l_j`);
+  - unbounded exact operand → `CompileError::UnboundedBigM { construct, expression }` naming the construct and the operand expression (SM-13.4, D12) — never a silent default constant;
+  - M values, derivations, and bound sources recorded as `minmax.selector_m.*` bound-evidence report entries (SM-13.5).
+  - The `exact_max_selector`/`exact_min_selector` helpers (with a resolved-`Operand` shape) are shared with the Task 17b clamp bridge.
+- **`src/compiler/origin.rs`** — `GeneratedRole::{MinMaxEpigraphRow, MinMaxHypographRow, MinMaxSelectorRow, MinMaxSelectorBinary}` (`#[non_exhaustive]` stays).
+- **`src/compiler/capability.rs`** — additive `BackendFeature::MinMax` (P32 Task 17a bridge-supported).
+- **`src/compiler/session.rs`** — `ConstructKind::MinMax` dispatched through the Plan 01 `BridgeFinalizer` in deterministic construct-id order; `AbsoluteValue`/`BinaryProduct` arms return a typed `UnsupportedFeature` (bridges land in Tasks 17b/17c).
+- **`roml-highs/src/session.rs`** — `BackendFeature::MinMax` declared `SupportLevel::Bridge` (no native claim, SM-04.3); the bridge-declaration test iterates the array so it auto-covers the new feature.
+- **`src/lib.rs` / `src/advanced.rs`** — A30-pattern re-exports of `MinMaxConstraint`, `MinMaxSense`, `MinMaxRelation`.
+
+### Per-construct evidence (TRACEABILITY.md)
+
+| Construct | Semantic definition | Accepted domain | Rejected domain | Native | Bridge | Origin roles | Reference formulation |
+|---|---|---|---|---|---|---|---|
+| MinMax (exact max) | `y = max(x_1..x_n)` | ≥2 finite linear operands, all bounded | unbounded exact operands (`UnboundedBigM`); <2 operands; trivially-satisfiable sense/relation | none (P32) | bounded selector (binaries + finite derived M) | `MinMaxSelectorRow`, `MinMaxSelectorBinary` | `y ≥ x_i`; `Σz_i = 1`; `y ≤ x_i + M_i(1−z_i)`, `M_i = u_max − l_i` |
+| MinMax (exact min) | `y = min(x_1..x_n)` | ≥2 finite linear operands, all bounded | unbounded exact operands | none | bounded selector | `MinMaxSelectorRow`, `MinMaxSelectorBinary` | `y ≤ x_i`; `Σz_i = 1`; `y ≥ x_i − M_i(1−z_i)`, `M_i = u_i − l_min` |
+| MinMax (max epigraph) | `y ≥ max(x_1..x_n)` | ≥2 finite linear operands | trivially-satisfiable `Min`+`Epigraph` | none | zero-binary rows | `MinMaxEpigraphRow` | `x_i ≤ y` (all i) |
+| MinMax (min hypograph) | `y ≤ min(x_1..x_n)` | ≥2 finite linear operands | trivially-satisfiable `Max`+`Hypograph` | none | zero-binary rows | `MinMaxHypographRow` | `x_i ≥ y` (all i) |
+
+Unsupported/unbounded failure behavior: unbounded exact operand → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4); `NativeRequired` without native min/max → `CompileError::UnsupportedFeature` (via `select_path`). The D13 difference proof (exact vs one-sided feasible sets differ with NO objective) and the fixed-seed randomized direct-evaluation tests are in `tests/common_constructs.rs`; the reference-vs-portable HiGHS equivalence is in `roml-highs/tests/formulation_equivalence.rs`.
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test common_constructs minmax` | 0 — **8 passed; 0 failed** |
+| `cargo test -p roml --test compiler_bridges` | 0 — **15 passed; 0 failed** |
+| `cargo test -p roml-highs --test formulation_equivalence minmax` | 0 — **1 passed; 0 failed** |
+
+### Full verification
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `cargo test -p roml --all-targets` | 0 | **742 passed; 0 failed; 0 ignored** (baseline 734 + 8 new) |
+| `cargo test -p roml-highs --all-targets` | 0 | **119 passed; 0 failed** (baseline 118 + 1 new) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+| `cargo public-api -p roml` | 0 | **17536 → 18783 items** (+1247 additive) |
+
+### Acceptance criteria
+
+- `src/construct/minmax.rs` defines `MinMaxConstraint` with `MinMaxSense`/`MinMaxRelation`; `ConstructKind::MinMax` carries it and stays `#[non_exhaustive]`; `derive_parameter_dependencies` covers operand parameters — **met**.
+- `Model::add_minmax` returns a stable `Construct` handle plus the output-variable handle (SM-12.8) and rejects `<2` operands, `Min`+`Epigraph`, `Max`+`Hypograph`, and non-finite operands with typed `ModelError`s — **met**.
+- Exact min/max compile to bounded selector formulations (binary per operand, sum=1, finite derived M) with report entries recording M values, derivations, and bound sources (SM-13.5); no-binary max epigraph and min hypograph rows compile with zero binaries and the distinct `MinMaxEpigraphRow`/`MinMaxHypographRow` origins — **met**.
+- Unbounded exact operands → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4, D12) — **met**.
+- `tests/common_constructs.rs` proves exact and one-sided feasible sets differ with no objective (D13, SM-12.3); `roml-highs/tests/formulation_equivalence.rs` proves reference-vs-portable feasible-set equality on HiGHS — **met**.
+
+### Deviations
+
+1. **Exact-selector rows use negated operand coefficients.** The first implementation added the operand coefficients directly (`y + x_i`); the four exact-selector row types are `y − x_i` (and `y − x_i ± M_i·z_i`), so a `negate_coefficients` helper flips the operand signs. Caught by the exact-selector feasible-set enumeration and randomized direct-evaluation tests — a Rule 1 fix within the task.
+2. **One-sided output-variable bounds are relation-specific.** The initial builder gave the output `[l_min, u_max]` for every relation, which made the min-hypograph output bounded below and broke the D13 proof (y=0 not admitted). The builder now sets exact → `[l_min, u_max]`, max-epigraph → `[l_min, +inf)`, min-hypograph → `(-inf, u_max]` — a Rule 1 fix.
+3. **`BackendFeature::MinMax` added and HiGHS bridge-declared** (additive, `#[non_exhaustive]`), matching the Plan 01 logical-construct feature pattern, so `select_path` can gate the min/max bridge and `NativeRequired` rejects cleanly.
+4. **`AbsoluteValue`/`BinaryProduct` dispatch arms return `UnsupportedFeature` at this commit** (their bridges land in Tasks 17b/17c) — the `ConstructKind` match must be exhaustive, and a typed error is the honest intermediate behavior.
+
+### Commit trail
+
+- `feat(model): add exact min/max and one-sided relations` — Task 17a implementation + tests + evidence.
+
+---

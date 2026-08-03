@@ -56,6 +56,14 @@ pub enum BackendFeature {
     Boolean,
     /// Cardinality (exactly/at-most/at-least-k) — P32 bridge-supported.
     Cardinality,
+    /// Min/max (exact or one-sided epigraph/hypograph) — P32 Task 17a
+    /// bridge-supported.
+    MinMax,
+    /// Absolute value / positive part / clamp — P32 Task 17b bridge-supported.
+    AbsoluteValue,
+    /// Binary product (binary-binary / binary-times-bounded-linear) — P32
+    /// Task 17c bridge-supported.
+    BinaryProduct,
     /// Special ordered set of type 1.
     Sos1,
     /// Special ordered set of type 2.

@@ -20,6 +20,7 @@ use roml::compiler::session::CompilationSession;
 use roml::compiler::CompileError;
 use roml::construct::{
     BooleanKind, CardinalityKind, ConstructKind, FormulationPreference, IndicatorDirection,
+    MinMaxRelation, MinMaxSense,
 };
 use roml::id::VarId;
 use roml::model::ModelError;
@@ -45,8 +46,9 @@ fn full_caps() -> BackendCapabilitySet {
     set
 }
 
-/// Full + the four logical-construct features declared as exact ROML bridges
-/// (P32's first bridge declarations — SM-04.2).
+/// Full + the four logical-construct features AND the three algebraic-construct
+/// features declared as exact ROML bridges (P32's bridge declarations —
+/// SM-04.2).
 fn bridge_caps() -> BackendCapabilitySet {
     let mut set = full_caps();
     for f in [
@@ -54,6 +56,9 @@ fn bridge_caps() -> BackendCapabilitySet {
         BackendFeature::Reification,
         BackendFeature::Boolean,
         BackendFeature::Cardinality,
+        BackendFeature::MinMax,
+        BackendFeature::AbsoluteValue,
+        BackendFeature::BinaryProduct,
     ] {
         set.set(f, FeatureSupport::bridge(Default::default()));
     }
@@ -162,6 +167,92 @@ fn compiled_feasible_assignments(
     }
     out.sort();
     out
+}
+
+// ===========================================================================
+// Algebraic-construct helpers (P32 Task 17a/17b/17c)
+// ===========================================================================
+
+/// The compiled id of a user variable (exactly one compiled projection).
+fn compiled_user_var(compiled: &BackendSnapshot, var: VarId) -> CompiledVariableId {
+    let ids = compiled
+        .origin_map
+        .variables_for_origin(&EntityOrigin::UserVariable(var));
+    assert_eq!(ids.len(), 1, "each user variable has one compiled id");
+    ids[0]
+}
+
+/// All compiled linear rows hold for the given fixed compiled-variable values.
+fn rows_hold(compiled: &BackendSnapshot, values: &HashMap<CompiledVariableId, f64>) -> bool {
+    compiled.linear_rows.iter().all(|row| {
+        let sum: f64 = row
+            .coefficients
+            .iter()
+            .map(|(vid, c)| values.get(vid).copied().unwrap_or(0.0) * c)
+            .sum();
+        row.bounds.lower - 1e-9 <= sum && sum <= row.bounds.upper + 1e-9
+    })
+}
+
+/// Whether the fixed assignment is feasible in the compiled snapshot: every
+/// fixed value respects its compiled variable bounds, and SOME assignment of
+/// the generated binaries makes every row hold. This is the compiled feasible
+/// set projected onto the fixed user/generated variables (existential over the
+/// generated binaries).
+fn assignment_feasible(
+    compiled: &BackendSnapshot,
+    fixed: &HashMap<CompiledVariableId, f64>,
+    generated_binaries: &[CompiledVariableId],
+) -> bool {
+    for (&vid, &val) in fixed {
+        if let Some(cv) = compiled.variables.iter().find(|v| v.id == vid) {
+            if val < cv.bounds.lower - 1e-9 || val > cv.bounds.upper + 1e-9 {
+                return false;
+            }
+        }
+    }
+    if generated_binaries.is_empty() {
+        return rows_hold(compiled, fixed);
+    }
+    for mask in 0..(1usize << generated_binaries.len()) {
+        let mut values = fixed.clone();
+        for (i, &bid) in generated_binaries.iter().enumerate() {
+            values.insert(bid, ((mask >> i) & 1) as f64);
+        }
+        if rows_hold(compiled, &values) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Generated binary variable ids for a construct role.
+fn generated_binaries(
+    compiled: &BackendSnapshot,
+    construct: roml::Construct,
+    role: GeneratedRole,
+) -> Vec<CompiledVariableId> {
+    compiled
+        .origin_map
+        .variables_for_origin(&EntityOrigin::Construct { construct, role })
+}
+
+/// A tiny deterministic LCG for fixed-seed "random" tests (no external dep).
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0
+    }
+
+    /// Uniform integer in `[lo, hi]` (inclusive).
+    fn range(&mut self, lo: i64, hi: i64) -> f64 {
+        let span = (hi - lo + 1) as u64;
+        lo as f64 + (self.next() % span) as f64
+    }
 }
 
 // ===========================================================================
@@ -954,4 +1045,525 @@ fn cardinality_feasible_sets_match_semantic() {
     let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
     assert_eq!(semantic, reference);
     assert_eq!(semantic, compiled_feasible_assignments(&compiled, &vars));
+}
+
+// ===========================================================================
+// Task 17a — min/max (exact vs one-sided, selector, bounds, direct eval)
+// ===========================================================================
+
+#[test]
+fn minmax_rejects_fewer_than_two_operands() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let err = model
+        .add_minmax(
+            vec![x.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err, ModelError::MinMaxTooFewOperands);
+}
+
+#[test]
+fn minmax_rejects_trivially_satisfiable_relations() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    // A min epigraph (output >= min) is trivially satisfiable — reject.
+    let err = model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Min,
+            MinMaxRelation::Epigraph,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err, ModelError::TriviallySatisfiableMinMax);
+    // A max hypograph (output <= max) is trivially satisfiable — reject.
+    let err = model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Hypograph,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err, ModelError::TriviallySatisfiableMinMax);
+}
+
+#[test]
+fn minmax_payload_stores_operands_sense_relation_and_output() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, output) = model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Epigraph,
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let snap = model.take_snapshot().unwrap();
+    let entry = snap.constructs.iter().find(|e| e.id == k).unwrap();
+    assert_eq!(entry.preference, FormulationPreference::Portable);
+    match &entry.kind {
+        ConstructKind::MinMax(p) => {
+            assert_eq!(p.sense, MinMaxSense::Max);
+            assert_eq!(p.relation, MinMaxRelation::Epigraph);
+            assert_eq!(p.output, output);
+            assert_eq!(p.operands.len(), 2);
+        }
+        other => panic!("expected MinMax payload, got {other:?}"),
+    }
+}
+
+#[test]
+fn minmax_exact_vs_one_sided_feasible_sets_differ_with_no_objective() {
+    // D13: exactness is never inferred from objective context. With x1 = 3,
+    // x2 = 5 fixed and NO objective, the exact-min set is {y = 3} while the
+    // hypograph-min set also admits y = 0.
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(3.0, 3.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(5.0, 5.0)).unwrap();
+    let (k_exact, y_exact) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Min,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    let compiled_exact = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel = generated_binaries(
+        &compiled_exact,
+        k_exact,
+        GeneratedRole::MinMaxSelectorBinary,
+    );
+    assert_eq!(
+        sel.len(),
+        2,
+        "exact min has one selector binary per operand"
+    );
+    let x1id = compiled_user_var(&compiled_exact, x1);
+    let x2id = compiled_user_var(&compiled_exact, x2);
+    let yid = compiled_user_var(&compiled_exact, y_exact);
+    let mut fixed = HashMap::new();
+    fixed.insert(x1id, 3.0);
+    fixed.insert(x2id, 5.0);
+    fixed.insert(yid, 0.0);
+    assert!(
+        !assignment_feasible(&compiled_exact, &fixed, &sel),
+        "exact-min must NOT admit y=0 with x1=3, x2=5 (D13 difference proof)"
+    );
+    fixed.insert(yid, 3.0);
+    assert!(
+        assignment_feasible(&compiled_exact, &fixed, &sel),
+        "exact-min must admit y=3 = min(3,5)"
+    );
+
+    // Hypograph-min: rows y <= 3, y <= 5 — y=0 IS feasible.
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(3.0, 3.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(5.0, 5.0)).unwrap();
+    let (k_hypo, y_hypo) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Min,
+            MinMaxRelation::Hypograph,
+            None,
+        )
+        .unwrap();
+    let compiled_hypo = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel_hypo = generated_binaries(&compiled_hypo, k_hypo, GeneratedRole::MinMaxSelectorBinary);
+    assert!(
+        sel_hypo.is_empty(),
+        "hypograph-min has zero generated binaries"
+    );
+    let mut fixed = HashMap::new();
+    fixed.insert(compiled_user_var(&compiled_hypo, x1), 3.0);
+    fixed.insert(compiled_user_var(&compiled_hypo, x2), 5.0);
+    fixed.insert(compiled_user_var(&compiled_hypo, y_hypo), 0.0);
+    assert!(
+        assignment_feasible(&compiled_hypo, &fixed, &[]),
+        "hypograph-min must admit y=0 — the one-sided feasible set differs from the exact set (D13)"
+    );
+
+    // Mirror for max: exact-max set is {y = 5}; max-epigraph also admits y = 7.
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(3.0, 3.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(5.0, 5.0)).unwrap();
+    let (k_exact, y_exact) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    let compiled_exact = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel = generated_binaries(
+        &compiled_exact,
+        k_exact,
+        GeneratedRole::MinMaxSelectorBinary,
+    );
+    let mut fixed = HashMap::new();
+    fixed.insert(compiled_user_var(&compiled_exact, x1), 3.0);
+    fixed.insert(compiled_user_var(&compiled_exact, x2), 5.0);
+    fixed.insert(compiled_user_var(&compiled_exact, y_exact), 7.0);
+    assert!(
+        !assignment_feasible(&compiled_exact, &fixed, &sel),
+        "exact-max must NOT admit y=7 with x1=3, x2=5 (D13)"
+    );
+
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(3.0, 3.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(5.0, 5.0)).unwrap();
+    let (k_epi, y_epi) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Epigraph,
+            None,
+        )
+        .unwrap();
+    let compiled_epi = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel_epi = generated_binaries(&compiled_epi, k_epi, GeneratedRole::MinMaxSelectorBinary);
+    assert!(
+        sel_epi.is_empty(),
+        "max-epigraph has zero generated binaries"
+    );
+    let mut fixed = HashMap::new();
+    fixed.insert(compiled_user_var(&compiled_epi, x1), 3.0);
+    fixed.insert(compiled_user_var(&compiled_epi, x2), 5.0);
+    fixed.insert(compiled_user_var(&compiled_epi, y_epi), 7.0);
+    assert!(
+        assignment_feasible(&compiled_epi, &fixed, &[]),
+        "max-epigraph must admit y=7 — the one-sided feasible set differs from the exact set (D13)"
+    );
+}
+
+#[test]
+fn minmax_one_sided_rows_have_zero_binaries_and_distinct_roles() {
+    // Max epigraph: exactly the rows x1 <= y, x2 <= y with zero generated
+    // binaries and MinMaxEpigraphRow roles.
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Epigraph,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let generated_vars = compiled
+        .variables
+        .iter()
+        .filter(|v| {
+            matches!(
+                compiled.origin_map.variable_origin(v.id),
+                Some(EntityOrigin::Construct { construct, .. }) if *construct == k
+            )
+        })
+        .count();
+    assert_eq!(generated_vars, 0, "max epigraph generates zero variables");
+    let epi_rows: Vec<_> = compiled
+        .linear_rows
+        .iter()
+        .filter(|r| {
+            matches!(
+                compiled.origin_map.constraint_origin(r.id),
+                Some(EntityOrigin::Construct {
+                    role: GeneratedRole::MinMaxEpigraphRow,
+                    ..
+                })
+            )
+        })
+        .collect();
+    assert_eq!(epi_rows.len(), 2, "max epigraph is exactly two rows");
+    let yid = compiled_user_var(&compiled, y);
+    for row in &epi_rows {
+        // each row has the operand coefficient + (-1)·y, i.e. x_i - y <= 0.
+        assert!(
+            row.bounds.upper.abs() < 1e-9,
+            "x_i - y <= 0, got {:?}",
+            row.bounds
+        );
+        let y_coeff = row
+            .coefficients
+            .iter()
+            .find(|(id, _)| *id == yid)
+            .map(|(_, c)| *c);
+        assert_eq!(y_coeff, Some(-1.0), "row must contain -y");
+    }
+
+    // Min hypograph: exactly the rows x1 >= y, x2 >= y with zero binaries and
+    // MinMaxHypographRow roles.
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Min,
+            MinMaxRelation::Hypograph,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let generated_vars = compiled
+        .variables
+        .iter()
+        .filter(|v| {
+            matches!(
+                compiled.origin_map.variable_origin(v.id),
+                Some(EntityOrigin::Construct { construct, .. }) if *construct == k
+            )
+        })
+        .count();
+    assert_eq!(generated_vars, 0, "min hypograph generates zero variables");
+    let hypo_rows: Vec<_> = compiled
+        .linear_rows
+        .iter()
+        .filter(|r| {
+            matches!(
+                compiled.origin_map.constraint_origin(r.id),
+                Some(EntityOrigin::Construct {
+                    role: GeneratedRole::MinMaxHypographRow,
+                    ..
+                })
+            )
+        })
+        .collect();
+    assert_eq!(hypo_rows.len(), 2, "min hypograph is exactly two rows");
+    let yid = compiled_user_var(&compiled, y);
+    for row in &hypo_rows {
+        assert!(
+            row.bounds.lower.abs() < 1e-9,
+            "x_i - y >= 0, got {:?}",
+            row.bounds
+        );
+        let y_coeff = row
+            .coefficients
+            .iter()
+            .find(|(id, _)| *id == yid)
+            .map(|(_, c)| *c);
+        assert_eq!(y_coeff, Some(-1.0), "row must contain -y");
+    }
+}
+
+#[test]
+fn minmax_exact_selector_feasible_sets_match_semantic() {
+    // Exact max over 3 binary operands: the compiled feasible set over
+    // (x1,x2,x3,y) equals { y = max(x1,x2,x3) }.
+    let mut model = Model::new();
+    let x1 = model.add_variable(binary()).unwrap();
+    let x2 = model.add_variable(binary()).unwrap();
+    let x3 = model.add_variable(binary()).unwrap();
+    let (k, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into(), x3.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel = generated_binaries(&compiled, k, GeneratedRole::MinMaxSelectorBinary);
+    assert_eq!(sel.len(), 3, "one selector binary per exact-max operand");
+    let ids = [
+        compiled_user_var(&compiled, x1),
+        compiled_user_var(&compiled, x2),
+        compiled_user_var(&compiled, x3),
+    ];
+    let yid = compiled_user_var(&compiled, y);
+    for a in 0..2 {
+        for b in 0..2 {
+            for c in 0..2 {
+                for yv in 0..2 {
+                    let semantic = (yv as f64) == (a.max(b).max(c) as f64);
+                    let mut fixed = HashMap::new();
+                    fixed.insert(ids[0], a as f64);
+                    fixed.insert(ids[1], b as f64);
+                    fixed.insert(ids[2], c as f64);
+                    fixed.insert(yid, yv as f64);
+                    let feasible = assignment_feasible(&compiled, &fixed, &sel);
+                    assert_eq!(
+                        feasible, semantic,
+                        "exact-max feasible set mismatch at (x1,x2,x3,y)=({a},{b},{c},{yv})"
+                    );
+                }
+            }
+        }
+    }
+
+    // The report records the finite derived M values with bound sources
+    // (SM-13.5).
+    let m_entries: Vec<_> = compiled
+        .report
+        .formulation_decisions
+        .iter()
+        .filter(|d| d.decision.starts_with("minmax.selector_m"))
+        .collect();
+    assert_eq!(m_entries.len(), 3, "one M record per exact-max operand");
+    for e in &m_entries {
+        assert!(
+            e.selection.starts_with("M = "),
+            "finite M recorded, got {}",
+            e.selection
+        );
+        assert!(
+            e.reason.contains("u_max"),
+            "M derivation names u_max, got {}",
+            e.reason
+        );
+    }
+
+    // Exact min mirror.
+    let mut model = Model::new();
+    let x1 = model.add_variable(binary()).unwrap();
+    let x2 = model.add_variable(binary()).unwrap();
+    let (k, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Min,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel = generated_binaries(&compiled, k, GeneratedRole::MinMaxSelectorBinary);
+    assert_eq!(sel.len(), 2);
+    let ids = [
+        compiled_user_var(&compiled, x1),
+        compiled_user_var(&compiled, x2),
+    ];
+    let yid = compiled_user_var(&compiled, y);
+    for a in 0..2 {
+        for b in 0..2 {
+            for yv in 0..2 {
+                let semantic = (yv as f64) == (a.min(b) as f64);
+                let mut fixed = HashMap::new();
+                fixed.insert(ids[0], a as f64);
+                fixed.insert(ids[1], b as f64);
+                fixed.insert(yid, yv as f64);
+                let feasible = assignment_feasible(&compiled, &fixed, &sel);
+                assert_eq!(
+                    feasible, semantic,
+                    "exact-min feasible set mismatch at (x1,x2,y)=({a},{b},{yv})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn minmax_exact_rejects_unbounded_operand_with_construct_aware_error() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap(); // free
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, _) = model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &bridge_caps());
+    assert!(
+        matches!(&err, CompileError::UnboundedBigM { construct, expression }
+            if *construct == k && !expression.is_empty()),
+        "unbounded exact-max operand must surface the construct-aware UnboundedBigM naming the \
+         construct, got {err:?}"
+    );
+}
+
+#[test]
+fn minmax_randomized_direct_evaluation_matches_max_and_min() {
+    // Fixed-seed random bounded operands: the exact compiled rows force
+    // y = max/min at every sampled operand value (direct evaluation, no
+    // solver). Sample operands strictly inside their bounds so the selector
+    // rows — not the output bounds — are what reject y = max ± 0.5.
+    let mut rng = Lcg(0x5eed_1234);
+    for _ in 0..5 {
+        // Max.
+        let (l1, u1) = (-5.0, 5.0);
+        let (l2, u2) = (-5.0, 5.0);
+        let mut model = Model::new();
+        let x1 = model.add_variable(continuous().bounds(l1, u1)).unwrap();
+        let x2 = model.add_variable(continuous().bounds(l2, u2)).unwrap();
+        let (k, y) = model
+            .add_minmax(
+                vec![x1.into(), x2.into()],
+                MinMaxSense::Max,
+                MinMaxRelation::Exact,
+                None,
+            )
+            .unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+        let sel = generated_binaries(&compiled, k, GeneratedRole::MinMaxSelectorBinary);
+        let x1id = compiled_user_var(&compiled, x1);
+        let x2id = compiled_user_var(&compiled, x2);
+        let yid = compiled_user_var(&compiled, y);
+        for _ in 0..5 {
+            let v1 = rng.range(-4, 4);
+            let v2 = rng.range(-4, 4);
+            let m = v1.max(v2);
+            let mut fixed = HashMap::new();
+            fixed.insert(x1id, v1);
+            fixed.insert(x2id, v2);
+            fixed.insert(yid, m);
+            assert!(
+                assignment_feasible(&compiled, &fixed, &sel),
+                "y = max({v1},{v2}) = {m} must be feasible"
+            );
+            fixed.insert(yid, m + 0.5);
+            assert!(
+                !assignment_feasible(&compiled, &fixed, &sel),
+                "y = max + 0.5 must be infeasible (exact selector)"
+            );
+        }
+
+        // Min.
+        let mut model = Model::new();
+        let x1 = model.add_variable(continuous().bounds(-5.0, 5.0)).unwrap();
+        let x2 = model.add_variable(continuous().bounds(-5.0, 5.0)).unwrap();
+        let (k, y) = model
+            .add_minmax(
+                vec![x1.into(), x2.into()],
+                MinMaxSense::Min,
+                MinMaxRelation::Exact,
+                None,
+            )
+            .unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+        let sel = generated_binaries(&compiled, k, GeneratedRole::MinMaxSelectorBinary);
+        let x1id = compiled_user_var(&compiled, x1);
+        let x2id = compiled_user_var(&compiled, x2);
+        let yid = compiled_user_var(&compiled, y);
+        for _ in 0..5 {
+            let v1 = rng.range(-4, 4);
+            let v2 = rng.range(-4, 4);
+            let m = v1.min(v2);
+            let mut fixed = HashMap::new();
+            fixed.insert(x1id, v1);
+            fixed.insert(x2id, v2);
+            fixed.insert(yid, m);
+            assert!(
+                assignment_feasible(&compiled, &fixed, &sel),
+                "y = min({v1},{v2}) = {m} must be feasible"
+            );
+            fixed.insert(yid, m - 0.5);
+            assert!(
+                !assignment_feasible(&compiled, &fixed, &sel),
+                "y = min - 0.5 must be infeasible (exact selector)"
+            );
+        }
+    }
 }

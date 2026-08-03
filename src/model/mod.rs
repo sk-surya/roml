@@ -41,9 +41,11 @@ pub type Objective = crate::id::ObjId;
 pub type Parameter = crate::id::ParamId;
 
 use crate::construct::{
-    derive_parameter_dependencies, BooleanKind, CardinalityKind, Construct, ConstructEntry,
+    derive_parameter_dependencies, AbsoluteValueConstraint, AbsoluteValueVariant,
+    BinaryProductConstraint, BooleanKind, CardinalityKind, Construct, ConstructEntry,
     ConstructKind, ConstructStore, FixturePayload, FormulationPreference, IndicatorConstraint,
-    IndicatorDirection, ReificationConstraint,
+    IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense, ProductOperand,
+    ReificationConstraint,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -112,6 +114,27 @@ pub enum ModelError {
     UnsupportedReificationSet,
     /// A construct input list was empty (Boolean any/all, cardinality).
     EmptyConstructInput,
+    /// A min/max construct requires at least two operands (SM-12.3).
+    MinMaxTooFewOperands,
+    /// A min-epigraph / max-hypograph relation is trivially satisfiable
+    /// (SM-12.3) — a min epigraph (`output >= min`) and a max hypograph
+    /// (`output <= max`) impose no constraint.
+    TriviallySatisfiableMinMax,
+    /// An absolute-value-family expression is unbounded (free variable or
+    /// unbounded parameter) — the bounded exact bridge cannot be built
+    /// (SM-12.4).
+    UnboundedConstructExpression,
+    /// A clamp variant has invalid bounds (`lower > upper` or non-finite)
+    /// (SM-12.4).
+    InvalidClampBounds {
+        /// The offending lower bound.
+        lower: f64,
+        /// The offending upper bound.
+        upper: f64,
+    },
+    /// A product of two continuous operands is not exact MILP — no exact path
+    /// exists and no relaxation is emitted (SM-12.7, D23).
+    ContinuousTimesContinuousProduct,
     /// Revision counter overflow.
     RevisionOverflow,
     /// An opaque identity counter was exhausted (ids never wrap).
@@ -167,6 +190,31 @@ impl std::fmt::Display for ModelError {
                  two-implication contract)"
             ),
             Self::EmptyConstructInput => write!(f, "construct input list must not be empty"),
+            Self::MinMaxTooFewOperands => {
+                write!(f, "a min/max construct requires at least two operands")
+            }
+            Self::TriviallySatisfiableMinMax => write!(
+                f,
+                "a min-epigraph / max-hypograph min/max relation is trivially satisfiable \
+                 (D13): choose exact or the complementary one-sided relation"
+            ),
+            Self::UnboundedConstructExpression => write!(
+                f,
+                "an absolute-value-family construct requires a bounded expression (free \
+                 variables or unbounded parameters are a typed rejection; the bounded exact \
+                 bridge cannot be built)"
+            ),
+            Self::InvalidClampBounds { lower, upper } => {
+                write!(
+                    f,
+                    "invalid clamp bounds [{lower}, {upper}]: lower must be finite and <= upper"
+                )
+            }
+            Self::ContinuousTimesContinuousProduct => write!(
+                f,
+                "a continuous-times-continuous product is not exact MILP (D23, SM-12.7); \
+                 exact products cover binary-binary and binary-times-bounded-linear only"
+            ),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -626,6 +674,249 @@ impl Model {
             k: kk,
         };
         self.add_construct(ConstructKind::Cardinality(payload), preference)
+    }
+
+    /// Add a min/max construct (design §16.3, packet Task 17a; SM-12.3, D13).
+    ///
+    /// `operands` must contain at least two finite linear expressions.
+    /// `relation` selects the exact equality or the one-sided epigraph/
+    /// hypograph relation — these are distinct semantics and exactness is never
+    /// inferred from objective context (D13). The trivially-satisfiable
+    /// `Min`+`Epigraph` and `Max`+`Hypograph` combinations are typed rejections.
+    /// The builder creates the output variable (the construct's canonical
+    /// result) and returns it alongside the stable [`Construct`] handle
+    /// (SM-12.8). The optional per-construct [`FormulationPreference`] narrows
+    /// the global compilation policy (A29).
+    pub fn add_minmax(
+        &mut self,
+        operands: Vec<LinExpr>,
+        sense: MinMaxSense,
+        relation: MinMaxRelation,
+        preference: Option<FormulationPreference>,
+    ) -> Result<(Construct, VarId), ModelError> {
+        if operands.len() < 2 {
+            return Err(ModelError::MinMaxTooFewOperands);
+        }
+        // A min epigraph (output >= min) and a max hypograph (output <= max)
+        // are trivially satisfiable — reject them (SM-12.3, D13).
+        if matches!(sense, MinMaxSense::Min) && relation == MinMaxRelation::Epigraph {
+            return Err(ModelError::TriviallySatisfiableMinMax);
+        }
+        if matches!(sense, MinMaxSense::Max) && relation == MinMaxRelation::Hypograph {
+            return Err(ModelError::TriviallySatisfiableMinMax);
+        }
+        let mut l_min = f64::INFINITY;
+        let mut u_max = f64::NEG_INFINITY;
+        for expr in &operands {
+            // Reject non-finite constants/coefficients and stale entities
+            // before any mutation (API-06.5).
+            self.validate_expression_entities(expr)?;
+            let interval = self.expression_interval(expr)?;
+            if interval.lower < l_min {
+                l_min = interval.lower;
+            }
+            if interval.upper > u_max {
+                u_max = interval.upper;
+            }
+        }
+        // The output variable bounds reflect the relation: exact equality lies
+        // in the operand-interval span; a max epigraph is bounded below only;
+        // a min hypograph is bounded above only. An unbounded relevant side
+        // yields unbounded output bounds (an unbounded operand then fails at
+        // compile time with `UnboundedBigM` for the exact relation).
+        let output_bounds = match relation {
+            MinMaxRelation::Exact => {
+                if l_min.is_finite() && u_max.is_finite() {
+                    Bounds::new(l_min, u_max)
+                } else {
+                    Bounds::UNBOUNDED
+                }
+            }
+            MinMaxRelation::Epigraph => {
+                // y >= max_i x_i >= l_min.
+                if l_min.is_finite() {
+                    Bounds::new(l_min, f64::INFINITY)
+                } else {
+                    Bounds::UNBOUNDED
+                }
+            }
+            MinMaxRelation::Hypograph => {
+                // y <= min_i x_i <= u_max.
+                if u_max.is_finite() {
+                    Bounds::new(f64::NEG_INFINITY, u_max)
+                } else {
+                    Bounds::UNBOUNDED
+                }
+            }
+        };
+        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
+        let payload = MinMaxConstraint {
+            operands,
+            output,
+            sense,
+            relation,
+        };
+        let construct = self.add_construct(ConstructKind::MinMax(payload), preference)?;
+        Ok((construct, output))
+    }
+
+    /// Add an absolute-value-family construct (design §16.3, packet Task 17b;
+    /// SM-12.4).
+    ///
+    /// `expression` must be bounded (a finite `BoundAnalyzer` interval) — a free
+    /// variable or unbounded parameter is a typed [`ModelError`] because the
+    /// exact bridge requires finite derived bounds (never an arbitrary Big-M,
+    /// D12). `Clamp` requires finite `lower <= upper`. The builder creates the
+    /// output variable (the construct's canonical result, preserved as a
+    /// top-level construct origin) and returns it alongside the stable
+    /// [`Construct`] handle (SM-12.8).
+    pub fn add_absolute_value(
+        &mut self,
+        expression: LinExpr,
+        variant: AbsoluteValueVariant,
+        preference: Option<FormulationPreference>,
+    ) -> Result<(Construct, VarId), ModelError> {
+        self.validate_expression_entities(&expression)?;
+        let interval = self.expression_interval(&expression)?;
+        if !interval.is_bounded() {
+            return Err(ModelError::UnboundedConstructExpression);
+        }
+        let output_bounds = match variant {
+            AbsoluteValueVariant::Absolute => {
+                // z = |x|: z >= 0 and z <= max(U, -L).
+                let upper = interval.upper.max(-interval.lower);
+                Bounds::new(0.0, upper.max(0.0))
+            }
+            AbsoluteValueVariant::PositivePart => {
+                // z = max(x, 0): z >= 0 and z <= max(U, 0).
+                Bounds::new(0.0, interval.upper.max(0.0))
+            }
+            AbsoluteValueVariant::Clamp { lower, upper } => {
+                if !lower.is_finite() || !upper.is_finite() || lower > upper {
+                    return Err(ModelError::InvalidClampBounds { lower, upper });
+                }
+                Bounds::new(lower, upper)
+            }
+        };
+        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
+        let payload = AbsoluteValueConstraint {
+            expression,
+            output,
+            variant,
+        };
+        let construct = self.add_construct(ConstructKind::AbsoluteValue(payload), preference)?;
+        Ok((construct, output))
+    }
+
+    /// Add a binary product construct (design §16.5, packet Task 17c; SM-12.6,
+    /// SM-12.7, D23).
+    ///
+    /// The operand combination must be exactly one of Binary×Binary,
+    /// Binary×Linear, or Linear×Binary. A continuous×continuous request is a
+    /// typed rejection (SM-12.7) and produces no compiled entities; a non-binary
+    /// variable in a `Binary` operand is a typed rejection (SM-12.6). The
+    /// builder creates the output variable (the construct's canonical result)
+    /// and returns it alongside the stable [`Construct`] handle (SM-12.8).
+    pub fn add_binary_product(
+        &mut self,
+        left: ProductOperand,
+        right: ProductOperand,
+        preference: Option<FormulationPreference>,
+    ) -> Result<(Construct, VarId), ModelError> {
+        let (left, right) = self.validate_product_operands(left, right)?;
+        // The exact product result is the binary-binary case 0<=w<=1, else the
+        // linear-operand interval span.
+        let output_bounds = match (&left, &right) {
+            (ProductOperand::Binary(_), ProductOperand::Binary(_)) => Bounds::new(0.0, 1.0),
+            (ProductOperand::Binary(_), ProductOperand::Linear(expr))
+            | (ProductOperand::Linear(expr), ProductOperand::Binary(_)) => {
+                // w = b·f with b ∈ {0,1}: w lies between 0 and f's span, so
+                // w ∈ [min(0, L), max(0, U)] — finite when f is bounded.
+                let interval = self.expression_interval(expr)?;
+                Bounds::new(interval.lower.min(0.0), interval.upper.max(0.0))
+            }
+            _ => unreachable!("builder validates exactly one binary operand"),
+        };
+        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
+        let payload = BinaryProductConstraint {
+            left,
+            right,
+            output,
+        };
+        let construct = self.add_construct(ConstructKind::BinaryProduct(payload), preference)?;
+        Ok((construct, output))
+    }
+
+    /// Convenience builder: `output = binary * expression` (binary-times-
+    /// bounded-linear, design §16.5; SM-12.6).
+    ///
+    /// Equivalent to [`Self::add_binary_product`] with
+    /// `ProductOperand::Binary(binary)` × `ProductOperand::Linear(expression)`.
+    pub fn add_binary_times_linear(
+        &mut self,
+        binary: VarId,
+        expression: LinExpr,
+        preference: Option<FormulationPreference>,
+    ) -> Result<(Construct, VarId), ModelError> {
+        self.add_binary_product(
+            ProductOperand::Binary(binary),
+            ProductOperand::Linear(expression),
+            preference,
+        )
+    }
+
+    /// Validate the two product operands: exactly one binary operand, and any
+    /// binary operand must be a true binary variable (SM-12.6).
+    fn validate_product_operands(
+        &mut self,
+        left: ProductOperand,
+        right: ProductOperand,
+    ) -> Result<(ProductOperand, ProductOperand), ModelError> {
+        let left_binary = matches!(left, ProductOperand::Binary(_));
+        let right_binary = matches!(right, ProductOperand::Binary(_));
+        if !left_binary && !right_binary {
+            // Two continuous/linear operands: no exact MILP path exists.
+            return Err(ModelError::ContinuousTimesContinuousProduct);
+        }
+        if let ProductOperand::Binary(var) = &left {
+            self.require_binary(*var)?;
+        }
+        if let ProductOperand::Binary(var) = &right {
+            self.require_binary(*var)?;
+        }
+        if let ProductOperand::Linear(expr) = &left {
+            self.validate_expression_entities(expr)?;
+        }
+        if let ProductOperand::Linear(expr) = &right {
+            self.validate_expression_entities(expr)?;
+        }
+        Ok((left, right))
+    }
+
+    /// Compute the deterministic interval of a linear expression over the
+    /// model's declared variable bounds and evaluated parameter values, using
+    /// the compiler's [`BoundAnalyzer`](crate::compiler::bounds::BoundAnalyzer)
+    /// (the single interval semantics — SM-13.1).
+    fn expression_interval(
+        &self,
+        expr: &LinExpr,
+    ) -> Result<crate::compiler::bounds::Interval, ModelError> {
+        let analyzer = crate::compiler::bounds::BoundAnalyzer::new();
+        let variable_bounds = |v: VarId| {
+            self.variables
+                .get(v)
+                .map(|d| d.bounds)
+                .unwrap_or(Bounds::UNBOUNDED)
+        };
+        let parameter_values = |p: ParamId| self.parameters.get_value(p).unwrap_or(0.0);
+        analyzer
+            .interval_of(
+                &crate::function::ScalarFunction::Linear(expr.clone()),
+                variable_bounds,
+                parameter_values,
+            )
+            .map(|trace| trace.result)
+            .map_err(|_| ModelError::NonFiniteValue("expression bounds"))
     }
 
     /// Shared construct-add: allocate the arena entry, record the

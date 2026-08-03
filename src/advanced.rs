@@ -130,6 +130,8 @@ pub use crate::compiler::bridge::{
 /// The `Fixture` variant and [`crate::construct::FixturePayload`] are
 /// crate-private (A30) and never appear here.
 pub use crate::construct::{
-    BooleanConstraint, BooleanKind, CardinalityConstraint, CardinalityKind, ConstructEntry,
-    ConstructKind, IndicatorConstraint, IndicatorDirection, ReificationConstraint,
+    AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
+    BooleanKind, CardinalityConstraint, CardinalityKind, ConstructEntry, ConstructKind,
+    IndicatorConstraint, IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense,
+    ProductOperand, ReificationConstraint,
 };
