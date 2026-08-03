@@ -229,7 +229,14 @@ Package list unchanged in composition: `cargo package --list -p roml` still 70 f
 
 ## Reviewer findings
 
-<!-- Filled at the P25 phase boundary after Task 4 (independent review). -->
+Independent review at the P25 phase boundary (gsd-code-review, standard depth, 24 files; two-pass protocol per EXECUTION.md).
+
+- **P0/P1 (critical):** none remain. Two criticals found and fixed with TDD:
+  - CR-01 delta reconstructed `set` used pre-adjustment `AddConstraint` bounds, diverging from the canonical folded bounds on the constant-folding path (`(x + 3).le(5)`); fixed in `5c748e1` (last same-batch `SetConstraintBounds` wins) with tests `delta_set_reflects_bounds_folded_from_expression_constant` (+ge/between variants).
+  - CR-02 real solve path never bound the solved model's lineage/instance into `SolveMetadata` (`..SolveMetadata::default()` allocated fresh unrelated ids per solve); fixed in `37e67f0` (ids threaded from `SolverSession::solve_with`) with test `real_solve_binds_model_lineage_and_instance_into_metadata`.
+- **P2 (warnings):** all 6 fixed with TDD in `5c748e1`, `a845968`, `839361f`, `4335e2d`: WR-01 deterministic term order (sorted by var in `constraint_expression`, snapshot, delta — test `constraint_expression_term_order_matches_snapshot`); WR-02 tautological `debug_assert_eq` removed, real cross-check extended to function equality in `take_snapshot`; WR-03 saturating `fetch_update` (no wrap/reuse after overflow — seam test `family_allocate_saturates_on_overflow_without_reissuing`); WR-04 panic boundary documented; WR-05 `set_metadata` liveness validation + cascade removal in `remove_variable`/`remove_constraint`/`remove_objective`; WR-06 `remove_construct` cascades metadata (test `construct_remove_cascades_metadata_and_invariants_pass`).
+- **Info:** all 3 fixed — IN-01 dead `affects_solver` removed; IN-02 testable overflow seam; IN-03 rebuild test strengthened (by-id full-entry assertions).
+- **Dispositions:** all findings accepted and fixed; no deferrals. Re-verification pass confirmed every finding RESOLVED against the current code; `cargo test -p roml --all-targets` 594 pass, clippy `-D warnings` clean.
 
 ## Residual risks
 
