@@ -14,11 +14,14 @@
 //! [`crate::advanced`].
 
 pub mod backend_ir;
+pub mod bounds;
+pub mod bridge;
 pub mod capability;
 pub mod origin;
 pub mod report;
 pub mod session;
 
+use crate::construct::Construct;
 use backend_ir::{CompilationId, CompiledEntityRef, CompiledObjectiveId};
 
 /// A typed compilation/bridge failure (design §19, SM-13 foundations).
@@ -125,6 +128,33 @@ pub enum CompileError {
     /// Mirrors [`crate::IdentityOverflow`]: checked atomic allocation
     /// saturates and reports this error rather than re-issuing ids.
     IdentityOverflow,
+
+    /// No finite Big-M exists for a construct's bounds (SM-13.2/13.4, D12).
+    ///
+    /// The absence of a finite derived/validated Big-M is a typed error
+    /// naming the construct and the missing/unbounded expression — never a
+    /// silent default constant (design §9 rule 6, §19).
+    UnboundedBigM {
+        /// The construct that requires the Big-M.
+        construct: Construct,
+        /// The expression the Big-M was being derived for.
+        expression: String,
+    },
+
+    /// The bound analysis for a Big-M rejected non-finite input (SM-13.1,
+    /// design §19 "unbounded or invalid Big-M").
+    ///
+    /// A NaN/infinite coefficient, bound, constant, or parameter value, or
+    /// NaN interval arithmetic, surfaces as this typed error — no NaN
+    /// propagates silently.
+    InvalidBigM {
+        /// The construct that requires the Big-M.
+        construct: Construct,
+        /// The expression the Big-M was being derived for.
+        expression: String,
+        /// Why the derivation was invalid.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -163,6 +193,22 @@ impl std::fmt::Display for CompileError {
                 )
             }
             Self::IdentityOverflow => write!(f, "identity counter exhausted (ids never wrap)"),
+            Self::UnboundedBigM {
+                construct,
+                expression,
+            } => write!(
+                f,
+                "no finite Big-M exists for construct {construct:?} and expression {expression:?} \
+                 — add bounds or an explicit validated M"
+            ),
+            Self::InvalidBigM {
+                construct,
+                expression,
+                reason,
+            } => write!(
+                f,
+                "invalid Big-M for construct {construct:?} and expression {expression:?}: {reason}"
+            ),
         }
     }
 }
