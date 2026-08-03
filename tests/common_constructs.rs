@@ -428,6 +428,72 @@ fn reification_rejects_invalid_separation_tolerance() {
     );
 }
 
+#[test]
+fn reification_rejects_non_integral_threshold_on_proven_integer_expression() {
+    // CR-01: the inferred unit gap `f > rhs ⟺ f >= rhs + 1` is exact for an
+    // integer-valued f only when `rhs` is integral. `(x+y).le(1.5)` with x,y
+    // binary is proven integer-valued, but the fractional threshold silently
+    // excludes the integer just above 1.5 from both b=0 and b=1 — a typed
+    // build-time rejection, never a wrong formulation.
+    let mut model = Model::new();
+    let x = model.add_variable(binary()).unwrap();
+    let y = model.add_variable(binary()).unwrap();
+    let err = model.add_reify((x + y).le(1.5), None, None).unwrap_err();
+    assert!(
+        matches!(err, ModelError::NonIntegralReificationThreshold(v) if v == 1.5),
+        "non-integral threshold on a proven-integer expression must be a typed \
+         NonIntegralReificationThreshold, got {err:?}"
+    );
+}
+
+#[test]
+fn reification_accepts_integral_threshold_and_fractional_threshold_with_separation() {
+    // CR-01: an integral rhs keeps the inferred unit gap; a fractional rhs is
+    // accepted only with an explicit separation tolerance (which the bridge
+    // honors exactly).
+    let mut model = Model::new();
+    let x = model.add_variable(binary()).unwrap();
+    let y = model.add_variable(binary()).unwrap();
+    model.add_reify((x + y).le(1.0), None, None).unwrap();
+    model.add_reify((x + y).le(1.5), Some(0.5), None).unwrap();
+}
+
+#[test]
+fn reification_fractional_threshold_with_explicit_separation_keeps_integer_above_feasible() {
+    // CR-01: with an explicit separation tolerance the fractional threshold is
+    // honored exactly, so (x,y)=(1,1) — f = 2 just above rhs = 1.5 — keeps the
+    // integer just above the threshold feasible with b = 0. The compiled
+    // feasible set must equal the semantic set.
+    let mut model = Model::new();
+    let x = model.add_variable(binary()).unwrap();
+    let y = model.add_variable(binary()).unwrap();
+    let k = model.add_reify((x + y).le(1.5), Some(0.5), None).unwrap();
+    let snap = model.take_snapshot().unwrap();
+    let b = match &snap.constructs.iter().find(|e| e.id == k).unwrap().kind {
+        ConstructKind::Reification(p) => p.activator,
+        other => panic!("expected Reification payload, got {other:?}"),
+    };
+    let vars = [b, x, y];
+
+    // semantic: b ⟺ (x+y <= 1.5). At x=y=1 (f=2), b must be 0.
+    let semantic = semantic_feasible(3, |a| {
+        let lhs = a[1] as f64 + a[2] as f64;
+        (a[0] == 1) == (lhs <= 1.5)
+    });
+    assert!(
+        semantic.contains(&vec![0, 1, 1]),
+        "semantic set must contain (b=0, x=1, y=1)"
+    );
+
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let portable = compiled_feasible_assignments(&compiled, &vars);
+    assert_eq!(
+        semantic, portable,
+        "portable reification feasible set must equal semantic for a fractional threshold \
+         with explicit separation (CR-01)"
+    );
+}
+
 // ===========================================================================
 // Payload storage + per-construct preference (A29 single authority)
 // ===========================================================================

@@ -112,6 +112,11 @@ pub enum ModelError {
     /// equality/interval relations need a disjunctive complement not in the
     /// P32 two-implication contract.
     UnsupportedReificationSet,
+    /// A proven-integer reification with the inferred unit gap requires an
+    /// integral set threshold: `f > rhs ⟺ f >= rhs + 1` is exact only for an
+    /// integer `rhs`, so a fractional threshold on a proven-integer expression
+    /// is a typed build-time rejection (SM-12.2, D14; CR-01).
+    NonIntegralReificationThreshold(f64),
     /// A construct input list was empty (Boolean any/all, cardinality).
     EmptyConstructInput,
     /// A min/max construct requires at least two operands (SM-12.3).
@@ -188,6 +193,12 @@ impl std::fmt::Display for ModelError {
                 f,
                 "reification currently supports le/ge threshold relations only (P32 \
                  two-implication contract)"
+            ),
+            Self::NonIntegralReificationThreshold(v) => write!(
+                f,
+                "reification with the inferred unit gap requires an integral set threshold \
+                 (D14, CR-01); got {v}: the unit gap `f > rhs ⟺ f >= rhs + 1` is exact only \
+                 for an integer rhs — pass an explicit separation tolerance instead"
             ),
             Self::EmptyConstructInput => write!(f, "construct input list must not be empty"),
             Self::MinMaxTooFewOperands => {
@@ -564,6 +575,31 @@ impl Model {
             ScalarSet::LessEqual(_) | ScalarSet::GreaterEqual(_) => {}
             ScalarSet::EqualTo(_) | ScalarSet::Interval { .. } => {
                 return Err(ModelError::UnsupportedReificationSet);
+            }
+        }
+        // CR-01: the inferred unit gap `f > rhs ⟺ f >= rhs + 1` is exact only
+        // when the set threshold is integral (an integer-valued f separated by
+        // a non-integral rhs silently excludes the integer just above rhs from
+        // both b=0 and b=1). Validate every threshold for integrality at build
+        // time; a fractional threshold on a proven-integer expression is a
+        // typed rejection (an explicit separation tolerance is the exact path
+        // for fractional thresholds, D14).
+        if separation.is_none() && proven {
+            let eval = |e: &ValueExpr| e.eval(|p| self.parameters.get_value(p).unwrap_or(0.0));
+            let integral = |v: f64| v.is_finite() && (v - v.round()).abs() < 1e-9;
+            let check = |v: f64| -> Result<(), ModelError> {
+                if integral(v) {
+                    Ok(())
+                } else {
+                    Err(ModelError::NonIntegralReificationThreshold(v))
+                }
+            };
+            match &fc.set {
+                ScalarSet::LessEqual(upper) => check(eval(upper))?,
+                ScalarSet::GreaterEqual(lower) => check(eval(lower))?,
+                ScalarSet::EqualTo(_) | ScalarSet::Interval { .. } => unreachable!(
+                    "equality/interval reification is rejected above before the integrality check"
+                ),
             }
         }
         // The reification result is a fresh binary variable the construct owns
