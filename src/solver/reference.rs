@@ -826,10 +826,21 @@ impl OverlaySession for ReferenceBackend {
             base_view: self.compiled_normalized_view(),
         };
 
+        // WR-04: the apply is TRANSACTIONAL — stage every mutation on clones of
+        // the compiled maps and commit only on full success. A mid-apply
+        // failure (e.g. a second op referencing an unknown compiled variable)
+        // then leaves the backend exactly at the base: no half-overlaid state,
+        // no way for a later rollback to fail ("no applied overlay to roll
+        // back"). Compare `compile_delta`'s copy-on-write on a scratch
+        // `CurrentCompilation`.
+        let mut staged_variables = self.compiled_variables.clone();
+        let mut staged_rows = self.compiled_rows.clone();
+        let mut staged_policy = self.compiled_objective_policy.clone();
+
         for op in &overlay.operations {
             match op {
                 OverlayOp::SetTemporaryVariableBounds { variable, bounds } => {
-                    let entry = self.compiled_variables.get_mut(variable).ok_or_else(|| {
+                    let entry = staged_variables.get_mut(variable).ok_or_else(|| {
                         BackendError::new(
                             format!("overlay references unknown compiled variable {variable:?}"),
                             ErrorCategory::InvalidInput,
@@ -842,7 +853,7 @@ impl OverlaySession for ReferenceBackend {
                     entry.0 = *bounds;
                 }
                 OverlayOp::AddTemporaryRow { row } => {
-                    if self.compiled_rows.contains_key(&row.id) {
+                    if staged_rows.contains_key(&row.id) {
                         return Err(BackendError::new(
                             format!(
                                 "overlay row id {:?} already exists in the compiled state",
@@ -853,7 +864,7 @@ impl OverlaySession for ReferenceBackend {
                         ));
                     }
                     for (cid, _) in &row.coefficients {
-                        if !self.compiled_variables.contains_key(cid) {
+                        if !staged_variables.contains_key(cid) {
                             return Err(BackendError::new(
                                 format!(
                                     "overlay row {:?} references unknown compiled variable {cid:?}",
@@ -864,8 +875,7 @@ impl OverlaySession for ReferenceBackend {
                             ));
                         }
                     }
-                    self.compiled_rows
-                        .insert(row.id, (row.bounds, row.coefficients.clone()));
+                    staged_rows.insert(row.id, (row.bounds, row.coefficients.clone()));
                     state.added_rows.push(row.id);
                 }
                 // RemoveTemporaryRow is a rollback-only op; apply does not
@@ -880,11 +890,15 @@ impl OverlaySession for ReferenceBackend {
                 OverlayOp::SetObjectivePolicy(policy) => {
                     // The policy is applied to the overlay state; the base
                     // policy was captured in `prior_policy`.
-                    self.compiled_objective_policy = policy.clone();
+                    staged_policy = policy.clone();
                 }
             }
         }
 
+        // Commit: every op succeeded, so the staged state becomes the held state.
+        self.compiled_variables = staged_variables;
+        self.compiled_rows = staged_rows;
+        self.compiled_objective_policy = staged_policy;
         self.current_compilation = Some(overlay.compilation_id);
         self.overlay_state = Some(state);
         Ok(OverlayApplyReceipt {
