@@ -3,7 +3,7 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P25 accepted (merged via PR #27 at main@9c2a9df); P26 ready to plan  
+**Status:** P26 accepted (merged via PR #28 at main@192cd00); P27 and P32 unblocked  
 **Current phase:** P26 — compiler boundary, backend IR, capabilities, origins, compilation identity  
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
 **Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
@@ -35,13 +35,13 @@ Before P25 code:
 | Phase | Status | Prerequisite | Evidence | Blocking decision |
 |---|---|---|---|---|
 | P25 Semantic IR/identity | Accepted | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (merged PR #27, `9c2a9df`) | none |
-| P26 Compiler/backend IR | Executed; verified 6/6 must-haves; merge pending | P25 accepted (PR #27, `9c2a9df`) | `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md` (verified, `26-VERIFICATION.md`) | backend contract amendment review (passed, Task 0 acceptance record) |
-| P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
+| P26 Compiler/backend IR | Accepted | P25 accepted (PR #27, `9c2a9df`) | `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md` (merged PR #28, `192cd00`) | backend contract amendment review (passed, Task 0 acceptance record) |
+| P27 Fixing/locks/overlays | Ready to execute | P26 accepted (PR #28, `192cd00`) | `.planning/phases/27-fixing-locks-overlays/27-PLAN.md` | none |
 | P28 Starts/hints/SolvePlan | Blocked | P27 accepted | none | pinned HiGHS start API audit |
 | P29 IIS/conflicts | Blocked | P28 accepted | none | pinned/system HiGHS IIS capability |
 | P30 Soft constraints | Blocked | P28 accepted | none | none |
 | P31 Lexicographic objectives | Blocked | P28 accepted | none | native HiGHS semantics audit |
-| P32 Common constructs | Blocked | P26 accepted | none | none |
+| P32 Common constructs | Ready to execute | P26 accepted (PR #28, `192cd00`) | `.planning/phases/32-common-constructs/32-PLAN.md` | none |
 | P33 PWL/bounds | Blocked | P32 accepted | none | none |
 | P34 Qualification | Blocked | P29–P33 accepted | none | no publication in M3 |
 
