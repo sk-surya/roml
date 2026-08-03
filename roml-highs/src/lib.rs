@@ -74,6 +74,7 @@ mod solution;
 pub use error::HighsError;
 pub use facade::Highs;
 pub use lifecycle::HighsSession;
+pub use session::highs_capability_set;
 
 /// Re-export key types from `highs-sys` for caller convenience.
 pub use bindings::HighsInt;

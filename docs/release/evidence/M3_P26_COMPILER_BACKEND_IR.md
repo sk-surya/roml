@@ -209,5 +209,75 @@ All Task 5 acceptance criteria met:
 | # | SHA | Message |
 |---|---|---|
 | 1 | `cc743a8` | `feat(compiler): define backend IR and compilation identity` |
+||||||| 9c2a9df
+# Task 6 — Implement typed capabilities
+
+**Plan:** `26-PLAN.md` — Task 6 (implement typed capabilities)
+**Requirements:** SM-04.1, SM-04.2, SM-04.3, SM-04.4, SM-04.5 (foundation), SM-03.4
+**Status:** Complete — committed as `feat(backend): add typed feature capabilities`.
+**Branch (executor worktree):** `worktree-agent-a6f5ef61b9775b791` (base `main@9c2a9df254321792ef0e3cae275a662c798572c9`)
+
+## Scope
+
+Task 6 replaces the flat `BackendCapabilities` Boolean record with a typed `BackendCapabilitySet` keyed by `BackendFeature` (D10, SM-04.1), migrates request validation to the typed set (SM-04.4), builds a version-aware HiGHS typed capability set from pinned `highs-sys` facts (SM-04.2, SM-04.3), and removes the transitional flat→typed conversion before the P26 merge. `CompilationPolicy { Auto, Portable, NativeRequired }` is co-located in `src/compiler/capability.rs` per the packet's "Capabilities and compilation" grouping (SM-03.4).
+
+## TDD record
+
+1. **Characterization (untouched tree — passes before the migration):**
+   - `tests/typed_capabilities.rs` — `characterize_legacy_all_flat_capabilities`, `characterize_validate_request_rejects_mip_when_flat_mip_false`, `characterize_validate_request_accepts_mip_when_flat_mip_true` (flat API only). **3 passed** on the untouched tree.
+   - `roml-highs/tests/conformance.rs` — `characterize_highs_flat_capabilities` (HiGHS flat `capabilities()` values). **1 passed** on the untouched tree.
+   - `src/solver/backend.rs` — `characterize_legacy_flat_mapping_onto_typed_features` pins the flat→typed feature correspondence (`lp`/`mip` → `Lp`/`Mip`; `add_variable`/`add_constraint`/`set_coefficient`/`set_bounds` → `IncrementalRows`/`IncrementalCoefficients`/`IncrementalBounds`; flat-only fields preserved flat-only).
+2. **RED failures (recorded before implementation):**
+   - `tests/typed_capabilities.rs`: `error[E0432] unresolved imports roml::compiler::capability::{BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport, SupportLevel}`.
+   - `src/solver/request.rs` + `src/compiler/capability.rs` `#[cfg(test)]`: same unresolved imports / missing types (`error[E0422]`, `error[E0425]`, `error[E0433]`).
+3. **GREEN:** all typed tests pass after implementation (see verification matrix).
+
+## Implementation
+
+- **`src/compiler/capability.rs` (create):** `#[non_exhaustive] pub enum BackendFeature` (all 17 interface-contract variants), `SupportLevel { Unsupported, Native }` (default `Unsupported`), `FeatureLimitations { minimum_version, model_classes, maximum_count, notes }`, `FeatureSupport { level, limitations }` (+ `native`/`unsupported`/`is_native`), `BackendCapabilitySet` keyed by `BackendFeature` (`supports`, `support`, `set`, `native_features`, `unsupported_features`, `len`, `is_empty`), `CompilationPolicy { Auto, Portable, NativeRequired }`.
+- **`src/solver/request.rs`:** `validate_request` migrated to `&BackendCapabilitySet`; MIP options gate on `capabilities.supports(BackendFeature::Mip)`. Unsupported features are rejected, never silently ignored (SM-04.4).
+- **`src/solver/backend.rs`:** module doc documents the typed migration; characterization test pins the flat→typed feature correspondence. `BackendCapabilities` retained unchanged for M2 source compatibility (D27).
+- **`roml-highs/src/session.rs`:** `pub fn highs_capability_set(major, minor, patch) -> BackendCapabilitySet` — the M2-native surface (`Lp`, `Mip`, `IncrementalBounds`, `IncrementalRows`, `IncrementalCoefficients`) declared `Native` with `minimum_version` = runtime version; every unqualified M3 feature (`MipStart`, `PartialMipStart`, `MultipleMipStarts`, `VariableHints`, `InitialBasis`, `Iis`, `FeasibilityRelaxation`, `Indicator`, `Sos1`, `Sos2`, `NativePiecewiseLinear`, `NativeMultiObjective`) declared `Unsupported`. `BackendMetadata::capabilities()` returns the flat compat view derived from the typed set (typed-mappable fields from the set; flat-only facts preserved).
+- **`roml-highs/src/lib.rs`:** re-exports `highs_capability_set` so the version-aware declaration is publicly inspectable.
+- **Module wiring:** `src/lib.rs` gains `pub mod compiler;` and `src/compiler/mod.rs` is created with the single `pub mod capability;` line (Task 6's contribution; Task 5's `backend_ir`/`origin`/`report` declarations are merged by the orchestrator per the plan's ordered-line convention).
+- **Tests:** new `tests/typed_capabilities.rs` (7 tests), HiGHS `session.rs` unit tests (2), HiGHS `conformance.rs` (2), `src/solver/backend.rs` (1). Existing `tests/status_negotiation_tests.rs` and `tests/advanced_surface.rs` `validate_request` callers migrated to the typed set.
+
+## Transitional flat→typed conversion
+
+**Removed before merge.** No `From<&BackendCapabilities> for BackendCapabilitySet` / `from_flat` helper exists in the committed tree (verified by grep). The typed set is the sole authority for request validation and HiGHS capability declarations; `BackendCapabilities` remains only as the D27 source-compatible compat output view.
+
+## Verification matrix (Task 6)
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo test -p roml-highs --test conformance` | 0 | **4 passed** |
+| `cargo test -p roml-highs --all-targets` | 0 | **104 passed; 0 failed** |
+| `cargo test -p roml --all-targets` | 0 | **613 passed; 0 failed; 2 ignored** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+
+Baseline comparison: `roml` grew from 600 to 613 passing tests (+13: 5 capability unit tests + 7 typed-capability integration tests + 1 backend characterization test); `roml-highs` grew from 100 to 104 (+2 session unit tests + 2 conformance tests). No existing test weakened or deleted.
+
+## Acceptance criteria
+
+- `src/compiler/capability.rs` defines `#[non_exhaustive] pub enum BackendFeature` with the 17 interface-contract variants; `SupportLevel { Native, Unsupported }`; `FeatureLimitations`; `FeatureSupport`; `BackendCapabilitySet` keyed by `BackendFeature`; `CompilationPolicy { Auto, Portable, NativeRequired }` — **met** (SM-04.1, SM-03.4).
+- `validate_request` validates against the typed set; unsupported features rejected, never silently ignored — **met** (SM-04.4).
+- HiGHS `BackendMetadata::capabilities()` reports version-aware support with unqualified M3 features `Unsupported` — **met** (SM-04.2, SM-04.3).
+- The transitional flat→typed conversion helper does not exist at merge — **met** (grep-confirmed).
+- M2 source compatibility preserved (D27): `BackendCapabilities` retained; both `--all-targets` suites green — **met**.
+
+## Deviations
+
+1. **`validate_request` signature change required migrating existing test callers** (`tests/status_negotiation_tests.rs`, `tests/advanced_surface.rs`) — these are not in the plan's Task 6 file list, but the public signature change (`&BackendCapabilities` → `&BackendCapabilitySet`) mandated by the plan's "migrate request validation to the typed set" requires updating them for the `cargo test -p roml --all-targets` gate to pass. Documented here; minimal mechanical updates.
+2. **`roml-highs/src/lib.rs` re-export** (`pub use session::highs_capability_set;`) — not in the plan's file list, added so the version-aware typed HiGHS declaration is publicly inspectable (M3 official-backend-evidence requirement).
+3. **`src/lib.rs` `pub mod compiler;` and `src/compiler/mod.rs`** — wired by Task 6 so the capability module compiles and tests run in this worktree; the orchestrator resolves the shared `mod.rs` line and dedupes the identical `pub mod compiler;` line with Task 5 during merge.
+4. **`src/solver/conformance.rs`** — listed in the plan as a migration target, but it touches no capability code (verified); no change required.
+
+## Commit trail
+
+- `feat(backend): add typed feature capabilities` — Task 6 implementation + tests + this evidence section.
 
 <!-- Phase-level gate result (P26 boundary) filled after Task 7 review passes. -->

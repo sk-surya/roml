@@ -4,7 +4,7 @@
 //! than stored in canonical `Model` state. A request is either applied,
 //! adjusted, or rejected — never silently ignored.
 
-use crate::solver::backend::BackendCapabilities;
+use crate::compiler::capability::{BackendCapabilitySet, BackendFeature};
 use crate::solver::LpAlgorithm;
 
 /// A solve request — immutable solver policy for one solve attempt.
@@ -147,24 +147,27 @@ pub struct SolveSolution {
     pub reduced_costs: Option<Vec<(crate::id::VarId, f64)>>,
 }
 
-/// Validate that a request is compatible with a backend's capabilities.
+/// Validate that a request is compatible with a backend's typed capability
+/// set.
 ///
-/// Returns a list of rejections for unsupported options.
-/// Does not modify the request.
+/// Returns a list of rejections for unsupported options. A requested option
+/// whose feature is not declared native in the capability set is rejected —
+/// never silently ignored (SM-04.4). Does not modify the request.
 pub fn validate_request(
     request: &SolveRequest,
-    capabilities: &BackendCapabilities,
+    capabilities: &BackendCapabilitySet,
 ) -> Vec<ConfigRejection> {
     let mut rejections = Vec::new();
 
-    // MIP options require MIP capability
-    if request.mip_rel_gap.is_some() && !capabilities.mip {
+    // MIP options require the typed MIP feature.
+    let mip = capabilities.supports(BackendFeature::Mip);
+    if request.mip_rel_gap.is_some() && !mip {
         rejections.push(ConfigRejection {
             key: "mip_rel_gap".into(),
             reason: "backend does not support MIP".into(),
         });
     }
-    if request.mip_abs_gap.is_some() && !capabilities.mip {
+    if request.mip_abs_gap.is_some() && !mip {
         rejections.push(ConfigRejection {
             key: "mip_abs_gap".into(),
             reason: "backend does not support MIP".into(),
@@ -199,8 +202,13 @@ mod tests {
 
     #[test]
     fn validate_rejects_mip_options_on_lp_only_backend() {
-        let mut caps = BackendCapabilities::all();
-        caps.mip = false;
+        use crate::compiler::capability::FeatureSupport;
+
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport::native(Default::default()),
+        );
 
         let req = SolveRequest::new().with_mip_rel_gap(0.01);
         let rejections = validate_request(&req, &caps);
@@ -210,7 +218,18 @@ mod tests {
 
     #[test]
     fn validate_accepts_all_on_full_backend() {
-        let caps = BackendCapabilities::all();
+        use crate::compiler::capability::FeatureSupport;
+
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport::native(Default::default()),
+        );
+        caps.set(
+            BackendFeature::Mip,
+            FeatureSupport::native(Default::default()),
+        );
+
         let req = SolveRequest::new()
             .with_lp_algorithm(LpAlgorithm::Barrier)
             .with_mip_rel_gap(0.01)
