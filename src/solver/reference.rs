@@ -147,6 +147,19 @@ impl ReferenceBackend {
                     entry.0 = *bounds;
                 }
             }
+            ModelOp::SetVariableFixing {
+                var,
+                fixing: _,
+                effective_bounds,
+            } => {
+                // P27 Task 8: a persistent fixing change is a self-contained
+                // bound update (SM-05.3/05.7) — the op carries the effective
+                // bounds to apply (equal `[value, value]` for a fix; the
+                // current declared bounds for an unfix).
+                if let Some(entry) = self.variables.get_mut(var) {
+                    entry.0 = *effective_bounds;
+                }
+            }
             ModelOp::SetVariableActive { var, active } => {
                 if let Some(entry) = self.variables.get_mut(var) {
                     entry.2 = *active;
@@ -903,7 +916,10 @@ mod tests {
 
         // --- Snapshot at r1 (has var, con, param, cell) ---
         let mut vars_r1 = HashMap::new();
-        vars_r1.insert(var, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+        vars_r1.insert(
+            var,
+            (Bounds::NON_NEGATIVE, VarType::Continuous, true, None, None),
+        );
         let mut cons_r1 = HashMap::new();
         cons_r1.insert(con, (ConstraintBounds::le(10.0), true));
         let mut params_r1 = HashMap::new();
@@ -1008,7 +1024,10 @@ mod tests {
 
         let r1 = ModelRevision::ZERO.next().unwrap();
         let mut vars = HashMap::new();
-        vars.insert(var, (Bounds::new(0.0, 1.0), VarType::Binary, true, None));
+        vars.insert(
+            var,
+            (Bounds::new(0.0, 1.0), VarType::Binary, true, None, None),
+        );
         let mut cons = HashMap::new();
         cons.insert(con, (ConstraintBounds::le(1.0), true));
         let objs = HashMap::new();

@@ -77,14 +77,74 @@ impl Default for Bounds {
     }
 }
 
+/// The declared domain of a variable (design §10, SM-05.1).
+///
+/// Separates the declared domain (bounds, type, optional semi-continuous
+/// lower bound) from the optional persistent [`VariableFixing`]. The compiled
+/// effective bounds of a fixed variable are `[value, value]` (D6: fixing
+/// compiles as bound tightening, never a separate equality row).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VariableDomain {
+    /// The declared variable bounds.
+    pub bounds: Bounds,
+    /// The declared variable type (continuous, integer, or binary).
+    pub var_type: VarType,
+    /// Optional semi-continuous domain (declared canonical state only; the
+    /// compiled IR has no semi-continuous representation, so it is rejected
+    /// at the compile boundary — P26 behavior unchanged).
+    pub semi: Option<SemiDomain>,
+}
+
+/// A semi-continuous domain (design §10): the variable is zero or at least
+/// `nonzero_lower` in magnitude.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SemiDomain {
+    /// Semi-continuous continuous variable: 0 or `≥ nonzero_lower`.
+    Continuous {
+        /// The non-zero lower bound.
+        nonzero_lower: f64,
+    },
+    /// Semi-continuous integer variable: 0 or `≥ nonzero_lower`.
+    Integer {
+        /// The non-zero lower bound.
+        nonzero_lower: f64,
+    },
+}
+
+/// The provenance of a persistent [`VariableFixing`] (design §10, SM-05.5).
+#[derive(Clone, Debug, PartialEq)]
+pub enum FixingProvenance {
+    /// The fixing was made by the user through [`Model::fix`](crate::Model::fix).
+    User,
+    /// The fixing was imported from an external source.
+    Imported {
+        /// A diagnostic label describing the import source.
+        source: String,
+    },
+}
+
+/// A persistent variable fixing (design §10, SM-05.1).
+///
+/// Fixing is represented as bound tightening: a fixed variable's effective
+/// bounds equal `[value, value]`. The fixing is stored separately from the
+/// declared domain so `unfix` can restore the *current* declared bounds
+/// (SM-05.4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariableFixing {
+    /// The value the variable is fixed to.
+    pub value: f64,
+    /// Where this fixing came from (diagnostics and provenance).
+    pub provenance: FixingProvenance,
+}
+
 /// Internal data for a variable.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct VariableData {
-    /// Variable bounds.
-    pub bounds: Bounds,
-    /// Variable type.
-    pub var_type: VarType,
+    /// The declared variable domain.
+    pub domain: VariableDomain,
+    /// Optional persistent fixing (SM-05.1).
+    pub fixing: Option<VariableFixing>,
     /// Whether this variable is active in the model.
     pub active: bool,
     /// Optional name for debugging/printing.
@@ -95,8 +155,12 @@ impl VariableData {
     /// Create a new variable with default settings.
     pub fn new(bounds: Bounds, var_type: VarType) -> Self {
         Self {
-            bounds,
-            var_type,
+            domain: VariableDomain {
+                bounds,
+                var_type,
+                semi: None,
+            },
+            fixing: None,
             active: true,
             name: None,
         }
@@ -277,8 +341,9 @@ mod tests {
         let id = store.add(Bounds::NON_NEGATIVE, VarType::Continuous);
 
         let data = store.get(id).unwrap();
-        assert_eq!(data.bounds, Bounds::NON_NEGATIVE);
-        assert_eq!(data.var_type, VarType::Continuous);
+        assert_eq!(data.domain.bounds, Bounds::NON_NEGATIVE);
+        assert_eq!(data.domain.var_type, VarType::Continuous);
+        assert!(data.fixing.is_none());
         assert!(data.active);
     }
 

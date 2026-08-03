@@ -77,6 +77,11 @@ pub use crate::solution::{SolutionBuilder, SolutionStore};
 /// The model's change journal (raw event stream).
 pub use crate::model::changelog::Change;
 
+/// Declared variable domain and persistent fixing state (P27 Task 8,
+/// SM-05.1). Backend authors matching `ModelOp::SetVariableFixing` reach the
+/// fixing record here alongside the delta/change surface.
+pub use crate::model::variable::{FixingProvenance, SemiDomain, VariableDomain, VariableFixing};
+
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
 
