@@ -222,6 +222,93 @@ fn validate_for_rejects_non_integral_value_on_integer_variable() {
     ));
 }
 
+/// CR-01: `validate_for` rejects non-finite assignment values (NaN, ±inf)
+/// with a typed error — a NaN/±inf value must never reach a native solver as
+/// a bound. `NaN` passes the `<`/`>` bounds comparisons (both false) and `+inf`
+/// passes when the upper bound is itself infinite, so the finiteness check must
+/// come FIRST.
+#[test]
+fn validate_for_rejects_non_finite_values() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let unbounded = model.add_variable(continuous()).unwrap(); // [0, +inf)
+    model.commit().unwrap();
+
+    for (var, value) in [
+        (x, f64::NAN),
+        (x, f64::INFINITY),
+        (x, f64::NEG_INFINITY),
+        // +inf inside an unbounded-upper domain is exactly the case the
+        // `value < lower || value > upper` gate misses.
+        (unbounded, f64::INFINITY),
+    ] {
+        let assignment = PrimalAssignment {
+            lineage: model.lineage(),
+            source_instance: None,
+            source_revision: None,
+            values: BTreeMap::from([(var, value)]),
+        };
+        assert!(
+            matches!(
+                assignment.validate_for(&model),
+                Err(AssignmentError::NonFiniteValue { variable, value: v })
+                    if variable == var
+                        && if value.is_nan() { v.is_nan() } else { v == value }
+            ),
+            "assignment value {value} for {var:?} must be rejected as non-finite"
+        );
+    }
+}
+
+/// CR-01: an overlay temporary fixing or lock value that is NaN/±inf is
+/// rejected at COMPILE time with a typed error, BEFORE any backend op — the
+/// NaN/±inf bound must never reach the native solver (e.g.
+/// `Highs_changeColBounds(NaN, NaN)`).
+#[test]
+fn overlay_rejects_non_finite_temporary_fixing_and_lock_values() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let unbounded = model.add_variable(continuous()).unwrap(); // [0, +inf)
+    model.commit().unwrap();
+    let (compiler, _) = compile_base(&model);
+
+    // NaN temporary fixing -> rejected before any op.
+    let overlay =
+        SolveOverlay::new(BTreeMap::from([(x, f64::NAN)]), vec![], vec![], vec![]).unwrap();
+    let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            OverlayError::Assignment(AssignmentError::NonFiniteValue { variable, value })
+                if variable == x && value.is_nan()
+        ),
+        "a NaN temporary fixing must be a typed non-finite error, got {err:?}"
+    );
+
+    // +inf lock value on an unbounded-upper variable -> rejected before any op.
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: None,
+        source_revision: None,
+        values: BTreeMap::from([(unbounded, f64::INFINITY)]),
+    };
+    let lock = SolutionLock {
+        assignment,
+        selector: LockSelector::AllAssigned,
+        continuous: ContinuousLock::Exact,
+    };
+    let overlay = SolveOverlay::new(BTreeMap::new(), vec![lock], vec![], vec![]).unwrap();
+    let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            OverlayError::Assignment(AssignmentError::NonFiniteValue { variable, value })
+                if variable == unbounded && value == f64::INFINITY
+        ),
+        "a +inf lock value must be a typed non-finite error, got {err:?}"
+    );
+}
+
 #[test]
 fn clones_at_same_revision_both_validate_an_assignment() {
     // D4: instance/revision are PROVENANCE, not compatibility authority. Two

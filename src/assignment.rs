@@ -71,6 +71,17 @@ impl PrimalAssignment {
                         variable: *variable,
                     })?;
             let bounds = domain.bounds;
+            // CR-01 (SM-06.6): a non-finite value is rejected FIRST — NaN
+            // passes both `value < lower` and `value > upper` (both false),
+            // and +inf passes when the upper bound is itself infinite, so the
+            // range comparison alone can never catch it. A NaN/±inf value must
+            // never reach a native solver as a bound.
+            if !value.is_finite() {
+                return Err(AssignmentError::NonFiniteValue {
+                    variable: *variable,
+                    value: *value,
+                });
+            }
             if *value < bounds.lower || *value > bounds.upper {
                 return Err(AssignmentError::ValueOutOfBounds {
                     variable: *variable,
@@ -138,6 +149,15 @@ pub enum AssignmentError {
         value: f64,
         /// The variable's declared bounds.
         bounds: Bounds,
+    },
+    /// The assigned value is not finite (NaN or ±inf) — it must never reach a
+    /// native solver as a bound (CR-01, SM-06.6). Checked BEFORE the range
+    /// comparison, which NaN/±inf both defeat.
+    NonFiniteValue {
+        /// The affected variable.
+        variable: crate::Variable,
+        /// The non-finite assigned value.
+        value: f64,
     },
 }
 

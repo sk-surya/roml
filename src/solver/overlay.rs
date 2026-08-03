@@ -411,6 +411,17 @@ fn validate_value_in_domain(
             variable,
         }))?;
     let bounds = domain.bounds;
+    // CR-01: a non-finite value is rejected FIRST — NaN passes both range
+    // comparisons (both false) and +inf passes when the upper bound is itself
+    // infinite. The overlay compiles to `Bounds::new(value, value)` pushed into
+    // `Highs_changeColBounds`, so a NaN/±inf value must never survive compile
+    // time.
+    if !value.is_finite() {
+        return Err(OverlayError::Assignment(AssignmentError::NonFiniteValue {
+            variable,
+            value,
+        }));
+    }
     if value < bounds.lower || value > bounds.upper {
         return Err(OverlayError::Assignment(
             AssignmentError::ValueOutOfBounds {
