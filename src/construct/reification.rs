@@ -38,8 +38,19 @@ pub struct ReificationConstraint {
 }
 
 impl ReificationConstraint {
-    /// Derive the parameter dependencies of the constrained function (F1).
+    /// Derive the parameter dependencies of the constrained function AND its
+    /// set thresholds (F1; WR-03).
+    ///
+    /// The set's `ValueExpr` threshold can reference a parameter (evaluated by
+    /// the bridge's `eval_bound` at compile time), so the construct dependency
+    /// derivation must attribute it too.
     pub fn parameter_dependencies(&self) -> Vec<ParamId> {
-        self.function.parameter_dependencies()
+        let mut deps: Vec<ParamId> = self.function.parameter_dependencies();
+        for p in self.set.dependencies() {
+            if !deps.contains(&p) {
+                deps.push(p);
+            }
+        }
+        deps
     }
 }
