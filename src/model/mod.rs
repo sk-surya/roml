@@ -823,49 +823,25 @@ impl Model {
         if matches!(sense, MinMaxSense::Max) && relation == MinMaxRelation::Hypograph {
             return Err(ModelError::TriviallySatisfiableMinMax);
         }
-        let mut l_min = f64::INFINITY;
-        let mut u_max = f64::NEG_INFINITY;
         for expr in &operands {
             // Reject non-finite constants/coefficients and stale entities
             // before any mutation (API-06.5).
             self.validate_expression_entities(expr)?;
-            let interval = self.expression_interval(expr)?;
-            if interval.lower < l_min {
-                l_min = interval.lower;
-            }
-            if interval.upper > u_max {
-                u_max = interval.upper;
-            }
+            // F2: the operand interval is validated (finite endpoints, no NaN)
+            // but is NOT encoded as the output variable's declared bounds — the
+            // interval is mutable (variable bounds / parameter values change),
+            // so a frozen build-time bound would over-restrict a full rebuild.
+            self.expression_interval(expr)?;
         }
-        // The output variable bounds reflect the relation: exact equality lies
-        // in the operand-interval span; a max epigraph is bounded below only;
-        // a min hypograph is bounded above only. An unbounded relevant side
-        // yields unbounded output bounds (an unbounded operand then fails at
-        // compile time with `UnboundedBigM` for the exact relation).
+        // The output variable's declared bounds are a parameter/domain-
+        // independent conservative domain: the exact selector / one-sided rows
+        // enforce the relation from the CURRENT operand intervals at compile
+        // time (F2). An unbounded operand still fails at compile time with
+        // `UnboundedBigM` for the exact relation.
         let output_bounds = match relation {
-            MinMaxRelation::Exact => {
-                if l_min.is_finite() && u_max.is_finite() {
-                    Bounds::new(l_min, u_max)
-                } else {
-                    Bounds::UNBOUNDED
-                }
-            }
-            MinMaxRelation::Epigraph => {
-                // y >= max_i x_i >= l_min.
-                if l_min.is_finite() {
-                    Bounds::new(l_min, f64::INFINITY)
-                } else {
-                    Bounds::UNBOUNDED
-                }
-            }
-            MinMaxRelation::Hypograph => {
-                // y <= min_i x_i <= u_max.
-                if u_max.is_finite() {
-                    Bounds::new(f64::NEG_INFINITY, u_max)
-                } else {
-                    Bounds::UNBOUNDED
-                }
-            }
+            MinMaxRelation::Exact => Bounds::UNBOUNDED,
+            MinMaxRelation::Epigraph => Bounds::UNBOUNDED,
+            MinMaxRelation::Hypograph => Bounds::UNBOUNDED,
         };
         // IN-03 atomicity: reserve the construct id BEFORE creating the output
         // variable so a construct-id failure cannot leave an orphaned variable
@@ -905,16 +881,21 @@ impl Model {
         if !interval.is_bounded() {
             return Err(ModelError::UnboundedConstructExpression);
         }
+        // F2: the expression interval is validated (and required bounded) at
+        // build time, but the output variable's declared bounds are NOT derived
+        // from it — the interval is mutable (variable bounds / parameter values
+        // change), so a frozen build-time bound would over-restrict a full
+        // rebuild. Only static sign/clamp facts are encoded; the exact bridge
+        // rows enforce the relationship from the CURRENT interval at compile
+        // time.
         let output_bounds = match variant {
-            AbsoluteValueVariant::Absolute => {
-                // z = |x|: z >= 0 and z <= max(U, -L).
-                let upper = interval.upper.max(-interval.lower);
-                Bounds::new(0.0, upper.max(0.0))
-            }
-            AbsoluteValueVariant::PositivePart => {
-                // z = max(x, 0): z >= 0 and z <= max(U, 0).
-                Bounds::new(0.0, interval.upper.max(0.0))
-            }
+            // z = |x|: the static sign fact is z >= 0; the upper bound is
+            // derived by the bridge at compile time.
+            AbsoluteValueVariant::Absolute => Bounds::new(0.0, f64::INFINITY),
+            // z = max(x, 0): the static sign fact is z >= 0.
+            AbsoluteValueVariant::PositivePart => Bounds::new(0.0, f64::INFINITY),
+            // Clamp bounds are fixed constants — a parameter-independent static
+            // fact that IS retained.
             AbsoluteValueVariant::Clamp { lower, upper } => {
                 if !lower.is_finite() || !upper.is_finite() || lower > upper {
                     return Err(ModelError::InvalidClampBounds { lower, upper });
@@ -954,17 +935,18 @@ impl Model {
         preference: Option<FormulationPreference>,
     ) -> Result<(Construct, VarId), ModelError> {
         let (left, right) = self.validate_product_operands(left, right)?;
-        // The exact product result is the binary-binary case 0<=w<=1, else the
-        // linear-operand interval span.
+        // F2: the output variable's declared bounds are a conservative static
+        // domain — never the build-time linear-operand interval, which is
+        // mutable (variable bounds / parameter values change). The exact
+        // product rows enforce the relationship from the CURRENT interval at
+        // compile time.
         let output_bounds = match (&left, &right) {
+            // w = a·b with a,b binary → w ∈ {0,1} is a static binary fact.
             (ProductOperand::Binary(_), ProductOperand::Binary(_)) => Bounds::new(0.0, 1.0),
-            (ProductOperand::Binary(_), ProductOperand::Linear(expr))
-            | (ProductOperand::Linear(expr), ProductOperand::Binary(_)) => {
-                // w = b·f with b ∈ {0,1}: w lies between 0 and f's span, so
-                // w ∈ [min(0, L), max(0, U)] — finite when f is bounded.
-                let interval = self.expression_interval(expr)?;
-                Bounds::new(interval.lower.min(0.0), interval.upper.max(0.0))
-            }
+            // w = b·f: the reachable set {0} ∪ [L,U] depends on f's CURRENT
+            // interval — the bridge derives L/U at compile time.
+            (ProductOperand::Binary(_), ProductOperand::Linear(_))
+            | (ProductOperand::Linear(_), ProductOperand::Binary(_)) => Bounds::UNBOUNDED,
             _ => unreachable!("builder validates exactly one binary operand"),
         };
         // IN-03 atomicity: reserve the construct id BEFORE creating the output
