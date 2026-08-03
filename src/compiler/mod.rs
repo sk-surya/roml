@@ -1,17 +1,19 @@
-//! Compiler boundary: backend IR, exact compilation identity, origins, and
-//! structured compilation reports (design §8, §19; P26 Task 5).
+//! Compiler boundary: backend IR, exact compilation identity, origins,
+//! capabilities, and structured compilation reports (design §8, §19;
+//! P26 Tasks 5-6).
 //!
 //! P26 establishes the compiler foundation: the backend IR types
-//! ([`backend_ir`]), the mandatory origin mapping ([`origin`]), and the
-//! compilation report ([`report`]). The capability registry (`capability`)
-//! and the identity compiler (`session`) land in Tasks 6 and 7; this module
-//! declares their shared error surface ([`CompileError`]) now.
+//! ([`backend_ir`]), the mandatory origin mapping ([`origin`]), the typed
+//! capability registry ([`capability`]), and the compilation report
+//! ([`report`]). The identity compiler (`session`) lands in Task 7; this
+//! module declares the shared error surface ([`CompileError`]) now.
 //!
 //! Compiler internals are deliberately NOT part of the ordinary prelude
 //! (SM-03.x / API-07.2): framework and backend authors reach them through
 //! [`crate::advanced`].
 
 pub mod backend_ir;
+pub mod capability;
 pub mod origin;
 pub mod report;
 
@@ -51,8 +53,8 @@ pub enum CompileError {
     /// The target backend lacks a required capability/feature.
     ///
     /// P26 uses a feature-name string (the typed `BackendFeature` registry
-    /// lands in Task 6); unqualified features are rejected, never silently
-    /// ignored (SM-04.4).
+    /// lives in [`capability`]); unqualified features are rejected, never
+    /// silently ignored (SM-04.4).
     UnsupportedFeature(String),
 
     /// The compiled objective policy references an objective that was not

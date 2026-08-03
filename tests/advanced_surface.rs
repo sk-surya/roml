@@ -6,6 +6,7 @@
 //! prelude's protocol items (which are absent there — API-07.2).
 
 use roml::advanced::*;
+use roml::compiler::capability::{BackendCapabilitySet, BackendFeature, FeatureSupport};
 use roml::model::{Bounds, Sense, VarType};
 
 /// A minimal backend-author session implementing the frozen contract.
@@ -126,6 +127,16 @@ fn advanced_exposes_protocol_and_id_vocabulary() {
         .with_lp_algorithm(LpAlgorithm::Barrier)
         .with_time_limit(30.0);
     let _capabilities: BackendCapabilities = BackendCapabilities::all();
-    let _rejections = validate_request(&request, &_capabilities);
+    // validate_request now validates against the typed capability set.
+    let mut typed_capabilities = BackendCapabilitySet::new();
+    typed_capabilities.set(
+        BackendFeature::Lp,
+        FeatureSupport::native(Default::default()),
+    );
+    typed_capabilities.set(
+        BackendFeature::Mip,
+        FeatureSupport::native(Default::default()),
+    );
+    let _rejections = validate_request(&request, &typed_capabilities);
     assert!(matches!(_status, TerminationStatus::Optimal));
 }
