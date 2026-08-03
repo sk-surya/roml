@@ -38,6 +38,9 @@ use crate::error::{check_highs_status, from_native_status};
 use crate::lifecycle::HighsSession;
 use crate::projection::{apply_delta_batch, rebuild_from_snapshot};
 use crate::solution::{extract_solution, map_termination_status};
+use roml::compiler::capability::{
+    BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
+};
 use roml::id::{ConId, VarId};
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
@@ -322,25 +325,105 @@ impl BackendMetadata for HighsSession {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
+        // D27 source-compatible compat view derived from the typed capability
+        // set (SM-04.2). The typed set is authoritative for the features it can
+        // express; the flat-only facts below are preserved for the M2 surface.
+        let typed =
+            highs_capability_set(self.version_major, self.version_minor, self.version_patch);
         BackendCapabilities {
-            lp: true,
-            mip: true,
+            lp: typed.supports(BackendFeature::Lp),
+            mip: typed.supports(BackendFeature::Mip),
+            add_variable: typed.supports(BackendFeature::IncrementalRows),
+            add_constraint: typed.supports(BackendFeature::IncrementalRows),
+            set_coefficient: typed.supports(BackendFeature::IncrementalCoefficients),
+            set_bounds: typed.supports(BackendFeature::IncrementalBounds),
+            // Flat-only facts with no typed BackendFeature equivalent,
+            // preserved for D27 source compatibility:
+            set_objective: true,
+            delete: true,
+            callbacks: true,
             solution: true,
             duals: true,
             reduced_costs: true,
-            callbacks: true,
-            delete: true,
-            add_variable: true,
-            add_constraint: true,
-            set_coefficient: true,
-            set_bounds: true,
-            set_objective: true,
             // H7: Semi-continuous is explicitly rejected — not supported.
             semicontinuous: false,
             semiinteger: false,
             parameter_update: false,
         }
     }
+}
+
+// ── Typed capability set ────────────────────────────────────────────────────────
+
+/// The M2-native feature surface declared `Native` by HiGHS.
+///
+/// `Lp`, `Mip`, and the three incremental features map from the M2 flat
+/// capability contract (`src/solver/backend.rs`) and are declared native for
+/// every supported runtime version. The pinned bundled build is
+/// `highs-sys 1.15.0`; the CI system-HiGHS floor is 1.9.0.
+const M2_NATIVE_FEATURES: [BackendFeature; 5] = [
+    BackendFeature::Lp,
+    BackendFeature::Mip,
+    BackendFeature::IncrementalBounds,
+    BackendFeature::IncrementalRows,
+    BackendFeature::IncrementalCoefficients,
+];
+
+/// Every M3 feature that P26 does **not** qualify as native for HiGHS.
+///
+/// These are declared `Unsupported` (SM-04.4): request/compilation paths gate
+/// on them and reject or rebuild rather than silently proceeding. The list
+/// matches the plan Task 6 bullet verbatim.
+const UNQUALIFIED_M3_FEATURES: [BackendFeature; 12] = [
+    BackendFeature::MipStart,
+    BackendFeature::PartialMipStart,
+    BackendFeature::MultipleMipStarts,
+    BackendFeature::VariableHints,
+    BackendFeature::InitialBasis,
+    BackendFeature::Iis,
+    BackendFeature::FeasibilityRelaxation,
+    BackendFeature::Indicator,
+    BackendFeature::Sos1,
+    BackendFeature::Sos2,
+    BackendFeature::NativePiecewiseLinear,
+    BackendFeature::NativeMultiObjective,
+];
+
+/// Build the version-aware HiGHS typed capability set from pinned `highs-sys`
+/// facts (SM-04.2, SM-04.3).
+///
+/// The M2-native feature surface is declared `Native` with the runtime version
+/// recorded as the declaration's `minimum_version` (the version the support is
+/// verified against: bundled `highs-sys 1.15.0`, CI system floor 1.9.0). Every
+/// unqualified M3 feature is declared `Unsupported` for P26.
+pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabilitySet {
+    let version = format!("{}.{}.{}", major, minor, patch);
+    let mut set = BackendCapabilitySet::new();
+
+    for feature in M2_NATIVE_FEATURES {
+        set.set(
+            feature,
+            FeatureSupport::native(FeatureLimitations {
+                minimum_version: Some(version.clone()),
+                notes: vec![
+                    "declared against the runtime HiGHS version (pinned highs-sys 1.15.0; CI system floor 1.9.0)".to_string(),
+                ],
+                ..FeatureLimitations::default()
+            }),
+        );
+    }
+
+    for feature in UNQUALIFIED_M3_FEATURES {
+        set.set(
+            feature,
+            FeatureSupport::unsupported(FeatureLimitations {
+                notes: vec!["P26 does not qualify native support for this M3 feature".to_string()],
+                ..FeatureLimitations::default()
+            }),
+        );
+    }
+
+    set
 }
 
 // ── CallbackSession ─────────────────────────────────────────────────────────────
@@ -633,6 +716,53 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roml::compiler::capability::SupportLevel;
+
+    #[test]
+    fn highs_capability_set_declares_m2_native_and_m3_unsupported() {
+        let set = highs_capability_set(1, 15, 0);
+
+        // M2-native features are declared Native.
+        for feature in M2_NATIVE_FEATURES {
+            assert!(
+                set.supports(feature),
+                "M2-native feature {:?} must be declared Native",
+                feature
+            );
+        }
+
+        // Unqualified M3 features are declared Unsupported (SM-04.4).
+        for feature in UNQUALIFIED_M3_FEATURES {
+            assert!(
+                !set.supports(feature),
+                "M3 feature {:?} must be declared Unsupported in P26",
+                feature
+            );
+            let support = set
+                .support(feature)
+                .unwrap_or_else(|| panic!("feature {:?} must be present", feature));
+            assert_eq!(
+                support.level,
+                SupportLevel::Unsupported,
+                "feature {:?} level",
+                feature
+            );
+        }
+    }
+
+    #[test]
+    fn highs_capability_set_records_minimum_version() {
+        let set = highs_capability_set(1, 15, 0);
+        let lp = set
+            .support(BackendFeature::Lp)
+            .expect("Lp must be declared");
+        assert_eq!(lp.level, SupportLevel::Native);
+        assert_eq!(
+            lp.limitations.minimum_version.as_deref(),
+            Some("1.15.0"),
+            "minimum_version records the runtime version the declaration is verified against"
+        );
+    }
 
     #[test]
     fn health_after_failed_delta_maps_terminal_and_rebuild() {
