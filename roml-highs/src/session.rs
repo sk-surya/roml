@@ -2229,4 +2229,147 @@ mod tests {
             "health() must reflect the marked cursor"
         );
     }
+
+    /// F1: a consistent aggregated overlay (temporary fixing x=8 AND an exact
+    /// lock x=8 on the SAME variable) compiles to ONE temporary-bound op and
+    /// applies/solves correctly on the native model — the AGGREGATED
+    /// intersection (not last-op-wins) is what reaches `Highs_changeColBounds`.
+    #[test]
+    fn highs_aggregated_overlay_restrictions_solve_correctly() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.add_constraint((x + y).le(10.0)).unwrap();
+        model.maximize(x + y).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+
+        let assignment = roml::PrimalAssignment {
+            lineage: model.lineage(),
+            source_instance: Some(model.instance()),
+            source_revision: Some(model.current_revision()),
+            values: BTreeMap::from([(x, 8.0)]),
+        };
+        let lock = roml::SolutionLock {
+            assignment,
+            selector: roml::LockSelector::AllAssigned,
+            continuous: roml::ContinuousLock::Exact,
+        };
+        let overlay =
+            roml::SolveOverlay::new(BTreeMap::from([(x, 8.0)]), vec![lock], vec![], vec![])
+                .expect("overlay id allocates");
+        let compiled =
+            compile_overlay(&model, &compiler, &overlay, None).expect("overlay compiles");
+        let bound_ops = compiled
+            .operations
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    roml::advanced::OverlayOp::SetTemporaryVariableBounds { .. }
+                )
+            })
+            .count();
+        assert_eq!(
+            bound_ops, 1,
+            "consistent restrictions on one variable must aggregate into one op"
+        );
+
+        let request = SolveRequest {
+            enable_output: Some(false),
+            ..SolveRequest::new()
+        };
+        let receipt = highs.apply_overlay(&compiled).expect("apply must succeed");
+        let result = highs.solve(&request).expect("overlay solve succeeds");
+        let solved_x = result.solution.as_ref().and_then(|s| {
+            s.variable_values
+                .iter()
+                .find(|(v, _)| *v == x)
+                .map(|(_, v)| *v)
+        });
+        assert_eq!(
+            solved_x,
+            Some(8.0),
+            "the aggregated [8,8] restriction must fix x to 8 in the native solve"
+        );
+
+        let outcome = highs
+            .rollback_overlay(&receipt)
+            .expect("rollback must succeed");
+        assert!(
+            matches!(
+                outcome,
+                roml::advanced::OverlayRollbackOutcome::Clean { .. }
+            ),
+            "a fully applied overlay must roll back Clean, got {outcome:?}"
+        );
+    }
+
+    /// F1: a CONFLICTING overlay (temp fixing x=2 + exact lock x=3) is rejected
+    /// at COMPILE time — `compile_overlay` returns `InfeasibleOverlay` before
+    /// any op is produced, so the native model and compiled state are never
+    /// touched.
+    #[test]
+    fn highs_conflicting_overlay_rejected_before_native_mutation() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let held = highs.current_compilation.expect("base compiled");
+        let cols_before = unsafe { Highs_getNumCol(highs.raw) };
+
+        let assignment = roml::PrimalAssignment {
+            lineage: model.lineage(),
+            source_instance: Some(model.instance()),
+            source_revision: Some(model.current_revision()),
+            values: BTreeMap::from([(x, 3.0)]),
+        };
+        let lock = roml::SolutionLock {
+            assignment,
+            selector: roml::LockSelector::AllAssigned,
+            continuous: roml::ContinuousLock::Exact,
+        };
+        let overlay =
+            roml::SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![lock], vec![], vec![])
+                .expect("overlay id allocates");
+
+        let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+        assert!(
+            matches!(err, roml::OverlayError::InfeasibleOverlay { .. }),
+            "a conflicting overlay must be rejected at compile time, got {err:?}"
+        );
+        assert_eq!(
+            unsafe { Highs_getNumCol(highs.raw) },
+            cols_before,
+            "a rejected overlay must not mutate the native model"
+        );
+        assert_eq!(highs.current_compilation, Some(held));
+    }
 }
