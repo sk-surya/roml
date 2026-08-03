@@ -469,25 +469,52 @@ impl BackendSnapshot {
 }
 
 impl BackendDeltaBatch {
-    /// Validate every op's referenced IDs against the target state formed by
-    /// `existing` (the backend's current compiled state) plus the entities this
-    /// batch ADDS (F5): a row/objective coefficient references a compiled
-    /// variable that exists (or is added earlier in this batch); an
-    /// update/remove op references an existing entity; the objective policy
-    /// references an existing objective. A dangling reference is a typed
-    /// [`CompileError::InvalidReference`], never a silent skip.
+    /// All-or-nothing preflight validation of this batch against `existing`
+    /// (the backend's current compiled state) using EXACT op semantics in
+    /// operation order (F1):
     ///
-    /// Backends run this BEFORE applying any op, so a malformed batch never
-    /// partially mutates native state.
+    /// - `AddVariable`/`AddLinearRow`/`AddObjective` INSERT the entity into a
+    ///   working registry clone and REJECT a duplicate id (a compiled id is
+    ///   added exactly once per target state) as a typed
+    ///   [`CompileError::DuplicateEntity`];
+    /// - `RemoveVariable`/`RemoveLinearRow`/`RemoveObjective` DELETE the id
+    ///   from the working clone, so a later `Set*`/coefficient op on a removed
+    ///   id correctly fails ([`CompileError::InvalidReference`]);
+    /// - every `Add*` op must carry a corresponding origin in this batch's
+    ///   [`origin_additions`](Self::origin_additions) map — the target state
+    ///   stays origin-complete (D5, SM-02.5), otherwise
+    ///   [`CompileError::MissingOrigin`];
+    /// - update/remove ops reference entities present in the evolving clone,
+    ///   and the objective policy references an existing objective.
+    ///
+    /// Backends run this BEFORE applying any op, so a malformed batch — even
+    /// one whose ops are self-consistent only when reordered — never partially
+    /// mutates native state.
     pub fn validate(&self, existing: &CompiledEntityRegistry) -> Result<(), CompileError> {
         let mut present = existing.clone();
         for op in &self.operations {
             match op {
+                // F1: `Add*` inserts and REJECTS an id that is already present
+                // (whether from the from-state or an earlier op in this batch);
+                // `Remove*` DELETES from the working set, so a later `Set*` on a
+                // removed id correctly fails. Order is preserved — the batch is
+                // simulated sequentially against a working registry clone.
                 BackendOp::AddVariable(v) => {
-                    present.variables.insert(v.id);
+                    if !present.variables.insert(v.id) {
+                        return Err(CompileError::DuplicateEntity {
+                            entity: CompiledEntityRef::Variable(v.id),
+                        });
+                    }
+                    // F1 (SM-02.5): every entity ADDED by the batch must carry
+                    // an origin in the batch's origin map.
+                    if self.origin_additions.variable_origin(v.id).is_none() {
+                        return Err(CompileError::MissingOrigin {
+                            entity: CompiledEntityRef::Variable(v.id),
+                        });
+                    }
                 }
                 BackendOp::RemoveVariable(id) => {
-                    if !present.variables.contains(id) {
+                    if !present.variables.remove(id) {
                         return Err(CompileError::InvalidReference {
                             entity: CompiledEntityRef::Variable(*id),
                         });
@@ -501,7 +528,16 @@ impl BackendDeltaBatch {
                     }
                 }
                 BackendOp::AddLinearRow(r) => {
-                    present.rows.insert(r.id);
+                    if !present.rows.insert(r.id) {
+                        return Err(CompileError::DuplicateEntity {
+                            entity: CompiledEntityRef::Constraint(r.id),
+                        });
+                    }
+                    if self.origin_additions.constraint_origin(r.id).is_none() {
+                        return Err(CompileError::MissingOrigin {
+                            entity: CompiledEntityRef::Constraint(r.id),
+                        });
+                    }
                     for (cid, _) in &r.coefficients {
                         if !present.variables.contains(cid) {
                             return Err(CompileError::InvalidReference {
@@ -511,7 +547,7 @@ impl BackendDeltaBatch {
                     }
                 }
                 BackendOp::RemoveLinearRow(id) => {
-                    if !present.rows.contains(id) {
+                    if !present.rows.remove(id) {
                         return Err(CompileError::InvalidReference {
                             entity: CompiledEntityRef::Constraint(*id),
                         });
@@ -556,7 +592,16 @@ impl BackendDeltaBatch {
                     }
                 }
                 BackendOp::AddObjective(o) => {
-                    present.objectives.insert(o.id);
+                    if !present.objectives.insert(o.id) {
+                        return Err(CompileError::DuplicateEntity {
+                            entity: CompiledEntityRef::Objective(o.id),
+                        });
+                    }
+                    if self.origin_additions.objective_origin(o.id).is_none() {
+                        return Err(CompileError::MissingOrigin {
+                            entity: CompiledEntityRef::Objective(o.id),
+                        });
+                    }
                     for (cid, _) in &o.coefficients {
                         if !present.variables.contains(cid) {
                             return Err(CompileError::InvalidReference {
@@ -566,7 +611,7 @@ impl BackendDeltaBatch {
                     }
                 }
                 BackendOp::RemoveObjective(id) => {
-                    if !present.objectives.contains(id) {
+                    if !present.objectives.remove(id) {
                         return Err(CompileError::InvalidReference {
                             entity: CompiledEntityRef::Objective(*id),
                         });
@@ -1065,6 +1110,8 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::origin::EntityOrigin;
+    use crate::id::{Generation, VarId};
 
     /// Test-only id family (mirrors `TestOverflowId` in `src/identity.rs`,
     /// IN-02) so the family-level overflow branch is exercised without racing
@@ -1137,5 +1184,140 @@ mod tests {
 
         assert_eq!(f_a1, f_a2, "equal content -> equal fingerprint");
         assert_ne!(f_a1, f_b, "different content -> different fingerprint");
+    }
+
+    // ── F1: order-aware, all-or-nothing delta preflight ──────────────────────
+
+    fn test_var(id: u32) -> CompiledVariable {
+        CompiledVariable {
+            id: CompiledVariableId(id),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            name: None,
+        }
+    }
+
+    fn test_row(id: u32) -> CompiledLinearRow {
+        CompiledLinearRow {
+            id: CompiledConstraintId(id),
+            bounds: ConstraintBounds::le(10.0),
+            coefficients: Vec::new(),
+            name: None,
+        }
+    }
+
+    fn test_batch(ops: Vec<BackendOp>, origins: OriginMap) -> BackendDeltaBatch {
+        BackendDeltaBatch {
+            from_compilation: CompilationId::allocate().unwrap(),
+            to_compilation: CompilationId::allocate().unwrap(),
+            from_revision: ModelRevision::ZERO,
+            to_revision: ModelRevision::from_u64(1),
+            operations: ops,
+            origin_additions: origins,
+            recipe_fingerprint: RecipeFingerprint::for_operations(&[]),
+        }
+    }
+
+    fn var_origin() -> EntityOrigin {
+        EntityOrigin::UserVariable(VarId::new(0, Generation::new()))
+    }
+
+    /// F1: a `RemoveVariable` followed by a `SetVariableBounds` on the SAME id
+    /// in one batch is rejected at preflight — the removal deletes the id from
+    /// the working registry, so the later set correctly fails. Without
+    /// order-aware simulation the batch would pass preflight and then partially
+    /// mutate (the all-or-nothing guarantee breaks).
+    #[test]
+    fn delta_validate_rejects_remove_then_set_same_batch() {
+        let existing = CompiledEntityRegistry {
+            variables: BTreeSet::from([CompiledVariableId(0)]),
+            ..CompiledEntityRegistry::default()
+        };
+        let batch = test_batch(
+            vec![
+                BackendOp::RemoveVariable(CompiledVariableId(0)),
+                BackendOp::SetVariableBounds {
+                    variable: CompiledVariableId(0),
+                    bounds: Bounds::new(0.0, 5.0),
+                },
+            ],
+            OriginMap::new(),
+        );
+        assert!(matches!(
+            batch.validate(&existing),
+            Err(CompileError::InvalidReference {
+                entity: CompiledEntityRef::Variable(CompiledVariableId(0))
+            })
+        ));
+    }
+
+    /// F1: adding the SAME compiled id twice in one batch is a typed
+    /// `DuplicateEntity` error — a compiled id is added exactly once per target
+    /// state.
+    #[test]
+    fn delta_validate_rejects_duplicate_add_variable() {
+        let existing = CompiledEntityRegistry::default();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        let batch = test_batch(
+            vec![
+                BackendOp::AddVariable(test_var(0)),
+                BackendOp::AddVariable(test_var(0)),
+            ],
+            origins,
+        );
+        assert!(matches!(
+            batch.validate(&existing),
+            Err(CompileError::DuplicateEntity {
+                entity: CompiledEntityRef::Variable(CompiledVariableId(0))
+            })
+        ));
+    }
+
+    /// F1 (SM-02.5): an `AddLinearRow` op MUST carry a corresponding origin in
+    /// the batch's `origin_additions` — the target compiled state stays
+    /// origin-complete. A missing origin is a typed error.
+    #[test]
+    fn delta_validate_rejects_add_without_origin() {
+        let existing = CompiledEntityRegistry::default();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        let batch = test_batch(
+            vec![
+                BackendOp::AddVariable(test_var(0)),
+                BackendOp::AddLinearRow(test_row(0)),
+            ],
+            // origin for the variable, but NOT for the added row.
+            origins,
+        );
+        assert!(matches!(
+            batch.validate(&existing),
+            Err(CompileError::MissingOrigin {
+                entity: CompiledEntityRef::Constraint(CompiledConstraintId(0))
+            })
+        ));
+    }
+
+    /// F1: a valid ordered batch (add -> set -> remove -> add) still passes
+    /// preflight — removal deletes the id so a later re-add is not a duplicate,
+    /// and every add carries an origin.
+    #[test]
+    fn delta_validate_accepts_valid_ordered_batch() {
+        let existing = CompiledEntityRegistry::default();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        let batch = test_batch(
+            vec![
+                BackendOp::AddVariable(test_var(0)),
+                BackendOp::SetVariableBounds {
+                    variable: CompiledVariableId(0),
+                    bounds: Bounds::new(0.0, 5.0),
+                },
+                BackendOp::RemoveVariable(CompiledVariableId(0)),
+                BackendOp::AddVariable(test_var(0)),
+            ],
+            origins,
+        );
+        assert!(batch.validate(&existing).is_ok());
     }
 }

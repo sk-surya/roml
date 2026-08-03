@@ -77,6 +77,23 @@ pub enum CompileError {
         entity: CompiledEntityRef,
     },
 
+    /// A compiled entity was specified more than once (F1/F2): a duplicate
+    /// `Add*` op within a delta batch, or a duplicate compiled id across a
+    /// snapshot's collections. Compiled ids are dense and unique by
+    /// construction (SM-02.4); a duplicate is malformed backend IR.
+    DuplicateEntity {
+        /// The duplicated compiled entity.
+        entity: CompiledEntityRef,
+    },
+
+    /// A compiled snapshot's ids are not dense (F2): the design's
+    /// deterministic dense allocation (`0..len` per family, SM-02.4) is
+    /// violated by a gap or an id beyond the count.
+    NonDenseCompilation {
+        /// The compiled entity whose id breaks density.
+        entity: CompiledEntityRef,
+    },
+
     /// The delta could not be proven incrementally equivalent — a
     /// deterministic rebuild is required (design §18, D22).
     ///
@@ -114,6 +131,12 @@ impl std::fmt::Display for CompileError {
             ),
             Self::InvalidReference { entity } => {
                 write!(f, "compiled IR references an unknown entity: {entity:?}")
+            }
+            Self::DuplicateEntity { entity } => {
+                write!(f, "duplicate compiled entity: {entity:?}")
+            }
+            Self::NonDenseCompilation { entity } => {
+                write!(f, "compiled ids are not dense (gap/overflow at {entity:?})")
             }
             Self::RebuildRequired(reason) => {
                 write!(
