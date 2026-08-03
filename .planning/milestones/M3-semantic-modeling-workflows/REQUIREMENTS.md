@@ -19,6 +19,7 @@ Requirement IDs are stable for M3. Every implementation PR must list the IDs it 
 - **SM-02.4** Compiler-generated and solve-overlay entities use distinct compiled IDs, never user entity handles.
 - **SM-02.5** Every generated entity maps to a user entity, construct, or overlay role.
 - **SM-02.6** Diagnostics distinguish declared bounds, persistent fixings, construct-derived bounds, and temporary locks.
+- **SM-02.7** Every live `Model` object has an opaque `ModelInstanceId`; cloning preserves lineage but allocates a new instance ID so divergent clones with equal revisions cannot be mistaken for the same canonical state.
 
 ## SM-03 — Compiler boundary and backend IR
 
@@ -26,10 +27,11 @@ Requirement IDs are stable for M3. Every implementation PR must list the IDs it 
 - **SM-03.2** Backends consume backend IR rather than mutable canonical `Model` state.
 - **SM-03.3** Backend IR supports linear rows plus normalized indicator, SOS1, SOS2, and PWL primitives.
 - **SM-03.4** `CompilationPolicy::{Auto, Portable, NativeRequired}` has documented deterministic semantics.
-- **SM-03.5** Compilation produces an origin map, formulation report, recipe fingerprint, and generated-entity inventory.
+- **SM-03.5** Compilation produces an origin map, formulation report, recipe fingerprint, generated-entity inventory, and opaque exact `CompilationId`.
 - **SM-03.6** Recipe changes force deterministic rebuild; unchanged qualified recipes may produce compiled deltas.
 - **SM-03.7** Primitive linear incremental behavior remains equivalent to compiled rebuild.
 - **SM-03.8** Backend contract migration is documented and tested for the reference backend.
+- **SM-03.9** Backend results, overlays, and analysis artifacts identify the exact `CompilationId` they refer to; deterministic fingerprints/digests are evidence and cache aids, never authority for stale-state safety.
 
 ## SM-04 — Typed capabilities and effective support
 
@@ -81,7 +83,7 @@ Requirement IDs are stable for M3. Every implementation PR must list the IDs it 
 ## SM-09 — IIS and conflict analysis
 
 - **SM-09.1** infeasibility analysis is an optional backend capability, not a required `BackendSession` method.
-- **SM-09.2** analysis preserves kind, scope, minimality claim, completion status, backend identity, and model revision.
+- **SM-09.2** analysis preserves kind, scope, minimality claim, completion status, backend identity, model instance/revision, and exact compilation identity.
 - **SM-09.3** conflict members distinguish constraint sides, variable bounds, persistent fixings, temporary locks, and constructs.
 - **SM-09.4** compiled conflict findings map through the origin map to original ROML terms.
 - **SM-09.5** reports render text, Markdown, and structured Rust data.
