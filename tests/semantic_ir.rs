@@ -12,6 +12,7 @@
 //! remove/rebuild (design §7, SM-01.3, SM-01.6).
 
 use roml::expr::TermCoeff;
+use roml::model::CoefficientTarget;
 use roml::{
     continuous, ConstraintBounds, ConstraintExprExt, FunctionConstraint, IntoScalarFunction, Model,
     ModelOp, ModelRevision, ScalarFunction, ScalarSet, ValueExpr, VarId,
@@ -348,6 +349,78 @@ fn delta_functions_contract_updates_ride_ops_not_functions_view() {
             .iter()
             .any(|op| matches!(op, ModelOp::SetConstraintBounds { con: c, .. } if *c == con)),
         "the update is carried by the underlying SetConstraintBounds op"
+    );
+}
+
+/// F2 (A31): updating a coefficient of a PRE-EXISTING constraint (here by
+/// updating the parameter it depends on) produces NO entry in `delta.functions`
+/// for that constraint — the update rides the underlying `SetCell` op, not the
+/// functions view.
+#[test]
+fn delta_functions_contract_coefficient_update_rides_ops_not_functions_view() {
+    let mut model = Model::new();
+    let p = model.add_parameter(2.0).unwrap();
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((p * x).le(10.0)).unwrap();
+    let r1 = model.commit().unwrap();
+
+    // Update the parameter; the dependent coefficient's cached value changes,
+    // producing a `SetCell` op in the next batch. The constraint itself is
+    // pre-existing — it was added in the FIRST commit.
+    model.set_parameter(p, 5.0).unwrap();
+    let r2 = model.commit().unwrap();
+    assert_ne!(r1, r2);
+
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r2)
+        .expect("parameter-update batch present");
+    assert!(
+        !batch.functions.iter().any(|e| e.constraint == con),
+        "updates to a pre-existing constraint must not appear in delta.functions"
+    );
+    assert!(
+        batch.operations.iter().any(|op| matches!(
+            op,
+            ModelOp::SetCell { cell_key, .. }
+                if cell_key.0 == CoefficientTarget::Constraint(con)
+        )),
+        "the coefficient update rides the underlying SetCell op"
+    );
+}
+
+/// F2 (A31): removing a PRE-EXISTING constraint produces NO entry in
+/// `delta.functions` for it (the functions view is constraints ADDED minus
+/// constraints REMOVED by this batch), and the removal rides the underlying
+/// `RemoveConstraint` op.
+#[test]
+fn delta_functions_contract_existing_row_removal_rides_ops_not_functions_view() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((x).le(10.0)).unwrap();
+    let r1 = model.commit().unwrap();
+
+    // Remove the pre-existing constraint in the next commit.
+    model.remove_constraint(con).unwrap();
+    let r2 = model.commit().unwrap();
+    assert_ne!(r1, r2);
+
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r2)
+        .expect("constraint-removal batch present");
+    assert!(
+        !batch.functions.iter().any(|e| e.constraint == con),
+        "removing a pre-existing constraint must not leave a stale FunctionEntry"
+    );
+    assert!(
+        batch
+            .operations
+            .iter()
+            .any(|op| matches!(op, ModelOp::RemoveConstraint { con: c } if *c == con)),
+        "the removal rides the underlying RemoveConstraint op"
     );
 }
 
