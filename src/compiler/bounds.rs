@@ -149,7 +149,10 @@ impl std::fmt::Display for BoundError {
                 write!(f, "non-finite value for parameter {parameter:?}")
             }
             Self::MissingParameter { parameter } => {
-                write!(f, "missing parameter {parameter:?} (never defaulted to zero — F5)")
+                write!(
+                    f,
+                    "missing parameter {parameter:?} (never defaulted to zero — F5)"
+                )
             }
             Self::ArithmeticNan => write!(f, "interval arithmetic produced NaN"),
             Self::UnsupportedFunctionKind => {

@@ -127,14 +127,18 @@ impl ValueExpr {
         match self {
             Self::Constant(v) => Ok(*v),
             Self::Param(id) => get_param(*id),
-            Self::Add(l, r) => Ok(l.eval_checked_recursive(get_param)?
-                + r.eval_checked_recursive(get_param)?),
-            Self::Sub(l, r) => Ok(l.eval_checked_recursive(get_param)?
-                - r.eval_checked_recursive(get_param)?),
-            Self::Mul(l, r) => Ok(l.eval_checked_recursive(get_param)?
-                * r.eval_checked_recursive(get_param)?),
-            Self::Div(l, r) => Ok(l.eval_checked_recursive(get_param)?
-                / r.eval_checked_recursive(get_param)?),
+            Self::Add(l, r) => {
+                Ok(l.eval_checked_recursive(get_param)? + r.eval_checked_recursive(get_param)?)
+            }
+            Self::Sub(l, r) => {
+                Ok(l.eval_checked_recursive(get_param)? - r.eval_checked_recursive(get_param)?)
+            }
+            Self::Mul(l, r) => {
+                Ok(l.eval_checked_recursive(get_param)? * r.eval_checked_recursive(get_param)?)
+            }
+            Self::Div(l, r) => {
+                Ok(l.eval_checked_recursive(get_param)? / r.eval_checked_recursive(get_param)?)
+            }
             Self::Neg(inner) => Ok(-inner.eval_checked_recursive(get_param)?),
         }
     }
@@ -563,13 +567,7 @@ mod tests {
         let expr = 2.0 * p1 + p2;
         // Present p1=3, absent p2 -> Err(p2).
         let err = expr
-            .eval_checked(|id| {
-                if id == p1 {
-                    Ok(3.0)
-                } else {
-                    Err(id)
-                }
-            })
+            .eval_checked(|id| if id == p1 { Ok(3.0) } else { Err(id) })
             .expect_err("a missing parameter must be a typed Err, never a default zero");
         assert_eq!(err, p2);
         // All present -> Ok.
