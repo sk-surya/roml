@@ -147,3 +147,63 @@ Full detail (RED failures, per-construct evidence table, verification matrix, A3
 - Created files verified: all four payload modules, all four bridge modules, `tests/common_constructs.rs`, `roml-highs/tests/formulation_equivalence.rs`, and the evidence file are present in commit `5f4d972`.
 - Commits verified: `5f4d972` (feat) and `55f429d` (docs) exist in the worktree history.
 - Verification matrix: roml 734 tests / highs 118 tests / both clippy lanes clean / both doc lanes clean / fmt clean / `cargo public-api -p roml` 17536 items with `Fixture`/`FixturePayload`/`add_construct_fixture`/`ConstructData` absent.
+
+---
+
+# Phase [32] Plan [02]: Algebraic semantic constructs (packet Task 17)
+
+Exact min/max with one-sided epigraph/hypograph relations, exact absolute value / positive part / clamp, and exact binary products (binary-binary and binary-times-bounded-linear), each as one semantic definition with complete top-level construct origins, a bounded exact portable formulation, and explicit failure when bounds/support are insufficient. Exactness is never inferred from objective context (D13): a proof test shows exact and one-sided feasible sets differ with no objective. Continuous×continuous product requests are typed rejections (SM-12.7, D23).
+
+## What was built
+
+- **`src/construct/{minmax,absolute,product}.rs`** — `MinMaxConstraint` (`MinMaxSense`, `MinMaxRelation`), `AbsoluteValueConstraint` (`AbsoluteValueVariant::{Absolute,PositivePart,Clamp}`), `BinaryProductConstraint` (`ProductOperand::{Binary,Linear}`). Each builder creates the output variable and stores it in the payload (top-level construct origin); `derive_parameter_dependencies` covers the operand/expression parameters.
+- **`src/model/mod.rs`** — `add_minmax`, `add_absolute_value`, `add_binary_product`, `add_binary_times_linear` builders returning the stable `Construct` handle plus the output-variable handle (SM-12.8); typed rejections for `<2` minmax operands, trivially-satisfiable `Min`+`Epigraph`/`Max`+`Hypograph`, unbounded abs expressions, invalid clamp bounds, continuous×continuous products, and non-binary product operands.
+- **`src/compiler/bridge/{minmax,absolute,product}.rs`** — the bounded exact bridges on the Plan 01 `BridgeFinalizer`:
+  - minmax: zero-binary max-epigraph / min-hypograph rows; exact min/max bounded selector formulations with finite derived `M_i` and bound-source report entries (SM-13.5);
+  - absolute: exact `z = p + n`, `p - n = x` decomposition with `M_p = max(U,0)`, `M_n = max(-L,0)`; composed clamp (inner max selector on `{x, lo}`, outer min selector on `{w, hi}`); no one-sided relaxation (D13), no reification row (D14);
+  - product: binary-binary (`w <= a`, `w <= b`, `w >= a+b-1`) and binary-times-bounded-linear (`w >= L·b`, `w <= U·b`, `w >= f-U(1-b)`, `w <= f-L(1-b)`) exact rows; no continuous×continuous path (SM-12.7).
+- **`src/compiler/{origin,session,capability}.rs`** — per-construct `GeneratedRole`s; `ConstructKind::{MinMax,AbsoluteValue,BinaryProduct}` dispatch through the bridge framework in deterministic construct-id order; additive `BackendFeature::{MinMax,AbsoluteValue,BinaryProduct}`.
+- **`src/lib.rs` / `src/advanced.rs`** — A30-pattern re-exports of the three payload types and helper enums.
+- **`roml-highs/src/session.rs`** — the three algebraic features declared `SupportLevel::Bridge` (no native claims, SM-04.3).
+- **Tests** — `tests/common_constructs.rs` (17 new: D13 difference proof, zero-binary rows, exact-selector feasible-set enumeration, abs/positive-part/clamp enumeration, product enumeration, fixed-seed randomized direct evaluation, `UnboundedBigM` / typed-rejection tests) + `roml-highs/tests/formulation_equivalence.rs` (3 new reference-vs-portable HiGHS tests).
+
+## Verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test common_constructs minmax` | 0 — 8 passed |
+| `cargo test -p roml --test common_constructs absolute` | 0 — 7 passed |
+| `cargo test -p roml --test common_constructs product` | 0 — 6 passed (the `binary_binary`/`binary_times_linear` enumeration tests are included in the full-suite run; 8 product tests total) |
+| `cargo test -p roml --test compiler_bridges` | 0 — 15 passed |
+| `cargo test -p roml-highs --test formulation_equivalence minmax/absolute/product` | 0 — 1 passed each |
+| `cargo test -p roml --all-targets` | 0 — **759 passed; 0 failed** |
+| `cargo test -p roml-highs --all-targets` | 0 — **121 passed; 0 failed** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 — clean |
+| `cargo public-api -p roml` | 0 — **18783 items** (+1247 over the Task 16 baseline 17536) |
+
+## Deviations from plan
+
+1. **Selector helpers emit the complete selector (Rule 1 bug fix, Task 17b).** The `exact_max_selector`/`exact_min_selector` helpers originally emitted only the sum-binary and Big-M rows (the minmax `compile` emitted the base `y >= x_i` rows itself), so the clamp bridge's direct helper calls omitted the base rows and `z = min(w, hi)` was unbounded above. Moved the base-row emission into the helpers and removed the duplicate loops from the minmax arms. Behavior of the Task 17a min/max is unchanged (re-verified).
+2. **Exact-selector rows need negated operand coefficients (Rule 1 bug fix, Task 17a).** `y - x_i` requires `-x_i` coefficients; the first implementation added them positively. Caught by the feasible-set enumeration and randomized direct-evaluation tests.
+3. **One-sided minmax output bounds are relation-specific (Rule 1 bug fix, Task 17a).** Exact → `[l_min, u_max]`, max-epigraph → `[l_min, +inf)`, min-hypograph → `(-inf, u_max]`; the initial `[l_min, u_max]` for every relation broke the D13 proof for the one-sided models.
+4. **Dispatch arms for not-yet-wired constructs returned `UnsupportedFeature`** at the Task 17a/17b intermediate commits (the `ConstructKind` match must be exhaustive); each was replaced by the real bridge as its task landed.
+5. **Test-surface fixes (Rule 1):** `compiled.variables.is_empty()` in the binary-binary test was corrected to count only `Construct`-origin generated variables (the snapshot always includes user variables); `integer().bounds(0, 10)` integer literals fixed to `f64`.
+6. **Public API was frozen by Task 17a.** The three payload types, builders, `GeneratedRole`s, and `BackendFeature`s all landed with the Task 17a commit (they were needed to keep the crate compiling); Tasks 17b/17c wired the bridge bodies behind them, so the public API count (18783) did not change between 17a→17b→17c.
+
+## Commit trail (Plan 02)
+
+| # | SHA | Message |
+|---|---|---|
+| 5 | `cd204be` | `feat(model): add exact min/max and one-sided relations` |
+| 6 | `3be5093` | `feat(model): add exact absolute value, positive part, and clamp` |
+| 7 | `109e0d8` | `feat(model): add algebraic semantic constructs` |
+| 8 | (this commit) | `docs(32): summarize Plan 02 evidence and deviations` |
+
+## Self-Check: PASSED
+
+- Created files verified: `src/construct/{minmax,absolute,product}.rs`, `src/compiler/bridge/{minmax,absolute,product}.rs`, and the evidence/SUMMARY appends are present in the worktree history.
+- Commits verified: `cd204be`, `3be5093`, `109e0d8` exist in the worktree history.
+- Verification matrix: roml 759 / highs 121 / both clippy lanes clean / both doc lanes clean / fmt clean / `cargo public-api -p roml` 18783 items. OR review is requested per the packet (Task 17 final commit).
