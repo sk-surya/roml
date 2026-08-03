@@ -155,6 +155,20 @@ pub enum CompileError {
         /// Why the derivation was invalid.
         reason: String,
     },
+
+    /// A construct references an entity absent from the compiled snapshot
+    /// (design §19 — errors identify the construct).
+    ///
+    /// Constructs are validated at build time, but a variable can be removed
+    /// after the construct was added; compiling such a construct is a typed
+    /// error naming the construct and the missing reference — never a silently
+    /// dropped coefficient.
+    MissingConstructReference {
+        /// The construct with the dangling reference.
+        construct: Construct,
+        /// The referenced variable that has no compiled counterpart.
+        variable: crate::id::VarId,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -208,6 +222,14 @@ impl std::fmt::Display for CompileError {
             } => write!(
                 f,
                 "invalid Big-M for construct {construct:?} and expression {expression:?}: {reason}"
+            ),
+            Self::MissingConstructReference {
+                construct,
+                variable,
+            } => write!(
+                f,
+                "construct {construct:?} references variable {variable:?} absent from the \
+                 compiled snapshot (the variable was likely removed after the construct was added)"
             ),
         }
     }

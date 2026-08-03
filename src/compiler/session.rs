@@ -34,11 +34,14 @@ use crate::compiler::backend_ir::{
     CompiledConstraintId, CompiledLinearRow, CompiledObjective, CompiledObjectiveId,
     CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, RecipeFingerprint,
 };
+use crate::compiler::bridge::{BridgeContext, BridgeOutput};
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::{EntityOrigin, OriginMap};
+use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
+use crate::construct::{ConstructKind, FormulationPreference};
 use crate::delta::{DeltaBatch, ModelOp};
-use crate::id::{ConId, ObjId, VarId};
+use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::identity::ModelInstanceId;
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::{Bounds, ConstraintBounds, VarType};
@@ -122,6 +125,28 @@ fn require_feature(
         ),
     };
     Err(CompileError::UnsupportedFeature(message))
+}
+
+/// The effective compilation policy for one construct: the global policy
+/// narrowed by the per-construct [`FormulationPreference`] (A29 single
+/// authority).
+///
+/// A stricter global policy (Portable/NativeRequired) is never weakened by a
+/// per-construct preference (design §8.1: preferences may narrow, never weaken
+/// exactness). Under a global `Auto` the per-construct preference governs.
+fn effective_policy(
+    global: &CompilationPolicy,
+    preference: FormulationPreference,
+) -> CompilationPolicy {
+    match global {
+        CompilationPolicy::Auto => match preference {
+            FormulationPreference::Auto => CompilationPolicy::Auto,
+            FormulationPreference::Portable => CompilationPolicy::Portable,
+            FormulationPreference::NativeRequired => CompilationPolicy::NativeRequired,
+        },
+        CompilationPolicy::Portable => CompilationPolicy::Portable,
+        CompilationPolicy::NativeRequired => CompilationPolicy::NativeRequired,
+    }
 }
 
 impl CompilationSession {
@@ -324,9 +349,88 @@ impl CompilationSession {
             .map(CompiledObjectivePolicy::Single)
             .unwrap_or(CompiledObjectivePolicy::None);
 
+        // ── Semantic constructs (P32 Task 16) ──────────────────────────────
+        // Active constructs compile in the snapshot's deterministic
+        // construct-id order, each through the Task 15 bridge framework
+        // (native-or-bridge selection per the effective policy, exact rows,
+        // mandatory construct origins, and bound/Big-M evidence report
+        // entries). A construct whose exact representation is unavailable
+        // surfaces a typed CompileError (UnboundedBigM / UnsupportedFeature /
+        // MissingConstructReference) — never a silent relaxation.
+        let parameter_values: HashMap<ParamId, f64> = snapshot
+            .parameters
+            .iter()
+            .map(|p| (p.id, p.value))
+            .collect();
+        let mut next_variable_index = variables.len() as u32;
+        let mut next_row_index = rows.len() as u32;
+        let mut construct_variables: Vec<CompiledVariable> = Vec::new();
+        let mut construct_rows: Vec<CompiledLinearRow> = Vec::new();
+        let mut construct_origins = OriginMap::new();
+        let mut construct_decisions: Vec<FormulationDecision> = Vec::new();
+
+        for entry in &snapshot.constructs {
+            if !entry.active {
+                continue;
+            }
+            let effective = effective_policy(policy, entry.preference);
+            let ctx = BridgeContext {
+                construct: entry.id,
+                snapshot,
+                variable_ids: &variable_ids,
+                parameter_values: &parameter_values,
+                policy: &effective,
+                capabilities,
+            };
+            let output: BridgeOutput = match &entry.kind {
+                ConstructKind::Indicator(payload) => crate::compiler::bridge::indicator::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
+                ConstructKind::Reification(payload) => {
+                    crate::compiler::bridge::reification::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
+                ConstructKind::Boolean(payload) => crate::compiler::bridge::boolean::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
+                ConstructKind::Cardinality(payload) => {
+                    crate::compiler::bridge::cardinality::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
+                // Crate-private P32 fixture scaffolding is never compiled.
+                ConstructKind::Fixture(_) => continue,
+            };
+            next_variable_index += output.variables.len() as u32;
+            next_row_index += output.rows.len() as u32;
+            construct_variables.extend(output.variables);
+            construct_rows.extend(output.rows);
+            construct_origins.merge(output.origin_map);
+            construct_decisions.extend(output.decisions);
+        }
+
+        // The session's origin map must include the construct-generated
+        // entities so builder finalization validates their origins (D5,
+        // SM-02.5).
+        origin_map.merge(construct_origins);
+
         let mut builder = BackendSnapshotBuilder::new(source_instance, snapshot.revision)
             .origin_map(origin_map)
-            .objective_policy(objective_policy.clone());
+            .objective_policy(objective_policy.clone())
+            .add_formulation_decisions(construct_decisions);
         for v in variables {
             builder = builder.add_variable(v);
         }
@@ -335,6 +439,12 @@ impl CompilationSession {
         }
         for o in objectives {
             builder = builder.add_objective(o);
+        }
+        for v in construct_variables {
+            builder = builder.add_variable(v);
+        }
+        for r in construct_rows {
+            builder = builder.add_linear_row(r);
         }
         let compiled = builder.finalize()?;
 

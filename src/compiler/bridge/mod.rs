@@ -13,15 +13,28 @@
 //! [`crate::compiler::CompileError`] (design §19) — a bridge never silently
 //! relaxes.
 
+pub(crate) mod boolean;
+pub(crate) mod cardinality;
+pub(crate) mod indicator;
+pub(crate) mod reification;
+
+use std::collections::HashMap;
+
 use crate::compiler::backend_ir::{
     CompiledConstraintId, CompiledLinearRow, CompiledVariable, CompiledVariableId,
 };
 use crate::compiler::bounds::BoundSource;
+use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::{EntityOrigin, GeneratedRole, OriginMap};
 use crate::compiler::report::FormulationDecision;
+use crate::compiler::CompileError;
 use crate::construct::Construct;
+use crate::expr::TermCoeff;
+use crate::function::ScalarFunction;
 use crate::id::{ParamId, VarId};
 use crate::model::{Bounds, ConstraintBounds, VarType};
+use crate::snapshot::ModelSnapshot;
+use crate::value_expr::ValueExpr;
 
 /// The representation kind a bridge produced (design §8.5).
 #[non_exhaustive]
@@ -204,6 +217,154 @@ pub struct BridgeOutput {
     pub dependencies: Vec<BridgeDependency>,
     /// Bound/Big-M evidence and formulation decisions (SM-13.5).
     pub decisions: Vec<FormulationDecision>,
+}
+
+// ===========================================================================
+// Shared bridge context and helpers (P32 Task 16)
+// ===========================================================================
+
+/// The shared context a P32 construct bridge needs to compile one construct.
+///
+/// Carries the originating construct, the canonical snapshot (for declared
+/// bounds / parameter values via [`BoundAnalyzer`](crate::compiler::bounds::BoundAnalyzer)),
+/// the user→compiled variable map, the evaluated parameter-value map, and the
+/// effective compilation policy (global narrowed by the per-construct
+/// preference) plus the backend capability set (for native/bridge selection).
+pub(crate) struct BridgeContext<'a> {
+    /// The originating construct.
+    pub construct: Construct,
+    /// The canonical snapshot being compiled.
+    pub snapshot: &'a ModelSnapshot,
+    /// User variable → compiled variable id.
+    pub variable_ids: &'a HashMap<VarId, CompiledVariableId>,
+    /// Evaluated parameter values.
+    pub parameter_values: &'a HashMap<ParamId, f64>,
+    /// The effective compilation policy (global narrowed by per-construct
+    /// preference).
+    pub policy: &'a CompilationPolicy,
+    /// The backend's typed capability set.
+    pub capabilities: &'a BackendCapabilitySet,
+}
+
+/// Whether a construct should use a qualified native primitive or the exact
+/// portable bridge (design §8.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConstructPath {
+    /// A qualified exact native primitive.
+    Native,
+    /// The exact portable ROML bridge.
+    Bridge,
+}
+
+/// Select the representation path for a construct feature under the effective
+/// policy (design §8.1).
+///
+/// `Auto` prefers a qualified native primitive, then an exact bridge, then a
+/// typed `UnsupportedFeature`. `Portable` forces the bridge. `NativeRequired`
+/// rejects a non-native feature. An unqualified feature is never silently
+/// ignored (SM-04.4).
+pub(crate) fn select_path(
+    capabilities: &BackendCapabilitySet,
+    policy: &CompilationPolicy,
+    feature: BackendFeature,
+    context: &str,
+) -> Result<ConstructPath, CompileError> {
+    let native = capabilities.supports(feature);
+    match policy {
+        CompilationPolicy::Auto => {
+            if native {
+                Ok(ConstructPath::Native)
+            } else if capabilities.is_bridge(feature) {
+                Ok(ConstructPath::Bridge)
+            } else {
+                Err(CompileError::UnsupportedFeature(format!(
+                    "{feature:?} has neither qualified native support nor an exact ROML bridge \
+                     ({context})"
+                )))
+            }
+        }
+        CompilationPolicy::Portable => Ok(ConstructPath::Bridge),
+        CompilationPolicy::NativeRequired => {
+            if native {
+                Ok(ConstructPath::Native)
+            } else {
+                Err(CompileError::UnsupportedFeature(format!(
+                    "{feature:?} requires exact native support which this backend lacks \
+                     ({context}; NativeRequired policy)"
+                )))
+            }
+        }
+    }
+}
+
+/// Resolve a user variable to its compiled id, or a typed
+/// `MissingConstructReference` when the construct references a variable absent
+/// from the compiled snapshot (design §19) — never a silently dropped
+/// coefficient.
+pub(crate) fn resolve_variable(
+    variable_ids: &HashMap<VarId, CompiledVariableId>,
+    var: VarId,
+    construct: Construct,
+) -> Result<CompiledVariableId, CompileError> {
+    variable_ids
+        .get(&var)
+        .copied()
+        .ok_or(CompileError::MissingConstructReference {
+            construct,
+            variable: var,
+        })
+}
+
+/// Convert a linear scalar function into compiled (id, coefficient) pairs plus
+/// the constant term. Terms are processed in sorted variable order
+/// (determinism, matching `BoundAnalyzer`).
+pub(crate) fn function_coefficients(
+    function: &ScalarFunction,
+    construct: Construct,
+    variable_ids: &HashMap<VarId, CompiledVariableId>,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(Vec<(CompiledVariableId, f64)>, f64), CompileError> {
+    match function {
+        ScalarFunction::Linear(expr) => {
+            let mut coefficients = Vec::new();
+            let mut terms: Vec<_> = expr.terms.iter().collect();
+            terms.sort_by_key(|t| t.var);
+            for term in terms {
+                let value = match &term.coeff {
+                    TermCoeff::Constant(v) => *v,
+                    TermCoeff::Expr(e) => {
+                        e.eval(|p| parameter_values.get(&p).copied().unwrap_or(0.0))
+                    }
+                };
+                let vid = resolve_variable(variable_ids, term.var, construct)?;
+                coefficients.push((vid, value));
+            }
+            Ok((coefficients, expr.constant))
+        }
+    }
+}
+
+/// Evaluate a scalar-set bound (`ValueExpr`) against the evaluated parameter
+/// values.
+pub(crate) fn eval_bound(bound: &ValueExpr, parameter_values: &HashMap<ParamId, f64>) -> f64 {
+    bound.eval(|p| parameter_values.get(&p).copied().unwrap_or(0.0))
+}
+
+/// Combine the function's compiled coefficients with a single-var term
+/// (e.g. `M·activator`), merging if the variable already appears.
+pub(crate) fn combine_coefficients(
+    coefficients: Vec<(CompiledVariableId, f64)>,
+    extra: (CompiledVariableId, f64),
+) -> Vec<(CompiledVariableId, f64)> {
+    let mut out = coefficients;
+    let (extra_id, extra_value) = extra;
+    if let Some(slot) = out.iter_mut().find(|(id, _)| *id == extra_id) {
+        slot.1 += extra_value;
+    } else {
+        out.push((extra_id, extra_value));
+    }
+    out.sort_by_key(|(id, _)| *id);
+    out
 }
 
 #[cfg(test)]

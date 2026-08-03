@@ -48,6 +48,14 @@ pub enum BackendFeature {
     FeasibilityRelaxation,
     /// Indicator constraints (binary activation of a row).
     Indicator,
+    /// Reification (`b = 1 ⟺ relation`) — P32 bridge-supported, no qualified
+    /// native claims.
+    Reification,
+    /// Boolean relations (implication/equivalence/any/all) — P32
+    /// bridge-supported.
+    Boolean,
+    /// Cardinality (exactly/at-most/at-least-k) — P32 bridge-supported.
+    Cardinality,
     /// Special ordered set of type 1.
     Sos1,
     /// Special ordered set of type 2.
@@ -125,6 +133,20 @@ impl FeatureSupport {
         }
     }
 
+    /// Declare the feature provided through an exact ROML bridge formulation
+    /// (SM-04.2) with the given limitations.
+    ///
+    /// P32's first bridge declarations land with the logical-construct
+    /// features; bridge support is reported separately from native support so
+    /// backend selection can distinguish a qualified native primitive from an
+    /// exact portable formulation (design §8.1).
+    pub fn bridge(limitations: FeatureLimitations) -> Self {
+        Self {
+            level: SupportLevel::Bridge,
+            limitations,
+        }
+    }
+
     /// Whether this declaration reports native support.
     pub fn is_native(&self) -> bool {
         self.level == SupportLevel::Native
@@ -178,6 +200,14 @@ impl BackendCapabilitySet {
         self.support
             .get(&feature)
             .is_some_and(|support| support.is_native())
+    }
+
+    /// Whether the feature is declared provided through an exact ROML bridge
+    /// formulation (SM-04.2).
+    pub fn is_bridge(&self, feature: BackendFeature) -> bool {
+        self.support
+            .get(&feature)
+            .is_some_and(|support| support.is_bridge())
     }
 
     /// The full support declaration for a feature, if present.

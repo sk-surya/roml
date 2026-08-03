@@ -91,14 +91,15 @@ impl CompilationReport {
     ///
     /// The generated-entity inventory lists every compiled variable, row, and
     /// objective (deterministic declaration order). The formulation-decision
-    /// list records the objective-policy selection; P32/P33 bridges extend it
-    /// with per-construct decisions.
+    /// list records the objective-policy selection followed by the extra
+    /// decisions (P32/P33 bridge per-construct decisions).
     pub(crate) fn new(
         recipe_fingerprint: RecipeFingerprint,
         variables: &[CompiledVariable],
         linear_rows: &[CompiledLinearRow],
         objectives: &[CompiledObjective],
         objective_policy: &CompiledObjectivePolicy,
+        extra_decisions: Vec<FormulationDecision>,
     ) -> Self {
         let mut generated_entities = Vec::new();
         generated_entities.extend(variables.iter().map(|v| CompiledEntityRef::Variable(v.id)));
@@ -113,12 +114,13 @@ impl CompilationReport {
                 .map(|o| CompiledEntityRef::Objective(o.id)),
         );
 
-        let formulation_decisions = vec![FormulationDecision {
+        let mut formulation_decisions = vec![FormulationDecision {
             decision: "objective_policy".to_string(),
             selection: format!("{objective_policy:?}"),
             reason: "the compiled objective policy defines which optimization problem is active"
                 .to_string(),
         }];
+        formulation_decisions.extend(extra_decisions);
 
         Self {
             recipe_fingerprint,
