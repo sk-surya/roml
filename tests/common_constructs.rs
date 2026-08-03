@@ -717,7 +717,11 @@ fn construct_snapshot_and_delta_round_trip_preserves_payload_and_preference() {
 // ===========================================================================
 
 #[test]
-fn indicator_auto_selects_native_when_declared() {
+fn indicator_auto_with_native_declared_selects_exact_bridge() {
+    // F4: even when a backend declares native `Indicator` support, the P32
+    // backend IR has no native payload — the construct is reported/selected
+    // ONLY as the exact bridge, never a "native indicator" label for a bridge
+    // formulation.
     let mut model = Model::new();
     let z = model.add_variable(binary()).unwrap();
     let x = model.add_variable(binary()).unwrap();
@@ -732,21 +736,31 @@ fn indicator_auto_selects_native_when_declared() {
         .iter()
         .find(|d| d.decision == "indicator.representation")
         .expect("indicator representation decision recorded");
-    assert_eq!(dec.selection, "native indicator");
+    assert_eq!(dec.selection, "exact bridge (finite bound)");
 
-    // The generated row carries the native indicator role.
+    // The generated row carries the exact bridge row role — NOT a native role.
     let row = compiled.linear_rows.iter().find(|r| {
         matches!(
             compiled.origin_map.constraint_origin(r.id),
             Some(EntityOrigin::Construct {
-                role: GeneratedRole::IndicatorNative,
+                role: GeneratedRole::IndicatorImplicationRow,
                 ..
             })
         )
     });
     assert!(
         row.is_some(),
-        "native indicator row present with IndicatorNative role"
+        "exact bridge indicator row present with IndicatorImplicationRow role"
+    );
+    assert!(
+        compiled.linear_rows.iter().all(|r| !matches!(
+            compiled.origin_map.constraint_origin(r.id),
+            Some(EntityOrigin::Construct {
+                role: GeneratedRole::IndicatorNative,
+                ..
+            })
+        )),
+        "no IndicatorNative role may be emitted for a bridge formulation (F4)"
     );
 }
 
@@ -2844,5 +2858,176 @@ fn f3_revalidation_happens_at_every_compilation() {
         session.current_compilation(),
         before,
         "a rejected reification compilation must not advance the compiled identity"
+    );
+}
+
+// ===========================================================================
+// F4 — no native payload in P32: construct features are bridge-only
+// ===========================================================================
+
+/// Full + every construct feature declared NATIVE (a backend claiming native
+/// support for constructs). F4: even such a backend cannot be selected as
+/// native — the P32 backend IR has no native payload — so `NativeRequired`
+/// rejects it and `Auto` falls back to the exact bridge.
+fn native_construct_caps() -> BackendCapabilitySet {
+    let mut set = full_caps();
+    for f in [
+        BackendFeature::Indicator,
+        BackendFeature::Reification,
+        BackendFeature::Boolean,
+        BackendFeature::Cardinality,
+        BackendFeature::MinMax,
+        BackendFeature::AbsoluteValue,
+        BackendFeature::BinaryProduct,
+    ] {
+        set.set(f, FeatureSupport::native(Default::default()));
+    }
+    set
+}
+
+/// F4: centralize policy gating for one construct family:
+/// - Auto + bridge -> compiles (bridge-only selection);
+/// - Portable + bridge -> compiles (bridge forced);
+/// - NativeRequired + bridge -> typed `UnsupportedFeature` (bridge-only path is
+///   not native);
+/// - Auto + unqualified -> typed `UnsupportedFeature`;
+/// - NativeRequired + native-declared (no payload) -> typed `UnsupportedFeature`.
+fn f4_assert_gating(build: impl Fn(&mut Model)) {
+    for (policy, caps, should_compile) in [
+        (
+            CompilationPolicy::Auto,
+            &bridge_caps() as &BackendCapabilitySet,
+            true,
+        ),
+        (
+            CompilationPolicy::Portable,
+            &bridge_caps() as &BackendCapabilitySet,
+            true,
+        ),
+        (
+            CompilationPolicy::NativeRequired,
+            &bridge_caps() as &BackendCapabilitySet,
+            false,
+        ),
+        (
+            CompilationPolicy::Auto,
+            &full_caps() as &BackendCapabilitySet,
+            false,
+        ),
+        (
+            CompilationPolicy::NativeRequired,
+            &native_construct_caps() as &BackendCapabilitySet,
+            false,
+        ),
+    ] {
+        let mut model = Model::new();
+        build(&mut model);
+        if should_compile {
+            let _ = compile(&model, policy, caps);
+        } else {
+            let err = compile_err(&model, policy, caps);
+            assert!(
+                matches!(err, CompileError::UnsupportedFeature(_)),
+                "{policy:?} must reject with UnsupportedFeature, got {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn f4_indicator_policy_gating() {
+    f4_assert_gating(|m| {
+        let z = m.add_variable(binary()).unwrap();
+        let x = m.add_variable(binary()).unwrap();
+        m.add_indicator(z, IndicatorDirection::WhenOne, (x).le(1.0), None)
+            .unwrap();
+    });
+}
+
+#[test]
+fn f4_reification_policy_gating() {
+    f4_assert_gating(|m| {
+        let x = m.add_variable(binary()).unwrap();
+        let y = m.add_variable(binary()).unwrap();
+        m.add_reify((x + y).le(1.0), None, None).unwrap();
+    });
+}
+
+#[test]
+fn f4_boolean_policy_gating() {
+    f4_assert_gating(|m| {
+        let a = m.add_variable(binary()).unwrap();
+        let b = m.add_variable(binary()).unwrap();
+        m.add_boolean(
+            BooleanKind::Implication {
+                antecedent: a,
+                consequent: b,
+            },
+            None,
+        )
+        .unwrap();
+    });
+}
+
+#[test]
+fn f4_cardinality_policy_gating() {
+    f4_assert_gating(|m| {
+        let a = m.add_variable(binary()).unwrap();
+        let b = m.add_variable(binary()).unwrap();
+        m.add_cardinality(vec![a, b], CardinalityKind::AtMost, 1.0, None)
+            .unwrap();
+    });
+}
+
+#[test]
+fn f4_minmax_policy_gating() {
+    f4_assert_gating(|m| {
+        let x = m.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let y = m.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        m.add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Epigraph,
+            None,
+        )
+        .unwrap();
+    });
+}
+
+#[test]
+fn f4_absolute_value_policy_gating() {
+    f4_assert_gating(|m| {
+        let x = m.add_variable(continuous().bounds(-5.0, 5.0)).unwrap();
+        m.add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+            .unwrap();
+    });
+}
+
+#[test]
+fn f4_binary_product_policy_gating() {
+    f4_assert_gating(|m| {
+        let a = m.add_variable(binary()).unwrap();
+        let b = m.add_variable(binary()).unwrap();
+        m.add_binary_product(ProductOperand::Binary(a), ProductOperand::Binary(b), None)
+            .unwrap();
+    });
+}
+
+/// F4: a genuinely unbounded indicator must still fail with the construct-aware
+/// `UnboundedBigM` — a native `Indicator` declaration cannot escape the exact
+/// bridge's boundedness requirement (there is no native payload to fall back
+/// to).
+#[test]
+fn f4_unbounded_indicator_still_fails_with_unbounded_big_m() {
+    let mut model = Model::new();
+    let z = model.add_variable(binary()).unwrap();
+    let x = model.add_variable(continuous()).unwrap(); // free
+    let k = model
+        .add_indicator(z, IndicatorDirection::WhenOne, (2.0 * x).le(5.0), None)
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Auto, &native_indicator_caps());
+    assert!(
+        matches!(&err, CompileError::UnboundedBigM { construct, .. } if *construct == k),
+        "expected the construct-aware UnboundedBigM (no native escape), got {err:?}"
     );
 }

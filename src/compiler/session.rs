@@ -991,15 +991,6 @@ impl CompilationSession {
                 // behavior through the compiled path (the F-B1 conservative
                 // rebuild list is narrowed here by this provable equivalence).
                 //
-                // `SetParameter` is a provable NO-OP on backend IR: no compiled
-                // entity carries a parameter, and the coefficient index is the
-                // single coefficient authority (SM-01.1) — a parameter change
-                // re-emits `SetCell` ops for every dependent cell with the new
-                // evaluated value, which the compiled delta carries. Skipping
-                // the parameter op preserves the M2 incremental parameter
-                // behavior through the compiled path (the F-B1 conservative
-                // rebuild list is narrowed here by this provable equivalence).
-                //
                 // EXCEPTION (F1): a construct's bridge artifact EVALUATES
                 // parameters directly (function coefficients, set thresholds,
                 // Big-M values). A parameter change on a construct dependency

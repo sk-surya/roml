@@ -253,6 +253,19 @@ pub struct CompiledObjectiveLevel {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackendConstraint {}
 
+/// Whether the backend IR can carry a real native-primitive payload (F4).
+///
+/// In P32 [`BackendConstraint`] has NO variants, so no construct feature can
+/// be selected through a qualified native primitive — the exact portable
+/// bridge is the only representable path. When a real native payload variant
+/// lands (P32/P33 bridge tasks), this function MUST be updated alongside
+/// `BackendConstraint` so a backend's native declaration becomes selectable
+/// again. Until then, `NativeRequired` rejects every construct feature (a
+/// bridge-only path is not native) and `Auto` never reports a native label.
+pub(crate) const fn native_payloads_available() -> bool {
+    false
+}
+
 /// A compiled backend snapshot (design §8.3).
 ///
 /// The full compiled state produced by compiling one canonical

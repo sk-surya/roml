@@ -19,7 +19,7 @@
 use crate::compiler::bounds::BoundAnalyzer;
 use crate::compiler::bridge::{
     function_coefficients, resolve_variable, select_path, BridgeContext, BridgeFinalizer,
-    BridgeOutput, ConstructPath,
+    BridgeOutput,
 };
 use crate::compiler::capability::BackendFeature;
 use crate::compiler::origin::GeneratedRole;
@@ -36,29 +36,25 @@ pub(crate) fn compile(
     next_variable_index: u32,
     next_row_index: u32,
 ) -> Result<BridgeOutput, CompileError> {
-    let path = select_path(
+    // SM-04.4 / F4 gating: an unqualified feature and a bridge-only feature
+    // under `NativeRequired` are typed errors. Under `Auto` a native declaration
+    // falls back to the exact bridge (no native payload exists in P32), so the
+    // recorded path is always the honest exact bridge — never a "native binary
+    // product" label for a bridge formulation.
+    select_path(
         ctx.capabilities,
         ctx.policy,
         BackendFeature::BinaryProduct,
         "binary product construct",
     )?;
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
-    // IN-01: record the selected representation path so a native selection is
+    // IN-01: record the selected representation path so the bridge selection is
     // observable in the formulation decisions (the indicator bridge precedent).
-    let (path_selection, path_reason) = match path {
-        ConstructPath::Native => (
-            "native binary product",
-            "qualified native BackendFeature::BinaryProduct selected (Auto)",
-        ),
-        ConstructPath::Bridge => (
-            "exact bridge",
-            "no qualified native binary product; exact ROML bridge (design §8.1)",
-        ),
-    };
     finalizer.add_decision(FormulationDecision {
         decision: "product.path".to_string(),
-        selection: path_selection.to_string(),
-        reason: path_reason.to_string(),
+        selection: "exact bridge".to_string(),
+        reason: "no qualified native binary product; exact ROML bridge (design §8.1; F4)"
+            .to_string(),
     });
     let w = resolve_variable(ctx.variable_ids, payload.output, ctx.construct)?;
 
