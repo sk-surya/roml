@@ -166,4 +166,4 @@ Task 8 gate: **PASSED** — `cargo test -p roml --all-targets` (695) and `cargo 
 
 | # | SHA | Message |
 |---|---|---|
-| 1 | `[filled after commit]` | `feat(model): add first-class variable fixing` |
+| 1 | `d19b54c` | `feat(model): add first-class variable fixing` |
