@@ -40,10 +40,11 @@ use std::rc::Rc;
 
 use roml::advanced::{
     compile_overlay, BackendCapabilitySet, BackendFeature, BackendOp, BackendSnapshot,
-    CompilationId, CompilationSession, CompiledObjectiveId, CompiledObjectivePolicy,
-    CompiledVariableId, CutoffDirection, EntityOrigin, FeatureSupport, GeneratedRole,
-    OverlayApplyReceipt, OverlayOp, OverlayRollbackOutcome, OverlaySession, SolveRequest,
-    SolveResult, SolveSolution, SupportLevel, Synchronization,
+    CompilationId, CompilationSession, CompiledConstraintId, CompiledLinearRow,
+    CompiledObjectiveId, CompiledObjectivePolicy, CompiledVariableId, CutoffDirection,
+    EntityOrigin, FeatureSupport, GeneratedRole, OriginMap, OverlayApplyReceipt, OverlayOp,
+    OverlayRollbackOutcome, OverlaySession, SolveRequest, SolveResult, SolveSolution, SupportLevel,
+    Synchronization,
 };
 use roml::compiler::capability::CompilationPolicy;
 use roml::model::objective::Sense;
@@ -1532,6 +1533,133 @@ fn stale_overlay_apply_rejects_before_mutation() {
         state_before,
         "a rejected stale overlay must not mutate the compiled state"
     );
+}
+
+// ── F2: complete compiled-overlay preflight (reject before mutation) ─────────
+
+/// F2: an overlay whose `compilation_id == base_compilation` is rejected at
+/// preflight (D28 — the overlay-compounded state must receive a FRESH exact
+/// id). The compiled state and the exact identity are unchanged.
+#[test]
+fn reference_rejects_overlay_with_identical_base_and_overlay_compilation() {
+    let (model, _compiler, x, _y, obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    let overlay = sample_overlay(x, obj);
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    compiled.compilation_id = compiled.base_compilation;
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("an overlay with an identical base/overlay id must be rejected");
+    assert_eq!(
+        err.category,
+        ErrorCategory::InvalidInput,
+        "a malformed overlay envelope is invalid input"
+    );
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
+}
+
+/// F2: an `AddTemporaryRow` that lacks a matching `SolveOverlay` origin is
+/// rejected at preflight (D5/SM-02.5) — the compiled state stays
+/// origin-complete.
+#[test]
+fn reference_rejects_overlay_row_missing_solve_overlay_origin() {
+    let (model, _compiler, x, _y, obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    // sample_overlay adds a cutoff row (temp fixing x + cutoff row); strip the
+    // origin additions so that row has no recorded origin.
+    let overlay = sample_overlay(x, obj);
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    compiled.origin_additions = OriginMap::new();
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("an added row without a SolveOverlay origin must be rejected");
+    assert_eq!(err.category, ErrorCategory::InvalidInput);
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
+}
+
+/// F2: an `AddTemporaryRow` whose id collides with a live compiled row is
+/// rejected at preflight — a temporary row id must be fresh.
+#[test]
+fn reference_rejects_overlay_row_id_collision_with_live_state() {
+    let (model, _compiler, x, _y, obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    let overlay = sample_overlay(x, obj);
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    // Row 0 is already live in the base (the fixture's x + y <= 10 row).
+    compiled.operations.push(OverlayOp::AddTemporaryRow {
+        row: CompiledLinearRow {
+            id: CompiledConstraintId(0),
+            bounds: ConstraintBounds::le(5.0),
+            coefficients: vec![],
+            name: None,
+        },
+    });
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("an overlay row id colliding with a live row must be rejected");
+    assert_eq!(err.category, ErrorCategory::InvalidInput);
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
+}
+
+/// F2: a `SetObjectivePolicy` referencing a compiled objective absent from the
+/// live state (dangling policy) is rejected at preflight.
+#[test]
+fn reference_rejects_overlay_dangling_objective_policy() {
+    let (model, _compiler, x, _y, obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    let overlay = sample_overlay(x, obj);
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    compiled.operations.push(OverlayOp::SetObjectivePolicy(
+        CompiledObjectivePolicy::Single(CompiledObjectiveId(999)),
+    ));
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("a dangling objective policy must be rejected");
+    assert_eq!(err.category, ErrorCategory::InvalidInput);
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
+}
+
+/// F2: a rollback-only `RemoveTemporaryRow` in the apply stream is rejected at
+/// preflight.
+#[test]
+fn reference_rejects_rollback_op_in_apply_stream() {
+    let (model, _compiler, x, _y, obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    let overlay = sample_overlay(x, obj);
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    compiled.operations.push(OverlayOp::RemoveTemporaryRow {
+        row: CompiledConstraintId(0),
+    });
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("RemoveTemporaryRow in the apply stream must be rejected");
+    assert_eq!(err.category, ErrorCategory::InvalidInput);
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
 }
 
 // ── 2. Façade-level transactional overlay solve ──────────────────────────────

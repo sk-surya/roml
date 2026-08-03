@@ -677,6 +677,26 @@ impl OverlaySession for HighsSession {
             ));
         }
 
+        // F2: run the COMPLETE overlay preflight against the exact live
+        // compiled registry BEFORE any native mutation — malformed envelopes,
+        // missing origins, row-id collisions, dangling objective policies, and
+        // rollback-only ops are all rejected here, so a malformed overlay never
+        // partially mutates the native model. Any preflight rejection marks the
+        // session `RequiresRebuild` (CR-02).
+        let registry = CompiledEntityRegistry {
+            variables: self.col_map.iter().map(|(id, _)| id).collect(),
+            rows: self.row_map.iter().map(|(id, _)| id).collect(),
+            objectives: self.compiled_to_user_objective.keys().copied().collect(),
+        };
+        if let Err(e) = overlay.validate(&registry) {
+            self.cursor.mark_rebuild();
+            return Err(BackendError::new(
+                format!("overlay failed preflight validation: {e}"),
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
+
         let mut state = HighsOverlayState {
             base_compilation: overlay.base_compilation,
             applied_compilation: overlay.compilation_id,
@@ -2371,5 +2391,60 @@ mod tests {
             "a rejected overlay must not mutate the native model"
         );
         assert_eq!(highs.current_compilation, Some(held));
+    }
+
+    /// F2: a MALFORMED `CompiledOverlay` (here: identical base/overlay id, so
+    /// the D28 envelope is broken) is rejected by the HiGHS session at
+    /// PREFLIGHT — BEFORE any native mutation. The native model and the exact
+    /// compiled identity are unchanged, and the session is marked
+    /// `RequiresRebuild` so the half-applied state is never silently reused.
+    #[test]
+    fn highs_rejects_malformed_overlay_before_native_mutation() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let held = highs.current_compilation.expect("base compiled");
+        let cols_before = unsafe { Highs_getNumCol(highs.raw) };
+
+        // Malformed envelope: the overlay-compounded state is NOT a fresh id.
+        let overlay = roml::SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![], vec![], vec![])
+            .expect("overlay id allocates");
+        let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+        compiled.compilation_id = compiled.base_compilation;
+
+        let err = highs
+            .apply_overlay(&compiled)
+            .expect_err("a malformed overlay must be rejected at preflight");
+        assert_eq!(err.category, ErrorCategory::InvalidInput);
+        assert_eq!(
+            unsafe { Highs_getNumCol(highs.raw) },
+            cols_before,
+            "a preflight-rejected overlay must not mutate the native model"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(held),
+            "a preflight-rejected overlay must not change the exact compiled identity"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::RequiresRebuild,
+            "a preflight rejection must mark the session RequiresRebuild"
+        );
     }
 }

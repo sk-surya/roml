@@ -12,15 +12,16 @@
 //! [`CompilationSession`] — `compiler.current_compilation()` stays `C_base`
 //! throughout (design §12).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::assignment::{AssignmentError, ContinuousLock, SolutionLock};
 use crate::compiler::backend_ir::{
-    CompilationId, CompiledConstraintId, CompiledLinearRow, CompiledObjectivePolicy,
-    CompiledVariableId,
+    CompilationId, CompiledConstraintId, CompiledEntityRef, CompiledEntityRegistry,
+    CompiledLinearRow, CompiledObjectiveId, CompiledObjectivePolicy, CompiledVariableId,
 };
 use crate::compiler::origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId};
 use crate::compiler::session::CompilationSession;
+use crate::compiler::CompileError;
 use crate::identity::IdentityOverflow;
 use crate::model::{Bounds, ConstraintBounds, Model, Objective, Sense, VarType};
 use crate::Variable;
@@ -191,6 +192,132 @@ pub enum OverlayRollbackOutcome {
         /// Why the rollback could not be proven clean.
         reason: String,
     },
+}
+
+impl CompiledOverlay {
+    /// All-or-nothing preflight validation of this overlay against `existing`
+    /// (the backend's exact live compiled entity registry) BEFORE any native
+    /// mutation (F2).
+    ///
+    /// Checks, in order:
+    /// - the D28 envelope: [`compilation_id`](Self::compilation_id) !=
+    ///   [`base_compilation`](Self::base_compilation) — the overlay-compounded
+    ///   state must receive a FRESH exact id;
+    /// - every op SIMULATED in operation order against a working registry
+    ///   clone:
+    ///   - `SetTemporaryVariableBounds` references a compiled variable present
+    ///     in the live state;
+    ///   - `AddTemporaryRow` rejects a duplicate/live row id, every
+    ///     coefficient variable must be present, and the row MUST carry a
+    ///     matching [`EntityOrigin::SolveOverlay`] origin in
+    ///     [`origin_additions`](Self::origin_additions) (D5, SM-02.5);
+    ///   - `RemoveTemporaryRow` is a rollback-only op and is REJECTED in the
+    ///     apply stream;
+    ///   - `SetObjectivePolicy` references only compiled objectives present in
+    ///     the live state (no dangling policy);
+    /// - a FUTURE `OverlayOp` variant (`#[non_exhaustive]`) is rejected as
+    ///   unsupported.
+    ///
+    /// Backends run this BEFORE any native mutation, so a malformed overlay —
+    /// even one whose ops are self-consistent only in a different order — never
+    /// partially mutates the backend.
+    pub fn validate(&self, existing: &CompiledEntityRegistry) -> Result<(), CompileError> {
+        if self.compilation_id == self.base_compilation {
+            return Err(CompileError::InvalidDeltaEnvelope {
+                reason: "overlay compilation id equals its base compilation id (D28)".to_string(),
+            });
+        }
+
+        let mut present = existing.clone();
+        for op in &self.operations {
+            match op {
+                OverlayOp::SetTemporaryVariableBounds { variable, .. } => {
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                OverlayOp::AddTemporaryRow { row } => {
+                    if !present.rows.insert(row.id) {
+                        return Err(CompileError::DuplicateEntity {
+                            entity: CompiledEntityRef::Constraint(row.id),
+                        });
+                    }
+                    // D5/SM-02.5: every added temporary row must trace to a
+                    // SolveOverlay origin.
+                    if !matches!(
+                        self.origin_additions.constraint_origin(row.id),
+                        Some(EntityOrigin::SolveOverlay { .. })
+                    ) {
+                        return Err(CompileError::MissingOrigin {
+                            entity: CompiledEntityRef::Constraint(row.id),
+                        });
+                    }
+                    for (cid, _) in &row.coefficients {
+                        if !present.variables.contains(cid) {
+                            return Err(CompileError::InvalidReference {
+                                entity: CompiledEntityRef::Variable(*cid),
+                            });
+                        }
+                    }
+                }
+                OverlayOp::RemoveTemporaryRow { row } => {
+                    return Err(CompileError::InvalidDeltaEnvelope {
+                        reason: format!(
+                            "RemoveTemporaryRow ({row:?}) is a rollback-only op and is not \
+                             accepted in the apply stream"
+                        ),
+                    });
+                }
+                OverlayOp::SetObjectivePolicy(policy) => {
+                    if let Some(id) = dangling_policy_objective(policy, &present.objectives) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(id),
+                        });
+                    }
+                } // `OverlayOp` is `#[non_exhaustive]`: this match is exhaustive
+                  // within the defining crate, so a FUTURE variant fails to
+                  // compile here (a compile-time rejection) AND is rejected at
+                  // runtime by each backend's apply loop (which carries the
+                  // required wildcard arm).
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Return the first compiled objective id referenced by `policy` that is not
+/// present in `objectives`, if any (F2 — the apply-stream analogue of the
+/// snapshot builder's dangling-policy check).
+fn dangling_policy_objective(
+    policy: &CompiledObjectivePolicy,
+    objectives: &BTreeSet<CompiledObjectiveId>,
+) -> Option<CompiledObjectiveId> {
+    match policy {
+        CompiledObjectivePolicy::None => None,
+        CompiledObjectivePolicy::Single(id) => {
+            if objectives.contains(id) {
+                None
+            } else {
+                Some(*id)
+            }
+        }
+        CompiledObjectivePolicy::Weighted(items) => items.iter().find_map(|item| {
+            if objectives.contains(&item.objective) {
+                None
+            } else {
+                Some(item.objective)
+            }
+        }),
+        CompiledObjectivePolicy::Lexicographic(items) => items.iter().find_map(|item| {
+            if objectives.contains(&item.objective) {
+                None
+            } else {
+                Some(item.objective)
+            }
+        }),
+    }
 }
 
 /// Error compiling (or, in Task 10, applying) a [`SolveOverlay`]
