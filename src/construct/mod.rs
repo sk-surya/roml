@@ -17,11 +17,11 @@
 //!
 //! P32 Task 16 activates the real per-construct variants, so the module and
 //! [`ConstructKind`]/[`ConstructEntry`] become **public** exports (A30). The
-//! `Fixture` variant, [`FixturePayload`], and the fixture-only builders stay
-//! crate-private: [`FixturePayload`]'s fields are private and it exposes a
-//! `pub(crate)` constructor so the in-crate `#[cfg(test)]` fixture helper keeps
-//! working. The `#[non_exhaustive]` extension boundary on [`ConstructKind`]
-//! stays (A30).
+//! `Fixture` variant and [`FixturePayload`] are `#[cfg(test)]`-gated test-only
+//! scaffolding: they exist solely for the in-crate construct lifecycle tests
+//! and are ABSENT from the public API surface in non-test builds (external code
+//! can never name `ConstructKind::Fixture` or `FixturePayload`). The
+//! `#[non_exhaustive]` extension boundary on [`ConstructKind`] stays (A30).
 
 pub mod absolute;
 pub mod boolean;
@@ -75,21 +75,23 @@ pub enum ConstructKind {
     /// Binary product: binary-binary or binary-times-bounded-linear (design
     /// §16.5, P32 Task 17c).
     BinaryProduct(BinaryProductConstraint),
-    /// P32-only crate-private fixture payload used by the in-crate construct
-    /// lifecycle tests (A30 — never exported).
+    /// Test-only crate-private fixture payload used by the in-crate construct
+    /// lifecycle tests (A30 — `#[cfg(test)]`-gated, so the variant is ABSENT
+    /// from the public API surface in non-test builds).
     #[doc(hidden)]
+    #[cfg(test)]
     Fixture(FixturePayload),
 }
 
-/// P32-only crate-private fixture payload for the in-crate construct lifecycle
+/// Test-only crate-private fixture payload for the in-crate construct lifecycle
 /// tests (A30).
 ///
 /// Minimal and intentionally solver-free; carries no formulation. The type is
-/// `#[doc(hidden)]` and its fields are `pub(crate)` (not exported publicly —
-/// external code cannot construct or read the fixture scaffolding); the
-/// `pub(crate)` constructor keeps the in-crate `#[cfg(test)]` fixture helper
-/// working.
+/// `#[cfg(test)]`-gated and `#[doc(hidden)]`: it exists only in test builds and
+/// is ABSENT from the public API surface in non-test builds, so external code
+/// can never name or construct the fixture scaffolding (A30).
 #[doc(hidden)]
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixturePayload {
     /// A distinguishing key (crate-visible only — A30).
@@ -98,9 +100,9 @@ pub struct FixturePayload {
     pub(crate) value: f64,
 }
 
+#[cfg(test)]
 impl FixturePayload {
     /// Build a fixture payload (crate-private — A30).
-    #[allow(dead_code)]
     pub(crate) fn new(key: String, value: f64) -> Self {
         Self { key, value }
     }
@@ -245,6 +247,7 @@ pub(crate) fn derive_parameter_dependencies(kind: &ConstructKind) -> Vec<ParamId
         ConstructKind::MinMax(payload) => payload.parameter_dependencies(),
         ConstructKind::AbsoluteValue(payload) => payload.parameter_dependencies(),
         ConstructKind::BinaryProduct(payload) => payload.parameter_dependencies(),
+        #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
     }
 }

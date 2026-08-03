@@ -40,12 +40,13 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
+#[cfg(test)]
+use crate::construct::FixturePayload;
 use crate::construct::{
     derive_parameter_dependencies, AbsoluteValueConstraint, AbsoluteValueVariant,
     BinaryProductConstraint, BooleanKind, CardinalityKind, Construct, ConstructEntry,
-    ConstructKind, ConstructStore, FixturePayload, FormulationPreference, IndicatorConstraint,
-    IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense, ProductOperand,
-    ReificationConstraint,
+    ConstructKind, ConstructStore, FormulationPreference, IndicatorConstraint, IndicatorDirection,
+    MinMaxConstraint, MinMaxRelation, MinMaxSense, ProductOperand, ReificationConstraint,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -509,7 +510,11 @@ impl Model {
     /// error rather than wrapping.
     ///
     /// P25 (F3): exercised only by the in-crate construct lifecycle tests.
-    #[allow(dead_code)]
+    ///
+    /// Test-only (A30): the `Fixture` variant and [`FixturePayload`] are
+    /// `#[cfg(test)]`-gated, so this method exists only in test builds and is
+    /// absent from the public API surface in non-test builds.
+    #[cfg(test)]
     pub(crate) fn add_construct_fixture(
         &mut self,
         payload: FixturePayload,
@@ -3348,10 +3353,10 @@ mod tests {
 // ── Construct lifecycle (P25 Task 4, design §7) ────────────────────────────
 //
 // Moved IN-CRATE from tests/semantic_ir.rs (F3): these exercise the
-// crate-private fixture scaffolding (`FixturePayload`, `ConstructKind::Fixture`,
-// `add_construct_fixture`, `Model::construct`, and the pub(crate) snapshot /
-// delta `.constructs` fields), which is not part of the public surface until
-// P32.
+// `#[cfg(test)]`-gated fixture scaffolding (`FixturePayload`,
+// `ConstructKind::Fixture`, `add_construct_fixture`, `Model::construct`, and
+// the pub(crate) snapshot / delta `.constructs` fields), which is test-only
+// and absent from the public API surface (A30).
 #[cfg(test)]
 mod construct_tests {
     // `ConstructKind` is single-variant (`Fixture`) in P25. The tests keep the

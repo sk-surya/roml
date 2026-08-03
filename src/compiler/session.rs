@@ -431,7 +431,10 @@ impl CompilationSession {
                     next_variable_index,
                     next_row_index,
                 )?,
-                // Crate-private P32 fixture scaffolding is never compiled.
+                // Test-only crate-private P32 fixture scaffolding is never
+                // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
+                // builds).
+                #[cfg(test)]
                 ConstructKind::Fixture(_) => continue,
             };
             next_variable_index += output.variables.len() as u32;
