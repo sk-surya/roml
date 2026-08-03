@@ -393,6 +393,8 @@ pub enum EntityOrigin {
 }
 ```
 
+`GeneratedRole` is an implementation-detail marker for the role a generated entity plays for its originating construct (refined with the bridge tasks). `OverlayId` is the opaque overlay identity defined in the design (§4.4).
+
 ### Capabilities and compilation
 
 ```rust
@@ -490,6 +492,8 @@ pub struct InfeasibilityReport {
 }
 ```
 
+`BackendIdentity` is an implementation-detail backend name/version pair used for report provenance (design §13).
+
 ---
 
 ## Planned module structure
@@ -518,6 +522,7 @@ roml-highs/src/{compiler,start,iis,relaxation,multiobjective}.rs
 - [ ] Run untouched fmt/check/clippy/test/doc commands for `roml` and `roml-highs`.
 - [ ] Capture `cargo public-api` and `cargo package --list` output.
 - [ ] Add characterization tests for fluent linear modeling, deterministic snapshot, parameter update, objective constant, solution metadata, and one-rebuild-retry behavior.
+- [ ] Stop when the baseline is fully captured: exact base SHA, tool versions, untouched command outputs, and passing characterization tests, all recorded in `M3_P25_SEMANTIC_IR.md`.
 - [ ] Commit as `test(m3): capture semantic modeling baseline`.
 
 Verification:
@@ -535,7 +540,9 @@ cargo test -p roml --test m3_baseline_characterization -- --nocapture
 - [ ] Allocate opaque IDs through checked atomic counters with zero reserved.
 - [ ] Implement manual `Default` and `Clone` for `Model`.
 - [ ] Add metadata store keyed by `EntityRef`; metadata changes are canonical but non-solver-affecting.
+- [ ] Define `ConstructId(u64)` in `src/identity.rs` (entity identity per design §4.4); the `EntityRef::Construct` variant becomes usable once the construct arena lands in Task 4.
 - [ ] Export lineage/instance/metadata types through reviewed public surfaces.
+- [ ] Stop when independent models never share a lineage, clone tests pass, and solution metadata records every state ID.
 - [ ] Commit as `feat(model): add lineage instance and metadata`.
 
 Verification:
@@ -554,6 +561,7 @@ cargo test -p roml --all-targets
 - [ ] Implement `ScalarFunction`, `ScalarSet`, `FunctionConstraint`, and `IntoScalarFunction`.
 - [ ] Keep the existing coefficient index authoritative in P25 and reconstruct linear functions deterministically.
 - [ ] Extend canonical snapshot/delta with semantic function/set data while invariant-checking transitional legacy fields.
+- [ ] Stop when the coefficient index remains authoritative, every transitional legacy field is invariant-checked, and all conversion tests pass.
 - [ ] Commit as `feat(model): add linear function-in-set semantics`.
 
 Verification:
@@ -567,7 +575,7 @@ cargo test -p roml --all-targets
 ## Task 4 — Add canonical construct lifecycle
 
 **Phase:** P25  
-**Files:** create `src/construct/mod.rs`; modify model/snapshot/delta/metadata/lib and semantic tests.
+**Files:** create `src/construct/mod.rs`; modify model/snapshot/delta/metadata/lib and semantic tests. (P25 ships `mod.rs` plus the construct arena; the per-construct modules `indicator`, `minmax`, `absolute`, `boolean`, `product`, `piecewise_linear`, and `soft` land in Tasks 13/16/17/18.)
 
 - [ ] Write add/clone/snapshot/activity/remove/stale-generation tests using a private fixture payload.
 - [ ] Implement one generation-safe construct arena.
@@ -575,6 +583,7 @@ cargo test -p roml --all-targets
 - [ ] Derive parameter dependencies from payload; validate any cache.
 - [ ] Extend model invariants for live references, metadata, and auxiliary ownership.
 - [ ] Finish P25 evidence and request independent review.
+- [ ] Commit as `feat(model): add canonical construct lifecycle`.
 
 Verification:
 
@@ -596,12 +605,15 @@ cargo public-api -p roml
 - [ ] Define backend deltas with exact from/to compilation IDs.
 - [ ] Implement bidirectional origin queries and structured compilation reports.
 - [ ] Implement deterministic recipe fingerprinting solely for evidence/cache use.
+- [ ] Stop when no generated entity can be finalized without a recorded origin.
 - [ ] Commit as `feat(compiler): define backend IR and compilation identity`.
 
 Verification:
 
 ```bash
 cargo test -p roml --test compiler_identity
+cargo test -p roml --all-targets
+cargo clippy -p roml --all-targets -- -D warnings
 ```
 
 ## Task 6 — Implement typed capabilities
@@ -619,7 +631,7 @@ cargo test -p roml --test compiler_identity
 Verification:
 
 ```bash
-cargo test -p roml solver::conformance
+cargo test -p roml-highs --test conformance
 cargo test -p roml-highs --all-targets
 ```
 
@@ -758,6 +770,7 @@ cargo test -p roml-highs --all-targets
 - [ ] Define weighted violation as minimization and translate sign correctly into maximize targets.
 - [ ] Add solution lower/upper/total violation accessors.
 - [ ] Audit native HiGHS feasibility-relaxation mutation/lifecycle and use a temporary rebuilt session when reversal is uncertain.
+- [ ] Keep the P30 soft bridge self-contained (violation rows and objective penalties only); bound inference and one-sided Big-M helpers belong to the P32 bridge framework (Task 15).
 - [ ] Prove solve-scoped relaxation does not create persistent soft handles or canonical changes.
 - [ ] Commit as `feat(model): add soft constraints and relaxation`.
 
@@ -781,7 +794,7 @@ cargo test -p roml-highs --all-targets
 - [ ] Execute temporary objectives and lock rows through overlays tagged with exact compilation/overlay IDs.
 - [ ] Audit native HiGHS priorities/weights/tolerances/senses and select native only on exact semantic match.
 - [ ] Add native/portable differential corpus and all-objective/stage result storage.
-- [ ] Commit as `feat(solve): add objective policies and lexicographic execution`.
+- [ ] Commit as `feat(solve): add objective policies and lexicographic execution` and request independent review at the P29–P31 phase boundary.
 
 Verification:
 
@@ -799,7 +812,7 @@ cargo test -p roml-highs --all-targets
 
 - [ ] Test interval arithmetic over coefficient signs, constants, fixed variables, infinite bounds, and parameters.
 - [ ] Implement deterministic linear propagation and reject NaN.
-- [ ] Implement one-sided Big-M helpers returning construct-aware `UnboundedBigM`.
+- [ ] Implement one-sided Big-M helpers returning construct-aware `UnboundedBigM` (an implementation-detail marker that no finite Big-M exists for the construct's bounds; never silently substituted).
 - [ ] Implement bridge finalization with deterministic generated order, dependency capture, origins, and report entries.
 - [ ] Commit as `feat(compiler): add safe bridge infrastructure`.
 
@@ -878,7 +891,7 @@ cargo test -p roml-highs --all-targets
 ## Task 19 — Integrate construct-aware diagnostics and public workflows
 
 **Phase:** P34 integration  
-**Files:** modify IIS/origin tests and user docs; create solution-lock/IIS/soft/lexicographic/construct/PWL examples plus NLP boundary document.
+**Files:** create `examples/m3_solution_lock.rs`, `examples/m3_iis_report.rs`, `examples/m3_soft_constraints.rs`, `examples/m3_lexicographic.rs`, `examples/m3_constructs.rs`, `examples/m3_pwl.rs`, and `docs/release/evidence/M3_NLP_READINESS.md`; modify IIS/origin tests and user docs.
 
 - [ ] Add indicator, soft-bound, and PWL conflict fixtures mapping to original constructs/roles.
 - [ ] Write compiled public examples using only golden-path APIs.
@@ -905,7 +918,7 @@ RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps
 - [ ] Build deterministic native/portable corpus covering every M3 semantic workflow.
 - [ ] Run fixed-seed fixing, bound, bridge, origin, delta/rebuild, exact-compilation-ID, and overlay-leak property suites.
 - [ ] Enforce primitive parameter-update median overhead below 5% or 50 microseconds per solve attempt, whichever is larger.
-- [ ] Run full fmt/check/clippy/test/doc/deny/machete/audit/public-api/package matrix.
+- [ ] Run full fmt/check/clippy/test/doc/deny/machete/audit/public-api/package matrix, scoped to `-p roml -p roml-highs` (the `roml-mosek`/`roml-xpress` adapters are `publish = false` and do not compile against the current facade; fixing them is out of scope for M3, matching M2's matrix convention).
 - [ ] Compile and run fresh packed consumers for every golden workflow.
 - [ ] Complete principal engineering, OR formulation, native/unsafe, and NLP-readiness reviews; close all P0/P1 findings.
 - [ ] Close every SM requirement with evidence and exact final SHA.
@@ -915,10 +928,10 @@ Full qualification commands:
 
 ```bash
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+cargo check -p roml -p roml-highs --all-targets
+cargo clippy -p roml -p roml-highs --all-targets -- -D warnings
+cargo test -p roml -p roml-highs --all-targets
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml -p roml-highs --no-deps
 cargo deny check
 cargo machete
 cargo audit
@@ -946,6 +959,8 @@ Every task follows:
 6. update evidence and traceability;
 7. commit one coherent unit;
 8. request independent review at phase boundary.
+
+Verification commands are evidence commands: record their output in the phase evidence file. CI runs `cargo nextest`; local evidence uses `cargo test` (M2 convention).
 
 Every phase PR includes:
 

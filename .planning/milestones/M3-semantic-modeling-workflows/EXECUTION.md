@@ -57,7 +57,7 @@ Default WIP:
 
 Permitted bounded parallelism:
 
-- P29, P30, and P31 after P28, each with independent ownership and one integration reviewer;
+- P29, P30, and P31 after P28, each with independent ownership and one integration reviewer; tasks inside P29–P31 run serially (plan Tasks 11→12→13→14) because they share capability, session, facade, and solution files;
 - P32 after P26 while P27–P31 proceed, only if P26's compiler API is frozen;
 - research/header audits may run in parallel but may not land production code against speculative APIs.
 
@@ -237,7 +237,7 @@ cargo package -p roml --locked
 cargo package -p roml-highs --locked
 ```
 
-Exact commands may be extended by phase plans. Skips must be recorded, not treated as passing.
+Exact commands may be extended by phase plans (per-phase plans live at `.planning/phases/Pnn-*/Pnn-PLAN.md`, following the M2 convention; evidence files live at the paths listed in TRACEABILITY.md). Skips must be recorded, not treated as passing.
 
 ## Phase-specific mandatory checks
 

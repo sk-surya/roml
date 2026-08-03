@@ -204,4 +204,4 @@
 
 **Reason:** two clones can preserve lineage and have equal revision numbers while containing different canonical states, and finite hashes are not exact identity.
 
-**Consequence:** canonical state is identified by `(ModelInstanceId, ModelRevision)`. Backend results, overlay receipts, conflict data, and origin maps must agree on exact `CompilationId` before use.
+**Consequence:** canonical state is identified by `(ModelInstanceId, ModelRevision)`. Backend results, overlay receipts, conflict data, and origin maps must agree on exact `CompilationId` before use. The four identity values and their roles are: `ModelLineageId` (assignment compatibility across related clones), `ModelInstanceId` (identity of one concrete model clone), `CompilationId` (exact backend state used by solutions, overlays, and IIS results), and `RecipeFingerprint` (deterministic evidence/cache aid only — never a correctness authority).

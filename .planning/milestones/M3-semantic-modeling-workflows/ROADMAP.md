@@ -11,19 +11,21 @@ P26 Compiler boundary, backend IR, capabilities, origins, compilation identity
   +-------------------------------+
   |                               |
   v                               v
-P27 Fixing, assignments, locks    P32 Common semantic constructs
+P27 Fixing, locks, overlays       P32 Common semantic constructs
   |                               |
   v                               v
 P28 Starts, hints, SolvePlan      P33 PWL and bound analysis
-  |
-  +------------+------------+
-  |            |            |
-  v            v            v
+  |                                 |
+  +------------+------------+       |
+  |            |            |       |
+  v            v            v       |
 P29 IIS        P30 Soft     P31 Objective policies
-  \            |            /
-   +-----------+-----------+
-               |
-               v
+  \            |            /       |
+   +-----------+-----------+        |
+               |                    |
+               +--------------------+
+                                    |
+                                    v
 P34 Qualification, migration, docs, NLP-readiness
 ```
 
@@ -110,7 +112,7 @@ P32 may begin after P26 while P27–P31 proceed, but only when the compiler cont
 
 **Goal:** expose one explicit solve-attempt contract.
 
-**Requirements:** SM-07, SM-08.
+**Requirements:** SM-07.1–SM-07.2, SM-07.7, SM-08.
 
 **Deliverables:**
 
@@ -135,7 +137,7 @@ P32 may begin after P26 while P27–P31 proceed, but only when the compiler cont
 
 **Goal:** diagnose infeasibility accurately in original ROML terms.
 
-**Requirements:** SM-09 plus SM-02.5–SM-02.6.
+**Requirements:** SM-09 and IIS-related SM-02.6/SM-04.3.
 
 **Deliverables:**
 
@@ -274,7 +276,7 @@ P32 may begin after P26 while P27–P31 proceed, but only when the compiler cont
 - principal engineering, OR formulation, native/unsafe, and NLP-readiness reviews;
 - milestone state update; no publication.
 
-**Performance gate:** ordinary primitive parameter-update median overhead attributable to M3 remains below 5% or 50 microseconds per solve attempt, whichever is larger, on the defined fixture. Exceptions require profiling evidence and owner approval.
+**Performance gate:** ordinary primitive parameter-update median overhead attributable to M3 remains below 5% or 50 microseconds per solve attempt, whichever is larger, on the fixture named in the P34 plan before any benchmarking (the same fixture is cited by SM-15.5 evidence). Exceptions require profiling evidence and owner approval.
 
 **Gate:** all mandatory checks pass; no P0/P1 finding remains; all requirements are evidenced; exact-state safety is qualified; public claims match behavior; NLP extension review passes.
 

@@ -26,35 +26,54 @@ let capacity = model.add_constraint(
 )?;
 model.add_indicator(on, when_one(), generation.ge(10.0))?;
 
+let cost = model.add_objective(minimize(25.0 * generation).named("cost"))?;
+
 let violation = model.soften(
     capacity,
     soft()
         .upper_side()
         .max_violation(20.0)
         .penalty(1_000.0)
+        .on(cost)
         .named("capacity_overage"),
 )?;
 
-let service = model.minimize(violation.total())?;
-let cost = model.add_objective(minimize(25.0 * generation).named("cost"))?;
-model.set_objective_policy(
-    lexicographic()
-        .first(service)
-        .then(cost, degradation().relative(1e-4)),
-)?;
+let service = model.add_objective(minimize(violation.total()).named("service"))?;
+model.set_objective_policy(ObjectivePolicy::Lexicographic(vec![
+    ObjectiveLevel {
+        objective: service,
+        absolute_tolerance: 1e-4,
+        relative_tolerance: 0.0,
+    },
+    ObjectiveLevel {
+        objective: cost,
+        absolute_tolerance: 1e-6,
+        relative_tolerance: 0.0,
+    },
+]))?;
 
 let mut highs = Highs::new()?;
 let first = highs.solve(&mut model)?;
 
-let lock = SolutionLock::integer_variables(first.primal_assignment());
-let second = highs.solve_plan(&mut model, SolvePlan::new().lock(lock))?;
+let lock = SolutionLock {
+    assignment: first.primal_assignment(),
+    selector: LockSelector::IntegerAssigned,
+    continuous: ContinuousLock::Exact,
+};
+let second = highs.solve_plan(
+    &mut model,
+    SolvePlan {
+        overlay: /* solve-scoped overlay carrying the lock; overlay contents follow design §12 */,
+        ..SolvePlan::default()
+    },
+)?;
 ```
 
 If the model is infeasible, the same façade can request an origin-aware report:
 
 ```rust
-let report = highs.analyze_infeasibility(&mut model, IisOptions::default())?;
-println!("{}", report.render_text(&model)?);
+let report = highs.analyze_infeasibility(&mut model, &InfeasibilityRequest::default())?;
+println!("{}", report.render_text()?);
 ```
 
 ## Packet index
