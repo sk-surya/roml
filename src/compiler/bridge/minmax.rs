@@ -147,17 +147,6 @@ pub(crate) fn compile(
                 .iter()
                 .map(|op| op.interval.upper)
                 .fold(f64::NEG_INFINITY, f64::max);
-            // y >= x_i for all i  ⇔  y - x_i >= 0.
-            for op in &operands {
-                let coeffs =
-                    combine_coefficients(negate_coefficients(op.coefficients.clone()), (y, 1.0));
-                finalizer.add_row(
-                    GeneratedRole::MinMaxSelectorRow,
-                    ConstraintBounds::ge(op.constant),
-                    coeffs,
-                    None,
-                );
-            }
             let binaries = exact_max_selector(
                 &mut finalizer,
                 y,
@@ -185,17 +174,6 @@ pub(crate) fn compile(
                 .iter()
                 .map(|op| op.interval.lower)
                 .fold(f64::INFINITY, f64::min);
-            // y <= x_i for all i  ⇔  y - x_i <= 0.
-            for op in &operands {
-                let coeffs =
-                    combine_coefficients(negate_coefficients(op.coefficients.clone()), (y, 1.0));
-                finalizer.add_row(
-                    GeneratedRole::MinMaxSelectorRow,
-                    ConstraintBounds::le(op.constant),
-                    coeffs,
-                    None,
-                );
-            }
             let binaries = exact_min_selector(
                 &mut finalizer,
                 y,
@@ -268,6 +246,12 @@ pub(crate) fn exact_max_selector(
     row_role: GeneratedRole,
     m_key_prefix: &str,
 ) -> Result<Vec<crate::compiler::backend_ir::CompiledVariableId>, CompileError> {
+    // output >= x_i for all i  ⇔  output - x_i >= 0.
+    for op in operands {
+        let coeffs =
+            combine_coefficients(negate_coefficients(op.coefficients.clone()), (output, 1.0));
+        finalizer.add_row(row_role, ConstraintBounds::ge(op.constant), coeffs, None);
+    }
     let mut binaries = Vec::with_capacity(operands.len());
     for _ in operands {
         binaries.push(finalizer.add_variable(binary_role, VarType::Binary, Bounds::BINARY, None));
@@ -314,6 +298,12 @@ pub(crate) fn exact_min_selector(
     row_role: GeneratedRole,
     m_key_prefix: &str,
 ) -> Result<Vec<crate::compiler::backend_ir::CompiledVariableId>, CompileError> {
+    // output <= x_i for all i  ⇔  output - x_i <= 0.
+    for op in operands {
+        let coeffs =
+            combine_coefficients(negate_coefficients(op.coefficients.clone()), (output, 1.0));
+        finalizer.add_row(row_role, ConstraintBounds::le(op.constant), coeffs, None);
+    }
     let mut binaries = Vec::with_capacity(operands.len());
     for _ in operands {
         binaries.push(finalizer.add_variable(binary_role, VarType::Binary, Bounds::BINARY, None));

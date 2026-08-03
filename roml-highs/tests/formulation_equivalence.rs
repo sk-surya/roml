@@ -10,7 +10,8 @@
 use roml::compiler::capability::CompilationPolicy;
 use roml::compiler::session::CompilationSession;
 use roml::construct::{
-    BooleanKind, CardinalityKind, IndicatorDirection, MinMaxRelation, MinMaxSense,
+    AbsoluteValueVariant, BooleanKind, CardinalityKind, IndicatorDirection, MinMaxRelation,
+    MinMaxSense,
 };
 use roml::id::VarId;
 use roml::prelude::*;
@@ -277,5 +278,79 @@ fn minmax_highs_exact_feasible_sets_match_semantic() {
     assert!(
         mismatches.is_empty(),
         "exact-min HiGHS feasible set differs from semantic: {mismatches:?}"
+    );
+}
+
+#[test]
+fn absolute_value_highs_feasible_sets_match_semantic() {
+    // Exact abs over a bounded integer domain: HiGHS finds the probe feasible
+    // iff z == |x|.
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    let (_, z) = model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+
+    let mut mismatches = Vec::new();
+    for xv in -2..=2 {
+        for zv in -2..=2 {
+            let semantic = (zv as f64) == (xv as f64).abs();
+            let auto = highs_feasible_for_fixes(
+                &model,
+                &[(x, xv as f64), (z, zv as f64)],
+                CompilationPolicy::Auto,
+            );
+            let portable = highs_feasible_for_fixes(
+                &model,
+                &[(x, xv as f64), (z, zv as f64)],
+                CompilationPolicy::Portable,
+            );
+            if auto != semantic || portable != semantic {
+                mismatches.push((xv, zv, semantic, auto, portable));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "exact abs HiGHS feasible set differs from semantic: {mismatches:?}"
+    );
+
+    // Clamp over a bounded domain: HiGHS finds the probe feasible iff
+    // z == clamp(x, 1, 3).
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-3.0, 5.0)).unwrap();
+    let (_, z) = model
+        .add_absolute_value(
+            x.into(),
+            AbsoluteValueVariant::Clamp {
+                lower: 1.0,
+                upper: 3.0,
+            },
+            None,
+        )
+        .unwrap();
+
+    let mut mismatches = Vec::new();
+    for xv in -3..=5 {
+        for zv in 0..=4 {
+            let semantic = (zv as f64) == (xv as f64).clamp(1.0, 3.0);
+            let auto = highs_feasible_for_fixes(
+                &model,
+                &[(x, xv as f64), (z, zv as f64)],
+                CompilationPolicy::Auto,
+            );
+            let portable = highs_feasible_for_fixes(
+                &model,
+                &[(x, xv as f64), (z, zv as f64)],
+                CompilationPolicy::Portable,
+            );
+            if auto != semantic || portable != semantic {
+                mismatches.push((xv, zv, semantic, auto, portable));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "clamp HiGHS feasible set differs from semantic: {mismatches:?}"
     );
 }

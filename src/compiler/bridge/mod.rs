@@ -13,6 +13,7 @@
 //! [`crate::compiler::CompileError`] (design §19) — a bridge never silently
 //! relaxes.
 
+pub(crate) mod absolute;
 pub(crate) mod boolean;
 pub(crate) mod cardinality;
 pub(crate) mod indicator;

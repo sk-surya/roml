@@ -366,3 +366,86 @@ Unsupported/unbounded failure behavior: unbounded exact operand → `CompileErro
 - `feat(model): add exact min/max and one-sided relations` — Task 17a implementation + tests + evidence.
 
 ---
+
+## Plan 02 — Task 17b: Add exact absolute value, positive part, and clamp
+
+**Phase:** P32 (Plan 02)  **Requirements:** SM-12.4, SM-12.8; exercises SM-13.2/13.3/13.4/13.5
+**Status:** complete — committed as `feat(model): add exact absolute value, positive part, and clamp`.
+
+### Scope
+
+Task 17b lands `AbsoluteValueConstraint` with `AbsoluteValueVariant { Absolute, PositivePart, Clamp { lower, upper } }`, the `Model::add_absolute_value` builder (stable `Construct` + output-variable handle, SM-12.8), and the bounded exact bridges: the abs/positive-part decomposition (`z = p + n`, `p - n = x`, `p, n >= 0`, selector binary, `M_p = max(U, 0)`, `M_n = max(-L, 0)`) and the composed clamp (inner exact max `w = max(x, lo)` then outer exact min `z = min(w, hi)`, reusing the Task 17a selector helpers). Every generated entity carries a top-level `EntityOrigin::Construct { construct, role }`; no one-sided relaxation (D13) and no reification/strict-inequality row (D14) is emitted. Clause-level scope: SM-12.1/12.2/12.5 stay closed by Plan 01; SM-12.3 by Task 17a; SM-12.6/12.7 by Task 17c; SM-13 full closure remains P33.
+
+### TDD — RED failures (recorded before implementation)
+
+The new abs tests referenced `roml::construct::AbsoluteValueVariant` and `Model::add_absolute_value` against the Task 17a tree — the bridge was not wired (`ConstructKind::AbsoluteValue` returned `UnsupportedFeature`). Expected failure, recorded verbatim:
+
+```text
+---- absolute_value_exact_feasible_set_matches_semantic stdout ----
+thread 'absolute_value_exact_feasible_set_matches_semantic' panicked:
+snapshot compilation must fail: UnsupportedFeature("absolute value bridge not yet implemented (P32 Task 17b)")
+```
+
+### Implementation
+
+- **`src/construct/absolute.rs` (created in Task 17a)** — `AbsoluteValueConstraint { expression, output, variant }`; `AbsoluteValueVariant { Absolute, PositivePart, Clamp { lower, upper } }`; the output variable is created by the builder and stored in the payload (top-level construct origin).
+- **`src/model/mod.rs` (builder added in Task 17a)** — `add_absolute_value(expression, variant, preference)` returns `(Construct, VarId)`; validates the expression is bounded (`UnboundedConstructExpression` typed rejection) and clamp bounds are finite `lower <= upper` (`InvalidClampBounds`); output bounds `[0, max(U, -L)]` (abs), `[0, max(U, 0)]` (positive part), `[lo, hi]` (clamp).
+- **`src/compiler/bridge/absolute.rs` (create)** — the bounded exact bridge:
+  - absolute: `z = p + n`, `p - n = x`, `p, n >= 0`, binary `b`, `p <= M_p·b`, `n <= M_n·(1-b)` with `M_p = max(U, 0)`, `M_n = max(-L, 0)` — `AbsoluteValueDecompositionRow` / `AbsoluteValuePositivePartRow` / `AbsoluteValueNegativePartRow` / `AbsoluteValueSelectorBinary` roles;
+  - positive part: `z - n = x`, `z <= M_p·b`, `n <= M_n·(1-b)` (z wired to the positive part);
+  - clamp: inner `exact_max_selector` on `{x, lo}` → generated `w`, then outer `exact_min_selector` on `{w, hi}` → `z`, with `ClampInnerSelector*` / `ClampOuterSelector*` roles; all M finite derived from `[L, U]` and the constants;
+  - unbounded expression → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4, D12); `M_p`/`M_n` and the clamp selector M values recorded as bound-evidence report entries (SM-13.5).
+- **`src/compiler/bridge/minmax.rs`** — the `exact_max_selector`/`exact_min_selector` helpers now emit the COMPLETE selector (base `output <=/>= x_i` rows, sum-binary row, and the Big-M rows) so the clamp bridge can call them directly; the minmax `compile` arms were adjusted to call the helpers (which now own the base rows). This was a Rule 1 bug fix: the clamp's first emission omitted the base rows, making `z = min(w, hi)` unbounded above (caught by the feasible-set enumeration).
+- **`src/compiler/session.rs`** — `ConstructKind::AbsoluteValue` now dispatches to the absolute bridge (the `UnsupportedFeature` placeholder is gone).
+- **`src/compiler/bridge/mod.rs`** — `pub(crate) mod absolute;`.
+
+### Per-construct evidence (TRACEABILITY.md)
+
+| Construct | Semantic definition | Accepted domain | Rejected domain | Native | Bridge | Origin roles | Reference formulation |
+|---|---|---|---|---|---|---|---|
+| Absolute value | `z = \|x\|` | bounded linear expr | unbounded expr (`UnboundedBigM` / builder rejection) | none (P32) | exact decomposition | `AbsoluteValueDecompositionRow`, `AbsoluteValuePositivePartRow`, `AbsoluteValueNegativePartRow`, `AbsoluteValueSelectorBinary` | `z = p + n`, `p − n = x`, `p,n ≥ 0`, `p ≤ M_p·b`, `n ≤ M_n·(1−b)`, `M_p = max(U,0)`, `M_n = max(−L,0)` |
+| Positive part | `z = max(x, 0)` | bounded linear expr | unbounded expr | none | exact decomposition | same family | `z − n = x`, `z ≤ M_p·b`, `n ≤ M_n·(1−b)` |
+| Clamp | `z = clamp(x, lo, hi)` | bounded linear expr, finite `lo ≤ hi` | invalid clamp bounds | none | composed selectors | `ClampInnerSelectorRow/Binary`, `ClampOuterSelectorRow/Binary` | inner `w = max(x, lo)` selector, outer `z = min(w, hi)` selector |
+
+Unsupported/unbounded failure behavior: unbounded expression → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4); builder-level boundedness/`InvalidClampBounds` rejections. No one-sided relaxation and no reification row is emitted (D13/D14). Randomized direct evaluation and the feasible-set enumeration (z = |x|, z = max(x,0), z = clamp(x,lo,hi) across x below/inside/above) are in `tests/common_constructs.rs`; the HiGHS reference-vs-portable equivalence is in `roml-highs/tests/formulation_equivalence.rs`.
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test common_constructs absolute` | 0 — **7 passed; 0 failed** |
+| `cargo test -p roml --test compiler_bridges` | 0 — **15 passed; 0 failed** |
+| `cargo test -p roml-highs --test formulation_equivalence absolute` | 0 — **1 passed; 0 failed** |
+
+### Full verification
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `cargo test -p roml --all-targets` | 0 | **751 passed; 0 failed; 0 ignored** (baseline 742 + 9 new) |
+| `cargo test -p roml-highs --all-targets` | 0 | **120 passed; 0 failed** (baseline 119 + 1 new) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+| `cargo public-api -p roml` | 0 | **18783 items** (unchanged — the abs public surface landed with Task 17a) |
+
+### Acceptance criteria
+
+- `src/construct/absolute.rs` defines `AbsoluteValueConstraint` with `AbsoluteValueVariant { Absolute, PositivePart, Clamp { lower, upper } }`; `ConstructKind::AbsoluteValue` carries it; `derive_parameter_dependencies` covers expression parameters — **met**.
+- `Model::add_absolute_value` returns a stable `Construct` handle plus the output-variable handle (SM-12.8) and rejects unbounded expressions and invalid clamp bounds with typed `ModelError`s (SM-12.4) — **met**.
+- Abs/positive-part compile to the exact bounded decomposition; clamp compiles to the composed exact max/min selectors; all M finite derived and recorded with bound sources (SM-13.5); unbounded expression → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4, D12) — **met**.
+- Every generated entity carries `EntityOrigin::Construct { construct, role }` (SM-02.5) — **met** (`absolute_value_every_generated_entity_carries_construct_origin` + the completeness validator).
+- Feasible-set enumeration and HiGHS reference-vs-portable equivalence prove z = |x|, z = max(x,0), z = clamp(x,lo,hi) exactly — **met**.
+
+### Deviations
+
+1. **The selector helpers now emit the complete selector (Rule 1 bug fix).** The first Task 17b implementation called `exact_max_selector`/`exact_min_selector` for the clamp but those helpers only emitted the sum-binary and Big-M rows — the minmax `compile` function had been emitting the base `y >= x_i`/`y <= x_i` rows itself. The clamp's direct helper calls therefore omitted the base rows, so `z = min(w, hi)` was unbounded above. Fixed by moving the base-row emission INTO the helpers and removing the now-duplicate loops from the minmax `compile` arms (caught by the clamp feasible-set enumeration). This also corrected the Task 17a min/max emission to the exact same row set (behavior unchanged, verified by re-running the Task 17a min/max suite).
+2. **Clippy `useless_conversion` in a test** (`(p * x).into()` — `p * x` is already `LinExpr`) fixed inline.
+3. **`BackendFeature::AbsoluteValue` already declared** in Task 17a (the feature gate and HiGHS bridge declaration were additive then); Task 17b only wires the bridge body behind it.
+
+### Commit trail
+
+- `feat(model): add exact absolute value, positive part, and clamp` — Task 17b implementation + tests + evidence.
+
+---

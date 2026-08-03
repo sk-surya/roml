@@ -19,8 +19,8 @@ use roml::compiler::origin::{EntityOrigin, GeneratedRole};
 use roml::compiler::session::CompilationSession;
 use roml::compiler::CompileError;
 use roml::construct::{
-    BooleanKind, CardinalityKind, ConstructKind, FormulationPreference, IndicatorDirection,
-    MinMaxRelation, MinMaxSense,
+    AbsoluteValueVariant, BooleanKind, CardinalityKind, ConstructKind, FormulationPreference,
+    IndicatorDirection, MinMaxRelation, MinMaxSense,
 };
 use roml::id::VarId;
 use roml::model::ModelError;
@@ -235,6 +235,23 @@ fn generated_binaries(
     compiled
         .origin_map
         .variables_for_origin(&EntityOrigin::Construct { construct, role })
+}
+
+/// The single generated variable id for a construct role.
+fn generated_var_for(
+    compiled: &BackendSnapshot,
+    construct: roml::Construct,
+    role: GeneratedRole,
+) -> CompiledVariableId {
+    let ids = compiled
+        .origin_map
+        .variables_for_origin(&EntityOrigin::Construct { construct, role });
+    assert_eq!(
+        ids.len(),
+        1,
+        "expected exactly one generated variable for role {role:?}, got {ids:?}"
+    );
+    ids[0]
 }
 
 /// A tiny deterministic LCG for fixed-seed "random" tests (no external dep).
@@ -1563,6 +1580,326 @@ fn minmax_randomized_direct_evaluation_matches_max_and_min() {
             assert!(
                 !assignment_feasible(&compiled, &fixed, &sel),
                 "y = min - 0.5 must be infeasible (exact selector)"
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// Task 17b — absolute value / positive part / clamp
+// ===========================================================================
+
+#[test]
+fn absolute_value_rejects_unbounded_expression() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap(); // free
+    let err = model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap_err();
+    assert_eq!(err, ModelError::UnboundedConstructExpression);
+
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-5.0, 5.0)).unwrap();
+    let p = model.add_parameter(2.0).unwrap();
+    // A bare-parameter expression whose value is finite is fine; an expression
+    // with a free variable is not.
+    let err = model
+        .add_absolute_value(p * x, AbsoluteValueVariant::PositivePart, None)
+        .is_ok();
+    assert!(err, "bounded parameterized expression must be accepted");
+}
+
+#[test]
+fn absolute_value_rejects_invalid_clamp_bounds() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let err = model
+        .add_absolute_value(
+            x.into(),
+            AbsoluteValueVariant::Clamp {
+                lower: 5.0,
+                upper: 1.0,
+            },
+            None,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, ModelError::InvalidClampBounds { lower, upper } if lower == 5.0 && upper == 1.0),
+        "lower > upper must be a typed InvalidClampBounds, got {err:?}"
+    );
+    let err = model
+        .add_absolute_value(
+            x.into(),
+            AbsoluteValueVariant::Clamp {
+                lower: f64::NAN,
+                upper: 1.0,
+            },
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(err, ModelError::InvalidClampBounds { .. }));
+}
+
+#[test]
+fn absolute_value_payload_stores_expression_variant_and_output() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-5.0, 5.0)).unwrap();
+    let (k, output) = model
+        .add_absolute_value(
+            x.into(),
+            AbsoluteValueVariant::Clamp {
+                lower: -1.0,
+                upper: 2.0,
+            },
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let snap = model.take_snapshot().unwrap();
+    let entry = snap.constructs.iter().find(|e| e.id == k).unwrap();
+    assert_eq!(entry.preference, FormulationPreference::Portable);
+    match &entry.kind {
+        ConstructKind::AbsoluteValue(p) => {
+            assert_eq!(p.output, output);
+            assert_eq!(
+                p.variant,
+                AbsoluteValueVariant::Clamp {
+                    lower: -1.0,
+                    upper: 2.0
+                }
+            );
+        }
+        other => panic!("expected AbsoluteValue payload, got {other:?}"),
+    }
+}
+
+#[test]
+fn absolute_value_unbounded_at_compile_returns_construct_aware_error() {
+    // The builder accepts the bounded expression; removing the bound afterwards
+    // makes the bridge see an unbounded interval at compile time — a typed
+    // `UnboundedBigM` naming the construct and expression (SM-13.4, D12).
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, _) = model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+    model.set_variable_bounds(x, Bounds::UNBOUNDED).unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &bridge_caps());
+    assert!(
+        matches!(&err, CompileError::UnboundedBigM { construct, expression }
+            if *construct == k && !expression.is_empty()),
+        "unbounded abs expression must surface the construct-aware UnboundedBigM, got {err:?}"
+    );
+}
+
+#[test]
+fn absolute_value_exact_feasible_set_matches_semantic() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    let (k, z) = model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let b = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValueSelectorBinary);
+    let p = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValuePositivePartRow);
+    let n = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValueNegativePartRow);
+    let xid = compiled_user_var(&compiled, x);
+    let zid = compiled_user_var(&compiled, z);
+    for xv in -2..=2 {
+        for zv in -2..=2 {
+            let semantic = (zv as f64) == (xv as f64).abs();
+            let mut fixed = HashMap::new();
+            fixed.insert(xid, xv as f64);
+            fixed.insert(zid, zv as f64);
+            fixed.insert(p, (xv as f64).max(0.0));
+            fixed.insert(n, (-(xv as f64)).max(0.0));
+            let feasible = assignment_feasible(&compiled, &fixed, &[b]);
+            assert_eq!(
+                feasible, semantic,
+                "z = |x| feasible set mismatch at x={xv}, z={zv}"
+            );
+        }
+    }
+}
+
+#[test]
+fn positive_part_exact_feasible_set_matches_semantic() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    let (k, z) = model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::PositivePart, None)
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let b = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValueSelectorBinary);
+    let n = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValueNegativePartRow);
+    let xid = compiled_user_var(&compiled, x);
+    let zid = compiled_user_var(&compiled, z);
+    for xv in -2..=2 {
+        for zv in -2..=2 {
+            let semantic = (zv as f64) == (xv as f64).max(0.0);
+            let mut fixed = HashMap::new();
+            fixed.insert(xid, xv as f64);
+            fixed.insert(zid, zv as f64);
+            fixed.insert(n, (-(xv as f64)).max(0.0));
+            let feasible = assignment_feasible(&compiled, &fixed, &[b]);
+            assert_eq!(
+                feasible, semantic,
+                "z = max(x,0) feasible set mismatch at x={xv}, z={zv}"
+            );
+        }
+    }
+}
+
+#[test]
+fn clamp_exact_feasible_set_matches_semantic() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-3.0, 5.0)).unwrap();
+    let (k, z) = model
+        .add_absolute_value(
+            x.into(),
+            AbsoluteValueVariant::Clamp {
+                lower: 1.0,
+                upper: 3.0,
+            },
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let mut all_binaries =
+        generated_binaries(&compiled, k, GeneratedRole::ClampInnerSelectorBinary);
+    all_binaries.extend(generated_binaries(
+        &compiled,
+        k,
+        GeneratedRole::ClampOuterSelectorBinary,
+    ));
+    assert_eq!(
+        all_binaries.len(),
+        4,
+        "clamp has 2 inner + 2 outer selector binaries"
+    );
+    let w = generated_var_for(&compiled, k, GeneratedRole::ClampInnerSelectorRow);
+    let xid = compiled_user_var(&compiled, x);
+    let zid = compiled_user_var(&compiled, z);
+    for xv in -3..=5 {
+        for zv in 0..=4 {
+            let semantic = (zv as f64) == (xv as f64).clamp(1.0, 3.0);
+            let w0 = (xv as f64).max(1.0);
+            let mut fixed = HashMap::new();
+            fixed.insert(xid, xv as f64);
+            fixed.insert(zid, zv as f64);
+            fixed.insert(w, w0);
+            let feasible = assignment_feasible(&compiled, &fixed, &all_binaries);
+            assert_eq!(
+                feasible, semantic,
+                "z = clamp(x,1,3) feasible set mismatch at x={xv}, z={zv}"
+            );
+        }
+    }
+}
+
+#[test]
+fn absolute_value_every_generated_entity_carries_construct_origin() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    let (k, _) = model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    for v in &compiled.variables {
+        if let Some(EntityOrigin::Construct { construct, .. }) =
+            compiled.origin_map.variable_origin(v.id)
+        {
+            assert_eq!(*construct, k, "generated var must trace to this construct");
+        }
+    }
+    // Completeness validator finds no missing origins (D5, SM-02.5).
+    assert!(compiled
+        .origin_map
+        .missing_origins(
+            &compiled.variables,
+            &compiled.linear_rows,
+            &compiled.objectives
+        )
+        .is_empty());
+}
+
+#[test]
+fn absolute_value_randomized_direct_evaluation_matches_functions() {
+    // Fixed-seed random bounded x: the exact compiled rows force z = |x|,
+    // z = max(x,0), and z = clamp(x,lo,hi) at every sampled x (direct
+    // evaluation, no solver).
+    let mut rng = Lcg(0xabc_def0);
+    for _ in 0..5 {
+        // Absolute.
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(-4.0, 4.0)).unwrap();
+        let (k, z) = model
+            .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+            .unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+        let b = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValueSelectorBinary);
+        let p = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValuePositivePartRow);
+        let n = generated_var_for(&compiled, k, GeneratedRole::AbsoluteValueNegativePartRow);
+        let xid = compiled_user_var(&compiled, x);
+        let zid = compiled_user_var(&compiled, z);
+        for _ in 0..5 {
+            let xv = rng.range(-3, 3);
+            let z_ref = xv.abs();
+            let mut fixed = HashMap::new();
+            fixed.insert(xid, xv);
+            fixed.insert(zid, z_ref);
+            fixed.insert(p, xv.max(0.0));
+            fixed.insert(n, (-xv).max(0.0));
+            assert!(
+                assignment_feasible(&compiled, &fixed, &[b]),
+                "z=|x| must be feasible"
+            );
+            fixed.insert(zid, z_ref + 1.0);
+            assert!(
+                !assignment_feasible(&compiled, &fixed, &[b]),
+                "z=|x|+1 must be infeasible"
+            );
+        }
+
+        // Clamp.
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(-6.0, 6.0)).unwrap();
+        let (k, z) = model
+            .add_absolute_value(
+                x.into(),
+                AbsoluteValueVariant::Clamp {
+                    lower: -2.0,
+                    upper: 3.0,
+                },
+                None,
+            )
+            .unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+        let mut all_binaries =
+            generated_binaries(&compiled, k, GeneratedRole::ClampInnerSelectorBinary);
+        all_binaries.extend(generated_binaries(
+            &compiled,
+            k,
+            GeneratedRole::ClampOuterSelectorBinary,
+        ));
+        let w = generated_var_for(&compiled, k, GeneratedRole::ClampInnerSelectorRow);
+        let xid = compiled_user_var(&compiled, x);
+        let zid = compiled_user_var(&compiled, z);
+        for _ in 0..5 {
+            let xv = rng.range(-5, 5);
+            let z_ref = xv.clamp(-2.0, 3.0);
+            let w0 = xv.max(-2.0);
+            let mut fixed = HashMap::new();
+            fixed.insert(xid, xv);
+            fixed.insert(zid, z_ref);
+            fixed.insert(w, w0);
+            assert!(
+                assignment_feasible(&compiled, &fixed, &all_binaries),
+                "z=clamp(x,-2,3) must be feasible"
+            );
+            fixed.insert(zid, z_ref + 0.5);
+            assert!(
+                !assignment_feasible(&compiled, &fixed, &all_binaries),
+                "z=clamp(x,-2,3)+0.5 must be infeasible"
             );
         }
     }
