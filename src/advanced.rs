@@ -127,7 +127,7 @@ pub use crate::compiler::bridge::{
 
 /// Canonical semantic construct payloads and kinds (P32 Task 16; design §7).
 ///
-/// The `Fixture` variant and [`crate::construct::FixturePayload`] are
+/// The `Fixture` variant and `crate::construct::FixturePayload` are
 /// `#[cfg(test)]`-gated test-only scaffolding (A30) and never appear here.
 pub use crate::construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,

@@ -8,7 +8,7 @@
 //! `MinMax`, `AbsoluteValue`, `Boolean`, `Cardinality`, `BinaryProduct`,
 //! `PiecewiseLinear`, `SoftConstraint`) as the extension surface. P25 declared
 //! [`ConstructKind`] and its `#[non_exhaustive]` extension boundary and stored
-//! only the crate-private [`FixturePayload`]. P32 Task 16 activates the four
+//! only the crate-private `FixturePayload`. P32 Task 16 activates the four
 //! logical-construct variants (`Indicator`, `Reification`, `Boolean`,
 //! `Cardinality`) with exact semantic payloads; the remaining variants land in
 //! P30/P32/P33 follow-up plans.
@@ -17,7 +17,7 @@
 //!
 //! P32 Task 16 activates the real per-construct variants, so the module and
 //! [`ConstructKind`]/[`ConstructEntry`] become **public** exports (A30). The
-//! `Fixture` variant and [`FixturePayload`] are `#[cfg(test)]`-gated test-only
+//! `Fixture` variant and `FixturePayload` are `#[cfg(test)]`-gated test-only
 //! scaffolding: they exist solely for the in-crate construct lifecycle tests
 //! and are ABSENT from the public API surface in non-test builds (external code
 //! can never name `ConstructKind::Fixture` or `FixturePayload`). The
