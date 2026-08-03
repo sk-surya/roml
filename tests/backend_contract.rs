@@ -54,7 +54,10 @@ fn sample_snapshot(rev: ModelRevision) -> ModelSnapshot {
     let p = param_id(0);
 
     let mut variables = HashMap::new();
-    variables.insert(v, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+    variables.insert(
+        v,
+        (Bounds::NON_NEGATIVE, VarType::Continuous, true, None, None),
+    );
 
     let mut constraints = HashMap::new();
     constraints.insert(c, (ConstraintBounds::le(100.0), true));
@@ -1436,7 +1439,10 @@ fn normalized_view_commuting_square() {
     let r1 = r0.next().unwrap();
 
     let mut vars = HashMap::new();
-    vars.insert(v, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+    vars.insert(
+        v,
+        (Bounds::NON_NEGATIVE, VarType::Continuous, true, None, None),
+    );
     let mut cons = HashMap::new();
     cons.insert(c, (ConstraintBounds::le(100.0), true));
     let objs = HashMap::new();
@@ -1784,6 +1790,7 @@ fn semicontinuous_in_snapshot() {
             VarType::Continuous,
             true,
             Some(5.0),
+            None,
         ),
     );
     let constraints = HashMap::new();

@@ -48,8 +48,9 @@ pub use identity::{ConstructId, IdentityOverflow, ModelInstanceId, ModelLineageI
 pub use metadata::{EntityMetadata, EntityRef, ModelSource};
 pub use model::changelog::Change;
 pub use model::{
-    binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, Model,
-    ModelError, Objective, Parameter, ParameterDef, Sense, VarType, Variable, VariableDef,
+    binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, FixingProvenance,
+    Model, ModelError, Objective, Parameter, ParameterDef, SemiDomain, Sense, VarType, Variable,
+    VariableDef, VariableDomain, VariableFixing,
 };
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
