@@ -238,18 +238,6 @@ pub enum Change {
     },
 }
 
-impl Change {
-    /// Check if this change affects solver state.
-    ///
-    /// Some changes (like parameter value changes) only affect coefficients
-    /// and are tracked separately. Construct changes are canonical changes
-    /// that flow through the delta (adapters treat them as no-ops until M3
-    /// compiles constructs; design §18 permits conservative rebuild).
-    pub fn affects_solver(&self) -> bool {
-        !matches!(self, Change::ParameterValueChanged { .. })
-    }
-}
-
 /// Tracks all changes since last solver sync.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ChangeLog {
