@@ -7,6 +7,7 @@
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
 use crate::id::ObjId;
+use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::model::Model;
 use crate::revision::ModelRevision;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
@@ -36,6 +37,8 @@ pub fn normalize_result(
     active_objective: Option<ObjId>,
     backend_name: &str,
     synchronization: SynchronizationMode,
+    model_lineage: ModelLineageId,
+    model_instance: ModelInstanceId,
 ) -> Result<Solution, SolveError> {
     let status = SolveStatus::from_termination(result.termination)?;
 
@@ -46,10 +49,13 @@ pub fn normalize_result(
             model_revision,
             effective_configuration: result.effective_configuration.clone(),
             synchronization,
-            // P25: the result carries no model reference; the fresh default
-            // lineage/instance ids are filled in when a model binds the
-            // solution (SM-02.7).
-            ..SolveMetadata::default()
+            // CR-02 (SM-02.7): the solution records the SOLVED model's
+            // lineage/instance ids, threaded from `SolverSession::solve_with`.
+            // `SolveMetadata::default()` allocates fresh unrelated global
+            // counter ids, so it must never be used here — that would make
+            // every real solve report ids unequal to the solved model.
+            model_lineage,
+            model_instance,
         });
 
     if let Some(value) = result.solution.as_ref().and_then(|s| s.objective_value) {
@@ -212,7 +218,10 @@ where
             .solve(&request)
             .map_err(|e| SolveError::from_backend(false, e))?;
 
-        // 9. Normalize and attach metadata.
+        // 9. Normalize and attach metadata. The solved model's lineage and
+        // instance ids are bound here (CR-02, SM-02.7) — there is no separate
+        // model-binds-solution step; normalize_result must never fall back to
+        // fresh default ids.
         let active_objective = model.active_objective();
         let solution = normalize_result(
             &result,
@@ -220,6 +229,8 @@ where
             active_objective,
             self.backend.name(),
             sync_mode,
+            model.lineage(),
+            model.instance(),
         )?;
 
         Ok(solution)
@@ -297,12 +308,16 @@ mod tests {
     #[test]
     fn normalize_optimal_result_builds_solution() {
         let obj = make_obj(3);
+        let lineage = ModelLineageId::allocate().unwrap();
+        let instance = ModelInstanceId::allocate().unwrap();
         let solution = normalize_result(
             &optimal_result(),
             ModelRevision::from_u64(2),
             Some(obj),
             "ReferenceBackend",
             SynchronizationMode::Rebuild,
+            lineage,
+            instance,
         )
         .expect("optimal must normalize");
 
@@ -322,6 +337,9 @@ mod tests {
             solution.metadata().synchronization,
             SynchronizationMode::Rebuild
         );
+        // CR-02: the passed lineage/instance ids are recorded verbatim.
+        assert_eq!(solution.metadata().model_lineage, lineage);
+        assert_eq!(solution.metadata().model_instance, instance);
     }
 
     /// A result with no variable values converts to a `Solution` with an empty
@@ -344,6 +362,8 @@ mod tests {
             None,
             "ReferenceBackend",
             SynchronizationMode::NoChange,
+            ModelLineageId::allocate().unwrap(),
+            ModelInstanceId::allocate().unwrap(),
         )
         .expect("feasible must normalize");
         assert_eq!(solution.status(), SolveStatus::Feasible);
@@ -369,6 +389,8 @@ mod tests {
             None,
             "ReferenceBackend",
             SynchronizationMode::NoChange,
+            ModelLineageId::allocate().unwrap(),
+            ModelInstanceId::allocate().unwrap(),
         )
         .expect("infeasible must normalize to Ok(Solution)");
         assert_eq!(solution.status(), SolveStatus::Infeasible);
@@ -391,6 +413,8 @@ mod tests {
                 None,
                 "ReferenceBackend",
                 SynchronizationMode::NoChange,
+                ModelLineageId::allocate().unwrap(),
+                ModelInstanceId::allocate().unwrap(),
             )
             .expect_err("uninterpretable termination must error");
             assert!(
@@ -433,6 +457,8 @@ mod tests {
                 Some(obj),
                 "ReferenceBackend",
                 SynchronizationMode::NoChange,
+                model.lineage(),
+                model.instance(),
             )
             .expect("optimal must normalize");
 

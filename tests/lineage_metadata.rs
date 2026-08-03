@@ -10,8 +10,14 @@ use std::collections::HashSet;
 
 use roml::{
     continuous, ConstraintExprExt, EntityMetadata, EntityRef, Model, ModelRevision, ModelSource,
-    SolveMetadata,
+    SolveMetadata, SolverSession,
 };
+use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
+use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult, SolveSolution};
+use roml::solver::session::{
+    BackendMetadata, BackendSession, SessionHealth, SyncReceipt, Synchronization,
+};
+use roml::sync::{AdapterCursor, AdapterHealth};
 
 #[test]
 fn independent_models_never_share_lineage_or_instance() {
@@ -171,4 +177,106 @@ fn solve_metadata_records_every_state_id() {
     let other = SolveMetadata::default();
     assert_ne!(meta.model_lineage, other.model_lineage);
     assert_ne!(meta.model_instance, other.model_instance);
+}
+
+// ── Minimal session-trait backend for CR-02 ──────────────────────────────────
+//
+// A deterministic in-memory backend that accepts any synchronization and
+// reports an Optimal result, so the REAL `SolverSession::solve` path (commit →
+// sync → solve → normalize) is exercised. It deliberately carries no model
+// identity: the metadata binding is the facade's job, not the backend's.
+
+/// A backend satisfying the session traits with no model identity of its own.
+struct LineageTestBackend {
+    revision: ModelRevision,
+}
+
+impl LineageTestBackend {
+    fn new() -> Self {
+        Self {
+            revision: ModelRevision::ZERO,
+        }
+    }
+}
+
+impl BackendSession for LineageTestBackend {
+    fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
+        let revision = match sync {
+            Synchronization::DeltaBatch(batch) => batch.to,
+            Synchronization::Rebuild(snapshot) => snapshot.revision,
+        };
+        self.revision = revision;
+        Ok(SyncReceipt {
+            cursor: AdapterCursor {
+                applied_revision: revision,
+                health: AdapterHealth::Ready,
+            },
+            health: AdapterHealth::Ready,
+        })
+    }
+
+    fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
+        Ok(SolveResult {
+            effective_configuration: EffectiveConfig::default(),
+            termination: TerminationStatus::Optimal,
+            solution: Some(SolveSolution {
+                variable_values: vec![],
+                objective_value: Some(0.0),
+                dual_values: None,
+                reduced_costs: None,
+            }),
+        })
+    }
+
+    fn close(self) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
+impl SessionHealth for LineageTestBackend {
+    fn health(&self) -> AdapterHealth {
+        AdapterHealth::Ready
+    }
+
+    fn revision(&self) -> ModelRevision {
+        self.revision
+    }
+}
+
+impl BackendMetadata for LineageTestBackend {
+    fn name(&self) -> &str {
+        "LineageTestBackend"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::default()
+    }
+}
+
+/// CR-02: the REAL solve path must bind the solved model's lineage/instance
+/// ids into the solution metadata (SM-02.7). Before the fix,
+/// `normalize_result` filled them from `..SolveMetadata::default()`, which
+/// allocates fresh unrelated global-counter ids on every solve, so this
+/// comparison always failed.
+#[test]
+fn real_solve_binds_model_lineage_and_instance_into_metadata() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    model.add_constraint((x).le(10.0)).unwrap();
+    model.maximize(x).unwrap();
+
+    let mut session = SolverSession::new(LineageTestBackend::new());
+    let solution = session
+        .solve(&mut model)
+        .expect("reference solve succeeds");
+    assert_eq!(
+        solution.metadata().model_lineage,
+        model.lineage(),
+        "solution lineage must be the solved model's lineage"
+    );
+    assert_eq!(
+        solution.metadata().model_instance,
+        model.instance(),
+        "solution instance must be the solved model's instance"
+    );
 }
