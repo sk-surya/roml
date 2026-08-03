@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 
+use roml::advanced::CompilationId;
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
 use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult, SolveSolution};
 use roml::solver::session::{
@@ -199,12 +200,16 @@ fn solve_metadata_records_every_state_id() {
 /// A backend satisfying the session traits with no model identity of its own.
 struct LineageTestBackend {
     revision: ModelRevision,
+    /// The exact `CompilationId` of the compiled state held after the most
+    /// recent compiled synchronization (F2 / SM-03.9).
+    current_compilation: Option<CompilationId>,
 }
 
 impl LineageTestBackend {
     fn new() -> Self {
         Self {
             revision: ModelRevision::ZERO,
+            current_compilation: None,
         }
     }
 }
@@ -214,8 +219,14 @@ impl BackendSession for LineageTestBackend {
         let revision = match sync {
             Synchronization::DeltaBatch(batch) => batch.to,
             Synchronization::Rebuild(snapshot) => snapshot.revision,
-            Synchronization::CompiledDeltaBatch(batch) => batch.to_revision,
-            Synchronization::CompiledRebuild(snapshot) => snapshot.source_revision,
+            Synchronization::CompiledDeltaBatch(batch) => {
+                self.current_compilation = Some(batch.to_compilation);
+                batch.to_revision
+            }
+            Synchronization::CompiledRebuild(snapshot) => {
+                self.current_compilation = Some(snapshot.compilation_id);
+                snapshot.source_revision
+            }
         };
         self.revision = revision;
         Ok(SyncReceipt {
@@ -237,6 +248,9 @@ impl BackendSession for LineageTestBackend {
                 dual_values: None,
                 reduced_costs: None,
             }),
+            compilation_id: self
+                .current_compilation
+                .expect("a solve must follow a compiled synchronization"),
         })
     }
 
