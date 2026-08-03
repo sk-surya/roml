@@ -4,8 +4,8 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 
 | Requirement | Primary phase | Secondary phase/evidence | Status |
 |---|---|---|---|
-| SM-01 Canonical semantic IR | P25 | P34 public API/NLP audit | Closed in P25 (`M3_P25_SEMANTIC_IR.md`); P34 audit pending |
-| SM-02 Identity/metadata/provenance | P25 | P26 compilation/origin IDs; P29 reports | Closed in P25 (`M3_P25_SEMANTIC_IR.md`); P26 compilation IDs pending |
+| SM-01 Canonical semantic IR | P25 | P34 public API/NLP audit | Partially closed: SM-01.1–01.3, 01.5, 01.6 closed in P25; SM-01.4 partial (semantic constructs in P25, objective policies P31); P34 audit pending |
+| SM-02 Identity/metadata/provenance | P25 | P26 compilation/origin IDs; P29 reports | Partially closed: SM-02.1, 02.3, 02.7 closed in P25; SM-02.2 foundations only (validation mechanism P27); SM-02.4/02.5 → P26; SM-02.6 → P29 |
 | SM-03 Compiler/backend IR | P26 | P34 equivalence and stale-state evidence | Planned |
 | SM-04 Typed capabilities | P26 | P28/P29/P31/P33 backend features | Planned |
 | SM-05 Persistent fixing | P27 | P34 regression/performance | Planned |
