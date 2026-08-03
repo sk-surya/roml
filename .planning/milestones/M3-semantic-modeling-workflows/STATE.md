@@ -3,7 +3,7 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P25 accepted (merged via PR #27 at main@9c2a9df); P26 ready to plan  
+**Status:** P26 accepted (merged via PR #28 at main@192cd00); P27 and P32 in parallel execution  
 **Current phase:** P26 — compiler boundary, backend IR, capabilities, origins, compilation identity  
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
 **Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
@@ -41,7 +41,7 @@ Before P25 code:
 | P29 IIS/conflicts | Blocked | P28 accepted | none | pinned/system HiGHS IIS capability |
 | P30 Soft constraints | Blocked | P28 accepted | none | none |
 | P31 Lexicographic objectives | Blocked | P28 accepted | none | native HiGHS semantics audit |
-| P32 Common constructs | Blocked | P26 accepted | none | none |
+| P32 Common constructs | Ready to execute | P26 accepted (PR #28, `192cd00`) | `.planning/phases/32-common-constructs/32-PLAN.md` + `32-PLAN-02.md` | none |
 | P33 PWL/bounds | Blocked | P32 accepted | none | none |
 | P34 Qualification | Blocked | P29–P33 accepted | none | no publication in M3 |
 
