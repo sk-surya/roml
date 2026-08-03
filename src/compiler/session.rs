@@ -417,10 +417,13 @@ impl CompilationSession {
                     next_variable_index,
                     next_row_index,
                 )?,
-                ConstructKind::AbsoluteValue(_) => {
-                    return Err(CompileError::UnsupportedFeature(
-                        "absolute value bridge not yet implemented (P32 Task 17b)".into(),
-                    ));
+                ConstructKind::AbsoluteValue(payload) => {
+                    crate::compiler::bridge::absolute::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
                 }
                 ConstructKind::BinaryProduct(_) => {
                     return Err(CompileError::UnsupportedFeature(
