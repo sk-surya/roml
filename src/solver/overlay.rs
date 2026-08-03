@@ -466,7 +466,14 @@ fn continuous_band_bounds(
     if !matches!(domain.var_type, VarType::Continuous) {
         return Err(OverlayError::WithinBandOnNonContinuous { variable });
     }
-    Ok(Bounds::new(value - absolute, value + absolute))
+    // WR-01: a lock is a feasible-region RESTRICTION (SM-06.3/06.5) and must
+    // never LOOSEN a declared bound — INTERSECT the band with the declared
+    // domain. Without the clip, a band extending past a declared bound (e.g.
+    // value 1.0, absolute 2.0 on `[0,10]` -> raw `[-1,3]`) lets the overlay
+    // solve return a solution violating the declared bounds.
+    let lower = (value - absolute).max(domain.bounds.lower);
+    let upper = (value + absolute).min(domain.bounds.upper);
+    Ok(Bounds::new(lower, upper))
 }
 
 /// Resolve the compiled coefficients and constant of `objective` for a
