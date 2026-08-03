@@ -75,6 +75,30 @@ fn native_indicator_caps() -> BackendCapabilitySet {
     set
 }
 
+/// `Lp` native + the P32 construct bridges but NO `Mip`: a snapshot whose
+/// construct compilation generates binary columns must be rejected (WR-02) —
+/// a backend declaring only LP would otherwise solve a wrong continuous
+/// relaxation silently.
+fn lp_only_construct_bridge_caps() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    set.set(
+        BackendFeature::Lp,
+        FeatureSupport::native(Default::default()),
+    );
+    for f in [
+        BackendFeature::Indicator,
+        BackendFeature::Reification,
+        BackendFeature::Boolean,
+        BackendFeature::Cardinality,
+        BackendFeature::MinMax,
+        BackendFeature::AbsoluteValue,
+        BackendFeature::BinaryProduct,
+    ] {
+        set.set(f, FeatureSupport::bridge(Default::default()));
+    }
+    set
+}
+
 fn compile(
     model: &Model,
     policy: CompilationPolicy,
@@ -879,6 +903,80 @@ fn every_generated_entity_carries_construct_origin() {
             &compiled.objectives
         )
         .is_empty());
+}
+
+#[test]
+fn construct_generated_binaries_require_mip_gate() {
+    // WR-02: an exact minmax over all-continuous operands generates selector
+    // binaries at compile time. A backend declaring only Lp (plus the bridge
+    // feature) must be rejected with UnsupportedFeature — never silently
+    // compiled into a wrong continuous relaxation.
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    let err = compile_err(
+        &model,
+        CompilationPolicy::Auto,
+        &lp_only_construct_bridge_caps(),
+    );
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "construct-generated binaries must gate on BackendFeature::Mip, got {err:?}"
+    );
+
+    // An exact absolute value over an all-continuous bounded expression also
+    // generates a selector binary — same gate.
+    let mut model = Model::new();
+    let z = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    model
+        .add_absolute_value(z.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+    let err = compile_err(
+        &model,
+        CompilationPolicy::Auto,
+        &lp_only_construct_bridge_caps(),
+    );
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "abs selector binary must gate on BackendFeature::Mip, got {err:?}"
+    );
+}
+
+#[test]
+fn zero_binary_construct_compiles_without_mip() {
+    // WR-02 complement: a construct whose exact rows generate NO binaries
+    // (max epigraph) must compile against an Lp-only backend.
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Epigraph,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(
+        &model,
+        CompilationPolicy::Auto,
+        &lp_only_construct_bridge_caps(),
+    );
+    assert!(
+        compiled
+            .variables
+            .iter()
+            .all(|v| v.var_type == roml::model::VarType::Continuous),
+        "max epigraph generates no binary columns"
+    );
 }
 
 // ===========================================================================
