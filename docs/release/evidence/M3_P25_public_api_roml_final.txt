@@ -305,13 +305,13 @@ pub roml::advanced::Change::ConstraintRemoved
 pub roml::advanced::Change::ConstraintRemoved::con: roml::id::ConId
 pub roml::advanced::Change::ConstructActivityChanged
 pub roml::advanced::Change::ConstructActivityChanged::active: bool
-pub roml::advanced::Change::ConstructActivityChanged::construct: roml::construct::Construct
+pub roml::advanced::Change::ConstructActivityChanged::construct: roml::Construct
 pub roml::advanced::Change::ConstructAdded
 pub roml::advanced::Change::ConstructAdded::active: bool
-pub roml::advanced::Change::ConstructAdded::construct: roml::construct::Construct
-pub roml::advanced::Change::ConstructAdded::kind: roml::construct::ConstructKind
+pub roml::advanced::Change::ConstructAdded::construct: roml::Construct
+pub roml::advanced::Change::ConstructAdded::preference: roml::FormulationPreference
 pub roml::advanced::Change::ConstructRemoved
-pub roml::advanced::Change::ConstructRemoved::construct: roml::construct::Construct
+pub roml::advanced::Change::ConstructRemoved::construct: roml::Construct
 pub roml::advanced::Change::ObjectiveAdded
 pub roml::advanced::Change::ObjectiveAdded::obj: roml::id::ObjId
 pub roml::advanced::Change::ObjectiveAdded::sense: roml::model::objective::Sense
@@ -349,8 +349,6 @@ pub roml::advanced::Change::VariableTypeChanged
 pub roml::advanced::Change::VariableTypeChanged::new: roml::model::variable::VarType
 pub roml::advanced::Change::VariableTypeChanged::old: roml::model::variable::VarType
 pub roml::advanced::Change::VariableTypeChanged::var: roml::id::VarId
-impl roml::model::changelog::Change
-pub fn roml::model::changelog::Change::affects_solver(&self) -> bool
 impl core::clone::Clone for roml::model::changelog::Change
 pub fn roml::model::changelog::Change::clone(&self) -> roml::model::changelog::Change
 impl core::fmt::Debug for roml::model::changelog::Change
@@ -572,8 +570,8 @@ pub roml::advanced::ModelOp::AddConstraint::bounds: roml::model::constraint::Con
 pub roml::advanced::ModelOp::AddConstraint::con: roml::id::ConId
 pub roml::advanced::ModelOp::AddConstruct
 pub roml::advanced::ModelOp::AddConstruct::active: bool
-pub roml::advanced::ModelOp::AddConstruct::construct: roml::construct::Construct
-pub roml::advanced::ModelOp::AddConstruct::kind: roml::construct::ConstructKind
+pub roml::advanced::ModelOp::AddConstruct::construct: roml::Construct
+pub roml::advanced::ModelOp::AddConstruct::preference: roml::FormulationPreference
 pub roml::advanced::ModelOp::AddObjective
 pub roml::advanced::ModelOp::AddObjective::obj: roml::id::ObjId
 pub roml::advanced::ModelOp::AddObjective::sense: roml::model::objective::Sense
@@ -586,7 +584,7 @@ pub roml::advanced::ModelOp::RemoveCell::cell_key: roml::model::coefficient::Cel
 pub roml::advanced::ModelOp::RemoveConstraint
 pub roml::advanced::ModelOp::RemoveConstraint::con: roml::id::ConId
 pub roml::advanced::ModelOp::RemoveConstruct
-pub roml::advanced::ModelOp::RemoveConstruct::construct: roml::construct::Construct
+pub roml::advanced::ModelOp::RemoveConstruct::construct: roml::Construct
 pub roml::advanced::ModelOp::RemoveObjective
 pub roml::advanced::ModelOp::RemoveObjective::obj: roml::id::ObjId
 pub roml::advanced::ModelOp::RemoveVariable
@@ -605,7 +603,7 @@ pub roml::advanced::ModelOp::SetConstraintBounds::bounds: roml::model::constrain
 pub roml::advanced::ModelOp::SetConstraintBounds::con: roml::id::ConId
 pub roml::advanced::ModelOp::SetConstructActive
 pub roml::advanced::ModelOp::SetConstructActive::active: bool
-pub roml::advanced::ModelOp::SetConstructActive::construct: roml::construct::Construct
+pub roml::advanced::ModelOp::SetConstructActive::construct: roml::Construct
 pub roml::advanced::ModelOp::SetObjectiveCell
 pub roml::advanced::ModelOp::SetObjectiveCell::cell_key: roml::model::coefficient::CellKey
 pub roml::advanced::ModelOp::SetObjectiveCell::constant: f64
@@ -1585,48 +1583,7 @@ impl<T> core::clone::CloneToUninit for roml::snapshot::ConstraintEntry where T: 
 pub unsafe fn roml::snapshot::ConstraintEntry::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::snapshot::ConstraintEntry
 pub fn roml::snapshot::ConstraintEntry::from(T) -> T
-pub struct roml::advanced::ConstructEntry
-pub roml::advanced::ConstructEntry::active: bool
-pub roml::advanced::ConstructEntry::id: roml::construct::Construct
-pub roml::advanced::ConstructEntry::kind: roml::construct::ConstructKind
-impl core::clone::Clone for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::clone(&self) -> roml::construct::ConstructEntry
-impl core::cmp::PartialEq for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::eq(&self, &roml::construct::ConstructEntry) -> bool
-impl core::fmt::Debug for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for roml::construct::ConstructEntry
-impl core::marker::Freeze for roml::construct::ConstructEntry
-impl core::marker::Send for roml::construct::ConstructEntry
-impl core::marker::Sync for roml::construct::ConstructEntry
-impl core::marker::Unpin for roml::construct::ConstructEntry
-impl core::marker::UnsafeUnpin for roml::construct::ConstructEntry
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::ConstructEntry
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::ConstructEntry
-impl<T, U> core::convert::Into<U> for roml::construct::ConstructEntry where U: core::convert::From<T>
-pub fn roml::construct::ConstructEntry::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::ConstructEntry where U: core::convert::Into<T>
-pub type roml::construct::ConstructEntry::Error = core::convert::Infallible
-pub fn roml::construct::ConstructEntry::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::ConstructEntry where U: core::convert::TryFrom<T>
-pub type roml::construct::ConstructEntry::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::ConstructEntry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::ConstructEntry where T: core::clone::Clone
-pub type roml::construct::ConstructEntry::Owned = T
-pub fn roml::construct::ConstructEntry::clone_into(&self, &mut T)
-pub fn roml::construct::ConstructEntry::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::ConstructEntry where T: 'static + ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::ConstructEntry where T: ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::ConstructEntry where T: ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::ConstructEntry where T: core::clone::Clone
-pub unsafe fn roml::construct::ConstructEntry::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::from(T) -> T
 pub struct roml::advanced::DeltaBatch
-pub roml::advanced::DeltaBatch::constructs: alloc::vec::Vec<roml::construct::ConstructEntry>
 pub roml::advanced::DeltaBatch::from: roml::revision::ModelRevision
 pub roml::advanced::DeltaBatch::functions: alloc::vec::Vec<roml::function::FunctionEntry>
 pub roml::advanced::DeltaBatch::operations: alloc::vec::Vec<roml::delta::ModelOp>
@@ -1721,8 +1678,10 @@ impl<T> core::convert::From<T> for roml::solver::request::EffectiveConfig
 pub fn roml::solver::request::EffectiveConfig::from(T) -> T
 pub struct roml::advanced::FunctionEntry
 pub roml::advanced::FunctionEntry::constraint: roml::id::ConId
+pub roml::advanced::FunctionEntry::dependencies: alloc::vec::Vec<roml::id::ParamId>
 pub roml::advanced::FunctionEntry::function: roml::function::scalar::ScalarFunction
 pub roml::advanced::FunctionEntry::set: roml::function::set::ScalarSet
+pub roml::advanced::FunctionEntry::terms: alloc::vec::Vec<(roml::id::VarId, roml::value_expr::ValueExpr)>
 impl core::clone::Clone for roml::function::FunctionEntry
 pub fn roml::function::FunctionEntry::clone(&self) -> roml::function::FunctionEntry
 impl core::cmp::PartialEq for roml::function::FunctionEntry
@@ -1871,7 +1830,6 @@ pub fn roml::revision::ModelRevision::from(T) -> T
 pub struct roml::advanced::ModelSnapshot
 pub roml::advanced::ModelSnapshot::cells: alloc::vec::Vec<roml::snapshot::CellEntry>
 pub roml::advanced::ModelSnapshot::constraints: alloc::vec::Vec<roml::snapshot::ConstraintEntry>
-pub roml::advanced::ModelSnapshot::constructs: alloc::vec::Vec<roml::construct::ConstructEntry>
 pub roml::advanced::ModelSnapshot::functions: alloc::vec::Vec<roml::function::FunctionEntry>
 pub roml::advanced::ModelSnapshot::objectives: alloc::vec::Vec<roml::snapshot::ObjectiveEntry>
 pub roml::advanced::ModelSnapshot::parameters: alloc::vec::Vec<roml::snapshot::ParameterEntry>
@@ -2734,165 +2692,6 @@ pub fn roml::advanced::take_snapshot(roml::revision::ModelRevision, &std::collec
 pub fn roml::advanced::validate_request(&roml::solver::request::SolveRequest, &roml::solver::backend::BackendCapabilities) -> alloc::vec::Vec<roml::solver::request::ConfigRejection>
 pub type roml::advanced::CellKey = (roml::model::coefficient::CoefficientTarget, roml::id::VarId)
 pub type roml::advanced::SolverStatus = roml::solver::SolveStatus
-pub mod roml::construct
-#[non_exhaustive] pub enum roml::construct::ConstructKind
-impl core::clone::Clone for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::clone(&self) -> roml::construct::ConstructKind
-impl core::cmp::PartialEq for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::eq(&self, &roml::construct::ConstructKind) -> bool
-impl core::fmt::Debug for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for roml::construct::ConstructKind
-impl core::marker::Freeze for roml::construct::ConstructKind
-impl core::marker::Send for roml::construct::ConstructKind
-impl core::marker::Sync for roml::construct::ConstructKind
-impl core::marker::Unpin for roml::construct::ConstructKind
-impl core::marker::UnsafeUnpin for roml::construct::ConstructKind
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::ConstructKind
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::ConstructKind
-impl<T, U> core::convert::Into<U> for roml::construct::ConstructKind where U: core::convert::From<T>
-pub fn roml::construct::ConstructKind::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::ConstructKind where U: core::convert::Into<T>
-pub type roml::construct::ConstructKind::Error = core::convert::Infallible
-pub fn roml::construct::ConstructKind::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::ConstructKind where U: core::convert::TryFrom<T>
-pub type roml::construct::ConstructKind::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::ConstructKind::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::ConstructKind where T: core::clone::Clone
-pub type roml::construct::ConstructKind::Owned = T
-pub fn roml::construct::ConstructKind::clone_into(&self, &mut T)
-pub fn roml::construct::ConstructKind::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::ConstructKind where T: 'static + ?core::marker::Sized
-pub fn roml::construct::ConstructKind::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::ConstructKind where T: ?core::marker::Sized
-pub fn roml::construct::ConstructKind::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::ConstructKind where T: ?core::marker::Sized
-pub fn roml::construct::ConstructKind::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::ConstructKind where T: core::clone::Clone
-pub unsafe fn roml::construct::ConstructKind::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::from(T) -> T
-pub enum roml::construct::FormulationPreference
-pub roml::construct::FormulationPreference::Auto
-pub roml::construct::FormulationPreference::NativeRequired
-pub roml::construct::FormulationPreference::Portable
-impl core::clone::Clone for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::clone(&self) -> roml::construct::FormulationPreference
-impl core::cmp::Eq for roml::construct::FormulationPreference
-impl core::cmp::PartialEq for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::eq(&self, &roml::construct::FormulationPreference) -> bool
-impl core::fmt::Debug for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for roml::construct::FormulationPreference
-impl core::marker::StructuralPartialEq for roml::construct::FormulationPreference
-impl core::marker::Freeze for roml::construct::FormulationPreference
-impl core::marker::Send for roml::construct::FormulationPreference
-impl core::marker::Sync for roml::construct::FormulationPreference
-impl core::marker::Unpin for roml::construct::FormulationPreference
-impl core::marker::UnsafeUnpin for roml::construct::FormulationPreference
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::FormulationPreference
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::FormulationPreference
-impl<T, U> core::convert::Into<U> for roml::construct::FormulationPreference where U: core::convert::From<T>
-pub fn roml::construct::FormulationPreference::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::FormulationPreference where U: core::convert::Into<T>
-pub type roml::construct::FormulationPreference::Error = core::convert::Infallible
-pub fn roml::construct::FormulationPreference::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::FormulationPreference where U: core::convert::TryFrom<T>
-pub type roml::construct::FormulationPreference::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::FormulationPreference::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::FormulationPreference where T: core::clone::Clone
-pub type roml::construct::FormulationPreference::Owned = T
-pub fn roml::construct::FormulationPreference::clone_into(&self, &mut T)
-pub fn roml::construct::FormulationPreference::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::FormulationPreference where T: 'static + ?core::marker::Sized
-pub fn roml::construct::FormulationPreference::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::FormulationPreference where T: ?core::marker::Sized
-pub fn roml::construct::FormulationPreference::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::FormulationPreference where T: ?core::marker::Sized
-pub fn roml::construct::FormulationPreference::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::FormulationPreference where T: core::clone::Clone
-pub unsafe fn roml::construct::FormulationPreference::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::from(T) -> T
-pub struct roml::construct::ConstructData
-pub roml::construct::ConstructData::entry: roml::construct::ConstructEntry
-pub roml::construct::ConstructData::metadata: roml::metadata::EntityMetadata
-pub roml::construct::ConstructData::parameter_dependencies: alloc::vec::Vec<roml::id::ParamId>
-pub roml::construct::ConstructData::preference: roml::construct::FormulationPreference
-impl core::clone::Clone for roml::construct::ConstructData
-pub fn roml::construct::ConstructData::clone(&self) -> roml::construct::ConstructData
-impl core::fmt::Debug for roml::construct::ConstructData
-pub fn roml::construct::ConstructData::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for roml::construct::ConstructData
-impl core::marker::Send for roml::construct::ConstructData
-impl core::marker::Sync for roml::construct::ConstructData
-impl core::marker::Unpin for roml::construct::ConstructData
-impl core::marker::UnsafeUnpin for roml::construct::ConstructData
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::ConstructData
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::ConstructData
-impl<T, U> core::convert::Into<U> for roml::construct::ConstructData where U: core::convert::From<T>
-pub fn roml::construct::ConstructData::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::ConstructData where U: core::convert::Into<T>
-pub type roml::construct::ConstructData::Error = core::convert::Infallible
-pub fn roml::construct::ConstructData::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::ConstructData where U: core::convert::TryFrom<T>
-pub type roml::construct::ConstructData::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::ConstructData::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::ConstructData where T: core::clone::Clone
-pub type roml::construct::ConstructData::Owned = T
-pub fn roml::construct::ConstructData::clone_into(&self, &mut T)
-pub fn roml::construct::ConstructData::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::ConstructData where T: 'static + ?core::marker::Sized
-pub fn roml::construct::ConstructData::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::ConstructData where T: ?core::marker::Sized
-pub fn roml::construct::ConstructData::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::ConstructData where T: ?core::marker::Sized
-pub fn roml::construct::ConstructData::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::ConstructData where T: core::clone::Clone
-pub unsafe fn roml::construct::ConstructData::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::ConstructData
-pub fn roml::construct::ConstructData::from(T) -> T
-pub struct roml::construct::ConstructEntry
-pub roml::construct::ConstructEntry::active: bool
-pub roml::construct::ConstructEntry::id: roml::construct::Construct
-pub roml::construct::ConstructEntry::kind: roml::construct::ConstructKind
-impl core::clone::Clone for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::clone(&self) -> roml::construct::ConstructEntry
-impl core::cmp::PartialEq for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::eq(&self, &roml::construct::ConstructEntry) -> bool
-impl core::fmt::Debug for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for roml::construct::ConstructEntry
-impl core::marker::Freeze for roml::construct::ConstructEntry
-impl core::marker::Send for roml::construct::ConstructEntry
-impl core::marker::Sync for roml::construct::ConstructEntry
-impl core::marker::Unpin for roml::construct::ConstructEntry
-impl core::marker::UnsafeUnpin for roml::construct::ConstructEntry
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::ConstructEntry
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::ConstructEntry
-impl<T, U> core::convert::Into<U> for roml::construct::ConstructEntry where U: core::convert::From<T>
-pub fn roml::construct::ConstructEntry::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::ConstructEntry where U: core::convert::Into<T>
-pub type roml::construct::ConstructEntry::Error = core::convert::Infallible
-pub fn roml::construct::ConstructEntry::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::ConstructEntry where U: core::convert::TryFrom<T>
-pub type roml::construct::ConstructEntry::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::ConstructEntry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::ConstructEntry where T: core::clone::Clone
-pub type roml::construct::ConstructEntry::Owned = T
-pub fn roml::construct::ConstructEntry::clone_into(&self, &mut T)
-pub fn roml::construct::ConstructEntry::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::ConstructEntry where T: 'static + ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::ConstructEntry where T: ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::ConstructEntry where T: ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::ConstructEntry where T: core::clone::Clone
-pub unsafe fn roml::construct::ConstructEntry::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::from(T) -> T
-pub type roml::construct::Construct = roml::identity::ConstructId
 pub mod roml::delta
 pub enum roml::delta::ModelOp
 pub roml::delta::ModelOp::AddConstraint
@@ -2900,8 +2699,8 @@ pub roml::delta::ModelOp::AddConstraint::bounds: roml::model::constraint::Constr
 pub roml::delta::ModelOp::AddConstraint::con: roml::id::ConId
 pub roml::delta::ModelOp::AddConstruct
 pub roml::delta::ModelOp::AddConstruct::active: bool
-pub roml::delta::ModelOp::AddConstruct::construct: roml::construct::Construct
-pub roml::delta::ModelOp::AddConstruct::kind: roml::construct::ConstructKind
+pub roml::delta::ModelOp::AddConstruct::construct: roml::Construct
+pub roml::delta::ModelOp::AddConstruct::preference: roml::FormulationPreference
 pub roml::delta::ModelOp::AddObjective
 pub roml::delta::ModelOp::AddObjective::obj: roml::id::ObjId
 pub roml::delta::ModelOp::AddObjective::sense: roml::model::objective::Sense
@@ -2914,7 +2713,7 @@ pub roml::delta::ModelOp::RemoveCell::cell_key: roml::model::coefficient::CellKe
 pub roml::delta::ModelOp::RemoveConstraint
 pub roml::delta::ModelOp::RemoveConstraint::con: roml::id::ConId
 pub roml::delta::ModelOp::RemoveConstruct
-pub roml::delta::ModelOp::RemoveConstruct::construct: roml::construct::Construct
+pub roml::delta::ModelOp::RemoveConstruct::construct: roml::Construct
 pub roml::delta::ModelOp::RemoveObjective
 pub roml::delta::ModelOp::RemoveObjective::obj: roml::id::ObjId
 pub roml::delta::ModelOp::RemoveVariable
@@ -2933,7 +2732,7 @@ pub roml::delta::ModelOp::SetConstraintBounds::bounds: roml::model::constraint::
 pub roml::delta::ModelOp::SetConstraintBounds::con: roml::id::ConId
 pub roml::delta::ModelOp::SetConstructActive
 pub roml::delta::ModelOp::SetConstructActive::active: bool
-pub roml::delta::ModelOp::SetConstructActive::construct: roml::construct::Construct
+pub roml::delta::ModelOp::SetConstructActive::construct: roml::Construct
 pub roml::delta::ModelOp::SetObjectiveCell
 pub roml::delta::ModelOp::SetObjectiveCell::cell_key: roml::model::coefficient::CellKey
 pub roml::delta::ModelOp::SetObjectiveCell::constant: f64
@@ -2997,7 +2796,6 @@ pub unsafe fn roml::delta::ModelOp::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::delta::ModelOp
 pub fn roml::delta::ModelOp::from(T) -> T
 pub struct roml::delta::DeltaBatch
-pub roml::delta::DeltaBatch::constructs: alloc::vec::Vec<roml::construct::ConstructEntry>
 pub roml::delta::DeltaBatch::from: roml::revision::ModelRevision
 pub roml::delta::DeltaBatch::functions: alloc::vec::Vec<roml::function::FunctionEntry>
 pub roml::delta::DeltaBatch::operations: alloc::vec::Vec<roml::delta::ModelOp>
@@ -3511,8 +3309,10 @@ pub unsafe fn roml::function::set::ScalarSet::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::function::set::ScalarSet
 pub fn roml::function::set::ScalarSet::from(T) -> T
 pub struct roml::function::FunctionConstraint
+pub roml::function::FunctionConstraint::dependencies: alloc::vec::Vec<roml::id::ParamId>
 pub roml::function::FunctionConstraint::function: roml::function::scalar::ScalarFunction
 pub roml::function::FunctionConstraint::set: roml::function::set::ScalarSet
+pub roml::function::FunctionConstraint::terms: alloc::vec::Vec<(roml::id::VarId, roml::value_expr::ValueExpr)>
 impl core::clone::Clone for roml::function::FunctionConstraint
 pub fn roml::function::FunctionConstraint::clone(&self) -> roml::function::FunctionConstraint
 impl core::cmp::PartialEq for roml::function::FunctionConstraint
@@ -3553,8 +3353,10 @@ impl<T> core::convert::From<T> for roml::function::FunctionConstraint
 pub fn roml::function::FunctionConstraint::from(T) -> T
 pub struct roml::function::FunctionEntry
 pub roml::function::FunctionEntry::constraint: roml::id::ConId
+pub roml::function::FunctionEntry::dependencies: alloc::vec::Vec<roml::id::ParamId>
 pub roml::function::FunctionEntry::function: roml::function::scalar::ScalarFunction
 pub roml::function::FunctionEntry::set: roml::function::set::ScalarSet
+pub roml::function::FunctionEntry::terms: alloc::vec::Vec<(roml::id::VarId, roml::value_expr::ValueExpr)>
 impl core::clone::Clone for roml::function::FunctionEntry
 pub fn roml::function::FunctionEntry::clone(&self) -> roml::function::FunctionEntry
 impl core::cmp::PartialEq for roml::function::FunctionEntry
@@ -4368,13 +4170,13 @@ pub roml::model::changelog::Change::ConstraintRemoved
 pub roml::model::changelog::Change::ConstraintRemoved::con: roml::id::ConId
 pub roml::model::changelog::Change::ConstructActivityChanged
 pub roml::model::changelog::Change::ConstructActivityChanged::active: bool
-pub roml::model::changelog::Change::ConstructActivityChanged::construct: roml::construct::Construct
+pub roml::model::changelog::Change::ConstructActivityChanged::construct: roml::Construct
 pub roml::model::changelog::Change::ConstructAdded
 pub roml::model::changelog::Change::ConstructAdded::active: bool
-pub roml::model::changelog::Change::ConstructAdded::construct: roml::construct::Construct
-pub roml::model::changelog::Change::ConstructAdded::kind: roml::construct::ConstructKind
+pub roml::model::changelog::Change::ConstructAdded::construct: roml::Construct
+pub roml::model::changelog::Change::ConstructAdded::preference: roml::FormulationPreference
 pub roml::model::changelog::Change::ConstructRemoved
-pub roml::model::changelog::Change::ConstructRemoved::construct: roml::construct::Construct
+pub roml::model::changelog::Change::ConstructRemoved::construct: roml::Construct
 pub roml::model::changelog::Change::ObjectiveAdded
 pub roml::model::changelog::Change::ObjectiveAdded::obj: roml::id::ObjId
 pub roml::model::changelog::Change::ObjectiveAdded::sense: roml::model::objective::Sense
@@ -4412,8 +4214,6 @@ pub roml::model::changelog::Change::VariableTypeChanged
 pub roml::model::changelog::Change::VariableTypeChanged::new: roml::model::variable::VarType
 pub roml::model::changelog::Change::VariableTypeChanged::old: roml::model::variable::VarType
 pub roml::model::changelog::Change::VariableTypeChanged::var: roml::id::VarId
-impl roml::model::changelog::Change
-pub fn roml::model::changelog::Change::affects_solver(&self) -> bool
 impl core::clone::Clone for roml::model::changelog::Change
 pub fn roml::model::changelog::Change::clone(&self) -> roml::model::changelog::Change
 impl core::fmt::Debug for roml::model::changelog::Change
@@ -5064,13 +4864,13 @@ pub roml::model::Change::ConstraintRemoved
 pub roml::model::Change::ConstraintRemoved::con: roml::id::ConId
 pub roml::model::Change::ConstructActivityChanged
 pub roml::model::Change::ConstructActivityChanged::active: bool
-pub roml::model::Change::ConstructActivityChanged::construct: roml::construct::Construct
+pub roml::model::Change::ConstructActivityChanged::construct: roml::Construct
 pub roml::model::Change::ConstructAdded
 pub roml::model::Change::ConstructAdded::active: bool
-pub roml::model::Change::ConstructAdded::construct: roml::construct::Construct
-pub roml::model::Change::ConstructAdded::kind: roml::construct::ConstructKind
+pub roml::model::Change::ConstructAdded::construct: roml::Construct
+pub roml::model::Change::ConstructAdded::preference: roml::FormulationPreference
 pub roml::model::Change::ConstructRemoved
-pub roml::model::Change::ConstructRemoved::construct: roml::construct::Construct
+pub roml::model::Change::ConstructRemoved::construct: roml::Construct
 pub roml::model::Change::ObjectiveAdded
 pub roml::model::Change::ObjectiveAdded::obj: roml::id::ObjId
 pub roml::model::Change::ObjectiveAdded::sense: roml::model::objective::Sense
@@ -5108,8 +4908,6 @@ pub roml::model::Change::VariableTypeChanged
 pub roml::model::Change::VariableTypeChanged::new: roml::model::variable::VarType
 pub roml::model::Change::VariableTypeChanged::old: roml::model::variable::VarType
 pub roml::model::Change::VariableTypeChanged::var: roml::id::VarId
-impl roml::model::changelog::Change
-pub fn roml::model::changelog::Change::affects_solver(&self) -> bool
 impl core::clone::Clone for roml::model::changelog::Change
 pub fn roml::model::changelog::Change::clone(&self) -> roml::model::changelog::Change
 impl core::fmt::Debug for roml::model::changelog::Change
@@ -5193,7 +4991,7 @@ pub fn roml::model::coefficient::CoefficientTarget::from(T) -> T
 pub enum roml::model::ModelError
 pub roml::model::ModelError::CoefficientNotFound(roml::id::CoeffId)
 pub roml::model::ModelError::ConstraintNotFound(roml::id::ConId)
-pub roml::model::ModelError::ConstructNotFound(roml::construct::Construct)
+pub roml::model::ModelError::ConstructNotFound(roml::Construct)
 pub roml::model::ModelError::IdentityOverflow
 pub roml::model::ModelError::InvalidBinaryBounds
 pub roml::model::ModelError::InvalidBounds
@@ -5452,7 +5250,6 @@ pub fn roml::model::Model::add_binary(&mut self) -> roml::id::VarId
 pub fn roml::model::Model::add_coeff(&mut self, roml::id::ConId, roml::id::VarId, f64) -> core::result::Result<roml::id::CoeffId, roml::model::ModelError>
 pub fn roml::model::Model::add_constraint<S>(&mut self, S) -> core::result::Result<roml::id::ConId, roml::model::ModelError> where S: core::convert::Into<roml::ConstraintSpec>
 pub fn roml::model::Model::add_constraint_coefficient<E>(&mut self, roml::id::ConId, roml::id::VarId, E) -> core::result::Result<roml::id::CoeffId, roml::model::ModelError> where E: core::convert::Into<roml::value_expr::ValueExpr>
-pub fn roml::model::Model::add_construct_fixture(&mut self, FixturePayload, roml::construct::FormulationPreference) -> core::result::Result<roml::construct::Construct, roml::model::ModelError>
 pub fn roml::model::Model::add_empty_constraint(&mut self, roml::model::constraint::ConstraintBounds) -> roml::id::ConId
 pub fn roml::model::Model::add_integer(&mut self, roml::model::variable::Bounds) -> core::result::Result<roml::id::VarId, roml::model::ModelError>
 pub fn roml::model::Model::add_objective(&mut self, roml::model::objective::Sense) -> roml::id::ObjId
@@ -5470,8 +5267,7 @@ pub fn roml::model::Model::commit(&mut self) -> core::result::Result<roml::revis
 pub fn roml::model::Model::constraint_bounds(&self, roml::id::ConId) -> core::option::Option<roml::model::constraint::ConstraintBounds>
 pub fn roml::model::Model::constraint_function(&self, roml::id::ConId) -> core::result::Result<roml::function::FunctionConstraint, roml::model::ModelError>
 pub fn roml::model::Model::constraint_name(&self, roml::id::ConId) -> core::result::Result<core::option::Option<&str>, roml::model::ModelError>
-pub fn roml::model::Model::construct(&self, roml::construct::Construct) -> core::result::Result<&roml::construct::ConstructEntry, roml::model::ModelError>
-pub fn roml::model::Model::construct_parameter_dependencies(&self, roml::construct::Construct) -> core::result::Result<&[roml::id::ParamId], roml::model::ModelError>
+pub fn roml::model::Model::construct_parameter_dependencies(&self, roml::Construct) -> core::result::Result<&[roml::id::ParamId], roml::model::ModelError>
 pub fn roml::model::Model::current_revision(&self) -> roml::revision::ModelRevision
 pub fn roml::model::Model::drain_changes(&mut self) -> alloc::vec::Vec<roml::model::changelog::Change>
 pub fn roml::model::Model::has_pending_changes(&self) -> bool
@@ -5494,7 +5290,7 @@ pub fn roml::model::Model::parameter_value(&self, roml::id::ParamId) -> core::op
 pub fn roml::model::Model::remove_coefficient(&mut self, roml::id::CoeffId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_coefficient_at(&mut self, roml::model::coefficient::CoefficientTarget, roml::id::VarId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_constraint(&mut self, roml::id::ConId) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::remove_construct(&mut self, roml::construct::Construct) -> core::result::Result<(), roml::model::ModelError>
+pub fn roml::model::Model::remove_construct(&mut self, roml::Construct) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_metadata(&mut self, roml::metadata::EntityRef) -> core::option::Option<roml::metadata::EntityMetadata>
 pub fn roml::model::Model::remove_objective(&mut self, roml::id::ObjId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_variable(&mut self, roml::id::VarId) -> core::result::Result<(), roml::model::ModelError>
@@ -5504,8 +5300,8 @@ pub fn roml::model::Model::set_binary(&mut self, roml::id::VarId) -> core::resul
 pub fn roml::model::Model::set_coefficient(&mut self, roml::model::coefficient::CoefficientTarget, roml::id::VarId, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_constraint_active(&mut self, roml::id::ConId, bool) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_constraint_bounds(&mut self, roml::id::ConId, roml::model::constraint::ConstraintBounds) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::set_construct_active(&mut self, roml::construct::Construct, bool) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::set_metadata(&mut self, roml::metadata::EntityRef, roml::metadata::EntityMetadata)
+pub fn roml::model::Model::set_construct_active(&mut self, roml::Construct, bool) -> core::result::Result<(), roml::model::ModelError>
+pub fn roml::model::Model::set_metadata(&mut self, roml::metadata::EntityRef, roml::metadata::EntityMetadata) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_parameter(&mut self, roml::model::Parameter, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_semicontinuous(&mut self, roml::id::VarId, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_variable_active(&mut self, roml::id::VarId, bool) -> core::result::Result<(), roml::model::ModelError>
@@ -5792,7 +5588,7 @@ pub macro roml::prelude::constraint!
 pub enum roml::prelude::ModelError
 pub roml::prelude::ModelError::CoefficientNotFound(roml::id::CoeffId)
 pub roml::prelude::ModelError::ConstraintNotFound(roml::id::ConId)
-pub roml::prelude::ModelError::ConstructNotFound(roml::construct::Construct)
+pub roml::prelude::ModelError::ConstructNotFound(roml::Construct)
 pub roml::prelude::ModelError::IdentityOverflow
 pub roml::prelude::ModelError::InvalidBinaryBounds
 pub roml::prelude::ModelError::InvalidBounds
@@ -6261,7 +6057,6 @@ pub fn roml::model::Model::add_binary(&mut self) -> roml::id::VarId
 pub fn roml::model::Model::add_coeff(&mut self, roml::id::ConId, roml::id::VarId, f64) -> core::result::Result<roml::id::CoeffId, roml::model::ModelError>
 pub fn roml::model::Model::add_constraint<S>(&mut self, S) -> core::result::Result<roml::id::ConId, roml::model::ModelError> where S: core::convert::Into<roml::ConstraintSpec>
 pub fn roml::model::Model::add_constraint_coefficient<E>(&mut self, roml::id::ConId, roml::id::VarId, E) -> core::result::Result<roml::id::CoeffId, roml::model::ModelError> where E: core::convert::Into<roml::value_expr::ValueExpr>
-pub fn roml::model::Model::add_construct_fixture(&mut self, FixturePayload, roml::construct::FormulationPreference) -> core::result::Result<roml::construct::Construct, roml::model::ModelError>
 pub fn roml::model::Model::add_empty_constraint(&mut self, roml::model::constraint::ConstraintBounds) -> roml::id::ConId
 pub fn roml::model::Model::add_integer(&mut self, roml::model::variable::Bounds) -> core::result::Result<roml::id::VarId, roml::model::ModelError>
 pub fn roml::model::Model::add_objective(&mut self, roml::model::objective::Sense) -> roml::id::ObjId
@@ -6279,8 +6074,7 @@ pub fn roml::model::Model::commit(&mut self) -> core::result::Result<roml::revis
 pub fn roml::model::Model::constraint_bounds(&self, roml::id::ConId) -> core::option::Option<roml::model::constraint::ConstraintBounds>
 pub fn roml::model::Model::constraint_function(&self, roml::id::ConId) -> core::result::Result<roml::function::FunctionConstraint, roml::model::ModelError>
 pub fn roml::model::Model::constraint_name(&self, roml::id::ConId) -> core::result::Result<core::option::Option<&str>, roml::model::ModelError>
-pub fn roml::model::Model::construct(&self, roml::construct::Construct) -> core::result::Result<&roml::construct::ConstructEntry, roml::model::ModelError>
-pub fn roml::model::Model::construct_parameter_dependencies(&self, roml::construct::Construct) -> core::result::Result<&[roml::id::ParamId], roml::model::ModelError>
+pub fn roml::model::Model::construct_parameter_dependencies(&self, roml::Construct) -> core::result::Result<&[roml::id::ParamId], roml::model::ModelError>
 pub fn roml::model::Model::current_revision(&self) -> roml::revision::ModelRevision
 pub fn roml::model::Model::drain_changes(&mut self) -> alloc::vec::Vec<roml::model::changelog::Change>
 pub fn roml::model::Model::has_pending_changes(&self) -> bool
@@ -6303,7 +6097,7 @@ pub fn roml::model::Model::parameter_value(&self, roml::id::ParamId) -> core::op
 pub fn roml::model::Model::remove_coefficient(&mut self, roml::id::CoeffId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_coefficient_at(&mut self, roml::model::coefficient::CoefficientTarget, roml::id::VarId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_constraint(&mut self, roml::id::ConId) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::remove_construct(&mut self, roml::construct::Construct) -> core::result::Result<(), roml::model::ModelError>
+pub fn roml::model::Model::remove_construct(&mut self, roml::Construct) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_metadata(&mut self, roml::metadata::EntityRef) -> core::option::Option<roml::metadata::EntityMetadata>
 pub fn roml::model::Model::remove_objective(&mut self, roml::id::ObjId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_variable(&mut self, roml::id::VarId) -> core::result::Result<(), roml::model::ModelError>
@@ -6313,8 +6107,8 @@ pub fn roml::model::Model::set_binary(&mut self, roml::id::VarId) -> core::resul
 pub fn roml::model::Model::set_coefficient(&mut self, roml::model::coefficient::CoefficientTarget, roml::id::VarId, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_constraint_active(&mut self, roml::id::ConId, bool) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_constraint_bounds(&mut self, roml::id::ConId, roml::model::constraint::ConstraintBounds) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::set_construct_active(&mut self, roml::construct::Construct, bool) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::set_metadata(&mut self, roml::metadata::EntityRef, roml::metadata::EntityMetadata)
+pub fn roml::model::Model::set_construct_active(&mut self, roml::Construct, bool) -> core::result::Result<(), roml::model::ModelError>
+pub fn roml::model::Model::set_metadata(&mut self, roml::metadata::EntityRef, roml::metadata::EntityMetadata) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_parameter(&mut self, roml::model::Parameter, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_semicontinuous(&mut self, roml::id::VarId, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_variable_active(&mut self, roml::id::VarId, bool) -> core::result::Result<(), roml::model::ModelError>
@@ -6817,7 +6611,6 @@ pub fn roml::snapshot::ConstraintEntry::from(T) -> T
 pub struct roml::snapshot::ModelSnapshot
 pub roml::snapshot::ModelSnapshot::cells: alloc::vec::Vec<roml::snapshot::CellEntry>
 pub roml::snapshot::ModelSnapshot::constraints: alloc::vec::Vec<roml::snapshot::ConstraintEntry>
-pub roml::snapshot::ModelSnapshot::constructs: alloc::vec::Vec<roml::construct::ConstructEntry>
 pub roml::snapshot::ModelSnapshot::functions: alloc::vec::Vec<roml::function::FunctionEntry>
 pub roml::snapshot::ModelSnapshot::objectives: alloc::vec::Vec<roml::snapshot::ObjectiveEntry>
 pub roml::snapshot::ModelSnapshot::parameters: alloc::vec::Vec<roml::snapshot::ParameterEntry>
@@ -7811,7 +7604,7 @@ impl<T> core::borrow::BorrowMut<T> for roml::solver::facade::SolverSession<B> wh
 pub fn roml::solver::facade::SolverSession<B>::borrow_mut(&mut self) -> &mut T
 impl<T> core::convert::From<T> for roml::solver::facade::SolverSession<B>
 pub fn roml::solver::facade::SolverSession<B>::from(T) -> T
-pub fn roml::solver::facade::normalize_result(&roml::solver::request::SolveResult, roml::revision::ModelRevision, core::option::Option<roml::id::ObjId>, &str, roml::solution::metadata::SynchronizationMode) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+pub fn roml::solver::facade::normalize_result(&roml::solver::request::SolveResult, roml::revision::ModelRevision, core::option::Option<roml::id::ObjId>, &str, roml::solution::metadata::SynchronizationMode, roml::identity::ModelLineageId, roml::identity::ModelInstanceId) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
 pub mod roml::solver::options
 pub struct roml::solver::options::SolveOptions
 impl roml::solver::options::SolveOptions
@@ -9048,13 +8841,13 @@ pub roml::Change::ConstraintRemoved
 pub roml::Change::ConstraintRemoved::con: roml::id::ConId
 pub roml::Change::ConstructActivityChanged
 pub roml::Change::ConstructActivityChanged::active: bool
-pub roml::Change::ConstructActivityChanged::construct: roml::construct::Construct
+pub roml::Change::ConstructActivityChanged::construct: roml::Construct
 pub roml::Change::ConstructAdded
 pub roml::Change::ConstructAdded::active: bool
-pub roml::Change::ConstructAdded::construct: roml::construct::Construct
-pub roml::Change::ConstructAdded::kind: roml::construct::ConstructKind
+pub roml::Change::ConstructAdded::construct: roml::Construct
+pub roml::Change::ConstructAdded::preference: roml::FormulationPreference
 pub roml::Change::ConstructRemoved
-pub roml::Change::ConstructRemoved::construct: roml::construct::Construct
+pub roml::Change::ConstructRemoved::construct: roml::Construct
 pub roml::Change::ObjectiveAdded
 pub roml::Change::ObjectiveAdded::obj: roml::id::ObjId
 pub roml::Change::ObjectiveAdded::sense: roml::model::objective::Sense
@@ -9092,8 +8885,6 @@ pub roml::Change::VariableTypeChanged
 pub roml::Change::VariableTypeChanged::new: roml::model::variable::VarType
 pub roml::Change::VariableTypeChanged::old: roml::model::variable::VarType
 pub roml::Change::VariableTypeChanged::var: roml::id::VarId
-impl roml::model::changelog::Change
-pub fn roml::model::changelog::Change::affects_solver(&self) -> bool
 impl core::clone::Clone for roml::model::changelog::Change
 pub fn roml::model::changelog::Change::clone(&self) -> roml::model::changelog::Change
 impl core::fmt::Debug for roml::model::changelog::Change
@@ -9127,43 +8918,6 @@ impl<T> core::clone::CloneToUninit for roml::model::changelog::Change where T: c
 pub unsafe fn roml::model::changelog::Change::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::model::changelog::Change
 pub fn roml::model::changelog::Change::from(T) -> T
-#[non_exhaustive] pub enum roml::ConstructKind
-impl core::clone::Clone for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::clone(&self) -> roml::construct::ConstructKind
-impl core::cmp::PartialEq for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::eq(&self, &roml::construct::ConstructKind) -> bool
-impl core::fmt::Debug for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for roml::construct::ConstructKind
-impl core::marker::Freeze for roml::construct::ConstructKind
-impl core::marker::Send for roml::construct::ConstructKind
-impl core::marker::Sync for roml::construct::ConstructKind
-impl core::marker::Unpin for roml::construct::ConstructKind
-impl core::marker::UnsafeUnpin for roml::construct::ConstructKind
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::ConstructKind
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::ConstructKind
-impl<T, U> core::convert::Into<U> for roml::construct::ConstructKind where U: core::convert::From<T>
-pub fn roml::construct::ConstructKind::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::ConstructKind where U: core::convert::Into<T>
-pub type roml::construct::ConstructKind::Error = core::convert::Infallible
-pub fn roml::construct::ConstructKind::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::ConstructKind where U: core::convert::TryFrom<T>
-pub type roml::construct::ConstructKind::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::ConstructKind::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::ConstructKind where T: core::clone::Clone
-pub type roml::construct::ConstructKind::Owned = T
-pub fn roml::construct::ConstructKind::clone_into(&self, &mut T)
-pub fn roml::construct::ConstructKind::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::ConstructKind where T: 'static + ?core::marker::Sized
-pub fn roml::construct::ConstructKind::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::ConstructKind where T: ?core::marker::Sized
-pub fn roml::construct::ConstructKind::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::ConstructKind where T: ?core::marker::Sized
-pub fn roml::construct::ConstructKind::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::ConstructKind where T: core::clone::Clone
-pub unsafe fn roml::construct::ConstructKind::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::ConstructKind
-pub fn roml::construct::ConstructKind::from(T) -> T
 pub enum roml::EntityRef
 pub roml::EntityRef::Constraint(roml::model::Constraint)
 pub roml::EntityRef::Construct(roml::identity::ConstructId)
@@ -9262,44 +9016,44 @@ pub enum roml::FormulationPreference
 pub roml::FormulationPreference::Auto
 pub roml::FormulationPreference::NativeRequired
 pub roml::FormulationPreference::Portable
-impl core::clone::Clone for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::clone(&self) -> roml::construct::FormulationPreference
-impl core::cmp::Eq for roml::construct::FormulationPreference
-impl core::cmp::PartialEq for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::eq(&self, &roml::construct::FormulationPreference) -> bool
-impl core::fmt::Debug for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for roml::construct::FormulationPreference
-impl core::marker::StructuralPartialEq for roml::construct::FormulationPreference
-impl core::marker::Freeze for roml::construct::FormulationPreference
-impl core::marker::Send for roml::construct::FormulationPreference
-impl core::marker::Sync for roml::construct::FormulationPreference
-impl core::marker::Unpin for roml::construct::FormulationPreference
-impl core::marker::UnsafeUnpin for roml::construct::FormulationPreference
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::FormulationPreference
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::FormulationPreference
-impl<T, U> core::convert::Into<U> for roml::construct::FormulationPreference where U: core::convert::From<T>
-pub fn roml::construct::FormulationPreference::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::FormulationPreference where U: core::convert::Into<T>
-pub type roml::construct::FormulationPreference::Error = core::convert::Infallible
-pub fn roml::construct::FormulationPreference::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::FormulationPreference where U: core::convert::TryFrom<T>
-pub type roml::construct::FormulationPreference::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::FormulationPreference::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::FormulationPreference where T: core::clone::Clone
-pub type roml::construct::FormulationPreference::Owned = T
-pub fn roml::construct::FormulationPreference::clone_into(&self, &mut T)
-pub fn roml::construct::FormulationPreference::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::FormulationPreference where T: 'static + ?core::marker::Sized
-pub fn roml::construct::FormulationPreference::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::FormulationPreference where T: ?core::marker::Sized
-pub fn roml::construct::FormulationPreference::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::FormulationPreference where T: ?core::marker::Sized
-pub fn roml::construct::FormulationPreference::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::FormulationPreference where T: core::clone::Clone
-pub unsafe fn roml::construct::FormulationPreference::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::FormulationPreference
-pub fn roml::construct::FormulationPreference::from(T) -> T
+impl core::clone::Clone for roml::FormulationPreference
+pub fn roml::FormulationPreference::clone(&self) -> roml::FormulationPreference
+impl core::cmp::Eq for roml::FormulationPreference
+impl core::cmp::PartialEq for roml::FormulationPreference
+pub fn roml::FormulationPreference::eq(&self, &roml::FormulationPreference) -> bool
+impl core::fmt::Debug for roml::FormulationPreference
+pub fn roml::FormulationPreference::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for roml::FormulationPreference
+impl core::marker::StructuralPartialEq for roml::FormulationPreference
+impl core::marker::Freeze for roml::FormulationPreference
+impl core::marker::Send for roml::FormulationPreference
+impl core::marker::Sync for roml::FormulationPreference
+impl core::marker::Unpin for roml::FormulationPreference
+impl core::marker::UnsafeUnpin for roml::FormulationPreference
+impl core::panic::unwind_safe::RefUnwindSafe for roml::FormulationPreference
+impl core::panic::unwind_safe::UnwindSafe for roml::FormulationPreference
+impl<T, U> core::convert::Into<U> for roml::FormulationPreference where U: core::convert::From<T>
+pub fn roml::FormulationPreference::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml::FormulationPreference where U: core::convert::Into<T>
+pub type roml::FormulationPreference::Error = core::convert::Infallible
+pub fn roml::FormulationPreference::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for roml::FormulationPreference where U: core::convert::TryFrom<T>
+pub type roml::FormulationPreference::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml::FormulationPreference::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml::FormulationPreference where T: core::clone::Clone
+pub type roml::FormulationPreference::Owned = T
+pub fn roml::FormulationPreference::clone_into(&self, &mut T)
+pub fn roml::FormulationPreference::to_owned(&self) -> T
+impl<T> core::any::Any for roml::FormulationPreference where T: 'static + ?core::marker::Sized
+pub fn roml::FormulationPreference::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml::FormulationPreference where T: ?core::marker::Sized
+pub fn roml::FormulationPreference::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml::FormulationPreference where T: ?core::marker::Sized
+pub fn roml::FormulationPreference::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml::FormulationPreference where T: core::clone::Clone
+pub unsafe fn roml::FormulationPreference::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml::FormulationPreference
+pub fn roml::FormulationPreference::from(T) -> T
 pub enum roml::HealthEffect
 pub roml::HealthEffect::None
 pub roml::HealthEffect::Recoverable
@@ -9390,7 +9144,7 @@ pub fn roml::solver::LpAlgorithm::from(T) -> T
 pub enum roml::ModelError
 pub roml::ModelError::CoefficientNotFound(roml::id::CoeffId)
 pub roml::ModelError::ConstraintNotFound(roml::id::ConId)
-pub roml::ModelError::ConstructNotFound(roml::construct::Construct)
+pub roml::ModelError::ConstructNotFound(roml::Construct)
 pub roml::ModelError::IdentityOverflow
 pub roml::ModelError::InvalidBinaryBounds
 pub roml::ModelError::InvalidBounds
@@ -9449,8 +9203,8 @@ pub roml::ModelOp::AddConstraint::bounds: roml::model::constraint::ConstraintBou
 pub roml::ModelOp::AddConstraint::con: roml::id::ConId
 pub roml::ModelOp::AddConstruct
 pub roml::ModelOp::AddConstruct::active: bool
-pub roml::ModelOp::AddConstruct::construct: roml::construct::Construct
-pub roml::ModelOp::AddConstruct::kind: roml::construct::ConstructKind
+pub roml::ModelOp::AddConstruct::construct: roml::Construct
+pub roml::ModelOp::AddConstruct::preference: roml::FormulationPreference
 pub roml::ModelOp::AddObjective
 pub roml::ModelOp::AddObjective::obj: roml::id::ObjId
 pub roml::ModelOp::AddObjective::sense: roml::model::objective::Sense
@@ -9463,7 +9217,7 @@ pub roml::ModelOp::RemoveCell::cell_key: roml::model::coefficient::CellKey
 pub roml::ModelOp::RemoveConstraint
 pub roml::ModelOp::RemoveConstraint::con: roml::id::ConId
 pub roml::ModelOp::RemoveConstruct
-pub roml::ModelOp::RemoveConstruct::construct: roml::construct::Construct
+pub roml::ModelOp::RemoveConstruct::construct: roml::Construct
 pub roml::ModelOp::RemoveObjective
 pub roml::ModelOp::RemoveObjective::obj: roml::id::ObjId
 pub roml::ModelOp::RemoveVariable
@@ -9482,7 +9236,7 @@ pub roml::ModelOp::SetConstraintBounds::bounds: roml::model::constraint::Constra
 pub roml::ModelOp::SetConstraintBounds::con: roml::id::ConId
 pub roml::ModelOp::SetConstructActive
 pub roml::ModelOp::SetConstructActive::active: bool
-pub roml::ModelOp::SetConstructActive::construct: roml::construct::Construct
+pub roml::ModelOp::SetConstructActive::construct: roml::Construct
 pub roml::ModelOp::SetObjectiveCell
 pub roml::ModelOp::SetObjectiveCell::cell_key: roml::model::coefficient::CellKey
 pub roml::ModelOp::SetObjectiveCell::constant: f64
@@ -10561,46 +10315,6 @@ impl<T> core::clone::CloneToUninit for roml::ConstraintSpec where T: core::clone
 pub unsafe fn roml::ConstraintSpec::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::ConstraintSpec
 pub fn roml::ConstraintSpec::from(T) -> T
-pub struct roml::ConstructEntry
-pub roml::ConstructEntry::active: bool
-pub roml::ConstructEntry::id: roml::construct::Construct
-pub roml::ConstructEntry::kind: roml::construct::ConstructKind
-impl core::clone::Clone for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::clone(&self) -> roml::construct::ConstructEntry
-impl core::cmp::PartialEq for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::eq(&self, &roml::construct::ConstructEntry) -> bool
-impl core::fmt::Debug for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for roml::construct::ConstructEntry
-impl core::marker::Freeze for roml::construct::ConstructEntry
-impl core::marker::Send for roml::construct::ConstructEntry
-impl core::marker::Sync for roml::construct::ConstructEntry
-impl core::marker::Unpin for roml::construct::ConstructEntry
-impl core::marker::UnsafeUnpin for roml::construct::ConstructEntry
-impl core::panic::unwind_safe::RefUnwindSafe for roml::construct::ConstructEntry
-impl core::panic::unwind_safe::UnwindSafe for roml::construct::ConstructEntry
-impl<T, U> core::convert::Into<U> for roml::construct::ConstructEntry where U: core::convert::From<T>
-pub fn roml::construct::ConstructEntry::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for roml::construct::ConstructEntry where U: core::convert::Into<T>
-pub type roml::construct::ConstructEntry::Error = core::convert::Infallible
-pub fn roml::construct::ConstructEntry::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for roml::construct::ConstructEntry where U: core::convert::TryFrom<T>
-pub type roml::construct::ConstructEntry::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn roml::construct::ConstructEntry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for roml::construct::ConstructEntry where T: core::clone::Clone
-pub type roml::construct::ConstructEntry::Owned = T
-pub fn roml::construct::ConstructEntry::clone_into(&self, &mut T)
-pub fn roml::construct::ConstructEntry::to_owned(&self) -> T
-impl<T> core::any::Any for roml::construct::ConstructEntry where T: 'static + ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for roml::construct::ConstructEntry where T: ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for roml::construct::ConstructEntry where T: ?core::marker::Sized
-pub fn roml::construct::ConstructEntry::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for roml::construct::ConstructEntry where T: core::clone::Clone
-pub unsafe fn roml::construct::ConstructEntry::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for roml::construct::ConstructEntry
-pub fn roml::construct::ConstructEntry::from(T) -> T
 pub struct roml::ConstructId(_)
 impl core::clone::Clone for roml::identity::ConstructId
 pub fn roml::identity::ConstructId::clone(&self) -> roml::identity::ConstructId
@@ -10647,7 +10361,6 @@ pub unsafe fn roml::identity::ConstructId::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::identity::ConstructId
 pub fn roml::identity::ConstructId::from(T) -> T
 pub struct roml::DeltaBatch
-pub roml::DeltaBatch::constructs: alloc::vec::Vec<roml::construct::ConstructEntry>
 pub roml::DeltaBatch::from: roml::revision::ModelRevision
 pub roml::DeltaBatch::functions: alloc::vec::Vec<roml::function::FunctionEntry>
 pub roml::DeltaBatch::operations: alloc::vec::Vec<roml::delta::ModelOp>
@@ -10785,8 +10498,10 @@ pub unsafe fn roml::metadata::EntityMetadata::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::metadata::EntityMetadata
 pub fn roml::metadata::EntityMetadata::from(T) -> T
 pub struct roml::FunctionConstraint
+pub roml::FunctionConstraint::dependencies: alloc::vec::Vec<roml::id::ParamId>
 pub roml::FunctionConstraint::function: roml::function::scalar::ScalarFunction
 pub roml::FunctionConstraint::set: roml::function::set::ScalarSet
+pub roml::FunctionConstraint::terms: alloc::vec::Vec<(roml::id::VarId, roml::value_expr::ValueExpr)>
 impl core::clone::Clone for roml::function::FunctionConstraint
 pub fn roml::function::FunctionConstraint::clone(&self) -> roml::function::FunctionConstraint
 impl core::cmp::PartialEq for roml::function::FunctionConstraint
@@ -10827,8 +10542,10 @@ impl<T> core::convert::From<T> for roml::function::FunctionConstraint
 pub fn roml::function::FunctionConstraint::from(T) -> T
 pub struct roml::FunctionEntry
 pub roml::FunctionEntry::constraint: roml::id::ConId
+pub roml::FunctionEntry::dependencies: alloc::vec::Vec<roml::id::ParamId>
 pub roml::FunctionEntry::function: roml::function::scalar::ScalarFunction
 pub roml::FunctionEntry::set: roml::function::set::ScalarSet
+pub roml::FunctionEntry::terms: alloc::vec::Vec<(roml::id::VarId, roml::value_expr::ValueExpr)>
 impl core::clone::Clone for roml::function::FunctionEntry
 pub fn roml::function::FunctionEntry::clone(&self) -> roml::function::FunctionEntry
 impl core::cmp::PartialEq for roml::function::FunctionEntry
@@ -11019,7 +10736,6 @@ pub fn roml::model::Model::add_binary(&mut self) -> roml::id::VarId
 pub fn roml::model::Model::add_coeff(&mut self, roml::id::ConId, roml::id::VarId, f64) -> core::result::Result<roml::id::CoeffId, roml::model::ModelError>
 pub fn roml::model::Model::add_constraint<S>(&mut self, S) -> core::result::Result<roml::id::ConId, roml::model::ModelError> where S: core::convert::Into<roml::ConstraintSpec>
 pub fn roml::model::Model::add_constraint_coefficient<E>(&mut self, roml::id::ConId, roml::id::VarId, E) -> core::result::Result<roml::id::CoeffId, roml::model::ModelError> where E: core::convert::Into<roml::value_expr::ValueExpr>
-pub fn roml::model::Model::add_construct_fixture(&mut self, FixturePayload, roml::construct::FormulationPreference) -> core::result::Result<roml::construct::Construct, roml::model::ModelError>
 pub fn roml::model::Model::add_empty_constraint(&mut self, roml::model::constraint::ConstraintBounds) -> roml::id::ConId
 pub fn roml::model::Model::add_integer(&mut self, roml::model::variable::Bounds) -> core::result::Result<roml::id::VarId, roml::model::ModelError>
 pub fn roml::model::Model::add_objective(&mut self, roml::model::objective::Sense) -> roml::id::ObjId
@@ -11037,8 +10753,7 @@ pub fn roml::model::Model::commit(&mut self) -> core::result::Result<roml::revis
 pub fn roml::model::Model::constraint_bounds(&self, roml::id::ConId) -> core::option::Option<roml::model::constraint::ConstraintBounds>
 pub fn roml::model::Model::constraint_function(&self, roml::id::ConId) -> core::result::Result<roml::function::FunctionConstraint, roml::model::ModelError>
 pub fn roml::model::Model::constraint_name(&self, roml::id::ConId) -> core::result::Result<core::option::Option<&str>, roml::model::ModelError>
-pub fn roml::model::Model::construct(&self, roml::construct::Construct) -> core::result::Result<&roml::construct::ConstructEntry, roml::model::ModelError>
-pub fn roml::model::Model::construct_parameter_dependencies(&self, roml::construct::Construct) -> core::result::Result<&[roml::id::ParamId], roml::model::ModelError>
+pub fn roml::model::Model::construct_parameter_dependencies(&self, roml::Construct) -> core::result::Result<&[roml::id::ParamId], roml::model::ModelError>
 pub fn roml::model::Model::current_revision(&self) -> roml::revision::ModelRevision
 pub fn roml::model::Model::drain_changes(&mut self) -> alloc::vec::Vec<roml::model::changelog::Change>
 pub fn roml::model::Model::has_pending_changes(&self) -> bool
@@ -11061,7 +10776,7 @@ pub fn roml::model::Model::parameter_value(&self, roml::id::ParamId) -> core::op
 pub fn roml::model::Model::remove_coefficient(&mut self, roml::id::CoeffId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_coefficient_at(&mut self, roml::model::coefficient::CoefficientTarget, roml::id::VarId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_constraint(&mut self, roml::id::ConId) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::remove_construct(&mut self, roml::construct::Construct) -> core::result::Result<(), roml::model::ModelError>
+pub fn roml::model::Model::remove_construct(&mut self, roml::Construct) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_metadata(&mut self, roml::metadata::EntityRef) -> core::option::Option<roml::metadata::EntityMetadata>
 pub fn roml::model::Model::remove_objective(&mut self, roml::id::ObjId) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::remove_variable(&mut self, roml::id::VarId) -> core::result::Result<(), roml::model::ModelError>
@@ -11071,8 +10786,8 @@ pub fn roml::model::Model::set_binary(&mut self, roml::id::VarId) -> core::resul
 pub fn roml::model::Model::set_coefficient(&mut self, roml::model::coefficient::CoefficientTarget, roml::id::VarId, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_constraint_active(&mut self, roml::id::ConId, bool) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_constraint_bounds(&mut self, roml::id::ConId, roml::model::constraint::ConstraintBounds) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::set_construct_active(&mut self, roml::construct::Construct, bool) -> core::result::Result<(), roml::model::ModelError>
-pub fn roml::model::Model::set_metadata(&mut self, roml::metadata::EntityRef, roml::metadata::EntityMetadata)
+pub fn roml::model::Model::set_construct_active(&mut self, roml::Construct, bool) -> core::result::Result<(), roml::model::ModelError>
+pub fn roml::model::Model::set_metadata(&mut self, roml::metadata::EntityRef, roml::metadata::EntityMetadata) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_parameter(&mut self, roml::model::Parameter, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_semicontinuous(&mut self, roml::id::VarId, f64) -> core::result::Result<(), roml::model::ModelError>
 pub fn roml::model::Model::set_variable_active(&mut self, roml::id::VarId, bool) -> core::result::Result<(), roml::model::ModelError>
@@ -11288,7 +11003,6 @@ pub fn roml::revision::ModelRevision::from(T) -> T
 pub struct roml::ModelSnapshot
 pub roml::ModelSnapshot::cells: alloc::vec::Vec<roml::snapshot::CellEntry>
 pub roml::ModelSnapshot::constraints: alloc::vec::Vec<roml::snapshot::ConstraintEntry>
-pub roml::ModelSnapshot::constructs: alloc::vec::Vec<roml::construct::ConstructEntry>
 pub roml::ModelSnapshot::functions: alloc::vec::Vec<roml::function::FunctionEntry>
 pub roml::ModelSnapshot::objectives: alloc::vec::Vec<roml::snapshot::ObjectiveEntry>
 pub roml::ModelSnapshot::parameters: alloc::vec::Vec<roml::snapshot::ParameterEntry>
