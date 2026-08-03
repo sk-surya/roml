@@ -4,9 +4,9 @@
 
 **Goal:** Add a canonical semantic modeling IR, capability-aware backend compiler, solution-reuse workflows, infeasibility diagnostics, soft constraints, lexicographic objectives, and common exact MILP constructs while preserving ROML's incremental/recoverable solver guarantees and leaving an additive path for future nonlinear programming.
 
-**Architecture:** Canonical `Model` state stores functions, sets, constructs, objective policy, declared domains, fixings, metadata, and revisions. A per-solver `CompilationSession` lowers canonical snapshots/deltas into backend IR with typed capabilities, exact bridges, generated-entity origins, and formulation reports. `SolverSession` applies solve-scoped overlays, starts, hints, and objective stages transactionally before mapping backend results back to user entities.
+**Architecture:** Canonical `Model` state stores functions, sets, constructs, objective policy, declared domains, fixings, metadata, and revisions. A per-solver `CompilationSession` lowers canonical snapshots and deltas into backend IR with typed capabilities, exact bridges, generated-entity origins, and formulation reports. `SolverSession` applies solve-scoped overlays, starts, hints, and objective stages transactionally before mapping backend results back to user entities.
 
-**Tech Stack:** Rust 1.85, existing ROML arenas/revisions/journal/snapshots, `roml-highs` through pinned `highs-sys`, property/differential tests, GitHub Actions, cargo fmt/clippy/test/doc/public-api/package.
+**Tech Stack:** Rust 1.85, existing ROML arenas/revisions/journal/snapshots, `roml-highs` through pinned `highs-sys`, property and differential tests, GitHub Actions, cargo fmt/clippy/test/doc/public-api/package.
 
 ## Global Constraints
 
@@ -16,7 +16,7 @@
 - High-level constructs remain canonical entities; bridge expansion occurs only in the compiler.
 - Exact semantics are never silently compiled as relaxations.
 - Big-M requires finite proof or explicit validated user input; no default Big-M constant is permitted.
-- Every generated variable/constraint has an `EntityOrigin`.
+- Every generated variable and constraint has an `EntityOrigin`.
 - Unsupported features are applied, bridged exactly, adjusted explicitly, or rejected; never ignored.
 - Overlay rollback uncertainty marks the session `RequiresRebuild`.
 - Primitive compiled delta execution remains observationally equivalent to compiled rebuild.
@@ -26,37 +26,488 @@
 
 ---
 
-## Planned file structure
+## Cross-task interface contract
 
-### Canonical model and public semantics
+These names and fields are authoritative for the plan. A phase may change them only through an approved M3 decision amendment before dependent work starts.
 
-```text
-src/identity.rs                     opaque model lineage
-src/metadata.rs                     entity metadata and source information
-src/function/mod.rs                 scalar function/set exports
-src/function/scalar.rs              ScalarFunction and IntoScalarFunction
-src/function/set.rs                 ScalarSet and FunctionConstraint
-src/construct/mod.rs                construct IDs/store/common lifecycle
-src/construct/indicator.rs          indicator/reification specs
-src/construct/minmax.rs             min/max relation specs
-src/construct/absolute.rs           abs/positive-part/clamp specs
-src/construct/boolean.rs            Boolean/cardinality specs
-src/construct/product.rs            supported exact products
-src/construct/piecewise_linear.rs   PWL points/relation/extrapolation
-src/construct/soft.rs               soft constraint/signed correction
-src/assignment.rs                   PrimalAssignment/MipStart/Hints/locks
-src/objective_policy.rs             single/weighted/lexicographic policy
-src/model/variable.rs               declared domain and fixing
-src/model/mod.rs                    public mutations/accessors
-src/snapshot.rs                     canonical semantic snapshot
-src/delta.rs                        canonical semantic operations
-src/solution/mod.rs                 assignment/violation/objective access
-src/solution/metadata.rs            lineage/effective plan/stages
+### Identity and metadata
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModelLineageId(u64);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelSource {
+    pub module: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub external_key: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntityMetadata {
+    pub description: Option<String>,
+    pub group: Option<String>,
+    pub tags: Vec<String>,
+    pub source: Option<ModelSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EntityRef {
+    Variable(Variable),
+    Constraint(Constraint),
+    Objective(Objective),
+    Parameter(Parameter),
+    Construct(Construct),
+}
 ```
 
-### Compiler and backend IR
+### Function-in-set model
+
+```rust
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScalarFunction {
+    Linear(LinExpr),
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScalarSet {
+    LessEqual(ValueExpr),
+    GreaterEqual(ValueExpr),
+    EqualTo(ValueExpr),
+    Interval { lower: ValueExpr, upper: ValueExpr },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionConstraint {
+    pub function: ScalarFunction,
+    pub set: ScalarSet,
+}
+
+pub trait IntoScalarFunction {
+    fn into_scalar_function(self) -> ScalarFunction;
+}
+```
+
+### Canonical constructs
+
+```rust
+pub type Construct = ConstructId;
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConstructKind {
+    Indicator(IndicatorConstraint),
+    Reification(ReificationConstraint),
+    MinMax(MinMaxConstraint),
+    AbsoluteValue(AbsoluteValueConstraint),
+    Boolean(BooleanConstraint),
+    Cardinality(CardinalityConstraint),
+    BinaryProduct(BinaryProductConstraint),
+    PiecewiseLinear(PiecewiseLinearConstraint),
+    SoftConstraint(SoftConstraintDefinition),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConstructEntry {
+    pub id: Construct,
+    pub kind: ConstructKind,
+    pub active: bool,
+    pub dependencies: Vec<Parameter>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormulationPreference {
+    Auto,
+    Portable,
+    NativeRequired,
+}
+```
+
+### Domains and fixing
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VariableDomain {
+    pub bounds: Bounds,
+    pub var_type: VarType,
+    pub semi: Option<SemiDomain>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SemiDomain {
+    Continuous { nonzero_lower: f64 },
+    Integer { nonzero_lower: f64 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariableFixing {
+    pub value: f64,
+    pub provenance: FixingProvenance,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FixingProvenance {
+    User,
+    Imported { source: String },
+}
+```
+
+### Assignments and solve intent
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrimalAssignment {
+    lineage: ModelLineageId,
+    source_revision: Option<ModelRevision>,
+    values: std::collections::BTreeMap<Variable, f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MipStart {
+    pub assignment: PrimalAssignment,
+    pub repair: RepairPolicy,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepairPolicy {
+    BackendDefault,
+    RejectIncomplete,
+    AllowRepair,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VariableHints {
+    entries: std::collections::BTreeMap<Variable, VariableHint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VariableHint {
+    pub value: f64,
+    pub priority: HintPriority,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HintPriority(pub i32);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolutionLock {
+    pub assignment: PrimalAssignment,
+    pub selector: LockSelector,
+    pub continuous: ContinuousLock,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LockSelector {
+    AllAssigned,
+    IntegerAssigned,
+    BinaryAssigned,
+    Variables(std::collections::BTreeSet<Variable>),
+    Except(std::collections::BTreeSet<Variable>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContinuousLock {
+    Exact,
+    Within { absolute: f64 },
+}
+```
+
+### Objective policy
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectivePolicy {
+    Single(Objective),
+    Weighted(Vec<WeightedObjective>),
+    Lexicographic(Vec<ObjectiveLevel>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeightedObjective {
+    pub objective: Objective,
+    pub weight: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectiveLevel {
+    pub objective: Objective,
+    pub absolute_tolerance: f64,
+    pub relative_tolerance: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LexStagePolicy {
+    RequireOptimal,
+    UseBestFeasible,
+}
+```
+
+### Backend IR and origins
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompiledVariableId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompiledConstraintId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompiledObjectiveId(pub u32);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledVariable {
+    pub id: CompiledVariableId,
+    pub bounds: Bounds,
+    pub var_type: VarType,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledLinearRow {
+    pub id: CompiledConstraintId,
+    pub bounds: ConstraintBounds,
+    pub coefficients: Vec<(CompiledVariableId, f64)>,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledObjective {
+    pub id: CompiledObjectiveId,
+    pub sense: Sense,
+    pub coefficients: Vec<(CompiledVariableId, f64)>,
+    pub constant: f64,
+    pub name: Option<String>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum BackendConstraint {
+    Indicator(CompiledIndicator),
+    Sos1(CompiledSos),
+    Sos2(CompiledSos),
+    PiecewiseLinear(CompiledPiecewiseLinear),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledIndicator {
+    pub binary: CompiledVariableId,
+    pub active_value: i32,
+    pub row: CompiledLinearRow,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledSos {
+    pub variables: Vec<CompiledVariableId>,
+    pub weights: Vec<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledPiecewiseLinear {
+    pub input: CompiledVariableId,
+    pub output: CompiledVariableId,
+    pub points: Vec<PiecewisePoint>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackendSnapshot {
+    pub revision: ModelRevision,
+    pub variables: Vec<CompiledVariable>,
+    pub linear_rows: Vec<CompiledLinearRow>,
+    pub native_constraints: Vec<BackendConstraint>,
+    pub objectives: Vec<CompiledObjective>,
+    pub origin_map: OriginMap,
+    pub report: CompilationReport,
+    pub fingerprint: CompilationFingerprint,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackendDeltaBatch {
+    pub from: ModelRevision,
+    pub to: ModelRevision,
+    pub operations: Vec<BackendOp>,
+    pub fingerprint: CompilationFingerprint,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum BackendOp {
+    AddVariable(CompiledVariable),
+    RemoveVariable(CompiledVariableId),
+    SetVariableBounds { variable: CompiledVariableId, bounds: Bounds },
+    AddLinearRow(CompiledLinearRow),
+    RemoveLinearRow(CompiledConstraintId),
+    SetLinearRowBounds { constraint: CompiledConstraintId, bounds: ConstraintBounds },
+    SetLinearCoefficient { constraint: CompiledConstraintId, variable: CompiledVariableId, value: f64 },
+    AddObjective(CompiledObjective),
+    RemoveObjective(CompiledObjectiveId),
+    SetObjectiveCoefficient { objective: CompiledObjectiveId, variable: CompiledVariableId, value: f64 },
+    SetObjectiveConstant { objective: CompiledObjectiveId, value: f64 },
+    SetObjectiveSense { objective: CompiledObjectiveId, sense: Sense },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EntityOrigin {
+    UserVariable(Variable),
+    UserConstraint(Constraint),
+    UserObjective(Objective),
+    Construct { construct: Construct, role: GeneratedRole },
+    SolveOverlay { overlay: OverlayId, role: GeneratedRole },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GeneratedRole {
+    AuxiliaryVariable { label: String },
+    BridgeRow { label: String },
+    ObjectiveLock { level: usize },
+    LowerViolation,
+    UpperViolation,
+    PositiveCorrection,
+    NegativeCorrection,
+    SegmentSelector { segment: usize },
+    ConvexWeight { point: usize },
+}
+```
+
+### Capabilities and compilation
+
+```rust
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BackendFeature {
+    Lp,
+    Mip,
+    IncrementalBounds,
+    IncrementalRows,
+    IncrementalCoefficients,
+    MipStart,
+    PartialMipStart,
+    MultipleMipStarts,
+    VariableHints,
+    InitialBasis,
+    Iis,
+    FeasibilityRelaxation,
+    Indicator,
+    Sos1,
+    Sos2,
+    NativePiecewiseLinear,
+    NativeMultiObjective,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportLevel {
+    Native,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FeatureLimitations {
+    pub minimum_version: Option<String>,
+    pub model_classes: Vec<String>,
+    pub maximum_count: Option<usize>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeatureSupport {
+    pub level: SupportLevel,
+    pub limitations: FeatureLimitations,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompilationPolicy {
+    Auto,
+    Portable,
+    NativeRequired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CompilationFingerprint(pub u64);
+```
+
+### Solve plan and effective result
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolvePlan {
+    pub options: SolveOptions,
+    pub overlay: SolveOverlay,
+    pub mip_starts: Vec<MipStart>,
+    pub hints: VariableHints,
+    pub objective_override: Option<ObjectivePolicy>,
+    pub lex_stage_policy: LexStagePolicy,
+    pub unsupported: UnsupportedFeaturePolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnsupportedFeaturePolicy {
+    Reject,
+    IgnoreExplicitly,
+    Convert(ConversionPolicy),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversionPolicy {
+    HintsToMipStart,
+    MipStartToTemporaryFixing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EffectiveSolvePlan {
+    pub applied_features: Vec<AppliedFeature>,
+    pub adjustments: Vec<PlanAdjustment>,
+    pub rejections: Vec<PlanRejection>,
+    pub objective_stages: Vec<ObjectiveStageResult>,
+}
+```
+
+### Infeasibility analysis
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub struct InfeasibilityReport {
+    pub lineage: ModelLineageId,
+    pub revision: ModelRevision,
+    pub backend: BackendIdentity,
+    pub kind: InfeasibilityKind,
+    pub scope: AnalysisScope,
+    pub minimality: MinimalityClaim,
+    pub completion: CompletionStatus,
+    pub members: Vec<ConflictMember>,
+    pub statistics: AnalysisStatistics,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConflictMember {
+    ConstraintSide { constraint: Constraint, side: BoundSide, participation: Participation },
+    VariableBound { variable: Variable, side: BoundSide, provenance: BoundProvenance, participation: Participation },
+    Construct { construct: Construct, role: GeneratedRole, participation: Participation },
+}
+```
+
+---
+
+## Planned file structure
 
 ```text
+src/identity.rs
+src/metadata.rs
+src/function/mod.rs
+src/function/scalar.rs
+src/function/set.rs
+src/construct/mod.rs
+src/construct/indicator.rs
+src/construct/minmax.rs
+src/construct/absolute.rs
+src/construct/boolean.rs
+src/construct/product.rs
+src/construct/piecewise_linear.rs
+src/construct/soft.rs
+src/assignment.rs
+src/objective_policy.rs
 src/compiler/mod.rs
 src/compiler/backend_ir.rs
 src/compiler/capability.rs
@@ -72,51 +523,17 @@ src/compiler/bridge/boolean.rs
 src/compiler/bridge/product.rs
 src/compiler/bridge/piecewise_linear.rs
 src/compiler/bridge/soft.rs
-```
-
-### Solve orchestration and analysis
-
-```text
 src/solver/plan.rs
 src/solver/overlay.rs
 src/solver/effective_plan.rs
 src/solver/infeasibility.rs
+src/solver/feasibility_relaxation.rs
 src/solver/multiobjective.rs
-src/solver/session.rs
-src/solver/facade.rs
-src/solver/backend.rs
-```
-
-### HiGHS backend
-
-```text
 roml-highs/src/compiler.rs
 roml-highs/src/start.rs
 roml-highs/src/iis.rs
 roml-highs/src/relaxation.rs
 roml-highs/src/multiobjective.rs
-roml-highs/src/session.rs
-roml-highs/src/facade.rs
-```
-
-### Tests and evidence
-
-```text
-tests/semantic_ir.rs
-tests/lineage_metadata.rs
-tests/compiler_identity.rs
-tests/compiler_bridges.rs
-tests/fixing_assignment.rs
-tests/solve_overlay.rs
-tests/objective_policy.rs
-tests/common_constructs.rs
-tests/piecewise_linear.rs
-roml-highs/tests/solve_plan.rs
-roml-highs/tests/iis_reports.rs
-roml-highs/tests/soft_constraints.rs
-roml-highs/tests/lexicographic.rs
-roml-highs/tests/formulation_equivalence.rs
-docs/release/evidence/M3_*.md
 ```
 
 ---
@@ -128,15 +545,14 @@ docs/release/evidence/M3_*.md
 **Files:**
 - Create: `docs/release/evidence/M3_P25_SEMANTIC_IR.md`
 - Create: `tests/m3_baseline_characterization.rs`
-- Modify: none before baseline capture
+- Create: `docs/release/evidence/m3-baseline/roml.txt`
+- Create: `docs/release/evidence/m3-baseline/roml-highs.txt`
+- Create: `docs/release/evidence/m3-baseline/roml-package.txt`
+- Create: `docs/release/evidence/m3-baseline/roml-highs-package.txt`
 
-**Interfaces:**
-- Consumes: current M2 public API and test matrix.
-- Produces: executable characterization tests and untouched command/public-API/package baselines used by every later task.
+**Produces:** untouched command, public-API, package, and behavioral baselines.
 
-- [ ] **Step 1: Record exact base and environment**
-
-Run:
+- [ ] **Step 1: Record exact environment**
 
 ```bash
 git rev-parse HEAD
@@ -144,11 +560,9 @@ rustc --version --verbose
 cargo --version
 ```
 
-Write exact output to `docs/release/evidence/M3_P25_SEMANTIC_IR.md` under `Baseline and environment`.
+Copy exact output into `M3_P25_SEMANTIC_IR.md`.
 
-- [ ] **Step 2: Capture untouched core and HiGHS gates**
-
-Run:
+- [ ] **Step 2: Run untouched gates**
 
 ```bash
 cargo fmt --all -- --check
@@ -162,11 +576,9 @@ RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
 RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps
 ```
 
-Expected: all currently qualified commands pass. Record failures as baseline facts; do not repair them in this step.
+Record every result. Do not repair baseline defects in this task.
 
-- [ ] **Step 3: Capture public API and package inventories**
-
-Run:
+- [ ] **Step 3: Capture public/package inventories**
 
 ```bash
 mkdir -p docs/release/evidence/m3-baseline
@@ -176,56 +588,14 @@ cargo package --list -p roml > docs/release/evidence/m3-baseline/roml-package.tx
 cargo package --list -p roml-highs > docs/release/evidence/m3-baseline/roml-highs-package.txt
 ```
 
-- [ ] **Step 4: Write characterization tests**
+- [ ] **Step 4: Write M2 compatibility tests**
 
-Create `tests/m3_baseline_characterization.rs` with tests that pin:
+`tests/m3_baseline_characterization.rs` must compile the current fluent model path, deterministic snapshot, parameter update, objective constant, solution metadata, and one-rebuild-retry behavior.
 
-```rust
-use roml::prelude::*;
-
-#[test]
-fn m2_linear_api_remains_the_m3_compatibility_baseline() -> Result<(), Box<dyn std::error::Error>> {
-    let mut model = Model::named("baseline");
-    let x = model.add_variable(continuous().bounds(0.0, 10.0).named("x"))?;
-    let p = model.add_parameter(parameter(2.0).named("p"))?;
-    let c = model.add_constraint((x).le(4.0).named("capacity"))?;
-    let o = model.maximize(p * x + 1.0)?;
-
-    assert_eq!(model.variable_name(x)?, Some("x"));
-    assert_eq!(model.constraint_name(c)?, Some("capacity"));
-    assert_eq!(model.active_objective(), Some(o));
-    assert!(model.pprint().contains("capacity"));
-    Ok(())
-}
-
-#[test]
-fn primitive_snapshot_is_deterministic() -> Result<(), Box<dyn std::error::Error>> {
-    let mut model = Model::named("snapshot");
-    let x = model.add_variable(continuous().bounds(0.0, 5.0))?;
-    model.add_constraint((2.0 * x).le(8.0))?;
-    model.minimize(x)?;
-    model.commit()?;
-
-    assert_eq!(model.snapshot(), model.snapshot());
-    Ok(())
-}
-```
-
-Use current exact public snapshot access signature; if snapshot is advanced-only, import it through the existing advanced path without changing production code.
-
-- [ ] **Step 5: Run characterization tests**
-
-Run:
+- [ ] **Step 5: Run and commit**
 
 ```bash
 cargo test -p roml --test m3_baseline_characterization -- --nocapture
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit baseline evidence**
-
-```bash
 git add docs/release/evidence/M3_P25_SEMANTIC_IR.md \
   docs/release/evidence/m3-baseline tests/m3_baseline_characterization.rs
 git commit -m "test(m3): capture semantic modeling baseline"
@@ -233,7 +603,7 @@ git commit -m "test(m3): capture semantic modeling baseline"
 
 ---
 
-## Task 2: Add model lineage and entity metadata
+## Task 2: Add lineage and metadata
 
 **Phase:** P25
 
@@ -244,144 +614,34 @@ git commit -m "test(m3): capture semantic modeling baseline"
 - Modify: `src/lib.rs`
 - Modify: `src/model/mod.rs`
 - Modify: `src/solution/metadata.rs`
-- Modify: `src/prelude.rs` or current prelude definition
 
-**Interfaces:**
-- Produces:
-
-```rust
-pub struct ModelLineageId(u64);
-pub struct EntityMetadata { ... }
-pub struct ModelSource { ... }
-
-impl Model {
-    pub fn lineage(&self) -> ModelLineageId;
-    pub fn metadata(&self, entity: impl Into<EntityRef>) -> Result<&EntityMetadata, ModelError>;
-    pub fn set_metadata(&mut self, entity: impl Into<EntityRef>, metadata: EntityMetadata) -> Result<(), ModelError>;
-}
-```
-
-- Later tasks consume lineage for assignments and metadata for origins/reports.
+**Produces:** the identity and metadata contract defined above.
 
 - [ ] **Step 1: Write failing lineage tests**
 
-Create `tests/lineage_metadata.rs`:
+Test that independent models differ, clones preserve lineage, and solution metadata records lineage.
 
-```rust
-use roml::prelude::*;
+- [ ] **Step 2: Implement allocation**
 
-#[test]
-fn independent_models_have_distinct_lineages_and_clones_preserve_lineage() {
-    let a = Model::new();
-    let b = Model::new();
-    let a_clone = a.clone();
+Use `AtomicU64` with zero reserved. `Model::default()` allocates; `Clone` copies the value. Counter exhaustion panics only after `u64::MAX - 1` allocations and is documented as process-fatal exhaustion.
 
-    assert_ne!(a.lineage(), b.lineage());
-    assert_eq!(a.lineage(), a_clone.lineage());
-}
-```
+- [ ] **Step 3: Write failing metadata tests**
 
-- [ ] **Step 2: Run the test and verify failure**
+Test round-trip metadata for variable, constraint, objective, and parameter; stale entity keys fail atomically.
 
-```bash
-cargo test -p roml --test lineage_metadata independent_models_have_distinct_lineages_and_clones_preserve_lineage
-```
+- [ ] **Step 4: Implement metadata store**
 
-Expected: compile failure because `Model::lineage` does not exist.
+Store `HashMap<EntityRef, EntityMetadata>` in `Model`. Metadata changes are canonical diagnostic changes with `affects_solver() == false`.
 
-- [ ] **Step 3: Implement process-unique lineage allocation**
+- [ ] **Step 5: Export curated types**
 
-In `src/identity.rs`:
+Export `ModelLineageId`, `EntityMetadata`, and `ModelSource` from the crate root and prelude; keep `EntityRef` under `advanced` until public API review proves ordinary need.
 
-```rust
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_LINEAGE: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ModelLineageId(u64);
-
-impl ModelLineageId {
-    pub(crate) fn allocate() -> Self {
-        let id = NEXT_LINEAGE.fetch_add(1, Ordering::Relaxed);
-        assert_ne!(id, 0, "model lineage counter exhausted");
-        Self(id)
-    }
-}
-```
-
-Do not expose the numeric value as a stable serialization contract.
-
-Add `lineage: ModelLineageId` to `Model`; implement manual `Default` so new models allocate and `Clone` preserves the field.
-
-- [ ] **Step 4: Run lineage tests**
-
-```bash
-cargo test -p roml --test lineage_metadata independent_models_have_distinct_lineages_and_clones_preserve_lineage
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Write failing metadata tests**
-
-Add:
-
-```rust
-#[test]
-fn metadata_round_trips_for_named_entities() -> Result<(), Box<dyn std::error::Error>> {
-    let mut model = Model::new();
-    let x = model.add_variable(continuous().named("x"))?;
-    let metadata = EntityMetadata::new()
-        .description("dispatch level")
-        .group("dispatch")
-        .tag("interval:0")
-        .source(ModelSource::new().external_key("dispatch/x/0"));
-
-    model.set_metadata(x, metadata.clone())?;
-    assert_eq!(model.metadata(x)?, &metadata);
-    Ok(())
-}
-```
-
-- [ ] **Step 6: Implement metadata types and typed entity references**
-
-Use one internal `HashMap<EntityRef, EntityMetadata>` where `EntityRef` is:
-
-```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EntityRef {
-    Variable(Variable),
-    Constraint(Constraint),
-    Objective(Objective),
-    Parameter(Parameter),
-    Construct(Construct),
-}
-```
-
-Implement `From<Variable>`, `From<Constraint>`, `From<Objective>`, and `From<Parameter>`. Add construct conversion in Task 4.
-
-Metadata mutation is canonical diagnostic state but does not affect solver state. Record it separately from solver-affecting changes or mark its `Change` as non-solver-affecting.
-
-- [ ] **Step 7: Add lineage to solve metadata**
-
-Extend `SolveMetadata`:
-
-```rust
-pub model_lineage: ModelLineageId,
-```
-
-Update all constructors/tests so a solved `Solution` records both lineage and revision.
-
-- [ ] **Step 8: Run focused and core tests**
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 cargo test -p roml --test lineage_metadata
 cargo test -p roml --all-targets
-```
-
-- [ ] **Step 9: Commit**
-
-```bash
 git add src/identity.rs src/metadata.rs src/lib.rs src/model/mod.rs \
   src/solution/metadata.rs tests/lineage_metadata.rs
 git commit -m "feat(model): add lineage and entity metadata"
@@ -389,7 +649,7 @@ git commit -m "feat(model): add lineage and entity metadata"
 
 ---
 
-## Task 3: Introduce linear function-in-set canonical constraints
+## Task 3: Add function-in-set canonical constraints
 
 **Phase:** P25
 
@@ -398,73 +658,31 @@ git commit -m "feat(model): add lineage and entity metadata"
 - Create: `src/function/scalar.rs`
 - Create: `src/function/set.rs`
 - Create: `tests/semantic_ir.rs`
+- Modify: `src/lib.rs`
 - Modify: `src/model/constraint.rs`
 - Modify: `src/model/mod.rs`
 - Modify: `src/snapshot.rs`
 - Modify: `src/delta.rs`
-- Modify: `src/expr/linear.rs`
-- Modify: `src/lib.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** `ScalarFunction`, `ScalarSet`, `FunctionConstraint`, and `IntoScalarFunction`.
 
-```rust
-#[non_exhaustive]
-pub enum ScalarFunction { Linear(LinExpr) }
-#[non_exhaustive]
-pub enum ScalarSet { LessEqual(ValueExpr), GreaterEqual(ValueExpr), EqualTo(ValueExpr), Interval { lower: ValueExpr, upper: ValueExpr } }
-pub struct FunctionConstraint { pub function: ScalarFunction, pub set: ScalarSet }
-pub trait IntoScalarFunction { fn into_scalar_function(self) -> ScalarFunction; }
-```
+- [ ] **Step 1: Write failing conversion tests**
 
-- Existing `ConstraintSpec` converts losslessly to `FunctionConstraint`.
+Assert existing `.le`, `.ge`, `.eq`, and `.between` builders reconstruct the expected function/set values.
 
-- [ ] **Step 1: Write failing conversion and snapshot tests**
+- [ ] **Step 2: Implement types and conversions**
 
-```rust
-#[test]
-fn existing_constraint_builder_is_stored_as_linear_function_in_set() -> Result<(), Box<dyn std::error::Error>> {
-    let mut model = Model::new();
-    let x = model.add_variable(continuous())?;
-    let c = model.add_constraint((2.0 * x + 1.0).le(5.0))?;
+Implement `IntoScalarFunction` for `LinExpr` and `Variable`. Existing expression operators remain unchanged.
 
-    let semantic = model.function_constraint(c)?;
-    assert!(matches!(semantic.function, ScalarFunction::Linear(_)));
-    assert!(matches!(semantic.set, ScalarSet::LessEqual(_)));
-    Ok(())
-}
-```
+- [ ] **Step 3: Preserve one coefficient authority**
 
-- [ ] **Step 2: Verify the test fails**
+Keep the canonical coefficient index authoritative in P25. `Model::function_constraint` reconstructs `ScalarFunction::Linear` deterministically and reads set values from constraint bounds.
 
-```bash
-cargo test -p roml --test semantic_ir existing_constraint_builder_is_stored_as_linear_function_in_set
-```
+- [ ] **Step 4: Extend snapshots and deltas**
 
-- [ ] **Step 3: Implement function/set types**
+Canonical snapshot constraint entries carry `FunctionConstraint`. During P25 transition, legacy bounds/cells remain and invariant checks prove equality.
 
-Implement `IntoScalarFunction` for `LinExpr`, `Variable`, and supported scalar expression inputs by converting through existing `LinExpr` conversions. Keep operator overloading unchanged.
-
-- [ ] **Step 4: Store function constraints canonically**
-
-Refactor constraint storage so a user constraint owns `FunctionConstraint` plus metadata/activity. Preserve existing coefficient indexing by projecting `ScalarFunction::Linear` into canonical cells during insertion and mutation.
-
-Do not duplicate coefficient truth: the function expression and canonical cell store must have one authoritative relationship. Choose one of these two and document it in code:
-
-- function expression is authoritative and coefficient index is a derived index updated atomically; or
-- coefficient index is authoritative and `function_constraint` reconstructs the function.
-
-Use the current coefficient index as authoritative to minimize P25 risk; store set semantics and reconstruct the linear function deterministically.
-
-- [ ] **Step 5: Extend snapshots without changing backend behavior**
-
-Add canonical function/set fields to `ConstraintEntry`. Keep existing bounds/cells during the transition so current backends remain operational until P26. Add assertions that linear set and legacy bounds agree exactly.
-
-- [ ] **Step 6: Extend canonical deltas**
-
-Add a self-contained semantic operation for constraint-function/set addition/update while retaining current primitive operations through P26 migration. Mark the legacy duplication as transitional in rustdoc and evidence.
-
-- [ ] **Step 7: Run focused equivalence tests**
+- [ ] **Step 5: Verify compatibility**
 
 ```bash
 cargo test -p roml --test semantic_ir
@@ -472,112 +690,68 @@ cargo test -p roml --test m3_baseline_characterization
 cargo test -p roml --all-targets
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/function src/model/constraint.rs src/model/mod.rs src/snapshot.rs \
-  src/delta.rs src/expr/linear.rs src/lib.rs tests/semantic_ir.rs
+git add src/function src/lib.rs src/model/constraint.rs src/model/mod.rs \
+  src/snapshot.rs src/delta.rs tests/semantic_ir.rs
 git commit -m "feat(model): add linear function-in-set semantics"
 ```
 
 ---
 
-## Task 4: Add the canonical construct store and lifecycle
+## Task 4: Add canonical construct lifecycle
 
 **Phase:** P25
 
 **Files:**
 - Create: `src/construct/mod.rs`
-- Create: `src/construct/test_support.rs` under `#[cfg(test)]` or equivalent private fixture
+- Modify: `src/lib.rs`
+- Modify: `src/metadata.rs`
 - Modify: `src/model/mod.rs`
 - Modify: `src/snapshot.rs`
 - Modify: `src/delta.rs`
-- Modify: `src/metadata.rs`
-- Modify: `src/lib.rs`
 - Modify: `tests/semantic_ir.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** generation-safe `ConstructId`, `ConstructKind`, `ConstructEntry`, model lifecycle methods, snapshot/delta entries.
 
-```rust
-pub type Construct = ConstructId;
-#[non_exhaustive]
-pub enum ConstructKind { /* concrete variants added later */ }
-pub struct ConstructEntry { id, kind, active, metadata, dependencies }
+- [ ] **Step 1: Write lifecycle tests**
 
-impl Model {
-    pub fn construct(&self, id: Construct) -> Result<&ConstructEntry, ModelError>;
-    pub fn set_construct_active(&mut self, id: Construct, active: bool) -> Result<(), ModelError>;
-    pub fn remove_construct(&mut self, id: Construct) -> Result<(), ModelError>;
-}
-```
+Use a private test-only construct payload to test add, clone, snapshot, deactivate, reactivate, remove, and stale generation behavior.
 
-- [ ] **Step 1: Write lifecycle tests using a private fixture variant**
+- [ ] **Step 2: Implement one construct store**
 
-Test add/snapshot/clone/deactivate/remove/stale-handle behavior. The fixture must not enter the public enum; use a private test constructor around a minimal internal payload.
+Use the existing arena pattern. Do not add one map per construct family.
 
-- [ ] **Step 2: Implement generation-safe construct IDs/store**
+- [ ] **Step 3: Add canonical operations**
 
-Mirror existing arena identity semantics. IDs are never reused without generation change. Common record fields:
+Add `ConstructAdded`, `ConstructRemoved`, `ConstructActivityChanged`, and `ConstructUpdated` with self-contained payloads.
 
-```rust
-pub(crate) struct ConstructData {
-    pub kind: ConstructKind,
-    pub active: bool,
-    pub dependencies: Vec<Parameter>,
-}
-```
+- [ ] **Step 4: Extend invariants**
 
-Metadata remains in the common metadata store keyed by `EntityRef::Construct`.
+Validate live references, parameter dependencies, auxiliary ownership acyclicity, and metadata key validity.
 
-- [ ] **Step 3: Add construct canonical changes**
-
-```rust
-ConstructAdded { construct, kind }
-ConstructRemoved { construct }
-ConstructActivityChanged { construct, active }
-ConstructUpdated { construct, old, new }
-```
-
-Ensure each operation is self-contained enough for canonical replay and audit. Large payload cloning is acceptable in M3 correctness-first code; optimize only after profiling.
-
-- [ ] **Step 4: Add constructs to canonical snapshots**
-
-Sort construct entries by stable ID. Snapshot equality must include semantic payload, activity, and dependencies.
-
-- [ ] **Step 5: Update invariant checker**
-
-Validate:
-
-- referenced user entities exist;
-- dependencies refer to live parameters;
-- auxiliary ownership has no cycles;
-- inactive constructs are not compiled later;
-- metadata keys never point to stale entities.
-
-- [ ] **Step 6: Run property/lifecycle tests**
+- [ ] **Step 5: Run P25 gate**
 
 ```bash
-cargo test -p roml --test semantic_ir
 cargo test -p roml --all-targets
+cargo clippy -p roml --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
+cargo public-api -p roml
 ```
 
-- [ ] **Step 7: Update P25 evidence and commit**
+- [ ] **Step 6: Commit and request P25 review**
 
 ```bash
-git add src/construct src/model/mod.rs src/snapshot.rs src/delta.rs \
-  src/metadata.rs src/lib.rs tests/semantic_ir.rs \
+git add src/construct src/lib.rs src/metadata.rs src/model/mod.rs \
+  src/snapshot.rs src/delta.rs tests/semantic_ir.rs \
   docs/release/evidence/M3_P25_SEMANTIC_IR.md
-git commit -m "feat(model): add canonical semantic construct lifecycle"
+git commit -m "feat(model): add semantic construct lifecycle"
 ```
-
-- [ ] **Step 8: Run P25 phase gate**
-
-Run the baseline matrix, public API diff, and package list. Request independent review before P26.
 
 ---
 
-## Task 5: Define backend IR, compiled identities, and origin maps
+## Task 5: Define backend IR and origin completeness
 
 **Phase:** P26
 
@@ -591,290 +765,186 @@ Run the baseline matrix, public API diff, and package list. Request independent 
 - Modify: `src/lib.rs`
 - Modify: `src/advanced.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** compiled IDs, backend snapshot/delta/ops, origins, compilation fingerprint, and report types from the contract.
 
-```rust
-pub struct CompiledVariableId(u32);
-pub struct CompiledConstraintId(u32);
-pub struct BackendSnapshot { ... }
-pub struct BackendDeltaBatch { ... }
-#[non_exhaustive] pub enum BackendConstraint { Indicator(...), Sos1(...), Sos2(...), PiecewiseLinear(...) }
-pub enum EntityOrigin { UserVariable(...), UserConstraint(...), UserObjective(...), Construct { ... }, SolveOverlay { ... } }
-pub struct OriginMap { ... }
-pub struct CompilationReport { ... }
-```
+- [ ] **Step 1: Write failing builder-finalization tests**
 
-- [ ] **Step 1: Write failing origin completeness tests**
+Backend snapshot finalization fails when any compiled variable, row, objective, or native constraint lacks an origin.
 
-Construct a small backend snapshot builder and assert finalization fails when any compiled entity lacks origin.
+- [ ] **Step 2: Implement deterministic IDs**
 
-```rust
-assert!(matches!(builder.finish(), Err(CompileError::OriginMappingFailure { .. })));
-```
+Allocate dense IDs after sorting canonical user entities by stable handles and generated entities by `(construct, role)`.
 
-- [ ] **Step 2: Implement distinct compiled IDs**
+- [ ] **Step 3: Implement bidirectional origin queries**
 
-Use dense deterministic IDs allocated in sorted canonical order. Do not reuse user ID numeric components.
+Support compiled-to-origin and construct-to-generated-entity lookups.
 
-- [ ] **Step 3: Implement backend snapshot types**
+- [ ] **Step 4: Implement structured reports**
 
-Include compiled variables, linear rows, normalized native constraints, objectives, origin map, and report. Keep fields private where possible; expose read-only iterators/accessors under `roml::backend`.
+Each construct report records representation, generated counts, bound/Big-M evidence, and notes. Reports contain no backend-specific free-form requirement.
 
-- [ ] **Step 4: Implement origin map bidirectional queries**
-
-Required queries:
-
-```rust
-origin.variable(compiled_id) -> &EntityOrigin
-origin.constraint(compiled_id) -> &EntityOrigin
-origin.variables_for_construct(construct) -> iterator
-origin.constraints_for_construct(construct) -> iterator
-```
-
-- [ ] **Step 5: Implement compilation report records**
-
-```rust
-pub enum RepresentationKind { IdentityLinear, Native(BackendFeature), Bridge(BridgeKind) }
-pub struct ConstructCompilation { construct, representation, generated_variables, generated_constraints, notes }
-```
-
-No backend prose is required; reports are structured and renderable.
-
-- [ ] **Step 6: Test deterministic ordering and origin completeness**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
 cargo test -p roml --test compiler_identity
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add src/compiler src/lib.rs src/advanced.rs tests/compiler_identity.rs \
   docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md
-git commit -m "feat(compiler): define backend IR and origin mapping"
+git commit -m "feat(compiler): define backend IR and origins"
 ```
 
 ---
 
-## Task 6: Replace flat capabilities with typed feature support
+## Task 6: Implement typed capabilities
 
 **Phase:** P26
 
 **Files:**
 - Create: `src/compiler/capability.rs`
 - Modify: `src/solver/backend.rs`
-- Modify: `src/solver/session.rs`
+- Modify: `src/solver/request.rs`
 - Modify: `src/solver/conformance.rs`
 - Modify: `roml-highs/src/session.rs`
-- Modify: tests referencing `BackendCapabilities`
+- Modify: `tests/backend_conformance.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** typed `BackendFeature`, `FeatureSupport`, and `FeatureLimitations`.
 
-```rust
-#[non_exhaustive] pub enum BackendFeature { Lp, Mip, IncrementalBounds, IncrementalRows, MipStart, PartialMipStart, MultipleMipStarts, VariableHints, InitialBasis, Iis, FeasibilityRelaxation, Indicator, Sos1, Sos2, NativePiecewiseLinear, NativeMultiObjective }
-pub struct FeatureSupport { pub level: SupportLevel, pub limitations: FeatureLimitations }
-pub trait CapabilityProvider { fn support(&self, feature: BackendFeature) -> FeatureSupport; }
-```
+- [ ] **Step 1: Characterize legacy mapping**
 
-- [ ] **Step 1: Add compatibility tests for current capabilities**
+Write tests mapping every current Boolean capability to typed features before replacing callers.
 
-For ReferenceBackend and HiGHS, assert LP/MIP/duals/reduced-cost/current incremental capabilities map to equivalent typed features before removing old field reads.
+- [ ] **Step 2: Implement `BackendCapabilitySet`**
 
-- [ ] **Step 2: Implement typed registry**
+Use `BTreeMap<BackendFeature, FeatureSupport>` and helpers `support(feature)` and `supports_native(feature)`.
 
-Use a `BTreeMap<BackendFeature, FeatureSupport>` or exhaustive match. `FeatureLimitations` stores structured constraints such as minimum version, model class, maximum starts, and notes.
+- [ ] **Step 3: Migrate validation**
 
-- [ ] **Step 3: Add a temporary conversion from legacy capabilities**
+Solve-request validation queries typed features. Preserve existing rejection semantics.
 
-```rust
-impl From<LegacyBackendCapabilities> for BackendCapabilitySet
-```
+- [ ] **Step 4: Add version-aware HiGHS set**
 
-Use only during migration. Mark private/deprecated and remove by the end of P26.
+Populate current LP/MIP/incremental/solution features from actual backend version. New M3 features remain unsupported until qualified phases.
 
-- [ ] **Step 4: Migrate validation and metadata callers**
+- [ ] **Step 5: Remove flat public usage**
 
-Replace direct Boolean reads with `supports(feature)`/`support(feature)`. Ensure unsupported solve options still reject exactly as before.
+Keep a private conversion only until P26 tests pass, then remove it before merge.
 
-- [ ] **Step 5: Add version-aware HiGHS capability construction**
-
-Capability creation consumes authoritative backend version information already exposed by the session. Do not enable new M3 features yet; report them unsupported until their phases qualify them.
-
-- [ ] **Step 6: Run conformance tests**
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 cargo test -p roml solver::conformance
 cargo test -p roml-highs --all-targets
-```
-
-- [ ] **Step 7: Remove legacy capability struct/public exposure**
-
-Update migration docs/evidence. Keep a compatibility alias only if public API review requires one documented pre-1.0 window.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add src/compiler/capability.rs src/solver/backend.rs src/solver/session.rs \
-  src/solver/conformance.rs roml-highs/src/session.rs tests roml-highs/tests
+git add src/compiler/capability.rs src/solver/backend.rs src/solver/request.rs \
+  src/solver/conformance.rs roml-highs/src/session.rs tests/backend_conformance.rs
 git commit -m "feat(backend): add typed feature capabilities"
 ```
 
 ---
 
-## Task 7: Implement the identity compiler and migrate backend synchronization
+## Task 7: Add identity compiler and migrate synchronization
 
 **Phase:** P26
 
 **Files:**
 - Create: `src/compiler/session.rs`
 - Create: `roml-highs/src/compiler.rs`
+- Create: `docs/migration/M3_BACKEND_IR.md`
 - Modify: `src/solver/session.rs`
 - Modify: `src/solver/facade.rs`
+- Modify: `src/solver/reference.rs`
 - Modify: `src/solver/conformance.rs`
-- Modify: `src/reference_backend.rs` or current reference backend path
 - Modify: `roml-highs/src/session.rs`
 - Modify: `src/advanced.rs`
-- Create: `docs/migration/M3_BACKEND_IR.md`
+- Modify: `tests/differential_harness.rs`
 
-**Interfaces:**
-- Produces:
-
-```rust
-pub struct CompilationSession { ... }
-pub enum BackendSynchronization { Delta(BackendDeltaBatch), Rebuild(BackendSnapshot) }
-pub trait BackendSession { fn synchronize(&mut self, sync: BackendSynchronization) -> Result<SyncReceipt, BackendError>; ... }
-```
-
-- [ ] **Step 1: Write identity-compiler tests**
-
-For a primitive linear model, assert:
-
-- same user variable/row counts;
-- same bounds/types/cells/objective;
-- deterministic compiled IDs;
-- user origins for all entities;
-- `RepresentationKind::IdentityLinear`.
-
-- [ ] **Step 2: Implement `CompilationSession::compile_snapshot`**
-
-Compile only primitive linear canonical state. If an active semantic construct exists, return `CompileError::UnsupportedConstruct` until bridge tasks land.
-
-- [ ] **Step 3: Implement primitive compiled deltas**
-
-Translate canonical add/remove/bound/cell/objective operations into backend operations with compiled ID mapping. If mapping or recipe certainty is absent, return `CompilationDecision::Rebuild` rather than guessing.
-
-- [ ] **Step 4: Migrate ReferenceBackend first**
-
-Change its synchronization input to backend IR. Run all core synchronization/recovery/differential tests.
-
-- [ ] **Step 5: Migrate HiGHS**
-
-Move current snapshot/delta translation into `roml-highs/src/compiler.rs` or a focused backend-IR translator. It must not receive `ModelSnapshot` after migration.
-
-- [ ] **Step 6: Preserve one-rebuild-retry invariant**
-
-`SolverSession` flow becomes:
+**Produces:**
 
 ```rust
-commit -> compiler decision -> backend synchronization -> solve
+pub enum BackendSynchronization {
+    Delta(BackendDeltaBatch),
+    Rebuild(BackendSnapshot),
+}
+
+pub trait BackendSession {
+    fn synchronize(&mut self, sync: BackendSynchronization) -> Result<SyncReceipt, BackendError>;
+    fn solve(&mut self, request: &SolveRequest) -> Result<SolveResult, BackendError>;
+    fn close(self) -> Result<(), BackendError>;
+}
 ```
 
-A compile failure returns before backend mutation. A backend apply failure follows existing health/rebuild policy with at most one automatic rebuild retry.
+- [ ] **Step 1: Implement identity snapshot compilation**
 
-- [ ] **Step 7: Add randomized compiled delta versus rebuild tests**
+Primitive linear models compile one-to-one with deterministic origins and `IdentityLinear` representation.
 
-Reuse existing random legal mutation generators. Compare backend-observable state after compiled deltas to a fresh compiled snapshot rebuild at the same revision.
+- [ ] **Step 2: Implement conservative delta compilation**
 
-- [ ] **Step 8: Run P26 full gate**
+Translate known primitive operations. Return rebuild decision when compiled mapping or recipe certainty is absent.
+
+- [ ] **Step 3: Migrate ReferenceBackend**
+
+Run all core recovery and differential tests before touching HiGHS.
+
+- [ ] **Step 4: Migrate HiGHS**
+
+Move native translation behind `roml-highs/src/compiler.rs`. After migration, HiGHS receives no `ModelSnapshot`.
+
+- [ ] **Step 5: Preserve retry invariant**
+
+Compile failure occurs before backend mutation. Backend application still permits at most one automatic rebuild retry.
+
+- [ ] **Step 6: Add randomized compiled-delta/rebuild equality**
+
+Reuse fixed-seed mutation sequences from `tests/differential_harness.rs`.
+
+- [ ] **Step 7: Run P26 gate and commit**
 
 ```bash
 cargo test -p roml --all-targets
 cargo test -p roml-highs --all-targets
 cargo clippy -p roml --all-targets -- -D warnings
 cargo clippy -p roml-highs --all-targets -- -D warnings
+git add src/compiler/session.rs src/solver/session.rs src/solver/facade.rs \
+  src/solver/reference.rs src/solver/conformance.rs src/advanced.rs \
+  roml-highs/src/compiler.rs roml-highs/src/session.rs tests/differential_harness.rs \
+  docs/migration/M3_BACKEND_IR.md docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md
+git commit -m "feat(sync): compile canonical state into backend IR"
 ```
 
-- [ ] **Step 9: Commit migration and update evidence**
-
-```bash
-git add src/compiler/session.rs src/solver src/advanced.rs \
-  roml-highs/src/compiler.rs roml-highs/src/session.rs docs/migration/M3_BACKEND_IR.md \
-  docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md tests roml-highs/tests
-git commit -m "feat(sync): compile canonical models into backend IR"
-```
-
-Request independent architecture review before P27/P32.
+Request independent P26 review before P27 or P32.
 
 ---
 
-## Task 8: Unify declared domains and add persistent fixing
+## Task 8: Unify domains and add persistent fixing
 
 **Phase:** P27
 
 **Files:**
+- Create: `tests/fixing_assignment.rs`
+- Create: `docs/release/evidence/M3_P27_FIXING_LOCKS_OVERLAYS.md`
 - Modify: `src/model/variable.rs`
 - Modify: `src/model/mod.rs`
 - Modify: `src/snapshot.rs`
 - Modify: `src/delta.rs`
 - Modify: `src/compiler/session.rs`
-- Create: `tests/fixing_assignment.rs`
-- Create: `docs/release/evidence/M3_P27_FIXING_LOCKS_OVERLAYS.md`
 
-**Interfaces:**
-- Produces:
+**Produces:** `VariableDomain`, `SemiDomain`, `VariableFixing`, and model fixing methods.
 
-```rust
-pub struct VariableDomain { bounds: Bounds, var_type: VarType, semi: Option<SemiDomain> }
-pub struct VariableFixing { value: f64, provenance: FixingProvenance }
-impl Model { fix, unfix, fixing, declared_bounds, effective_bounds }
-```
+- [ ] **Step 1: Write reference state-machine tests**
 
-- [ ] **Step 1: Write reference-state-machine tests**
+Cover continuous, integer, binary, semi-continuous, semi-integer, bound changes while fixed, unfix restoration, stale handles, and atomic validation failure.
 
-Cover:
+- [ ] **Step 2: Refactor `VariableStore` record**
 
-- continuous fix/unfix;
-- integer near-integral acceptance/rejection using model tolerance;
-- binary normalization;
-- declared-bound change while fixed;
-- semi-domain preservation;
-- stale variable rejection;
-- atomic failure.
+Store domain, fixing, active flag, and name in one record. Remove the separate model-level semi-continuous map after all callers migrate.
 
-- [ ] **Step 2: Refactor variable storage**
+- [ ] **Step 3: Implement fixing validation**
 
-Replace fragmented fields/side map with one `VariableRecord`:
+Use a named integrality tolerance in model constants. Normalize accepted integer/binary values.
 
-```rust
-pub(crate) struct VariableRecord {
-    pub domain: VariableDomain,
-    pub fixing: Option<VariableFixing>,
-    pub active: bool,
-    pub name: Option<String>,
-}
-```
+- [ ] **Step 4: Add canonical fixing operation**
 
-Remove `Model::semicontinuous_lower` after all snapshot/delta/backend tests migrate.
+`SetVariableFixing { var, fixing: Option<VariableFixing> }` is solver-affecting. Compiler emits an effective bound update.
 
-- [ ] **Step 3: Implement effective-domain derivation**
-
-`effective_bounds()` returns fixed equal bounds when fixing exists; otherwise declared bounds. Keep domain type unchanged.
-
-- [ ] **Step 4: Add canonical fixing changes**
-
-```rust
-SetVariableFixing { var, fixing: Option<VariableFixing> }
-```
-
-Do not represent unfix as a guessed bound restore; compiler derives effective bounds from canonical state.
-
-- [ ] **Step 5: Compile fixing to backend bound updates**
-
-If backend supports incremental bounds, emit `SetCompiledVariableBounds`; otherwise rebuild. Include bound origin in compiler metadata.
-
-- [ ] **Step 6: Run focused and randomized tests**
+- [ ] **Step 5: Verify incremental and rebuild paths**
 
 ```bash
 cargo test -p roml --test fixing_assignment
@@ -882,7 +952,7 @@ cargo test -p roml --all-targets
 cargo test -p roml-highs --all-targets
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/model/variable.rs src/model/mod.rs src/snapshot.rs src/delta.rs \
@@ -893,1058 +963,647 @@ git commit -m "feat(model): add first-class variable fixing"
 
 ---
 
-## Task 9: Add primal assignments and solution extraction
+## Task 9: Add assignments, locks, and reversible overlays
 
 **Phase:** P27
 
 **Files:**
 - Create: `src/assignment.rs`
-- Modify: `src/solution/mod.rs`
-- Modify: `src/solution/metadata.rs`
-- Modify: `src/lib.rs`
-- Modify: prelude
-- Modify: `tests/fixing_assignment.rs`
-
-**Interfaces:**
-- Produces:
-
-```rust
-pub struct PrimalAssignment { lineage, source_revision, values }
-impl PrimalAssignment { new, set, remove, value, iter, select }
-impl Solution { pub fn primal_assignment(&self) -> PrimalAssignment; pub fn select_assignment(...) -> PrimalAssignment; }
-```
-
-- [ ] **Step 1: Write failing lineage and validation tests**
-
-Test independent-model mismatch, clone-lineage acceptance, stale removed/recreated handle rejection, non-finite values, and partial assignments.
-
-- [ ] **Step 2: Implement assignment construction**
-
-Validate variable belongs to lineage/model at application time. Construction from `Model` captures lineage but may accept only handles known to that model.
-
-- [ ] **Step 3: Add solution lineage/revision extraction**
-
-`Solution::primal_assignment()` copies only user variable values, excluding compiled/generated-only entities. Stable canonical auxiliary variables such as future soft slacks are user-addressable and included.
-
-- [ ] **Step 4: Add selection helpers**
-
-```rust
-pub fn select<I: IntoIterator<Item = Variable>>(&self, variables: I) -> PrimalAssignment;
-pub fn integer_variables(&self, model: &Model) -> Result<PrimalAssignment, AssignmentError>;
-```
-
-- [ ] **Step 5: Run tests and commit**
-
-```bash
-cargo test -p roml --test fixing_assignment
-cargo test -p roml --all-targets
-git add src/assignment.rs src/solution src/lib.rs tests/fixing_assignment.rs
-git commit -m "feat(solution): add lineage-bound primal assignments"
-```
-
----
-
-## Task 10: Implement reversible solve overlays and solution locks
-
-**Phase:** P27
-
-**Files:**
 - Create: `src/solver/overlay.rs`
 - Create: `src/solver/effective_plan.rs`
 - Create: `tests/solve_overlay.rs`
+- Modify: `src/lib.rs`
+- Modify: `src/solution/mod.rs`
+- Modify: `src/solution/metadata.rs`
 - Modify: `src/solver/session.rs`
 - Modify: `src/solver/backend.rs`
 - Modify: `src/compiler/backend_ir.rs`
 - Modify: `src/compiler/origin.rs`
 - Modify: `roml-highs/src/session.rs`
-- Modify: `roml-highs/src/facade.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** assignment, solution lock, overlay, receipt, and optional overlay-session APIs.
+
+- [ ] **Step 1: Write lineage/stale assignment tests**
+
+Independent model assignments fail before backend mutation; clone-lineage assignments succeed when handles remain live.
+
+- [ ] **Step 2: Implement solution extraction**
+
+`Solution::primal_assignment()` includes canonical variables and excludes compiler-only variables.
+
+- [ ] **Step 3: Write selector and lock-band tests**
+
+Cover every `LockSelector` and both `ContinuousLock` modes.
+
+- [ ] **Step 4: Define overlay operations**
 
 ```rust
-pub struct SolutionLock { assignment, selector, continuous }
-pub struct SolveOverlay { operations: Vec<OverlayOperation> }
-pub struct OverlayReceipt { reverse: Vec<BackendOverlayOperation>, health_token: ... }
-pub trait OverlaySession { apply_overlay, rollback_overlay }
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverlayOperation {
+    SetVariableBounds { variable: Variable, bounds: Bounds, origin: GeneratedRole },
+    AddLinearRow { row: FunctionConstraint, origin: GeneratedRole },
+    SetObjective { objective: Objective },
+}
 ```
 
-- [ ] **Step 1: Write lock-selector tests**
+- [ ] **Step 5: Implement explicit rollback receipt**
 
-Verify all/integer/binary/explicit/exclusion selection and exact/band continuous bounds.
+`apply_overlay` returns reverse operations and a health token. `rollback_overlay` is fallible. Failure sets `RequiresRebuild`.
 
-- [ ] **Step 2: Write failure-injection lifecycle tests**
+- [ ] **Step 6: Inject failures at validation, apply, solve, extraction, and rollback**
 
-Inject failure at:
+After each case, a clean subsequent solve must equal a fresh rebuilt session.
 
-1. overlay validation;
-2. first operation;
-3. middle operation;
-4. solve;
-5. result extraction;
-6. rollback;
-7. post-rollback health verification.
-
-After each case, the next clean solve must equal a fresh rebuilt backend.
-
-- [ ] **Step 3: Implement overlay compilation**
-
-Validate lineage/entities before backend mutation. Convert locks to temporary compiled bound changes with `EntityOrigin::SolveOverlay`.
-
-- [ ] **Step 4: Implement backend overlay trait**
-
-Keep it optional/bounded rather than adding overlay methods to every unrelated trait. ReferenceBackend implements exact reversible state snapshots for tests. HiGHS stores previous bounds/temporary rows required for reversal.
-
-- [ ] **Step 5: Integrate transactional lifecycle**
-
-Use an internal guard whose `finish()` performs explicit rollback and returns errors. Do not rely solely on `Drop` for fallible rollback. `Drop` may mark session dirty as a last-resort safety action.
-
-- [ ] **Step 6: Add model revision invariance assertions**
-
-Before and after lock solve, assert canonical model revision and snapshot are unchanged.
-
-- [ ] **Step 7: Run focused/full tests**
+- [ ] **Step 7: Verify and commit**
 
 ```bash
 cargo test -p roml --test solve_overlay -- --nocapture
-cargo test -p roml-highs --all-targets
 cargo test -p roml --all-targets
-```
-
-- [ ] **Step 8: Commit and finish P27 evidence**
-
-```bash
-git add src/solver/overlay.rs src/solver/effective_plan.rs src/solver/session.rs \
-  src/solver/backend.rs src/compiler roml-highs/src tests/solve_overlay.rs \
+cargo test -p roml-highs --all-targets
+git add src/assignment.rs src/solver/overlay.rs src/solver/effective_plan.rs \
+  src/solution src/solver/session.rs src/solver/backend.rs src/compiler \
+  roml-highs/src/session.rs tests/solve_overlay.rs \
   docs/release/evidence/M3_P27_FIXING_LOCKS_OVERLAYS.md
-git commit -m "feat(solve): add reversible solution-lock overlays"
+git commit -m "feat(solve): add assignments locks and overlays"
 ```
 
-Request review before P28.
+Request P27 review.
 
 ---
 
-## Task 11: Add SolvePlan and effective-plan metadata
+## Task 10: Add SolvePlan, starts, and hints
 
 **Phase:** P28
 
 **Files:**
 - Create: `src/solver/plan.rs`
-- Modify: `src/solver/options.rs`
+- Create: `roml-highs/src/start.rs`
+- Create: `roml-highs/tests/solve_plan.rs`
+- Create: `docs/knowledge/highs-starts-hints.md`
+- Create: `docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md`
+- Modify: `src/assignment.rs`
 - Modify: `src/solver/facade.rs`
 - Modify: `src/solver/session.rs`
 - Modify: `src/solution/metadata.rs`
-- Modify: `roml-highs/src/facade.rs`
-- Create: `roml-highs/tests/solve_plan.rs`
-- Create: `docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md`
-
-**Interfaces:**
-- Produces:
-
-```rust
-pub struct SolvePlan { options, overlay, mip_starts, hints, objective_override, unsupported }
-pub enum UnsupportedFeaturePolicy { Reject, IgnoreExplicitly, Convert(ConversionPolicy) }
-pub struct EffectiveSolvePlan { applied_features, adjustments, rejections, objective_stages }
-```
-
-- [ ] **Step 1: Write API compatibility tests**
-
-Assert:
-
-```rust
-highs.solve(&mut model)
-highs.solve_with(&mut model, options)
-highs.solve_plan(&mut model, SolvePlan::new())
-```
-
-produce equivalent results/effective options on a deterministic model.
-
-- [ ] **Step 2: Implement `SolvePlan` validation**
-
-Validation occurs before canonical synchronization or backend mutation when possible. Validate assignment lineage, finite values, duplicate/conflicting overlays, and unsupported policy syntax.
-
-- [ ] **Step 3: Refactor façade methods**
-
-`solve()` builds `SolvePlan::new()`. `solve_with()` builds `SolvePlan::new().options(options)`. One internal `execute_plan` owns orchestration.
-
-- [ ] **Step 4: Store effective-plan metadata**
-
-Keep existing effective configuration and add applied/adjusted/rejected solve features. Existing metadata access remains source-compatible.
-
-- [ ] **Step 5: Run tests and commit**
-
-```bash
-cargo test -p roml-highs --test solve_plan
-cargo test -p roml --all-targets
-cargo test -p roml-highs --all-targets
-git add src/solver/plan.rs src/solver/options.rs src/solver/facade.rs \
-  src/solver/session.rs src/solution/metadata.rs roml-highs/src/facade.rs \
-  roml-highs/tests/solve_plan.rs docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md
-git commit -m "feat(solve): add explicit solve plans"
-```
-
----
-
-## Task 12: Add MIP starts and variable hints with version-qualified HiGHS support
-
-**Phase:** P28
-
-**Files:**
-- Modify: `src/assignment.rs`
-- Modify: `src/solver/plan.rs`
 - Modify: `src/compiler/capability.rs`
-- Create: `roml-highs/src/start.rs`
-- Create: `docs/knowledge/highs-starts-hints.md`
+- Modify: `roml-highs/src/facade.rs`
 - Modify: `roml-highs/src/session.rs`
-- Modify: `roml-highs/tests/solve_plan.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** exact `SolvePlan`, `MipStart`, `VariableHints`, and effective-plan contracts.
 
-```rust
-pub struct MipStart { assignment, repair: RepairPolicy, name: Option<String> }
-pub enum RepairPolicy { BackendDefault, RejectIncomplete, AllowRepair }
-pub struct VariableHints { entries }
-pub struct VariableHint { value, priority }
-```
+- [ ] **Step 1: Write compatibility tests**
 
-- [ ] **Step 1: Audit official APIs before production code**
+`solve`, `solve_with`, and empty `solve_plan` produce equivalent deterministic results and effective options.
 
-Inspect exact pinned bundled and minimum system HiGHS headers/generated bindings. Record:
+- [ ] **Step 2: Implement plan validation**
 
-- start symbols and signatures;
-- partial-start semantics;
-- multiple-start support;
-- hint support or absence;
-- return codes;
-- version availability;
-- whether starts persist across solves and how they are cleared.
+Validate lineage, finite values, conflicting overlays, duplicate starts, hint entries, and conversion policy before backend mutation.
 
-Commit `docs/knowledge/highs-starts-hints.md` before native implementation.
+- [ ] **Step 3: Refactor façades**
 
-- [ ] **Step 2: Write backend-independent semantic tests**
+`solve()` and `solve_with()` delegate to one internal plan executor.
 
-Prove starts/hints leave canonical snapshot and feasible-region fingerprint unchanged. Test default unsupported rejection and explicit conversion metadata.
+- [ ] **Step 4: Audit official HiGHS start/hint API**
 
-- [ ] **Step 3: Implement core start/hint types**
+Record symbols, signatures, partial-start semantics, persistence/clear lifecycle, multiple-start support, hint support, return codes, and version availability.
 
-Reject non-finite values and duplicate entries. Hints may be mutually inconsistent because they are independent guidance; document this explicitly.
+- [ ] **Step 5: Implement only qualified native support**
 
-- [ ] **Step 4: Implement HiGHS start application from official bindings**
+Absent hint support returns typed rejection under default policy. Conversions occur only under `ConversionPolicy` and are recorded.
 
-Apply only supported features. Ensure starts are cleared/replaced according to official lifecycle. Version capability set must match compiled/runtime interface.
+- [ ] **Step 6: Prove starts/hints do not alter feasibility**
 
-- [ ] **Step 5: Implement hint behavior**
+Compare canonical and compiled feasible-region fingerprints before and after plan execution.
 
-If official HiGHS support is absent, return `PlanRejection`/`UnsupportedFeature` under default policy. Do not map hints to starts unless the user selected that conversion.
-
-- [ ] **Step 6: Add full/partial/unsupported tests**
-
-Use small deterministic MIPs. Assert effective-plan metadata, not solver runtime improvements.
-
-- [ ] **Step 7: Run and commit**
+- [ ] **Step 7: Run P28 gate and commit**
 
 ```bash
 cargo test -p roml-highs --test solve_plan -- --nocapture
 cargo test -p roml --all-targets
 cargo test -p roml-highs --all-targets
-git add src/assignment.rs src/solver/plan.rs src/compiler/capability.rs \
-  roml-highs/src/start.rs roml-highs/src/session.rs roml-highs/tests/solve_plan.rs \
-  docs/knowledge/highs-starts-hints.md docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md
-git commit -m "feat(highs): add qualified MIP start support"
+git add src/assignment.rs src/solver/plan.rs src/solver/facade.rs \
+  src/solver/session.rs src/solution/metadata.rs src/compiler/capability.rs \
+  roml-highs/src/start.rs roml-highs/src/facade.rs roml-highs/src/session.rs \
+  roml-highs/tests/solve_plan.rs docs/knowledge/highs-starts-hints.md \
+  docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md
+git commit -m "feat(solve): add solve plans starts and hints"
 ```
 
-Finish P28 independent review before P29–P31.
+Request P28 review before P29 through P31.
 
 ---
 
-## Task 13: Define normalized infeasibility analysis and reporting
+## Task 11: Add normalized IIS/conflict analysis
 
 **Phase:** P29
 
 **Files:**
 - Create: `src/solver/infeasibility.rs`
-- Create: `src/report/infeasibility.rs` or keep renderer beside analysis if no report module exists
-- Modify: `src/solver/session.rs`
-- Modify: `src/compiler/origin.rs`
-- Modify: `src/compiler/capability.rs`
+- Create: `src/report/mod.rs`
+- Create: `src/report/infeasibility.rs`
 - Create: `tests/infeasibility_report.rs`
 - Create: `docs/release/evidence/M3_P29_IIS_CONFLICTS.md`
+- Modify: `src/lib.rs`
+- Modify: `src/compiler/origin.rs`
+- Modify: `src/compiler/capability.rs`
+- Modify: `src/solver/session.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:** the exact report and conflict contracts defined above plus:
 
 ```rust
-pub trait InfeasibilityAnalysisSession { fn analyze_infeasibility(&mut self, request: &InfeasibilityRequest) -> Result<BackendConflict, BackendError>; }
-pub struct InfeasibilityReport { lineage, revision, backend, kind, scope, minimality, completion, members, statistics }
-pub enum ConflictMember { ConstraintSide { ... }, VariableBound { ... }, Construct { ... } }
+pub trait InfeasibilityAnalysisSession {
+    fn analyze_infeasibility(
+        &mut self,
+        request: &InfeasibilityRequest,
+    ) -> Result<BackendConflict, BackendError>;
+}
 ```
 
-- [ ] **Step 1: Write report semantic tests with synthetic backend conflicts**
+- [ ] **Step 1: Write synthetic mapping tests**
 
-Cover row lower/upper/equality, declared bounds, persistent fixing, overlay lock, and generated construct row. Assert all map to original entities/roles.
+Cover row sides, declared bounds, persistent fixings, temporary locks, and construct-generated rows.
 
-- [ ] **Step 2: Implement normalized types without backend assumptions**
+- [ ] **Step 2: Implement guarantee-bearing types**
 
-Require kind/scope/minimality/completion fields at construction. No default that overclaims irreducibility.
+Construction requires kind, scope, minimality, and completion; no overclaiming defaults exist.
 
-- [ ] **Step 3: Implement origin-aware mapper**
+- [ ] **Step 3: Implement exact compilation-fingerprint mapping**
 
-Mapper consumes the exact `BackendSnapshot`/`OriginMap` used for the infeasible solve revision. Reject stale/missing compilation fingerprints.
+Reject stale origin maps with `AnalysisError::StaleCompilation`.
 
-- [ ] **Step 4: Implement text and Markdown renderers**
+- [ ] **Step 4: Implement text and Markdown rendering**
 
-Render stable ROML content only. Backend free-form prose may appear in an optional details field but is not used in golden tests.
+Render stable ROML entity names, groups, sources, bound provenance, and generated roles.
 
-- [ ] **Step 5: Add `SolverSession::analyze_infeasibility` orchestration**
-
-Ensure model is synchronized at the requested revision. If last result is not infeasible and backend requires prior infeasible solve, return `AnalysisError::ModelNotInfeasible`.
-
-- [ ] **Step 6: Run tests and commit**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
 cargo test -p roml --test infeasibility_report
 cargo test -p roml --all-targets
-git add src/solver/infeasibility.rs src/report src/compiler/origin.rs \
-  src/compiler/capability.rs tests/infeasibility_report.rs \
+git add src/solver/infeasibility.rs src/report src/lib.rs src/compiler/origin.rs \
+  src/compiler/capability.rs src/solver/session.rs tests/infeasibility_report.rs \
   docs/release/evidence/M3_P29_IIS_CONFLICTS.md
-git commit -m "feat(analysis): add normalized infeasibility reports"
+git commit -m "feat(analysis): add origin-aware infeasibility reports"
 ```
 
 ---
 
-## Task 14: Implement version-qualified HiGHS IIS support
+## Task 12: Implement qualified HiGHS IIS
 
 **Phase:** P29
 
 **Files:**
 - Create: `roml-highs/src/iis.rs`
+- Create: `roml-highs/tests/iis_reports.rs`
 - Create: `docs/knowledge/highs-iis.md`
+- Modify: `roml-highs/src/lib.rs`
 - Modify: `roml-highs/src/session.rs`
 - Modify: `roml-highs/src/facade.rs`
-- Create: `roml-highs/tests/iis_reports.rs`
-- Modify: support matrix docs
+- Modify: `src/compiler/capability.rs`
 
-**Interfaces:**
-- Consumes normalized analysis types from Task 13.
-- Produces native HiGHS conflict members over compiled IDs plus exact capability limitations.
+- [ ] **Step 1: Audit bundled and minimum system official APIs**
 
-- [ ] **Step 1: Audit official bundled/system APIs**
+Record symbols, structure fields, status codes, model-class scope, presolve/original scope, minimality guarantee, and version availability. Upgrade official bindings in a separate commit only when required.
 
-Record exact symbols, structures, status codes, supported model classes, minimality guarantees, presolve/original-model scope, and version availability. If current bindings lack required official symbols, prepare a separate dependency-upgrade commit to the first qualified version; do not handwrite ABI declarations.
+- [ ] **Step 2: Add version capability tests**
 
-- [ ] **Step 2: Add compile/version capability tests**
-
-Bundled and system configurations must either expose `BackendFeature::Iis` with precise limitations or report unsupported.
+Each supported configuration reports native IIS with exact limitations or typed unsupported.
 
 - [ ] **Step 3: Implement native extraction**
 
-Check every return code. Convert native row/column bound participation to compiled IDs and side-specific members. Do not map to user IDs in the backend crate.
+Check every return code and produce compiled row/column-side members. User mapping remains in core.
 
-- [ ] **Step 4: Add deterministic infeasible fixtures**
+- [ ] **Step 4: Add deterministic fixtures**
 
-Include:
+Rows, row/bound, fixing, and lock conflicts must render original names and provenance.
 
-- conflicting named rows;
-- row versus declared variable bound;
-- persistent fixing conflict;
-- temporary lock conflict;
-- bridged indicator conflict after P32 is available, initially guarded/added later.
-
-- [ ] **Step 5: Assert report guarantees**
-
-Tests assert kind/scope/minimality from documented behavior, not generic `Iis` labels.
-
-- [ ] **Step 6: Run and commit**
+- [ ] **Step 5: Run and commit**
 
 ```bash
 cargo test -p roml-highs --test iis_reports -- --nocapture
 cargo test -p roml-highs --all-targets
-cargo test -p roml --all-targets
-git add roml-highs/src/iis.rs roml-highs/src/session.rs roml-highs/src/facade.rs \
-  roml-highs/tests/iis_reports.rs docs/knowledge/highs-iis.md \
-  docs/release/evidence/M3_P29_IIS_CONFLICTS.md docs
+git add roml-highs/src/iis.rs roml-highs/src/lib.rs roml-highs/src/session.rs \
+  roml-highs/src/facade.rs roml-highs/tests/iis_reports.rs \
+  src/compiler/capability.rs docs/knowledge/highs-iis.md \
+  docs/release/evidence/M3_P29_IIS_CONFLICTS.md
 git commit -m "feat(highs): add version-qualified IIS analysis"
 ```
 
 ---
 
-## Task 15: Implement soft constraints and violation variables
+## Task 13: Add soft constraints and feasibility relaxation
 
 **Phase:** P30
 
 **Files:**
 - Create: `src/construct/soft.rs`
+- Create: `src/compiler/bridge/mod.rs`
 - Create: `src/compiler/bridge/soft.rs`
+- Create: `src/solver/feasibility_relaxation.rs`
+- Create: `roml-highs/src/relaxation.rs`
+- Create: `roml-highs/tests/soft_constraints.rs`
+- Create: `docs/knowledge/highs-feasibility-relaxation.md`
+- Create: `docs/release/evidence/M3_P30_SOFT_CONSTRAINTS.md`
 - Modify: `src/construct/mod.rs`
 - Modify: `src/model/mod.rs`
-- Modify: `src/objective_policy.rs` if already present, otherwise Task 17 consumes penalty priority
 - Modify: `src/solution/mod.rs`
-- Create: `roml-highs/tests/soft_constraints.rs`
-- Create: `docs/release/evidence/M3_P30_SOFT_CONSTRAINTS.md`
+- Modify: `src/compiler/session.rs`
+- Modify: `roml-highs/src/lib.rs`
+- Modify: `roml-highs/src/facade.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:**
 
 ```rust
-pub fn soft() -> SoftConstraintSpec;
-pub struct SoftConstraintHandle { constraint, lower_violation, upper_violation, construct }
-impl Model { pub fn soften(&mut self, constraint: Constraint, spec: SoftConstraintSpec) -> Result<SoftConstraintHandle, ModelError>; pub fn harden(&mut self, handle: SoftConstraintHandle) -> Result<(), ModelError>; }
-impl Solution { pub fn violation(&self, handle: SoftConstraintHandle) -> Option<ConstraintViolation>; }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViolationSide { Lower, Upper, Both, Auto }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoftConstraintSpec {
+    pub side: ViolationSide,
+    pub max_lower: Option<f64>,
+    pub max_upper: Option<f64>,
+    pub penalty_weight: Option<ValueExpr>,
+    pub penalty_target: PenaltyTarget,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PenaltyTarget {
+    Objective(Objective),
+    LexicographicPriority(i32),
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SoftConstraintHandle {
+    pub constraint: Constraint,
+    pub lower_violation: Option<Variable>,
+    pub upper_violation: Option<Variable>,
+    pub construct: Construct,
+}
 ```
 
-- [ ] **Step 1: Write algebra tests before compiler code**
+- [ ] **Step 1: Write algebra tests**
 
-For each constraint shape, assert the semantic bridge equations:
+Pin upper, lower, equality, ranged, signed-correction, and objective-sense formulas before compiler code.
 
-```text
-upper: a(x) - s_u <= u
-lower: a(x) + s_l >= l
-range: l - s_l <= a(x) <= u + s_u
-```
+- [ ] **Step 2: Implement stable auxiliary variables**
 
-Use direct expression evaluation over sample assignments.
+Create canonical variables with lower/upper/correction roles and metadata. Return handles.
 
-- [ ] **Step 2: Implement builder validation**
+- [ ] **Step 3: Implement exact bridge**
 
-Validate sides against constraint bounds, finite/nonnegative maximum violations, finite penalty weights, and objective handles. Equality/ranged `Auto` creates both sides.
+Modify compiled rows, not canonical user rows. Penalty semantics always minimize weighted violation; translate sign into target objective.
 
-- [ ] **Step 3: Create stable auxiliary variables**
+- [ ] **Step 4: Add violation accessors**
 
-Add auxiliary `Variable` records with `EntityOrigin`/metadata indicating soft construct and lower/upper role. Return handles. Ordinary variable listing may include them only through an explicit include-auxiliary option; direct handle access always works.
+`Solution::violation(handle)` returns lower, upper, and total values.
 
-- [ ] **Step 4: Implement soft bridge**
+- [ ] **Step 5: Audit and implement native feasibility relaxation**
 
-The canonical original constraint remains a semantic constraint with soft attachment. Compiler emits adjusted linear row(s), violation variable bounds, and penalty objective contributions.
+Keep it solve-scoped. When native mutation cannot be safely reversed, run on a temporary rebuilt backend session.
 
-- [ ] **Step 5: Implement objective sign handling**
-
-Penalty semantics mean minimizing weighted violation. For a maximize target, subtract penalty; for minimize, add penalty. Add exact objective-cell tests including parameter-dependent weights.
-
-- [ ] **Step 6: Implement signed correction separately**
-
-Use positive/negative parts for L1 penalty. Reject ambiguous free-signed linear penalty requests.
-
-- [ ] **Step 7: Add solution violation accessors and examples**
-
-`ConstraintViolation { lower, upper, total }` derives from stable auxiliary values.
-
-- [ ] **Step 8: Run solver tests and commit**
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 cargo test -p roml-highs --test soft_constraints
 cargo test -p roml --all-targets
 cargo test -p roml-highs --all-targets
-git add src/construct/soft.rs src/compiler/bridge/soft.rs src/model/mod.rs \
-  src/solution/mod.rs roml-highs/tests/soft_constraints.rs \
-  docs/release/evidence/M3_P30_SOFT_CONSTRAINTS.md
-git commit -m "feat(model): add semantic soft constraints"
-```
-
----
-
-## Task 16: Add solve-scoped feasibility relaxation
-
-**Phase:** P30
-
-**Files:**
-- Create: `src/solver/feasibility_relaxation.rs`
-- Create: `roml-highs/src/relaxation.rs`
-- Modify: `src/compiler/capability.rs`
-- Modify: `roml-highs/src/facade.rs`
-- Modify: `roml-highs/tests/soft_constraints.rs`
-- Modify: `docs/knowledge/highs-feasibility-relaxation.md`
-
-**Interfaces:**
-- Produces:
-
-```rust
-pub struct FeasibilityRelaxationRequest { row_penalties, bound_penalties, measure }
-pub struct FeasibilityRelaxationResult { solution, violations, total_penalty, effective_request }
-pub enum RelaxationMeasure { L1, LInfinity, Cardinality }
-```
-
-M3 implements only measures officially supported and qualified; unsupported measures reject.
-
-- [ ] **Step 1: Audit official HiGHS API and lifecycle**
-
-Record whether relaxation mutates the native model, how to restore it, supported penalty arrays/measures, and result semantics.
-
-- [ ] **Step 2: Implement core request/result types**
-
-Requests reference original ROML constraints/bounds and compile through origin maps to native arrays.
-
-- [ ] **Step 3: Implement solve-scoped native operation**
-
-Use overlay/rebuild safety. If the native API mutates the model irreversibly or restoration is uncertain, execute on a temporary rebuilt session rather than the persistent session.
-
-- [ ] **Step 4: Add distinction tests**
-
-Assert feasibility relaxation leaves canonical model unchanged and does not create persistent soft-constraint handles.
-
-- [ ] **Step 5: Run and commit**
-
-```bash
-cargo test -p roml-highs --test soft_constraints feasibility_relaxation
-cargo test -p roml-highs --all-targets
-git add src/solver/feasibility_relaxation.rs roml-highs/src/relaxation.rs \
+git add src/construct/soft.rs src/compiler/bridge/mod.rs src/compiler/bridge/soft.rs \
+  src/solver/feasibility_relaxation.rs src/model/mod.rs src/solution/mod.rs \
+  src/compiler/session.rs roml-highs/src/relaxation.rs roml-highs/src/lib.rs \
   roml-highs/src/facade.rs roml-highs/tests/soft_constraints.rs \
-  docs/knowledge/highs-feasibility-relaxation.md
-git commit -m "feat(analysis): add solve-scoped feasibility relaxation"
+  docs/knowledge/highs-feasibility-relaxation.md \
+  docs/release/evidence/M3_P30_SOFT_CONSTRAINTS.md
+git commit -m "feat(model): add soft constraints and relaxation"
 ```
 
 ---
 
-## Task 17: Add canonical objective policies
+## Task 14: Add objective policies and lexicographic execution
 
 **Phase:** P31
 
 **Files:**
 - Create: `src/objective_policy.rs`
+- Create: `src/solver/multiobjective.rs`
+- Create: `roml-highs/src/multiobjective.rs`
+- Create: `tests/objective_policy.rs`
+- Create: `roml-highs/tests/lexicographic.rs`
+- Create: `docs/knowledge/highs-multiobjective.md`
+- Create: `docs/release/evidence/M3_P31_LEXICOGRAPHIC.md`
+- Modify: `src/lib.rs`
 - Modify: `src/model/mod.rs`
 - Modify: `src/snapshot.rs`
 - Modify: `src/delta.rs`
+- Modify: `src/solver/session.rs`
+- Modify: `src/solver/overlay.rs`
 - Modify: `src/solution/mod.rs`
-- Create: `tests/objective_policy.rs`
-- Create: `docs/release/evidence/M3_P31_LEXICOGRAPHIC.md`
+- Modify: `src/solution/metadata.rs`
+- Modify: `roml-highs/src/lib.rs`
+- Modify: `roml-highs/src/session.rs`
 
-**Interfaces:**
-- Produces:
+- [ ] **Step 1: Write policy validation tests**
 
-```rust
-pub enum ObjectivePolicy { Single(Objective), Weighted(Vec<WeightedObjective>), Lexicographic(Vec<ObjectiveLevel>) }
-pub struct ObjectiveLevel { objective, absolute_tolerance, relative_tolerance }
-impl Model { pub fn set_objective_policy(&mut self, policy: ObjectivePolicy) -> Result<(), ModelError>; pub fn objective_policy(&self) -> &ObjectivePolicy; }
-```
+Reject empty policies, stale/inactive/duplicate objectives, non-finite weights, and negative/non-finite tolerances.
 
-- [ ] **Step 1: Write validation tests**
+- [ ] **Step 2: Store policy canonically**
 
-Reject stale/inactive objectives, duplicates in one policy, negative/non-finite tolerances, empty policies, and ambiguous weighted senses unless normalized semantics are specified.
+`minimize` and `maximize` set `Single`. Snapshot/delta include policy changes.
 
-- [ ] **Step 2: Implement builders**
+- [ ] **Step 3: Implement portable stage formulas**
 
-```rust
-lexicographic().first(obj).then(obj2, degradation().relative(1e-3))
-weighted().term(obj, 1.0).term(obj2, 0.5)
-```
+For minimization: `f(x) <= z + abs + rel*abs(z)`. For maximization: `f(x) >= z - abs - rel*abs(z)`. Test positive, zero, and negative `z`.
 
-- [ ] **Step 3: Store policy canonically**
+- [ ] **Step 4: Execute stages through overlays**
 
-Add snapshot/delta operations. Existing `minimize`/`maximize` set `ObjectivePolicy::Single` automatically.
+Temporary objectives and lock rows roll back on success or failure.
 
-- [ ] **Step 4: Extend solution objective storage**
+- [ ] **Step 5: Audit native HiGHS semantics**
 
-Store a map of objective values and ordered stage results while preserving `objective_value()` as primary convenience.
+Use native path only when priorities, senses, weights, and tolerance semantics match exactly.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 6: Add native/portable differential corpus**
+
+Compare objective values and degradation constraints.
+
+- [ ] **Step 7: Verify and commit**
 
 ```bash
 cargo test -p roml --test objective_policy
-cargo test -p roml --all-targets
-git add src/objective_policy.rs src/model/mod.rs src/snapshot.rs src/delta.rs \
-  src/solution/mod.rs tests/objective_policy.rs docs/release/evidence/M3_P31_LEXICOGRAPHIC.md
-git commit -m "feat(model): add objective policies"
-```
-
----
-
-## Task 18: Implement portable lexicographic execution
-
-**Phase:** P31
-
-**Files:**
-- Create: `src/solver/multiobjective.rs`
-- Modify: `src/solver/session.rs`
-- Modify: `src/solver/overlay.rs`
-- Modify: `src/solution/metadata.rs`
-- Create: `roml-highs/tests/lexicographic.rs`
-
-**Interfaces:**
-- Produces portable sequential stage execution and objective-lock overlay rows.
-
-- [ ] **Step 1: Define degradation formulas in tests**
-
-For minimization stage optimum `z*`:
-
-```text
-f(x) <= z* + abs_tol + rel_tol * |z*|
-```
-
-For maximization:
-
-```text
-f(x) >= z* - abs_tol - rel_tol * |z*|
-```
-
-Use these exact formulas for M3. Test positive, zero, and negative objective values.
-
-- [ ] **Step 2: Implement stage executor**
-
-For each level:
-
-1. set temporary stage objective;
-2. solve;
-3. validate stage status under `RequireOptimal` or explicit `UseBestFeasible`;
-4. record value/status;
-5. add temporary lock row before next stage.
-
-- [ ] **Step 3: Guarantee cleanup**
-
-All temporary objectives/rows use overlay lifecycle. A failure at any stage rolls back all stage artifacts or marks rebuild required.
-
-- [ ] **Step 4: Add deterministic service/cost/switch tests**
-
-Assert final solution, all stage values, lock bounds, and no subsequent-solve leakage.
-
-- [ ] **Step 5: Run and commit**
-
-```bash
-cargo test -p roml-highs --test lexicographic portable
-cargo test -p roml --all-targets
-cargo test -p roml-highs --all-targets
-git add src/solver/multiobjective.rs src/solver/session.rs src/solver/overlay.rs \
-  src/solution/metadata.rs roml-highs/tests/lexicographic.rs
-git commit -m "feat(solve): add portable lexicographic execution"
-```
-
----
-
-## Task 19: Qualify native HiGHS multiobjective execution
-
-**Phase:** P31
-
-**Files:**
-- Create: `roml-highs/src/multiobjective.rs`
-- Create: `docs/knowledge/highs-multiobjective.md`
-- Modify: `roml-highs/src/session.rs`
-- Modify: `src/compiler/capability.rs`
-- Modify: `roml-highs/tests/lexicographic.rs`
-
-- [ ] **Step 1: Audit official semantics**
-
-Record priorities, weights, absolute/relative tolerances, sense handling, version availability, and result reporting.
-
-- [ ] **Step 2: Define semantic-match predicate**
-
-Native path is eligible only when every ROML level maps exactly to official semantics. Otherwise select portable path and report why.
-
-- [ ] **Step 3: Implement native translator and clear lifecycle**
-
-Ensure objective definitions do not persist unexpectedly across later single-objective solves.
-
-- [ ] **Step 4: Build native-versus-portable differential corpus**
-
-Cover mixed senses only if ROML policy permits them and backend semantics match. Assert objective values and degradation constraints within declared tolerances.
-
-- [ ] **Step 5: Run and commit**
-
-```bash
 cargo test -p roml-highs --test lexicographic -- --nocapture
+cargo test -p roml --all-targets
 cargo test -p roml-highs --all-targets
-git add roml-highs/src/multiobjective.rs roml-highs/src/session.rs \
-  src/compiler/capability.rs roml-highs/tests/lexicographic.rs \
-  docs/knowledge/highs-multiobjective.md docs/release/evidence/M3_P31_LEXICOGRAPHIC.md
-git commit -m "feat(highs): add qualified native multiobjective execution"
+git add src/objective_policy.rs src/solver/multiobjective.rs src/lib.rs \
+  src/model/mod.rs src/snapshot.rs src/delta.rs src/solver/session.rs \
+  src/solver/overlay.rs src/solution roml-highs/src/multiobjective.rs \
+  roml-highs/src/lib.rs roml-highs/src/session.rs tests/objective_policy.rs \
+  roml-highs/tests/lexicographic.rs docs/knowledge/highs-multiobjective.md \
+  docs/release/evidence/M3_P31_LEXICOGRAPHIC.md
+git commit -m "feat(solve): add lexicographic objective policies"
 ```
 
 ---
 
-## Task 20: Add bound analysis and safe bridge infrastructure
+## Task 15: Add interval bounds and bridge framework
 
-**Phase:** P32/P33 foundation
+**Phase:** P32 foundation
 
 **Files:**
 - Create: `src/compiler/bounds.rs`
-- Create: `src/compiler/bridge/mod.rs`
+- Create: `src/compiler/bridge/indicator.rs`
+- Create: `src/compiler/bridge/minmax.rs`
+- Create: `src/compiler/bridge/absolute.rs`
+- Create: `src/compiler/bridge/boolean.rs`
+- Create: `src/compiler/bridge/product.rs`
+- Create: `tests/compiler_bridges.rs`
+- Modify: `src/compiler/bridge/mod.rs`
 - Modify: `src/compiler/session.rs`
 - Modify: `src/compiler/report.rs`
-- Create: `tests/compiler_bridges.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:**
 
 ```rust
-pub struct Interval { lower: f64, upper: f64 }
-pub struct BoundTrace { terms: Vec<BoundSource>, result: Interval }
-pub fn scalar_bounds(snapshot: &ModelSnapshot, function: &ScalarFunction) -> Result<(Interval, BoundTrace), BoundAnalysisError>;
-pub trait Bridge { fn compile(&self, context: &mut BridgeContext) -> Result<BridgeOutput, CompileError>; }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Interval { pub lower: f64, pub upper: f64 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundTrace {
+    pub sources: Vec<BoundSource>,
+    pub result: Interval,
+}
+
+pub trait Bridge {
+    fn compile(
+        &self,
+        context: &mut BridgeContext,
+    ) -> Result<BridgeOutput, CompileError>;
+}
 ```
 
-- [ ] **Step 1: Write interval arithmetic tests**
+- [ ] **Step 1: Write interval tests**
 
-Cover positive/negative coefficients, constants, fixed variables, infinite bounds, and parameter values.
+Cover coefficient signs, constants, fixed variables, infinite bounds, and parameters.
 
-- [ ] **Step 2: Implement deterministic linear interval propagation**
+- [ ] **Step 2: Implement deterministic propagation**
 
-For each term `a*x`, use `[a*l, a*u]` for `a >= 0` and `[a*u, a*l]` for `a < 0`. Sum with checked finite/infinite handling; reject NaN.
+Use exact interval arithmetic for linear terms and reject NaN.
 
-- [ ] **Step 3: Implement Big-M derivation helpers**
+- [ ] **Step 3: Implement one-sided Big-M derivation helpers**
 
-Provide construct-specific helpers that derive the exact needed one-sided relaxation constant from expression bounds. Return `UnboundedBigM` when finite proof is absent.
+Return `UnboundedBigM` with construct/function context when finite proof is absent.
 
-- [ ] **Step 4: Add bridge context/output types**
+- [ ] **Step 4: Implement bridge finalization**
 
-Bridge output includes generated variables/rows/native constraints, origins, representation, dependencies, and notes. Finalization validates origin completeness.
+Validate origins, deterministic generated order, dependencies, and report entries.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
-cargo test -p roml --test compiler_bridges bound
+cargo test -p roml --test compiler_bridges
 cargo test -p roml --all-targets
-git add src/compiler/bounds.rs src/compiler/bridge/mod.rs src/compiler/session.rs \
+git add src/compiler/bounds.rs src/compiler/bridge src/compiler/session.rs \
   src/compiler/report.rs tests/compiler_bridges.rs
-git commit -m "feat(compiler): add bound analysis and bridge contracts"
+git commit -m "feat(compiler): add safe bridge infrastructure"
 ```
 
 ---
 
-## Task 21: Implement indicators and reification
+## Task 16: Add indicators, reification, Boolean, and cardinality
 
 **Phase:** P32
 
 **Files:**
 - Create: `src/construct/indicator.rs`
-- Create: `src/compiler/bridge/indicator.rs`
+- Create: `src/construct/boolean.rs`
+- Create: `tests/common_constructs.rs`
+- Create: `roml-highs/tests/formulation_equivalence.rs`
+- Create: `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md`
 - Modify: `src/construct/mod.rs`
 - Modify: `src/model/mod.rs`
 - Modify: `src/compiler/backend_ir.rs`
 - Modify: `src/compiler/session.rs`
-- Create: `tests/common_constructs.rs`
-- Create: `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md`
+- Modify: `src/compiler/bridge/indicator.rs`
+- Modify: `src/compiler/bridge/boolean.rs`
 
-**Interfaces:**
-- Produces:
+- [ ] **Step 1: Write truth-table and validation tests**
 
-```rust
-pub fn when_one() -> IndicatorActivation;
-pub fn when_zero() -> IndicatorActivation;
-impl Model { pub fn add_indicator(&mut self, binary: Variable, activation: IndicatorActivation, constraint: ConstraintSpec) -> Result<Construct, ModelError>; pub fn reify(&mut self, constraint: ConstraintSpec, spec: ReificationSpec) -> Result<Variable, ModelError>; }
-```
-
-- [ ] **Step 1: Write semantic validation tests**
-
-Reject non-binary activators, stale entities, non-finite separation, and exact continuous reification without separation.
+Reject non-binary activators, duplicate cardinality inputs, invalid `k`, and continuous reification without explicit separation.
 
 - [ ] **Step 2: Implement canonical payloads**
 
-Store activator, activation value, function/set, exactness, separation, and formulation override.
+Define indicator activation, one-way body, reification separation, Boolean operator, and cardinality bounds.
 
-- [ ] **Step 3: Implement native indicator backend IR path**
+- [ ] **Step 3: Implement native and portable indicators**
 
-Under `Auto`, select native only when capability supports the exact function/set form and activation semantics.
+Select native only with exact support. Portable bridge derives finite M and records trace.
 
-- [ ] **Step 4: Implement Big-M bridge**
+- [ ] **Step 4: Implement reification as two implications**
 
-Derive one-sided M from `BoundAnalysis`. Record values/traces. Reject unbounded expressions.
+Infer unit separation only when integer-valued expression proof exists.
 
-- [ ] **Step 5: Implement reification as two implications**
+- [ ] **Step 5: Implement exact Boolean/cardinality rows**
 
-For continuous expressions, use explicit separation for complement. For proven integer-valued expressions, permit inferred unit gap and record proof source.
+Use deterministic linear formulations and no anonymous generated entities.
 
-- [ ] **Step 6: Add explicit reference-formulation differential tests**
+- [ ] **Step 6: Differentially verify feasible sets**
 
-Enumerate binary values and bounded small domains. Compare feasible assignments/native/portable results.
+Enumerate small binary domains and compare semantic/reference/native/portable results.
 
-- [ ] **Step 7: Run and commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cargo test -p roml --test common_constructs indicator
 cargo test -p roml-highs --test formulation_equivalence indicator
-cargo test -p roml --all-targets
-git add src/construct/indicator.rs src/compiler/bridge/indicator.rs src/model/mod.rs \
-  src/compiler tests/common_constructs.rs docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md
-git commit -m "feat(model): add indicators and reification"
+git add src/construct/indicator.rs src/construct/boolean.rs src/construct/mod.rs \
+  src/model/mod.rs src/compiler/backend_ir.rs src/compiler/session.rs \
+  src/compiler/bridge/indicator.rs src/compiler/bridge/boolean.rs \
+  tests/common_constructs.rs roml-highs/tests/formulation_equivalence.rs \
+  docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md
+git commit -m "feat(model): add logical semantic constructs"
 ```
 
 ---
 
-## Task 22: Implement Boolean and cardinality constructs
-
-**Phase:** P32
-
-**Files:**
-- Create: `src/construct/boolean.rs`
-- Create: `src/compiler/bridge/boolean.rs`
-- Modify: `src/model/mod.rs`
-- Modify: `tests/common_constructs.rs`
-- Modify: `roml-highs/tests/formulation_equivalence.rs`
-
-**Interfaces:**
-- Produces `implies`, `iff`, `any_of`, `all_of`, `exactly_one`, `at_most`, and `at_least`.
-
-- [ ] **Step 1: Write truth-table tests**
-
-Enumerate all binary assignments for implication, equivalence, any, and all. Enumerate cardinality counts for small vectors.
-
-- [ ] **Step 2: Implement canonical payloads and validation**
-
-Reject non-binary variables, empty collections where semantics are ambiguous, invalid `k`, and duplicates unless deduplicating is explicitly documented. Choose rejection for duplicates to surface modeling mistakes.
-
-- [ ] **Step 3: Implement exact linear bridges**
-
-Use standard bounded linear formulations. Assign generated roles/names deterministically.
-
-- [ ] **Step 4: Run differential tests and commit**
-
-```bash
-cargo test -p roml --test common_constructs boolean
-cargo test -p roml-highs --test formulation_equivalence boolean
-git add src/construct/boolean.rs src/compiler/bridge/boolean.rs src/model/mod.rs \
-  tests/common_constructs.rs roml-highs/tests/formulation_equivalence.rs
-git commit -m "feat(model): add Boolean and cardinality constructs"
-```
-
----
-
-## Task 23: Implement min/max, absolute value, positive part, and clamp
+## Task 17: Add min/max, abs, clamp, and exact products
 
 **Phase:** P32
 
 **Files:**
 - Create: `src/construct/minmax.rs`
 - Create: `src/construct/absolute.rs`
-- Create: `src/compiler/bridge/minmax.rs`
-- Create: `src/compiler/bridge/absolute.rs`
-- Modify: `src/model/mod.rs`
-- Modify: `tests/common_constructs.rs`
-- Modify: `roml-highs/tests/formulation_equivalence.rs`
-
-**Interfaces:**
-- Produces:
-
-```rust
-model.max_of(functions, exact()) -> Result<Variable, ModelError>
-model.max_of(functions, epigraph()) -> Result<Variable, ModelError>
-model.min_of(functions, exact()/hypograph())
-model.abs(function, exact())
-model.positive_part(function)
-model.clamp(function, lower, upper)
-```
-
-- [ ] **Step 1: Write exactness distinction tests**
-
-Assert epigraph permits values above max while exact relation does not. Assert hypograph permits values below min. Do not rely on objective context.
-
-- [ ] **Step 2: Implement one-sided linear formulations**
-
-Epigraph max and hypograph min create only comparison rows and no binaries.
-
-- [ ] **Step 3: Implement exact bounded formulations**
-
-Use native general constraints if qualified; otherwise selector binaries with bound-derived M and exactly-one selection. Reject when bounds are insufficient.
-
-- [ ] **Step 4: Implement abs/positive part/clamp using semantic recipes**
-
-Do not recursively erase constructs in canonical state. Bridges may reuse internal bridge helpers while preserving top-level origin roles.
-
-- [ ] **Step 5: Add randomized evaluation tests**
-
-Generate bounded functions and compare output variable to direct Rust evaluation at feasible fixed inputs.
-
-- [ ] **Step 6: Run and commit**
-
-```bash
-cargo test -p roml --test common_constructs minmax
-cargo test -p roml-highs --test formulation_equivalence minmax
-git add src/construct/minmax.rs src/construct/absolute.rs \
-  src/compiler/bridge/minmax.rs src/compiler/bridge/absolute.rs src/model/mod.rs \
-  tests/common_constructs.rs roml-highs/tests/formulation_equivalence.rs
-git commit -m "feat(model): add min max and absolute constructs"
-```
-
----
-
-## Task 24: Implement supported exact products
-
-**Phase:** P32
-
-**Files:**
 - Create: `src/construct/product.rs`
-- Create: `src/compiler/bridge/product.rs`
+- Modify: `src/construct/mod.rs`
 - Modify: `src/model/mod.rs`
+- Modify: `src/compiler/bridge/minmax.rs`
+- Modify: `src/compiler/bridge/absolute.rs`
+- Modify: `src/compiler/bridge/product.rs`
 - Modify: `tests/common_constructs.rs`
 - Modify: `roml-highs/tests/formulation_equivalence.rs`
 
-**Interfaces:**
-- Produces exact binary-binary and binary-times-bounded-linear products only.
+- [ ] **Step 1: Write exact versus one-sided tests**
 
-- [ ] **Step 1: Write domain rejection tests**
+Prove epigraph/hypograph feasible sets differ from exact equality without relying on objectives.
 
-Continuous-continuous product must return an error that names the unsupported nonconvex exact operation and suggests a future explicitly named relaxation, not silently create McCormick inequalities.
+- [ ] **Step 2: Implement one-sided no-binary bridges**
 
-- [ ] **Step 2: Implement binary-binary linearization**
+Max epigraph and min hypograph create comparison rows only.
 
-For `z = x*y`:
+- [ ] **Step 3: Implement bounded exact bridges**
 
-```text
-z <= x
-z <= y
-z >= x + y - 1
-z >= 0
-```
+Use selector binaries and bound-derived M when no exact native primitive is qualified.
 
-- [ ] **Step 3: Implement binary-times-bounded-function bridge**
+- [ ] **Step 4: Implement abs, positive part, and clamp**
 
-Use exact four-inequality formulation from finite lower/upper bounds. Record bound trace.
+Preserve top-level construct origin even when bridge helpers compose lower-level formulations.
 
-- [ ] **Step 4: Add exhaustive/random tests**
+- [ ] **Step 5: Implement exact products**
 
-Enumerate binary values and random bounded scalar values fixed through overlays. Compare direct product.
+Support binary-binary and binary-times-bounded-linear only. Reject continuous-continuous exact requests.
 
-- [ ] **Step 5: Run and commit**
+- [ ] **Step 6: Randomized direct-evaluation tests**
+
+Fix inputs and compare output to Rust evaluation.
+
+- [ ] **Step 7: Commit and close P32**
 
 ```bash
-cargo test -p roml --test common_constructs product
-cargo test -p roml-highs --test formulation_equivalence product
-git add src/construct/product.rs src/compiler/bridge/product.rs src/model/mod.rs \
-  tests/common_constructs.rs roml-highs/tests/formulation_equivalence.rs
-git commit -m "feat(model): add exact binary product constructs"
+cargo test -p roml --test common_constructs
+cargo test -p roml-highs --test formulation_equivalence
+cargo test -p roml --all-targets
+git add src/construct/minmax.rs src/construct/absolute.rs src/construct/product.rs \
+  src/construct/mod.rs src/model/mod.rs src/compiler/bridge/minmax.rs \
+  src/compiler/bridge/absolute.rs src/compiler/bridge/product.rs \
+  tests/common_constructs.rs roml-highs/tests/formulation_equivalence.rs \
+  docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md
+git commit -m "feat(model): add algebraic semantic constructs"
 ```
 
-Finish P32 evidence/review.
+Request independent OR review.
 
 ---
 
-## Task 25: Implement piecewise-linear semantic validation and classification
+## Task 18: Add PWL semantics and formulations
 
 **Phase:** P33
 
 **Files:**
 - Create: `src/construct/piecewise_linear.rs`
+- Create: `src/compiler/bridge/piecewise_linear.rs`
 - Create: `tests/piecewise_linear.rs`
 - Create: `docs/release/evidence/M3_P33_PWL_BOUNDS.md`
+- Modify: `src/construct/mod.rs`
 - Modify: `src/model/mod.rs`
+- Modify: `src/compiler/backend_ir.rs`
+- Modify: `src/compiler/capability.rs`
+- Modify: `src/compiler/session.rs`
+- Modify: `roml-highs/tests/formulation_equivalence.rs`
 
-**Interfaces:**
-- Produces:
+**Produces:**
 
 ```rust
-pub struct PiecewisePoint { x: f64, y: f64 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PiecewisePoint { pub x: f64, pub y: f64 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PwlRelation { Epigraph, Hypograph, ExactGraph }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Extrapolation { Reject, ExtendEndSegments, ConstantEnds }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Curvature { Convex, Concave, Affine, NonConvex }
-impl Model { pub fn piecewise_linear(&mut self, input: Variable, points: impl IntoIterator<Item = PiecewisePoint>, spec: PwlSpec) -> Result<Variable, ModelError>; }
 ```
 
-- [ ] **Step 1: Write point validation tests**
+- [ ] **Step 1: Validate points and classify curvature**
 
-Reject NaN/infinite points, duplicate/out-of-order breakpoints, too few points, and domain/extrapolation contradictions.
+Reject non-finite, duplicate, out-of-order, and underspecified points. Classify segment slopes deterministically.
 
-- [ ] **Step 2: Implement curvature classification**
+- [ ] **Step 2: Implement direct evaluator**
 
-Compute segment slopes and classify nondecreasing as convex, nonincreasing as concave, all-equal as affine, otherwise nonconvex. Use a documented numeric comparison policy; exact input f64 values remain finite.
+Use it for tests and diagnostic output.
 
-- [ ] **Step 3: Validate relation/curvature combinations**
+- [ ] **Step 3: Compile convex epigraph and concave hypograph**
 
-Convex epigraph and concave hypograph qualify for no-binary row bridge. Exact graph remains exact regardless of curvature.
+Use supporting inequalities and assert zero generated binary variables.
 
-- [ ] **Step 4: Add direct evaluation helpers for tests**
+- [ ] **Step 4: Compile exact graph**
 
-Implement interpolation/extrapolation evaluation in test-support or public diagnostic API as appropriate.
+Select native PWL when officially qualified, otherwise SOS2 when available, otherwise deterministic exact segment binaries.
 
-- [ ] **Step 5: Run and commit**
+- [ ] **Step 5: Verify random fixed-input outputs**
 
-```bash
-cargo test -p roml --test piecewise_linear validation
-cargo test -p roml --all-targets
-git add src/construct/piecewise_linear.rs src/model/mod.rs tests/piecewise_linear.rs \
-  docs/release/evidence/M3_P33_PWL_BOUNDS.md
-git commit -m "feat(model): add piecewise linear semantics"
-```
+Cover affine, convex, concave, and nonconvex curves.
 
----
+- [ ] **Step 6: Verify reports**
 
-## Task 26: Implement PWL bridges and native/SOS2 selection
+Record curvature, relation, representation, generated counts, and binary-avoidance reason.
 
-**Phase:** P33
-
-**Files:**
-- Create: `src/compiler/bridge/piecewise_linear.rs`
-- Modify: `src/compiler/backend_ir.rs`
-- Modify: `src/compiler/session.rs`
-- Modify: `src/compiler/capability.rs`
-- Create: `roml-highs/tests/formulation_equivalence.rs` if not already created
-- Modify: `tests/piecewise_linear.rs`
-
-- [ ] **Step 1: Implement convex epigraph/concave hypograph row bridges**
-
-Use supporting segment inequalities. Assert compiled model contains zero generated binary variables.
-
-- [ ] **Step 2: Implement exact SOS2 bridge**
-
-Create convex-combination lambda variables, sum-to-one row, input/output interpolation rows, and normalized `BackendConstraint::Sos2` when supported. Every lambda/row receives construct role origins.
-
-- [ ] **Step 3: Implement portable exact binary fallback**
-
-Use segment-selection binaries and local interpolation with validated bounds. Keep formulation deterministic and documented.
-
-- [ ] **Step 4: Add native PWL selection only after backend qualification**
-
-If HiGHS official API has an exact native PWL primitive matching semantics, add translator/capability. Otherwise use SOS2/binary and report native unsupported.
-
-- [ ] **Step 5: Add randomized direct-evaluation tests**
-
-Fix input values at random points and solve for output; compare to direct interpolation. Test convex, concave, affine, and nonconvex exact curves.
-
-- [ ] **Step 6: Add formulation report assertions**
-
-Report curvature, relation, chosen representation, generated counts, and why binaries were introduced or avoided.
-
-- [ ] **Step 7: Run and commit**
+- [ ] **Step 7: Commit and review**
 
 ```bash
 cargo test -p roml --test piecewise_linear
 cargo test -p roml-highs --test formulation_equivalence pwl
 cargo test -p roml --all-targets
 cargo test -p roml-highs --all-targets
-git add src/compiler/bridge/piecewise_linear.rs src/compiler/backend_ir.rs \
-  src/compiler/session.rs src/compiler/capability.rs tests/piecewise_linear.rs \
-  roml-highs/tests/formulation_equivalence.rs docs/release/evidence/M3_P33_PWL_BOUNDS.md
-git commit -m "feat(compiler): add exact piecewise linear formulations"
+git add src/construct/piecewise_linear.rs src/compiler/bridge/piecewise_linear.rs \
+  src/construct/mod.rs src/model/mod.rs src/compiler/backend_ir.rs \
+  src/compiler/capability.rs src/compiler/session.rs tests/piecewise_linear.rs \
+  roml-highs/tests/formulation_equivalence.rs \
+  docs/release/evidence/M3_P33_PWL_BOUNDS.md
+git commit -m "feat(model): add piecewise linear functions"
 ```
-
-Finish P33 independent OR formulation review.
 
 ---
 
-## Task 27: Integrate construct-aware IIS and reporting
+## Task 19: Integrate construct-aware IIS and complete public workflows
 
-**Phase:** P29/P34 integration
+**Phase:** P34 integration
 
 **Files:**
 - Modify: `src/solver/infeasibility.rs`
 - Modify: `src/compiler/origin.rs`
 - Modify: `roml-highs/tests/iis_reports.rs`
-- Modify: `docs/release/evidence/M3_P29_IIS_CONFLICTS.md`
-
-- [ ] **Step 1: Add bridged indicator conflict fixture**
-
-Construct an infeasible model where one generated bridge row participates. The report must identify the original indicator and generated role, not expose only compiled row IDs.
-
-- [ ] **Step 2: Add soft-constraint/fixing provenance fixtures**
-
-Hard constraints in conflict should map normally; active soft violation variables should prevent infeasibility unless bounded too tightly, in which case report the soft construct and violation bound origin.
-
-- [ ] **Step 3: Add PWL construct conflict fixture**
-
-Conflict from exact graph/domain must map to PWL construct plus relevant user variable bounds.
-
-- [ ] **Step 4: Run and commit**
-
-```bash
-cargo test -p roml-highs --test iis_reports -- --nocapture
-git add src/solver/infeasibility.rs src/compiler/origin.rs \
-  roml-highs/tests/iis_reports.rs docs/release/evidence/M3_P29_IIS_CONFLICTS.md
-git commit -m "test(iis): map bridged conflicts to semantic constructs"
-```
-
----
-
-## Task 28: Complete public API, documentation, migration, and examples
-
-**Phase:** P34
-
-**Files:**
 - Modify: `README.md`
 - Modify: `MODELING_API.md`
 - Modify: `MIGRATION.md`
@@ -1962,27 +1621,23 @@ git commit -m "test(iis): map bridged conflicts to semantic constructs"
 - Create: `roml-highs/examples/modeling_constructs.rs`
 - Create: `roml-highs/examples/piecewise_linear.rs`
 
-- [ ] **Step 1: Write compiled examples first**
+- [ ] **Step 1: Add bridged conflict fixtures**
 
-Each example must be included in an integration test or doctest and use only public golden-path imports.
+Indicator, soft-constraint-bound, and PWL conflicts map to original constructs and generated roles.
 
-- [ ] **Step 2: Update README with one bounded M3 section**
+- [ ] **Step 2: Write compiled public examples**
 
-Keep the M2 quickstart first. Add semantic workflows after the basic solve path; do not overwhelm the initial user.
+Each example is exercised by integration tests and imports only public golden-path APIs.
 
-- [ ] **Step 3: Document semantic/native/bridge distinction**
+- [ ] **Step 3: Document semantic/native/bridge guarantees**
 
-Every construct table states semantic guarantee, portable bridge, native backend support, version limitations, and failure behavior.
+Tables state exact semantics, portable formulation, native support, version limits, and failure behavior.
 
-- [ ] **Step 4: Document backend-author migration**
+- [ ] **Step 4: Document NLP extension exercise**
 
-Explain canonical versus backend IR, typed capabilities, origins, compiled deltas, and optional IIS/start/multiobjective traits.
+Show exact files and additive enum/IR/capability changes for quadratic and nonlinear scalar functions without implementing them.
 
-- [ ] **Step 5: Document NLP extension exercise**
-
-`docs/NLP_EXTENSION_BOUNDARY.md` shows exact additive changes required for `ScalarFunction::Quadratic` and a future nonlinear graph without implementing them.
-
-- [ ] **Step 6: Run docs/examples**
+- [ ] **Step 5: Verify docs/examples and commit**
 
 ```bash
 cargo test -p roml-highs --examples
@@ -1990,56 +1645,45 @@ cargo test -p roml --doc
 cargo test -p roml-highs --doc
 RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
 RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add README.md MODELING_API.md MIGRATION.md CHANGELOG.md docs \
-  roml-highs/examples roml-highs/tests
-git commit -m "docs(m3): document semantic modeling workflows"
+git add src/solver/infeasibility.rs src/compiler/origin.rs \
+  roml-highs/tests/iis_reports.rs README.md MODELING_API.md MIGRATION.md \
+  CHANGELOG.md docs roml-highs/examples
+git commit -m "docs(m3): complete semantic modeling workflows"
 ```
 
 ---
 
-## Task 29: Add qualification corpus and performance regression gates
+## Task 20: Qualify M3 and close planning state
 
 **Phase:** P34
 
 **Files:**
 - Create: `tests/m3_property.rs`
 - Create: `roml-highs/tests/m3_native_portable.rs`
-- Create: `benches/m3_orchestration.rs` or existing benchmark location
+- Create: `benches/m3_orchestration.rs`
 - Create: `docs/release/evidence/M3_QUALIFICATION.md`
 - Create: `docs/release/evidence/M3_PUBLIC_API.md`
 - Create: `docs/release/evidence/M3_PERFORMANCE.md`
 - Create: `docs/release/evidence/M3_NLP_READINESS.md`
-- Modify: CI workflows as needed
+- Modify: `.planning/milestones/M3-semantic-modeling-workflows/STATE.md`
+- Modify: `.planning/milestones/M3-semantic-modeling-workflows/TRACEABILITY.md`
+- Modify: `.planning/milestones/M3-semantic-modeling-workflows/README.md`
+- Modify: `.github/workflows/ci-core.yml`
+- Modify: `.github/workflows/ci-highs.yml`
 
 - [ ] **Step 1: Build deterministic native/portable corpus**
 
-Include indicators, exact max/min, abs, Boolean/cardinality, products, soft constraints, lexicographic objectives, and PWL. Compare status, objective values, user variable values where unique, and semantic constraint satisfaction.
+Cover every M3 construct, soft constraints, lexicographic policies, starts/locks, and PWL. Compare status, objectives, and semantic satisfaction.
 
-- [ ] **Step 2: Add randomized property suites**
+- [ ] **Step 2: Run fixed-seed property suites**
 
-Use fixed seeds recorded in evidence. Test:
+Test fixing state machine, interval containment, bridge equivalence, origin completeness, compiled delta/rebuild equality, and overlay non-leakage.
 
-- fix/unfix state machine;
-- interval bounds contain sampled values;
-- bridge output equals direct semantics;
-- origin maps are complete;
-- compiled deltas equal rebuild;
-- overlays never leak.
+- [ ] **Step 3: Enforce performance gate**
 
-- [ ] **Step 3: Measure ordinary primitive overhead**
+Primitive parameter-update median overhead must remain below 5% or 50 microseconds per solve attempt, whichever is larger. Profile and fix identity compiler/cache before acceptance when exceeded.
 
-Benchmark untouched M2-style parameter update solve and M3 identity-compiler path. Gate median added overhead below 5% or 50 microseconds per solve attempt, whichever is larger. If exceeded, profile and optimize identity compilation/cache before acceptance.
-
-- [ ] **Step 4: Measure compile/report workloads**
-
-Record, but do not set unsupported marketing claims for, compile time and generated model size by construct count.
-
-- [ ] **Step 5: Run full matrix**
+- [ ] **Step 4: Run full matrix**
 
 ```bash
 cargo fmt --all -- --check
@@ -2058,96 +1702,57 @@ cargo package -p roml --locked
 cargo package -p roml-highs --locked
 ```
 
-Record unsupported commercial-adapter failures separately; do not weaken core/HiGHS gates.
+Record commercial-adapter limitations separately; do not weaken core/HiGHS gates.
 
-- [ ] **Step 6: Test fresh packed consumers**
+- [ ] **Step 5: Test fresh packed consumers**
 
-Create temporary projects that consume packed `roml`/`roml-highs` artifacts and compile/run each golden workflow.
+Compile and run each golden workflow from packed artifacts in temporary projects.
 
-- [ ] **Step 7: Run independent reviews**
+- [ ] **Step 6: Complete independent reviews**
 
-Required:
+Principal engineering, OR formulation, native/unsafe, and NLP-readiness reviews must close all P0/P1 findings.
 
-- principal engineering/architecture review;
-- OR formulation correctness review;
-- unsafe/native API review;
-- NLP-readiness extension review.
-
-Resolve all P0/P1 findings.
-
-- [ ] **Step 8: Commit qualification evidence**
+- [ ] **Step 7: Scan planning artifacts for unresolved markers**
 
 ```bash
-git add tests roml-highs/tests benches .github/workflows docs/release/evidence
-git commit -m "test(m3): qualify semantic modeling milestone"
-```
-
----
-
-## Task 30: Final state, traceability, and integration gate
-
-**Phase:** P34
-
-**Files:**
-- Modify: `.planning/milestones/M3-semantic-modeling-workflows/STATE.md`
-- Modify: `.planning/milestones/M3-semantic-modeling-workflows/TRACEABILITY.md`
-- Modify: `.planning/milestones/M3-semantic-modeling-workflows/README.md`
-- Modify: root planning state/roadmap only through a reviewed integration amendment
-
-- [ ] **Step 1: Close every requirement with evidence links**
-
-No requirement remains `Planned` or `In progress`. Any deferred item must be outside M3 scope and explicitly justified; mandatory acceptance criteria cannot be deferred while marking the milestone complete.
-
-- [ ] **Step 2: Record final merge/CI facts**
-
-List each phase PR, merge commit, CI result, evidence file, reviewer, and residual risk.
-
-- [ ] **Step 3: Run placeholder/consistency scan**
-
-```bash
-rg -n "TBD|TODO|FIXME|implement later|fill in" \
+rg -n "T[B]D|T[O]DO|F[I]XME|implement later|fill in" \
   .planning/milestones/M3-semantic-modeling-workflows \
   docs/superpowers/specs/2026-08-02-semantic-modeling-and-solve-workflows-design.md \
   docs/superpowers/plans/2026-08-02-semantic-modeling-and-solve-workflows.md
 ```
 
-Every match must be removed or be a quoted prohibition rather than an unresolved requirement.
+Every match must be a quoted prohibition or removed.
 
-- [ ] **Step 4: Verify exact final SHA**
-
-Re-run mandatory P34 gates on the final integrated head. Evidence must reference that SHA.
-
-- [ ] **Step 5: Commit state closure**
+- [ ] **Step 8: Close traceability and commit**
 
 ```bash
-git add .planning/milestones/M3-semantic-modeling-workflows docs/release/evidence
-git commit -m "docs(m3): close semantic modeling milestone"
+git add tests roml-highs/tests benches docs/release/evidence \
+  .planning/milestones/M3-semantic-modeling-workflows .github/workflows
+git commit -m "test(m3): qualify semantic modeling milestone"
 ```
 
-- [ ] **Step 6: Stop before publication**
+- [ ] **Step 9: Stop before publication**
 
-Do not tag, publish, or create a release. Report the verified state and request a separate owner decision for any publication activity.
+Do not tag, publish, or create a release. Report the exact verified SHA and request a separate owner decision for publication.
 
 ---
 
-## Plan self-review checklist
+## Plan self-review result
 
-Before execution begins, reviewers must confirm:
-
-- every SM-01 through SM-15 requirement maps to at least one task;
-- type names/signatures used by later tasks match their defining task;
-- P26 lands before concrete construct bridges;
-- no task adds backend-specific state to canonical `Model`;
-- no bridge uses an arbitrary Big-M;
-- overlays have explicit rollback/rebuild semantics;
-- IIS guarantees are version/scope aware;
-- soft penalties handle objective sense correctly;
-- lexicographic degradation formulas cover negative objectives;
-- exact and one-sided constructs remain distinct;
-- PWL convex one-sided formulations have a zero-binary test;
-- NLP readiness is an extension exercise, not unimplemented NLP code;
+- Every SM-01 through SM-15 requirement maps to a phase and task.
+- P25 and P26 establish canonical and compiler boundaries before concrete constructs.
+- Cross-task public and backend interfaces are defined explicitly above.
+- No task introduces backend state into canonical `Model`.
+- No bridge is permitted to use an arbitrary Big-M.
+- Overlay rollback and rebuild semantics are explicit.
+- IIS scope/minimality/version limitations are mandatory report fields.
+- Soft penalty sense and signed correction semantics are tested before implementation.
+- Lexicographic formulas cover positive, zero, and negative objectives.
+- Exact and one-sided min/max/PWL relations remain distinct.
+- Convex PWL epigraph and concave PWL hypograph have zero-binary assertions.
+- NLP readiness is a concrete extension exercise, not hidden NLP implementation.
 - P34 includes public API, package, fresh-consumer, performance, and independent review evidence.
 
 ## Execution handoff
 
-Recommended execution is **subagent-driven development** with one fresh implementation agent per task or tightly coupled task group and two-stage review after each phase. Use isolated worktrees and do not exceed the WIP limits in the M3 execution protocol.
+Use subagent-driven development with one fresh implementation agent per task or tightly coupled task group and two-stage review after each phase. Use isolated worktrees and do not exceed the WIP limits in the M3 execution protocol.
