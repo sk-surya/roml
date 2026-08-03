@@ -396,7 +396,7 @@ Baseline comparison: `roml` grew from 613 (after Task 6) to 641 passing tests (+
 
 **Status: PASSED** (verification: 6/6 must-haves, `26-VERIFICATION.md`)
 
-**Public API diff (P26 base = P25 final capture):** `cargo public-api -p roml` grew from 12,019 items (Task 0 baseline) to 14,987 items at P26 head; distinct pub-item diff **+948 / −13** vs the P25 final capture (the −13 are transitional items removed by the migration: the flat capability conversion, `projection.rs` surface, and related pre-compiler internals). Head capture: `M3_P26_public_api_roml.txt`. M2 guarded surface unchanged (`Model::new`/`Default`/`Clone`, `solve`/`solve_with` signatures; `Highs::solve` source-compatible per D27).
+**Public API diff (P26 base = P25 final capture):** `cargo public-api -p roml` grew from 12,019 items (Task 0 baseline) to 14,987+ items at P26 head; distinct pub-item diff **+1013 / −14** vs the P25 final capture (the −14 are transitional items removed by the migration: the flat capability conversion, `projection.rs` surface, and related pre-compiler internals). Head capture: `M3_P26_public_api_roml.txt`. M2 guarded surface unchanged (`Model::new`/`Default`/`Clone`, `solve`/`solve_with` signatures; `Highs::solve` source-compatible per D27).
 
 **Reviewer dispositions (two-stage boundary review; full detail in `26-REVIEW.md`/`26-REVIEW-FIX.md`):**
 - CR-01 compiled `RemoveVariable` left stale coefficients in rows/objectives — fixed (`9af0e4c`), removal-path commuting-square tests added.
@@ -423,7 +423,7 @@ Contract-level findings verified against the code and fixed with TDD on the bran
 5. **F5 — malformed compiled references silently skipped.** Fixed in `0f78cf8`: `BackendSnapshot::validate`/`BackendDeltaBatch::validate` (with `CompiledEntityRegistry`, typed `CompileError::InvalidReference`); both backends preflight before any native mutation; all `if let Some(...)` ID skips converted to typed errors; unknown-ID updates error. Six malformed-batch tests + a valid-batch-still-applies test.
 6. **F6 — traceability.** TRACEABILITY corrected to clause-level: SM-03.1–03.8 closed, SM-03.9 partial (results/metadata carry exact `CompilationId`; overlay artifacts P27, analysis P29); SM-04.1/04.3/04.4 closed, SM-04.2 partial (Native/Bridge representation; bridge features P32), SM-04.5 deferred to P28.
 
-**Final public-API diff vs P25 final capture: +1005 / −14** distinct pub items (pre-release additive: `SolveResult.compilation_id`, `SolveMetadata.compilation_id`, `BackendMetadata::typed_capabilities`, `SupportLevel::Bridge`, `SolveError::CompilationMismatch`, `CompileError::InvalidReference`, `CompiledEntityRegistry`, validate methods). Re-verification: all findings RESOLVED; `cargo test -p roml --all-targets` **659 pass**, `roml-highs` **107 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged.
+**Final public-API diff vs P25 final capture: +1013 / −14** distinct pub items (pre-release additive: `SolveResult.compilation_id`, `SolveMetadata.compilation_id`, `BackendMetadata::typed_capabilities`, `SupportLevel::Bridge`, `SolveError::CompilationMismatch`, `CompileError::InvalidReference`/`DuplicateEntity`/`NonDenseCompilation`/`MissingOrigin`, `CompiledEntityRegistry`, validate methods). Re-verification: all findings RESOLVED; `cargo test -p roml --all-targets` **669 pass**, `roml-highs` **111 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged.
 
 ### Fourth review round — blocking independent review (PR #28, preflight boundary)
 
