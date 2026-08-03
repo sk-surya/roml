@@ -391,3 +391,23 @@ Baseline comparison: `roml` grew from 613 (after Task 6) to 641 passing tests (+
 - `feat(sync): compile canonical state into backend IR` — Task 7 implementation + tests + evidence + migration guide + SUMMARY (single coherent unit).
 
 <!-- Phase-level gate result (P26 boundary) filled after Task 7 review passes. -->
+
+## Phase gate result
+
+**Status: PASSED** (verification: 6/6 must-haves, `26-VERIFICATION.md`)
+
+**Public API diff (P26 base = P25 final capture):** `cargo public-api -p roml` grew from 12,019 items (Task 0 baseline) to 14,987 items at P26 head; distinct pub-item diff **+948 / −13** vs the P25 final capture (the −13 are transitional items removed by the migration: the flat capability conversion, `projection.rs` surface, and related pre-compiler internals). Head capture: `M3_P26_public_api_roml.txt`. M2 guarded surface unchanged (`Model::new`/`Default`/`Clone`, `solve`/`solve_with` signatures; `Highs::solve` source-compatible per D27).
+
+**Reviewer dispositions (two-stage boundary review; full detail in `26-REVIEW.md`/`26-REVIEW-FIX.md`):**
+- CR-01 compiled `RemoveVariable` left stale coefficients in rows/objectives — fixed (`9af0e4c`), removal-path commuting-square tests added.
+- CR-02 removing the active objective left `compiled_objective_policy` dangling — fixed (`5675a99`): `SetObjectivePolicy(None)` emitted at the compile boundary + defensive backend clear; test asserts `None` after active-objective removal.
+- WR-1 HiGHS now validates exact `from_compilation` (typed `StaleCompilation`) — `49df760`.
+- WR-2 facade sends the compiled empty base (`CompiledRebuild`) before the first delta — uniform documented contract, locked by test — `514f273`.
+- WR-3 `compile_delta` gates bounds/cell ops on `IncrementalBounds`/`IncrementalCoefficients` (`UnsupportedFeature`, no session advance) — `44541d7`.
+- WR-4 `source_instance` validated on compile_snapshot/compile_delta (typed `RebuildRequired` on cross-model reuse) — `cf40319`.
+- WR-5 HiGHS origin lookups return typed errors, never `.expect()` panics — `f7e2c32`.
+- All re-verified RESOLVED against the code; tests: `cargo test -p roml --all-targets` 647 pass, `roml-highs` 102 pass, clippy `-D warnings` clean.
+
+**SM-02.6 clause-level scope (P26):** foundation only — diagnostics distinguishing declared bounds, persistent fixings, construct-derived bounds, and temporary locks are NOT implemented in P26; P26 establishes the exact-compilation-identity and origin machinery they build on. Full closure in P29.
+
+**Task deviations (accepted, recorded per task):** `BackendDeltaBatch.origin_additions`; `compile_snapshot(source_instance)`; `SetParameter` provable no-op (parameter changes re-emit `SetCell` per dependent cell); semi-continuous snapshots rejected at the compile boundary; non-incremental ops → `RebuildRequired` rebuild-on-uncertainty; `roml-highs` dead `projection.rs` removed.
