@@ -245,11 +245,16 @@ impl CompiledOverlay {
                         });
                     }
                     // D5/SM-02.5: every added temporary row must trace to a
-                    // SolveOverlay origin.
-                    if !matches!(
+                    // SolveOverlay origin, and the embedded overlay MUST be
+                    // THIS overlay (provenance check — a row attributed to
+                    // another overlay while being applied as this one would
+                    // misattribute the restriction).
+                    let origin_matches = matches!(
                         self.origin_additions.constraint_origin(row.id),
-                        Some(EntityOrigin::SolveOverlay { .. })
-                    ) {
+                        Some(EntityOrigin::SolveOverlay { overlay, .. })
+                            if *overlay == self.overlay_id
+                    );
+                    if !origin_matches {
                         return Err(CompileError::MissingOrigin {
                             entity: CompiledEntityRef::Constraint(row.id),
                         });
