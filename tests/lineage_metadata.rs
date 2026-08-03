@@ -275,9 +275,11 @@ impl BackendSession for LineageTestBackend {
                 dual_values: None,
                 reduced_costs: None,
             }),
-            compilation_id: self
-                .current_compilation
-                .expect("a solve must follow a compiled synchronization"),
+            // F5: a real solve always populates `Some`.
+            compilation_id: Some(
+                self.current_compilation
+                    .expect("a solve must follow a compiled synchronization"),
+            ),
         })
     }
 

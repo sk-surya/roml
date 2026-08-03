@@ -641,7 +641,8 @@ impl BackendSession for TestBackend {
             effective_configuration: EffectiveConfig::default(),
             termination,
             solution,
-            compilation_id,
+            // F5: a real solve always populates `Some`.
+            compilation_id: Some(compilation_id),
         })
     }
 
@@ -1091,7 +1092,7 @@ fn solution_metadata_carries_compilation_id_and_is_stable_across_solves() {
         .expect("the backend must hold a compiled state after sync");
     assert_eq!(
         first.metadata().compilation_id,
-        held,
+        Some(held),
         "the solution's compilation id must equal the compiled state's id"
     );
     assert!(first.value(x).is_some());
@@ -1115,7 +1116,7 @@ fn solution_metadata_carries_compilation_id_and_is_stable_across_solves() {
     );
     assert_eq!(
         third.metadata().compilation_id,
-        state.borrow().current_compilation.unwrap()
+        Some(state.borrow().current_compilation.unwrap())
     );
 }
 

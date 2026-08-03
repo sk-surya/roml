@@ -382,7 +382,10 @@ impl BackendSession for HighsSession {
             effective_configuration: effective_config,
             termination: status,
             solution,
-            compilation_id,
+            // F5: a real solve always populates `Some` — the session holds a
+            // compiled state (checked above) and its exact id is the only
+            // stale-state authority.
+            compilation_id: Some(compilation_id),
         })
     }
 

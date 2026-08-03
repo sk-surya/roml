@@ -444,6 +444,16 @@ mod tests {
         assert_eq!(s2.value(y), Some(2.0));
     }
 
+    /// F5: a synthetic `Solution::from_values` (no real solve) carries
+    /// `compilation_id == None` — it must not fabricate a compilation identity.
+    #[test]
+    fn synthetic_solution_has_no_compilation_id() {
+        let mut map = HashMap::new();
+        map.insert(make_var(0), 1.0);
+        let s = Solution::from_values(map, SolverStatus::Optimal);
+        assert_eq!(s.metadata().compilation_id, None);
+    }
+
     #[test]
     fn builder_values_replaces_and_objective_id() {
         let x = make_var(0);

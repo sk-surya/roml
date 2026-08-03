@@ -98,7 +98,11 @@ pub struct SolveResult {
     /// the façade verifies it equals the compilation it synchronized to and
     /// rejects a mismatch as a typed error, never accepting a result produced
     /// from a different compiled state.
-    pub compilation_id: CompilationId,
+    ///
+    /// F5: backends MUST populate `Some` for a real solve; `None` is treated
+    /// by the façade as a mismatch (a result with no compiled state is never
+    /// accepted).
+    pub compilation_id: Option<CompilationId>,
 }
 
 /// The configuration that was actually applied by the solver.
