@@ -10,9 +10,10 @@
 
 use crate::compiler::bounds::{BigMImplication, BoundAnalyzer};
 use crate::compiler::bridge::{
-    combine_coefficients, eval_bound, function_coefficients, resolve_variable, BridgeContext,
-    BridgeFinalizer, BridgeOutput,
+    combine_coefficients, eval_bound, function_coefficients, resolve_variable, select_path,
+    BridgeContext, BridgeFinalizer, BridgeOutput,
 };
+use crate::compiler::capability::BackendFeature;
 use crate::compiler::origin::GeneratedRole;
 use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
@@ -28,6 +29,18 @@ pub(crate) fn compile(
     next_variable_index: u32,
     next_row_index: u32,
 ) -> Result<BridgeOutput, CompileError> {
+    // F4: reification is centralized under the same policy gating as every
+    // other construct family — an unqualified `Reification` feature and a
+    // bridge-only path under `NativeRequired` are typed errors (never silently
+    // compiled); under `Auto`/`Portable` with bridge support the exact
+    // two-implication bridge is selected.
+    select_path(
+        ctx.capabilities,
+        ctx.policy,
+        BackendFeature::Reification,
+        "reification construct",
+    )?;
+
     // The build-time validation guarantees a threshold set and a valid
     // separation contract; the unit gap is `1.0` when the expression is proven
     // integral and no explicit tolerance was given (D14).

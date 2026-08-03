@@ -1,14 +1,12 @@
 //! Indicator bridge (design §16.1, §8.1; SM-12.1, SM-13.2/13.4).
 //!
-//! A one-way implication over a binary activator compiles to exact rows. Under
-//! `Auto`, a qualified native `BackendFeature::Indicator` is selected when the
-//! backend declares it (the emitted exact row carries the `IndicatorNative`
-//! role — the P32 backend IR has no native-constraint representation, so the
-//! exact finite-bound row is emitted and the selection is observable via the
-//! role + a formulation decision); otherwise the exact finite-bound Big-M
-//! bridge emits the same one-way implication row with the `IndicatorImplicationRow`
-//! role. `Portable` forces the bridge; `NativeRequired` rejects a non-native
-//! feature.
+//! A one-way implication over a binary activator compiles to exact rows. Until
+//! the backend IR carries a real native payload, `select_path` selects ONLY the
+//! exact finite-bound Big-M bridge (F4): a backend's native `Indicator`
+//! declaration is NOT reported as a native selection — the emitted row always
+//! carries the `IndicatorImplicationRow` role and an honest "exact bridge"
+//! formulation decision, and `NativeRequired` rejects the bridge-only path as a
+//! typed error. `Portable` forces the bridge.
 //!
 //! The Big-M is always derived from the construct's declared bounds via
 //! [`BoundAnalyzer`](crate::compiler::bounds::BoundAnalyzer) — never a default
@@ -20,7 +18,7 @@ use std::collections::HashMap;
 use crate::compiler::bounds::{BigMImplication, BoundAnalyzer};
 use crate::compiler::bridge::{
     combine_coefficients, function_coefficients, resolve_variable, select_path, BridgeContext,
-    BridgeFinalizer, BridgeOutput, ConstructPath,
+    BridgeFinalizer, BridgeOutput,
 };
 use crate::compiler::capability::BackendFeature;
 use crate::compiler::origin::GeneratedRole;
@@ -107,33 +105,33 @@ pub(crate) fn compile(
     next_variable_index: u32,
     next_row_index: u32,
 ) -> Result<BridgeOutput, CompileError> {
-    let path = select_path(
+    // SM-04.4 / F4 gating: an unqualified feature and a bridge-only feature
+    // under `NativeRequired` are typed errors. Under `Auto` a native declaration
+    // falls back to the exact bridge (the backend IR has no native payload in
+    // P32), so the emitted rows are ALWAYS the exact bridge rows — never a
+    // "native indicator" label for a bridge formulation.
+    select_path(
         ctx.capabilities,
         ctx.policy,
         BackendFeature::Indicator,
         "indicator construct",
     )?;
-    let (role, selection, decision_reason) = match path {
-        ConstructPath::Native => (
-            GeneratedRole::IndicatorNative,
-            "native indicator",
-            "qualified native BackendFeature::Indicator selected (Auto)",
-        ),
-        ConstructPath::Bridge
-            if *ctx.policy == crate::compiler::capability::CompilationPolicy::Portable =>
-        {
+    // The exact bridge row role is used regardless of the native declaration
+    // (F4: honest FormulationDecision — no native label for a bridge row).
+    let role = GeneratedRole::IndicatorImplicationRow;
+    let (selection, decision_reason) =
+        if *ctx.policy == crate::compiler::capability::CompilationPolicy::Portable {
             (
-                GeneratedRole::IndicatorImplicationRow,
                 "exact bridge (portable forced)",
                 "Portable policy forces the deterministic ROML bridge (design §8.1)",
             )
-        }
-        ConstructPath::Bridge => (
-            GeneratedRole::IndicatorImplicationRow,
-            "exact bridge (finite bound)",
-            "no qualified native indicator; exact finite-bound one-way Big-M bridge (design §8.1)",
-        ),
-    };
+        } else {
+            (
+                "exact bridge (finite bound)",
+                "no qualified native indicator; exact finite-bound one-way Big-M bridge \
+                 (design §8.1)",
+            )
+        };
 
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
     let analyzer = BoundAnalyzer::new();

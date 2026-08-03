@@ -266,18 +266,32 @@ pub(crate) enum ConstructPath {
 /// typed `UnsupportedFeature`. `Portable` forces the bridge. `NativeRequired`
 /// rejects a non-native feature. An unqualified feature is never silently
 /// ignored (SM-04.4).
+///
+/// # F4 — no native payload in P32
+///
+/// Until the backend IR carries a real native payload
+/// ([`BackendConstraint`](crate::compiler::backend_ir::BackendConstraint) is
+/// empty), these construct features are reported/selected ONLY as Bridge:
+/// a backend's native declaration does NOT make the feature selectable as
+/// `Native` (there is no native representation to emit), and `NativeRequired`
+/// rejects the bridge-only path as a typed error. Under `Auto` a native
+/// declaration falls back to the exact bridge (the bridge is the only
+/// representable path), so bridge selection is available when either a bridge
+/// or a (currently unrepresentable) native declaration exists.
 pub(crate) fn select_path(
     capabilities: &BackendCapabilitySet,
     policy: &CompilationPolicy,
     feature: BackendFeature,
     context: &str,
 ) -> Result<ConstructPath, CompileError> {
-    let native = capabilities.supports(feature);
+    let native_available =
+        crate::compiler::backend_ir::native_payloads_available() && capabilities.supports(feature);
+    let bridge_available = capabilities.is_bridge(feature) || capabilities.supports(feature);
     match policy {
         CompilationPolicy::Auto => {
-            if native {
+            if native_available {
                 Ok(ConstructPath::Native)
-            } else if capabilities.is_bridge(feature) {
+            } else if bridge_available {
                 Ok(ConstructPath::Bridge)
             } else {
                 Err(CompileError::UnsupportedFeature(format!(
@@ -288,7 +302,7 @@ pub(crate) fn select_path(
         }
         CompilationPolicy::Portable => Ok(ConstructPath::Bridge),
         CompilationPolicy::NativeRequired => {
-            if native {
+            if native_available {
                 Ok(ConstructPath::Native)
             } else {
                 Err(CompileError::UnsupportedFeature(format!(
