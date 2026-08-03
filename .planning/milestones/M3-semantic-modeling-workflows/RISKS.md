@@ -58,8 +58,8 @@
 ## R8 — Assignment identity is insufficient
 
 **Severity:** P0  
-**Failure mode:** an assignment from another model is applied to coincidentally equal IDs.  
-**Mitigation:** lineage plus generational handles; validation before backend mutation.  
+**Failure mode:** an assignment from an unrelated model is applied to coincidentally equal entity IDs, or provenance is mistaken for exact state compatibility.  
+**Mitigation:** `ModelLineageId` plus generation-safe handles govern assignment compatibility; source instance/revision are retained as provenance; values/domains are validated before backend mutation.  
 **Residual:** cross-process serialized reuse is unsupported and documented.
 
 ## R9 — Fixing destroys declared-domain information
@@ -74,7 +74,7 @@
 **Severity:** P1  
 **Failure mode:** unsupported hint becomes fixing or MIP start silently.  
 **Mitigation:** separate types; default reject; explicit conversion policy; effective-plan report.  
-**Gate:** feasible region fingerprints are unchanged by starts/hints and changed by locks.
+**Gate:** feasible region is unchanged by starts/hints and changed by locks.
 
 ## R11 — Solver capability names hide semantic differences
 
@@ -139,25 +139,25 @@
 **Mitigation:** one construct arena/store with typed payloads and common lifecycle/dependency interfaces.  
 **Gate:** adding a construct type does not modify unrelated model stores.
 
-## R20 — Compilation cache becomes stale
+## R20 — Compilation cache or analysis mapping becomes stale
 
 **Severity:** P0  
-**Failure mode:** parameter/domain/construct change does not invalidate selected recipe or generated coefficients.  
-**Mitigation:** explicit recipe dependencies and fingerprints; rebuild on uncertainty; differential compiled-delta versus rebuild tests.  
-**Default:** conservative rebuild for semantic changes in M3 v1.
+**Failure mode:** a divergent clone or updated model reuses a result/origin map from another compiled state, or a parameter/domain/construct change fails to invalidate generated coefficients.  
+**Mitigation:** unique `ModelInstanceId`, exact `CompilationId`, explicit recipe dependencies, rebuild on uncertainty, and compiled-delta versus rebuild tests. Recipe fingerprints are evidence/cache hints only.  
+**Default:** any exact-ID mismatch rejects use; semantic changes conservatively rebuild in M3 v1.
 
 ## R21 — Portable policy is not actually portable
 
 **Severity:** P1  
 **Failure mode:** it still relies on a backend-native construct.  
-**Mitigation:** portable report rejects native primitives except universally supported linear/integer rows; CI compares at least ReferenceBackend/HiGHS compilation artifacts where meaningful.  
+**Mitigation:** portable report rejects native primitives except universally supported linear/integer rows; CI compares ReferenceBackend/HiGHS compilation artifacts where meaningful.  
 **Gate:** portable snapshot inventory contains only declared portable primitives.
 
 ## R22 — Performance regression on ordinary models
 
 **Severity:** P2, elevated to P1 if production workloads are materially affected  
 **Failure mode:** every primitive parameter solve recompiles the whole model.  
-**Mitigation:** identity compiler fast path; compiled revision/fingerprint cache; P34 baseline and threshold.  
+**Mitigation:** identity compiler fast path; exact compiled-state cache keyed by instance/revision and recipe dependencies; P34 baseline and threshold.  
 **Threshold:** less than 5% or 50 microseconds median overhead, whichever is larger, on the defined primitive fixture.
 
 ## R23 — Public API expands faster than review capacity
@@ -171,12 +171,19 @@
 
 **Severity:** P1  
 **Failure mode:** architecture still assumes rows/matrices despite claims.  
-**Mitigation:** P34 review uses concrete extension exercise: sketch `ScalarFunction::Quadratic` and `Nonlinear`, backend IR/capability additions, and required file changes.  
+**Mitigation:** P34 review uses a concrete extension exercise for `ScalarFunction::Quadratic` and `Nonlinear`, backend IR/capability additions, and required file changes.  
 **Pass criterion:** identity, metadata, constructs, objective policy, solve plans, origin mapping, and reports require extension only, not replacement.
 
 ## R25 — Planning packet and implementation diverge
 
 **Severity:** P1  
 **Failure mode:** agents bypass phase gates or silently rename interfaces.  
-**Mitigation:** requirement IDs in every PR; evidence/state updates; design amendments recorded in `DECISIONS.md`; task interface blocks in implementation plan.  
+**Mitigation:** requirement IDs in every PR; evidence/state updates; design amendments recorded in `DECISIONS.md`; task interface contract in implementation plan.  
 **Stop condition:** code introduces a contradictory public semantic without an approved amendment.
+
+## R26 — Finite fingerprints are treated as exact identity
+
+**Severity:** P0  
+**Failure mode:** a hash collision or incorrectly reused digest authorizes stale overlay rollback, result mapping, or IIS projection.  
+**Mitigation:** correctness uses checked opaque `CompilationId`; deterministic recipe fingerprints are never accepted as authority.  
+**Gate:** APIs requiring exact compiled state accept/compare `CompilationId`, not only digest/fingerprint.
