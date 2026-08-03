@@ -396,6 +396,9 @@ fn bound_error_to_model_error(err: crate::compiler::bounds::BoundError) -> Model
         BoundError::NonFiniteParameterValue { .. } => {
             ModelError::NonFiniteValue("expression parameter value")
         }
+        BoundError::MissingParameter { .. } => {
+            ModelError::NonFiniteValue("expression missing parameter")
+        }
         BoundError::ArithmeticNan => ModelError::NaNValue("expression interval arithmetic"),
         BoundError::UnsupportedFunctionKind => {
             ModelError::NonFiniteValue("unsupported function kind")

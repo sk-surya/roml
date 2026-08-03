@@ -2481,3 +2481,74 @@ fn binary_product_randomized_direct_evaluation_matches_product() {
         }
     }
 }
+
+// ===========================================================================
+// F5 — malformed-snapshot preflight (missing parameter/variable references)
+// ===========================================================================
+
+/// F5: a construct referencing a parameter absent from the snapshot is a typed
+/// `MissingConstructParameter` — never a silent default of zero — and the
+/// compile fails before any state/identity advancement.
+#[test]
+fn f5_malformed_snapshot_missing_parameter_is_typed_error() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    let p = model.add_parameter(2.0).unwrap();
+    let ind = model
+        .add_indicator(z, IndicatorDirection::WhenOne, (p * x).le(5.0), None)
+        .unwrap();
+
+    let mut snap = model.take_snapshot().unwrap();
+    // Malform: drop the parameter the construct depends on.
+    snap.parameters.retain(|e| e.id != p);
+
+    let mut session = CompilationSession::new();
+    let err = session
+        .compile_snapshot(
+            model.instance(),
+            &snap,
+            &CompilationPolicy::Portable,
+            &bridge_caps(),
+        )
+        .expect_err("a construct referencing a parameter absent from the snapshot must fail");
+    assert!(
+        matches!(&err, CompileError::MissingConstructParameter { construct, parameter }
+            if *construct == ind && *parameter == p),
+        "expected MissingConstructParameter naming the construct and parameter, got {err:?}"
+    );
+    // F5: no compiled state/identity is produced on rejection.
+    assert_eq!(session.current_compilation(), None);
+}
+
+/// F5: a construct referencing a variable absent from the snapshot is a typed
+/// `MissingConstructReference` before any bridge row is generated.
+#[test]
+fn f5_malformed_snapshot_missing_variable_is_typed_error() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    let ind = model
+        .add_indicator(z, IndicatorDirection::WhenOne, (2.0 * x).le(5.0), None)
+        .unwrap();
+
+    let mut snap = model.take_snapshot().unwrap();
+    // Malform: drop the operand variable the construct references.
+    snap.variables.retain(|e| e.id != x);
+
+    let mut session = CompilationSession::new();
+    let err = session
+        .compile_snapshot(
+            model.instance(),
+            &snap,
+            &CompilationPolicy::Portable,
+            &bridge_caps(),
+        )
+        .expect_err("a construct referencing a variable absent from the snapshot must fail");
+    assert!(
+        matches!(&err, CompileError::MissingConstructReference { construct, variable }
+            if *construct == ind && *variable == x),
+        "expected MissingConstructReference naming the construct and variable, got {err:?}"
+    );
+    assert_eq!(session.current_compilation(), None);
+}

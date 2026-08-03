@@ -105,6 +105,40 @@ impl ValueExpr {
         self.eval_recursive(&get_param)
     }
 
+    /// Evaluate this expression against a FALLIBLE parameter lookup (F5).
+    ///
+    /// Unlike [`eval`](Self::eval) — which must return a number and therefore
+    /// cannot express a missing parameter — `eval_checked` returns a typed
+    /// `Err(missing)` when the lookup reports a parameter as absent. Bridge
+    /// coefficient/threshold evaluation uses this so a construct referencing a
+    /// parameter removed from the snapshot is a typed error, never a silent
+    /// default of zero.
+    pub fn eval_checked<F>(&self, get_param: F) -> Result<f64, ParamId>
+    where
+        F: Fn(ParamId) -> Result<f64, ParamId>,
+    {
+        self.eval_checked_recursive(&get_param)
+    }
+
+    fn eval_checked_recursive<F>(&self, get_param: &F) -> Result<f64, ParamId>
+    where
+        F: Fn(ParamId) -> Result<f64, ParamId>,
+    {
+        match self {
+            Self::Constant(v) => Ok(*v),
+            Self::Param(id) => get_param(*id),
+            Self::Add(l, r) => Ok(l.eval_checked_recursive(get_param)?
+                + r.eval_checked_recursive(get_param)?),
+            Self::Sub(l, r) => Ok(l.eval_checked_recursive(get_param)?
+                - r.eval_checked_recursive(get_param)?),
+            Self::Mul(l, r) => Ok(l.eval_checked_recursive(get_param)?
+                * r.eval_checked_recursive(get_param)?),
+            Self::Div(l, r) => Ok(l.eval_checked_recursive(get_param)?
+                / r.eval_checked_recursive(get_param)?),
+            Self::Neg(inner) => Ok(-inner.eval_checked_recursive(get_param)?),
+        }
+    }
+
     fn eval_recursive<F>(&self, get_param: &F) -> f64
     where
         F: Fn(ParamId) -> f64,
@@ -520,6 +554,29 @@ mod tests {
         assert!(deps.contains(&p2));
         assert!(!deps.contains(&p3));
         assert_eq!(deps.len(), 2);
+    }
+
+    #[test]
+    fn eval_checked_reports_missing_parameter() {
+        let p1 = make_param(0);
+        let p2 = make_param(1);
+        let expr = 2.0 * p1 + p2;
+        // Present p1=3, absent p2 -> Err(p2).
+        let err = expr
+            .eval_checked(|id| {
+                if id == p1 {
+                    Ok(3.0)
+                } else {
+                    Err(id)
+                }
+            })
+            .expect_err("a missing parameter must be a typed Err, never a default zero");
+        assert_eq!(err, p2);
+        // All present -> Ok.
+        let val = expr
+            .eval_checked(|id| Ok(if id == p1 { 3.0 } else { 5.0 }))
+            .expect("all present parameters evaluate");
+        assert_eq!(val, 11.0);
     }
 
     #[test]

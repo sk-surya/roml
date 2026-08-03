@@ -45,7 +45,7 @@ pub(crate) fn compile(
 
     match &payload.set {
         ScalarSet::LessEqual(upper) => {
-            let rhs = eval_bound(upper, ctx.parameter_values);
+            let rhs = eval_bound(upper, ctx.construct, ctx.parameter_values)?;
 
             // Forward: b=1 ⇒ f <= rhs  →  f + M1·b <= rhs + M1.
             let expression = format!("{:?} <= {rhs}", payload.function);
@@ -99,7 +99,7 @@ pub(crate) fn compile(
             );
         }
         ScalarSet::GreaterEqual(lower) => {
-            let rhs = eval_bound(lower, ctx.parameter_values);
+            let rhs = eval_bound(lower, ctx.construct, ctx.parameter_values)?;
 
             // Forward: b=1 ⇒ f >= rhs  →  f - M1·b >= rhs - M1.
             let expression = format!("{:?} >= {rhs}", payload.function);

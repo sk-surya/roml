@@ -335,9 +335,15 @@ pub(crate) fn function_coefficients(
             for term in terms {
                 let value = match &term.coeff {
                     TermCoeff::Constant(v) => *v,
-                    TermCoeff::Expr(e) => {
-                        e.eval(|p| parameter_values.get(&p).copied().unwrap_or(0.0))
-                    }
+                    // F5: a coefficient referencing a parameter absent from the
+                    // evaluated map is a typed `MissingConstructParameter` —
+                    // never a silent default of zero.
+                    TermCoeff::Expr(e) => e
+                        .eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
+                        .map_err(|parameter| CompileError::MissingConstructParameter {
+                            construct,
+                            parameter,
+                        })?,
                 };
                 let vid = resolve_variable(variable_ids, term.var, construct)?;
                 coefficients.push((vid, value));
@@ -348,9 +354,16 @@ pub(crate) fn function_coefficients(
 }
 
 /// Evaluate a scalar-set bound (`ValueExpr`) against the evaluated parameter
-/// values.
-pub(crate) fn eval_bound(bound: &ValueExpr, parameter_values: &HashMap<ParamId, f64>) -> f64 {
-    bound.eval(|p| parameter_values.get(&p).copied().unwrap_or(0.0))
+/// values, surfacing a missing parameter as a typed error (F5) — never a
+/// silent default of zero.
+pub(crate) fn eval_bound(
+    bound: &ValueExpr,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<f64, CompileError> {
+    bound
+        .eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
+        .map_err(|parameter| CompileError::MissingConstructParameter { construct, parameter })
 }
 
 /// Combine the function's compiled coefficients with a single-var term

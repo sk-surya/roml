@@ -45,25 +45,30 @@ struct OneSided {
 
 /// Decompose a set into its one-sided implications (le/ge; eq and interval
 /// become two one-sided implications each). `rhs` values are evaluated against
-/// the current parameter values.
+/// the current parameter values, surfacing a missing parameter as a typed
+/// error (F5) — never a silent default of zero.
 fn one_sided_implications(
     set: &ScalarSet,
+    construct: crate::construct::Construct,
     parameter_values: &HashMap<ParamId, f64>,
-) -> Vec<OneSided> {
-    let eval = |e: &ValueExpr| e.eval(|p| parameter_values.get(&p).copied().unwrap_or(0.0));
-    match set {
+) -> Result<Vec<OneSided>, CompileError> {
+    let eval = |e: &ValueExpr| -> Result<f64, CompileError> {
+        e.eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
+            .map_err(|parameter| CompileError::MissingConstructParameter { construct, parameter })
+    };
+    Ok(match set {
         ScalarSet::LessEqual(upper) => vec![OneSided {
             side: BigMImplication::Upper,
-            rhs: eval(upper),
+            rhs: eval(upper)?,
             op: "<=",
         }],
         ScalarSet::GreaterEqual(lower) => vec![OneSided {
             side: BigMImplication::Lower,
-            rhs: eval(lower),
+            rhs: eval(lower)?,
             op: ">=",
         }],
         ScalarSet::EqualTo(value) => {
-            let rhs = eval(value);
+            let rhs = eval(value)?;
             vec![
                 OneSided {
                     side: BigMImplication::Upper,
@@ -80,16 +85,16 @@ fn one_sided_implications(
         ScalarSet::Interval { lower, upper } => vec![
             OneSided {
                 side: BigMImplication::Lower,
-                rhs: eval(lower),
+                rhs: eval(lower)?,
                 op: ">=",
             },
             OneSided {
                 side: BigMImplication::Upper,
-                rhs: eval(upper),
+                rhs: eval(upper)?,
                 op: "<=",
             },
         ],
-    }
+    })
 }
 
 /// Compile one indicator construct into its exact rows (design §16.1).
@@ -137,7 +142,7 @@ pub(crate) fn compile(
         ctx.parameter_values,
     )?;
 
-    for one_sided in one_sided_implications(&payload.set, ctx.parameter_values) {
+    for one_sided in one_sided_implications(&payload.set, ctx.construct, ctx.parameter_values)? {
         let expression = format!("{:?} {} {}", payload.function, one_sided.op, one_sided.rhs);
         let (m, sources) = crate::compiler::bounds::bound_big_m_implied_snapshot(
             &analyzer,

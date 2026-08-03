@@ -31,7 +31,7 @@ use backend_ir::{CompilationId, CompiledEntityRef, CompiledObjectiveId};
 /// unsupported-feature rejections (exercised by Task 7), objective-policy
 /// validation, and identity-counter exhaustion. Later phases add the
 /// bridge/Big-M variants (`UnboundedBigM`, ...) defined by the design.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CompileError {
     /// A generated compiled entity has no recorded origin (D5, SM-02.5).
     ///
@@ -169,6 +169,37 @@ pub enum CompileError {
         /// The referenced variable that has no compiled counterpart.
         variable: crate::id::VarId,
     },
+
+    /// A construct references a parameter absent from the compiled snapshot
+    /// (F5).
+    ///
+    /// Constructs are validated at build time, but a parameter can be removed
+    /// after the construct was added; the bridge must NEVER default a missing
+    /// parameter to zero (a silently wrong coefficient/threshold). Compiling
+    /// such a construct is a typed error naming the construct and the missing
+    /// parameter.
+    MissingConstructParameter {
+        /// The construct with the dangling parameter reference.
+        construct: Construct,
+        /// The referenced parameter that has no compiled counterpart.
+        parameter: crate::id::ParamId,
+    },
+
+    /// An inferred-unit-gap reification's threshold is no longer integral at
+    /// compile time (F3).
+    ///
+    /// The builder validates the inferred unit gap once at build time (D14);
+    /// when the threshold is parameter-dependent the value can change to a
+    /// non-integral number, silently breaking the `f > rhs ⟺ f >= rhs + 1`
+    /// unit-gap exactness. The bridge revalidates threshold integrality at
+    /// EVERY compilation and returns this typed error before any backend
+    /// mutation.
+    NonIntegralReificationThreshold {
+        /// The reification construct with the invalid threshold.
+        construct: Construct,
+        /// The evaluated (fractional) threshold value.
+        threshold: f64,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -230,6 +261,23 @@ impl std::fmt::Display for CompileError {
                 f,
                 "construct {construct:?} references variable {variable:?} absent from the \
                  compiled snapshot (the variable was likely removed after the construct was added)"
+            ),
+            Self::MissingConstructParameter {
+                construct,
+                parameter,
+            } => write!(
+                f,
+                "construct {construct:?} references parameter {parameter:?} absent from the \
+                 compiled snapshot (a missing parameter is never defaulted to zero — F5)"
+            ),
+            Self::NonIntegralReificationThreshold {
+                construct,
+                threshold,
+            } => write!(
+                f,
+                "reification construct {construct:?} has non-integral inferred-unit-gap \
+                 threshold {threshold} at compile time (D14 — the unit gap is exact only for \
+                 integral thresholds)"
             ),
         }
     }
