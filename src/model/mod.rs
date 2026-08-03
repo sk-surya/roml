@@ -1598,6 +1598,16 @@ impl Model {
                     entry.set, fc.set,
                     "snapshot semantic set diverges from the coefficient index"
                 );
+                // WR-01/WR-02: the reconstructed function expression must also
+                // agree with the canonical reconstruction. Both sides are now
+                // var-ordered deterministic rebuilds of the same coefficient
+                // index, so divergence here would indicate a real
+                // second-coefficient-authority bug (e.g. CR-01's pre-adjusted
+                // bounds), not a benign ordering difference.
+                debug_assert_eq!(
+                    entry.function, fc.function,
+                    "snapshot semantic function diverges from the coefficient index"
+                );
             }
         }
 
