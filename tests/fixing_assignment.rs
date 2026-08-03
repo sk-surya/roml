@@ -554,6 +554,138 @@ fn compile_fix_delta_emits_set_variable_bounds_under_incremental_bounds() {
     )));
 }
 
+/// WR-02: a fixing change on an INACTIVE variable must NOT diverge between the
+/// delta and rebuild compile paths. The rebuild folds an inactive variable to
+/// `[0,0]` regardless of its fixing; the delta must therefore force a
+/// `RebuildRequired` (which the facade resolves with a deterministic snapshot
+/// rebuild), never emit a raw `SetVariableBounds` that leaves the backend at the
+/// declared bounds for an inactive variable (a solver could then assign a
+/// nonzero value to an inactive variable).
+#[test]
+fn fixing_change_on_inactive_variable_forces_rebuild_required() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.commit().unwrap(); // r1
+
+    model.fix(x, 4.0).unwrap();
+    model.commit().unwrap(); // r2
+    model.set_variable_active(x, false).unwrap();
+    model.commit().unwrap(); // r3 — the activity change forces the facade to
+                             // rebuild; the compiled base folds x to [0, 0]
+
+    let snapshot_r3 = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot_r3,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .expect("r3 snapshot must compile");
+    let entry = base
+        .variables
+        .iter()
+        .find(|v| v.id == CompiledVariableId(0))
+        .expect("compiled variable");
+    assert_eq!(
+        entry.bounds,
+        Bounds::new(0.0, 0.0),
+        "the compiled base folds the inactive variable to [0, 0]"
+    );
+    let rev_r3 = model.current_revision();
+
+    model.unfix(x).unwrap();
+    model.commit().unwrap(); // r4 — SetVariableFixing on the INACTIVE variable
+
+    let batches = model.deltas_since(rev_r3).unwrap();
+    let unfix_batch = batches
+        .iter()
+        .find(|b| b.to == model.current_revision())
+        .expect("unfix delta batch");
+    let err = session
+        .compile_delta(
+            unfix_batch,
+            base.compilation_id,
+            model.instance(),
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .expect_err("a fixing change on an inactive variable must force a rebuild");
+    assert!(
+        matches!(err, CompileError::RebuildRequired(_)),
+        "expected RebuildRequired (rebuild folds to [0, 0]), got {err:?}"
+    );
+}
+
+/// WR-02: the same divergence for a plain `SetVariableBounds` on an inactive
+/// variable (the gap predates P27 for `SetVariableBounds`; the fix covers it
+/// too).
+#[test]
+fn bounds_change_on_inactive_variable_forces_rebuild_required() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.commit().unwrap(); // r1
+    model.set_variable_active(x, false).unwrap();
+    model.commit().unwrap(); // r2 — compiled base folds x to [0, 0]
+
+    let snapshot_r2 = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot_r2,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .expect("r2 snapshot must compile");
+    let rev_r2 = model.current_revision();
+
+    model.set_variable_bounds(x, Bounds::new(5.0, 6.0)).unwrap();
+    model.commit().unwrap(); // r3 — SetVariableBounds on the INACTIVE variable
+
+    let batches = model.deltas_since(rev_r2).unwrap();
+    let bounds_batch = batches
+        .iter()
+        .find(|b| b.to == model.current_revision())
+        .expect("bounds delta batch");
+    let err = session
+        .compile_delta(
+            bounds_batch,
+            base.compilation_id,
+            model.instance(),
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .expect_err("a bounds change on an inactive variable must force a rebuild");
+    assert!(
+        matches!(err, CompileError::RebuildRequired(_)),
+        "expected RebuildRequired (rebuild folds to [0, 0]), got {err:?}"
+    );
+}
+
+/// WR-02 (model API): `Model::effective_bounds` of a FIXED INACTIVE variable
+/// folds to `[0,0]` — the model API agrees with `compile_snapshot`'s fold
+/// (previously it returned `[value, value]` from the fixing alone).
+#[test]
+fn effective_bounds_of_fixed_inactive_variable_fold_to_zero() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.commit().unwrap();
+    model.fix(x, 4.0).unwrap();
+    model.commit().unwrap();
+    model.set_variable_active(x, false).unwrap();
+    model.commit().unwrap();
+
+    assert_eq!(
+        model.effective_bounds(x),
+        Some(Bounds::new(0.0, 0.0)),
+        "an inactive variable's solver-facing bounds fold to [0, 0] regardless of its fixing"
+    );
+    // The declared view is unchanged.
+    assert_eq!(model.declared_bounds(x), Some(Bounds::new(0.0, 10.0)));
+}
+
 #[test]
 fn compile_fix_delta_gates_on_incremental_bounds_without_it() {
     let f = fixed_model();

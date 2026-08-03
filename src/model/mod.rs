@@ -701,6 +701,14 @@ impl Model {
     /// equal the declared bounds. Returns `None` for a stale/removed variable.
     pub fn effective_bounds(&self, var: VarId) -> Option<Bounds> {
         let data = self.variables.get(var)?;
+        // WR-02: the solver-facing bounds fold the fixing FIRST (SM-05.3),
+        // THEN the activity — an inactive variable's solver-facing bounds are
+        // `[0,0]` regardless of its fixing, matching `compile_snapshot`'s
+        // fold (the model API, `compile_snapshot`, and `compile_delta` must
+        // agree).
+        if !data.active {
+            return Some(Bounds::new(0.0, 0.0));
+        }
         match &data.fixing {
             Some(fixing) => Some(Bounds {
                 lower: data.domain.bounds.lower.max(fixing.value),
