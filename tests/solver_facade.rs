@@ -643,6 +643,7 @@ impl BackendSession for TestBackend {
             solution,
             // F5: a real solve always populates `Some`.
             compilation_id: Some(compilation_id),
+            overlay_id: None,
         })
     }
 

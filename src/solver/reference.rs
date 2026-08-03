@@ -28,6 +28,11 @@ use crate::model::coefficient::{CellKey, CoefficientTarget};
 use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
+use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
+use crate::solver::overlay::{
+    CompiledOverlay, OverlayApplyReceipt, OverlayOp, OverlayRollbackOutcome,
+};
+use crate::solver::session::OverlaySession;
 use crate::sync::{AdapterCursor, ApplyOutcome};
 use crate::value_expr::ValueExpr;
 
@@ -92,6 +97,30 @@ pub struct ReferenceBackend {
     pub current_compilation: Option<CompilationId>,
     /// Canonical revision of the current compiled state.
     pub compiled_revision: ModelRevision,
+    /// Transactional overlay state captured at apply (P27 Task 10). `None`
+    /// when no overlay is applied. Set by `apply_overlay`, consumed by
+    /// `rollback_overlay`, and used by `verify_overlay_clean` to prove the
+    /// base compiled state is restored exactly.
+    overlay_state: Option<OverlayApplyState>,
+}
+
+/// Prior compiled state captured by an overlay apply, enabling the
+/// transactional rollback and the post-rollback clean verification (SM-07.4).
+#[derive(Clone, Debug)]
+struct OverlayApplyState {
+    /// The exact base compiled state the overlay was applied on top of.
+    base_compilation: CompilationId,
+    /// The overlay-compounded compiled state.
+    applied_compilation: CompilationId,
+    /// Prior bounds of every compiled variable the overlay temporarily set.
+    prior_bounds: HashMap<CompiledVariableId, Bounds>,
+    /// The temporary compiled rows the overlay added.
+    added_rows: Vec<CompiledConstraintId>,
+    /// The base compiled objective policy (restored on rollback).
+    prior_policy: CompiledObjectivePolicy,
+    /// A deterministic view of the base compiled state (rollback's clean
+    /// target).
+    base_view: CompiledNormalizedView,
 }
 
 impl Default for ReferenceBackend {
@@ -113,6 +142,7 @@ impl Default for ReferenceBackend {
             compiled_objective_policy: CompiledObjectivePolicy::None,
             current_compilation: None,
             compiled_revision: ModelRevision::ZERO,
+            overlay_state: None,
         }
     }
 }
@@ -748,6 +778,188 @@ impl ReferenceBackend {
             objectives,
             objective_policy: self.compiled_objective_policy.clone(),
         }
+    }
+}
+
+// ── OverlaySession (P27 Task 10) ─────────────────────────────────────────────
+
+impl OverlaySession for ReferenceBackend {
+    /// Apply a compiled overlay against the exact base compiled state,
+    /// transitioning `C_base -> C_overlay`.
+    ///
+    /// The overlay's `base_compilation` must equal the backend's current
+    /// compiled state (D28 exact-id authority); a stale overlay is rejected
+    /// BEFORE any mutation. On success the prior bounds of every touched
+    /// variable, the added temporary rows, the prior objective policy, and a
+    /// deterministic base view are captured for the transactional rollback and
+    /// the post-rollback clean verification.
+    fn apply_overlay(
+        &mut self,
+        overlay: &CompiledOverlay,
+    ) -> Result<OverlayApplyReceipt, BackendError> {
+        // Exact-id stale rejection before mutation (D28 / SM-03.9).
+        let actual = self.current_compilation.ok_or_else(|| {
+            BackendError::new(
+                "reference backend has no compiled base to apply the overlay on top of",
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+        if actual != overlay.base_compilation {
+            return Err(BackendError::new(
+                format!(
+                    "stale overlay base: the overlay requires compilation {:?}, but the backend \
+                     holds {:?} (D28 exact compilation authority)",
+                    overlay.base_compilation, actual
+                ),
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
+
+        let mut state = OverlayApplyState {
+            base_compilation: overlay.base_compilation,
+            applied_compilation: overlay.compilation_id,
+            prior_bounds: HashMap::new(),
+            added_rows: Vec::new(),
+            prior_policy: self.compiled_objective_policy.clone(),
+            base_view: self.compiled_normalized_view(),
+        };
+
+        for op in &overlay.operations {
+            match op {
+                OverlayOp::SetTemporaryVariableBounds { variable, bounds } => {
+                    let entry = self.compiled_variables.get_mut(variable).ok_or_else(|| {
+                        BackendError::new(
+                            format!("overlay references unknown compiled variable {variable:?}"),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::RequiresRebuild,
+                        )
+                    })?;
+                    // Record the FIRST prior value only — later overlay ops on
+                    // the same variable must not overwrite the base capture.
+                    state.prior_bounds.entry(*variable).or_insert(entry.0);
+                    entry.0 = *bounds;
+                }
+                OverlayOp::AddTemporaryRow { row } => {
+                    if self.compiled_rows.contains_key(&row.id) {
+                        return Err(BackendError::new(
+                            format!(
+                                "overlay row id {:?} already exists in the compiled state",
+                                row.id
+                            ),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::RequiresRebuild,
+                        ));
+                    }
+                    for (cid, _) in &row.coefficients {
+                        if !self.compiled_variables.contains_key(cid) {
+                            return Err(BackendError::new(
+                                format!(
+                                    "overlay row {:?} references unknown compiled variable {cid:?}",
+                                    row.id
+                                ),
+                                ErrorCategory::InvalidInput,
+                                HealthEffect::RequiresRebuild,
+                            ));
+                        }
+                    }
+                    self.compiled_rows
+                        .insert(row.id, (row.bounds, row.coefficients.clone()));
+                    state.added_rows.push(row.id);
+                }
+                // RemoveTemporaryRow is a rollback-only op; apply does not
+                // produce it.
+                OverlayOp::RemoveTemporaryRow { row } => {
+                    return Err(BackendError::new(
+                        format!("apply_overlay does not accept RemoveTemporaryRow ({row:?})"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::RequiresRebuild,
+                    ));
+                }
+                OverlayOp::SetObjectivePolicy(policy) => {
+                    // The policy is applied to the overlay state; the base
+                    // policy was captured in `prior_policy`.
+                    self.compiled_objective_policy = policy.clone();
+                }
+            }
+        }
+
+        self.current_compilation = Some(overlay.compilation_id);
+        self.overlay_state = Some(state);
+        Ok(OverlayApplyReceipt {
+            overlay_id: overlay.overlay_id,
+            base_compilation: overlay.base_compilation,
+            applied_compilation: overlay.compilation_id,
+        })
+    }
+
+    /// Roll back an applied overlay, transitioning `C_overlay -> C_base`.
+    ///
+    /// Restores the prior bounds, removes the added temporary rows, restores
+    /// the base objective policy, and sets `current_compilation` back to the
+    /// base. A `Clean` outcome restores the exact base compiled state; an
+    /// unknown/foreign receipt is a [`RequiresRebuild`](OverlayRollbackOutcome::RequiresRebuild)
+    /// (D7 invariant).
+    fn rollback_overlay(
+        &mut self,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<OverlayRollbackOutcome, BackendError> {
+        let state = self.overlay_state.as_ref().ok_or_else(|| {
+            BackendError::new(
+                "no applied overlay to roll back; the receipt does not match this backend",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+        if state.applied_compilation != receipt.applied_compilation {
+            return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                reason: format!(
+                    "receipt applied compilation {:?} does not match the backend's applied overlay {:?}",
+                    receipt.applied_compilation, state.applied_compilation
+                ),
+            });
+        }
+
+        // Restore prior bounds.
+        for (variable, bounds) in &state.prior_bounds {
+            if let Some(entry) = self.compiled_variables.get_mut(variable) {
+                entry.0 = *bounds;
+            }
+        }
+        // Remove added temporary rows.
+        for row in &state.added_rows {
+            self.compiled_rows.remove(row);
+        }
+        // Restore the base objective policy.
+        self.compiled_objective_policy = state.prior_policy.clone();
+
+        let restored = state.base_compilation;
+        self.current_compilation = Some(restored);
+        Ok(OverlayRollbackOutcome::Clean {
+            restored_compilation: restored,
+        })
+    }
+
+    /// Verify the backend's compiled state is restored to the exact base view
+    /// captured at apply (the post-rollback clean check).
+    fn verify_overlay_clean(&mut self) -> Result<(), BackendError> {
+        let state = self.overlay_state.as_ref().ok_or_else(|| {
+            BackendError::new(
+                "verify_overlay_clean called with no recorded overlay apply",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+        let current = self.compiled_normalized_view();
+        if current != state.base_view {
+            return Err(BackendError::new(
+                "post-rollback verification failed: the compiled state does not equal the base",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
+        Ok(())
     }
 }
 
