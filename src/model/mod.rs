@@ -380,6 +380,75 @@ impl ModelConstants {
     }
 }
 
+/// Map a distinct [`BoundAnalyzer`](crate::compiler::bounds::BoundAnalyzer)
+/// failure to the matching [`ModelError`] variant so the specific cause is
+/// preserved (IN-02) instead of collapsing every failure into one generic
+/// `NonFiniteValue`.
+fn bound_error_to_model_error(err: crate::compiler::bounds::BoundError) -> ModelError {
+    use crate::compiler::bounds::BoundError;
+    match err {
+        BoundError::NonFiniteCoefficient { .. } => {
+            ModelError::NonFiniteValue("expression coefficient")
+        }
+        BoundError::NonFiniteBound { .. } => ModelError::NaNValue("expression variable bound"),
+        BoundError::InvalidBounds { .. } => ModelError::InvalidBounds,
+        BoundError::NonFiniteConstant => ModelError::NonFiniteValue("expression constant"),
+        BoundError::NonFiniteParameterValue { .. } => {
+            ModelError::NonFiniteValue("expression parameter value")
+        }
+        BoundError::ArithmeticNan => ModelError::NaNValue("expression interval arithmetic"),
+        BoundError::UnsupportedFunctionKind => {
+            ModelError::NonFiniteValue("unsupported function kind")
+        }
+    }
+}
+
+#[cfg(test)]
+mod bound_error_mapping_tests {
+    use super::*;
+    use crate::compiler::bounds::BoundError;
+
+    /// IN-02: each distinct `BoundAnalyzer` failure maps to the matching
+    /// `ModelError` variant — the specific cause is preserved, never collapsed
+    /// into one generic `NonFiniteValue("expression bounds")`. (The distinct
+    /// causes are defensive: `validate_expression_entities` and the interval
+    /// clamping preempt most of them through the public builders, but the
+    /// mapping keeps the analyzer reason observable wherever one surfaces.)
+    #[test]
+    fn expression_interval_maps_distinct_bound_error_causes() {
+        let v = VarId::new(0, crate::id::Generation::new());
+        let p = ParamId::new(0, crate::id::Generation::new());
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::NonFiniteCoefficient { variable: v }),
+            ModelError::NonFiniteValue("expression coefficient")
+        ));
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::NonFiniteBound { variable: v }),
+            ModelError::NaNValue("expression variable bound")
+        ));
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::InvalidBounds { variable: v }),
+            ModelError::InvalidBounds
+        ));
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::NonFiniteConstant),
+            ModelError::NonFiniteValue("expression constant")
+        ));
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::NonFiniteParameterValue { parameter: p }),
+            ModelError::NonFiniteValue("expression parameter value")
+        ));
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::ArithmeticNan),
+            ModelError::NaNValue("expression interval arithmetic")
+        ));
+        assert!(matches!(
+            bound_error_to_model_error(BoundError::UnsupportedFunctionKind),
+            ModelError::NonFiniteValue("unsupported function kind")
+        ));
+    }
+}
+
 impl Model {
     /// Create a new empty model.
     pub fn new() -> Self {
@@ -957,7 +1026,7 @@ impl Model {
                 parameter_values,
             )
             .map(|trace| trace.result)
-            .map_err(|_| ModelError::NonFiniteValue("expression bounds"))
+            .map_err(bound_error_to_model_error)
     }
 
     /// Shared construct-add: allocate the arena entry, record the
