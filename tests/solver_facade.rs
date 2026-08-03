@@ -663,6 +663,81 @@ fn no_change_second_solve_uses_no_sync() {
     assert_eq!(second.metadata().model_revision, model.current_revision());
 }
 
+/// F1: a `SolverSession` is bound to ONE model instance (the instance whose
+/// state is currently compiled in the backend). Solving a DIFFERENT model at
+/// the SAME revision must NOT take the no-sync path against the previous
+/// model's backend state — it forces a full snapshot rebuild and the solution
+/// comes from the NEW model's state, with the new model's lineage/instance
+/// recorded in the metadata.
+#[test]
+fn cross_model_reuse_at_same_revision_forces_rebuild_and_solves_new_model() {
+    // Model A: maximize 3x + 5 with x <= 10 (continuous).
+    let mut model_a = Model::new();
+    let x = model_a.add_variable(continuous()).unwrap();
+    model_a.add_constraint((x).le(10.0)).unwrap();
+    model_a.maximize(3.0 * x + 5.0).unwrap();
+
+    // Model B: an unrelated instance at the SAME revision number, but with a
+    // different objective (maximize 10y + 5) so the optimal objective value
+    // distinguishes the two models' states.
+    let mut model_b = Model::new();
+    let y = model_b.add_variable(continuous()).unwrap();
+    model_b.add_constraint((y).le(10.0)).unwrap();
+    model_b.maximize(10.0 * y + 5.0).unwrap();
+
+    assert_ne!(
+        model_a.instance(),
+        model_b.instance(),
+        "independent models must have distinct instance ids"
+    );
+    model_a.commit().unwrap();
+    model_b.commit().unwrap();
+    assert_eq!(
+        model_a.current_revision(),
+        model_b.current_revision(),
+        "the two models are at the SAME revision — only the instance differs"
+    );
+
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
+
+    let sol_a = session.solve(&mut model_a).expect("model A solves");
+    // Backend evaluates at fixed x = 1.0 => 3*1 + 5 = 8.
+    assert!((sol_a.objective_value().unwrap() - 8.0).abs() < 1e-9);
+    assert_eq!(sol_a.metadata().model_instance, model_a.instance());
+    let rebuilds_after_a = state.borrow().rebuilds();
+
+    let sol_b = session.solve(&mut model_b).expect("model B solves");
+    // B's state has cost 10 on its own variable => 10*1 + 5 = 15. If the
+    // session had taken the no-sync path, the backend would still hold A's
+    // state and report 8.
+    assert!(
+        (sol_b.objective_value().unwrap() - 15.0).abs() < 1e-9,
+        "B's solution must come from B's state, got {}",
+        sol_b.objective_value().unwrap()
+    );
+    assert_eq!(
+        sol_b.metadata().model_instance,
+        model_b.instance(),
+        "B's instance must be recorded in the metadata"
+    );
+    assert_eq!(
+        sol_b.metadata().model_lineage,
+        model_b.lineage(),
+        "B's lineage must be recorded in the metadata"
+    );
+    assert_eq!(
+        sol_b.metadata().synchronization,
+        SynchronizationMode::Rebuild,
+        "cross-model reuse must force a full snapshot rebuild, not the no-sync path"
+    );
+    assert_eq!(
+        state.borrow().rebuilds(),
+        rebuilds_after_a + 1,
+        "exactly one rebuild to re-establish the compiled base for model B"
+    );
+}
+
 /// A parameter change between solves is applied as a delta; the objective
 /// value reflects the new parameter and the constant is included exactly once.
 #[test]
