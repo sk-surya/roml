@@ -20,7 +20,7 @@ use roml::compiler::session::CompilationSession;
 use roml::compiler::CompileError;
 use roml::construct::{
     AbsoluteValueVariant, BooleanKind, CardinalityKind, ConstructKind, FormulationPreference,
-    IndicatorDirection, MinMaxRelation, MinMaxSense,
+    IndicatorDirection, MinMaxRelation, MinMaxSense, ProductOperand,
 };
 use roml::id::VarId;
 use roml::model::ModelError;
@@ -1900,6 +1900,247 @@ fn absolute_value_randomized_direct_evaluation_matches_functions() {
             assert!(
                 !assignment_feasible(&compiled, &fixed, &all_binaries),
                 "z=clamp(x,-2,3)+0.5 must be infeasible"
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// Task 17c — binary products (binary-binary / binary-times-bounded-linear)
+// ===========================================================================
+
+#[test]
+fn binary_product_rejects_continuous_times_continuous() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let err = model
+        .add_binary_product(
+            ProductOperand::Linear(x.into()),
+            ProductOperand::Linear(y.into()),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err, ModelError::ContinuousTimesContinuousProduct);
+    // No compiled entity and no relaxation is produced for the rejected request
+    // (SM-12.7).
+    assert_eq!(
+        model.num_constructs(),
+        0,
+        "rejected request adds no construct"
+    );
+    assert_eq!(model.num_constraints(), 0, "rejected request adds no rows");
+}
+
+#[test]
+fn binary_product_rejects_non_binary_operand() {
+    // An integer variable with a [0,10] domain in the binary slot is rejected.
+    let mut model = Model::new();
+    let z = model.add_variable(integer().bounds(0.0, 10.0)).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    let err = model
+        .add_binary_product(ProductOperand::Binary(z), ProductOperand::Binary(b), None)
+        .unwrap_err();
+    assert_eq!(err, ModelError::NonBinaryVariable(z));
+
+    let mut model = Model::new();
+    let z = model.add_variable(integer().bounds(0.0, 10.0)).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let err = model
+        .add_binary_times_linear(z, f.into(), None)
+        .unwrap_err();
+    assert_eq!(err, ModelError::NonBinaryVariable(z));
+}
+
+#[test]
+fn binary_product_payload_stores_operands_and_output() {
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    let (k, output) = model
+        .add_binary_product(
+            ProductOperand::Binary(a),
+            ProductOperand::Binary(b),
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let snap = model.take_snapshot().unwrap();
+    let entry = snap.constructs.iter().find(|e| e.id == k).unwrap();
+    assert_eq!(entry.preference, FormulationPreference::Portable);
+    match &entry.kind {
+        ConstructKind::BinaryProduct(p) => {
+            assert_eq!(p.output, output);
+            assert_eq!(p.left, ProductOperand::Binary(a));
+            assert_eq!(p.right, ProductOperand::Binary(b));
+        }
+        other => panic!("expected BinaryProduct payload, got {other:?}"),
+    }
+}
+
+#[test]
+fn binary_binary_exact_feasible_set_matches_semantic() {
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    let (_k, w) = model
+        .add_binary_product(ProductOperand::Binary(a), ProductOperand::Binary(b), None)
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    // No generated variables for the binary-binary product.
+    let generated_vars = compiled
+        .variables
+        .iter()
+        .filter(|v| {
+            matches!(
+                compiled.origin_map.variable_origin(v.id),
+                Some(EntityOrigin::Construct { .. })
+            )
+        })
+        .count();
+    assert_eq!(generated_vars, 0, "binary-binary generates no variables");
+    let aid = compiled_user_var(&compiled, a);
+    let bid = compiled_user_var(&compiled, b);
+    let wid = compiled_user_var(&compiled, w);
+    for av in 0..2 {
+        for bv in 0..2 {
+            for wv in 0..2 {
+                let semantic = (wv as f64) == ((av * bv) as f64);
+                let mut fixed = HashMap::new();
+                fixed.insert(aid, av as f64);
+                fixed.insert(bid, bv as f64);
+                fixed.insert(wid, wv as f64);
+                let feasible = assignment_feasible(&compiled, &fixed, &[]);
+                assert_eq!(
+                    feasible, semantic,
+                    "w = a·b feasible set mismatch at (a,b,w)=({av},{bv},{wv})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn binary_times_linear_exact_feasible_set_matches_semantic() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    let (_k, w) = model.add_binary_times_linear(b, f.into(), None).unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let bid = compiled_user_var(&compiled, b);
+    let fid = compiled_user_var(&compiled, f);
+    let wid = compiled_user_var(&compiled, w);
+    // Report records the finite derived M (interval endpoints) with sources.
+    let m_entries: Vec<_> = compiled
+        .report
+        .formulation_decisions
+        .iter()
+        .filter(|d| d.decision.starts_with("product.m_"))
+        .collect();
+    assert_eq!(m_entries.len(), 2, "L and U evidence recorded");
+    for e in &m_entries {
+        assert!(
+            e.selection.starts_with("M = "),
+            "finite M recorded, got {}",
+            e.selection
+        );
+        assert!(
+            e.reason.contains("interval"),
+            "M derivation names the interval, got {}",
+            e.reason
+        );
+    }
+    for bv in 0..2 {
+        for fv in -2..=2 {
+            for wv in -2..=2 {
+                let semantic = (wv as f64) == (bv as f64 * fv as f64);
+                let mut fixed = HashMap::new();
+                fixed.insert(bid, bv as f64);
+                fixed.insert(fid, fv as f64);
+                fixed.insert(wid, wv as f64);
+                let feasible = assignment_feasible(&compiled, &fixed, &[]);
+                assert_eq!(
+                    feasible, semantic,
+                    "w = b·f feasible set mismatch at (b,f,w)=({bv},{fv},{wv})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn binary_product_unbounded_linear_operand_returns_construct_aware_error() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, _) = model.add_binary_times_linear(b, f.into(), None).unwrap();
+    // Remove the finite bound after building the construct — the bridge now
+    // sees an unbounded linear operand at compile time.
+    model.set_variable_bounds(f, Bounds::UNBOUNDED).unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &bridge_caps());
+    assert!(
+        matches!(&err, CompileError::UnboundedBigM { construct, expression }
+            if *construct == k && !expression.is_empty()),
+        "unbounded binary-times-linear operand must surface the construct-aware UnboundedBigM, \
+         got {err:?}"
+    );
+}
+
+#[test]
+fn binary_product_every_generated_entity_carries_construct_origin() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (k, _) = model.add_binary_times_linear(b, f.into(), None).unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    for row in &compiled.linear_rows {
+        assert!(
+            matches!(
+                compiled.origin_map.constraint_origin(row.id),
+                Some(EntityOrigin::Construct { construct, .. }) if *construct == k
+            ),
+            "generated product row must trace to this construct"
+        );
+    }
+    assert!(compiled
+        .origin_map
+        .missing_origins(
+            &compiled.variables,
+            &compiled.linear_rows,
+            &compiled.objectives
+        )
+        .is_empty());
+}
+
+#[test]
+fn binary_product_randomized_direct_evaluation_matches_product() {
+    // Fixed-seed random bounded f: the exact compiled rows force w = b·f at
+    // every sampled (b, f) (direct evaluation, no solver).
+    let mut rng = Lcg(0x1234_abcd);
+    for _ in 0..5 {
+        let mut model = Model::new();
+        let b = model.add_variable(binary()).unwrap();
+        let f = model.add_variable(continuous().bounds(-3.0, 4.0)).unwrap();
+        let (_k, w) = model.add_binary_times_linear(b, f.into(), None).unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+        let bid = compiled_user_var(&compiled, b);
+        let fid = compiled_user_var(&compiled, f);
+        let wid = compiled_user_var(&compiled, w);
+        for _ in 0..5 {
+            let bv = rng.range(0, 1);
+            let fv = rng.range(-2, 3);
+            let w_ref = bv * fv;
+            let mut fixed = HashMap::new();
+            fixed.insert(bid, bv);
+            fixed.insert(fid, fv);
+            fixed.insert(wid, w_ref);
+            assert!(
+                assignment_feasible(&compiled, &fixed, &[]),
+                "w = b·f must be feasible"
+            );
+            fixed.insert(wid, w_ref + 0.5);
+            assert!(
+                !assignment_feasible(&compiled, &fixed, &[]),
+                "w = b·f + 0.5 must be infeasible"
             );
         }
     }

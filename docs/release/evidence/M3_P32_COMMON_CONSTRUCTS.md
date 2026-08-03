@@ -449,3 +449,84 @@ Unsupported/unbounded failure behavior: unbounded expression → `CompileError::
 - `feat(model): add exact absolute value, positive part, and clamp` — Task 17b implementation + tests + evidence.
 
 ---
+
+## Plan 02 — Task 17c: Add exact binary products and reject continuous-times-continuous
+
+**Phase:** P32 (Plan 02)  **Requirements:** SM-12.6, SM-12.7, SM-12.8; exercises SM-13.2/13.4/13.5
+**Status:** complete — committed as `feat(model): add algebraic semantic constructs` (the packet Task 17 final commit).
+
+### Scope
+
+Task 17c lands `BinaryProductConstraint` with `ProductOperand { Binary(VarId), Linear(LinExpr) }`, the `Model::add_binary_product` / `Model::add_binary_times_linear` builders (stable `Construct` + output-variable handle, SM-12.8), and the exact product bridge: binary-binary (`w <= a`, `w <= b`, `w >= a + b - 1`, `0 <= w <= 1`) and binary-times-bounded-linear (`w >= L·b`, `w <= U·b`, `w >= f - U·(1-b)`, `w <= f - L·(1-b)`) with finite derived M from the interval. Continuous×continuous exact requests are rejected with a typed `ModelError` (SM-12.7, D23) and produce no compiled entities and no relaxation mislabeled exact. Clause-level scope: SM-12.3/12.4 closed by Tasks 17a/17b; SM-13 full closure remains P33 (this task exercises SM-13.2/13.4/13.5 only).
+
+### TDD — RED failures (recorded before implementation)
+
+The new product tests referenced `Model::add_binary_product`/`ProductOperand` against the Task 17b tree — the bridge was not wired (`ConstructKind::BinaryProduct` returned `UnsupportedFeature`). Expected failure, recorded verbatim:
+
+```text
+---- binary_binary_exact_feasible_set_matches_semantic stdout ----
+thread 'binary_binary_exact_feasible_set_matches_semantic' panicked:
+snapshot compilation must fail: UnsupportedFeature("binary product bridge not yet implemented (P32 Task 17c)")
+```
+
+### Implementation
+
+- **`src/construct/product.rs` (created in Task 17a)** — `BinaryProductConstraint { left, right, output }`; `ProductOperand { Binary(VarId), Linear(LinExpr) }`; the output variable is created by the builder and stored in the payload (top-level construct origin).
+- **`src/model/mod.rs` (builders added in Task 17a)** — `add_binary_product(left, right, preference)` and `add_binary_times_linear(binary, expression, preference)` each return `(Construct, VarId)`; validate exactly one binary operand (Linear×Linear → `ContinuousTimesContinuousProduct`, SM-12.7) and that each `Binary` operand is a true binary variable (`NonBinaryVariable`, SM-12.6); output bounds `[0,1]` (binary-binary) or `[min(0,L), max(0,U)]` (binary-times-linear).
+- **`src/compiler/bridge/product.rs` (create)** — the exact bridge:
+  - binary-binary: rows `w <= a`, `w <= b`, `w >= a + b - 1` (`BinaryProductRow`), output bounds `0 <= w <= 1` — no generated binaries, no Big-M;
+  - binary-times-bounded-linear: rows `w >= L·b`, `w <= U·b` (`BinaryProductBoundRow`) and `w >= f - U·(1-b)`, `w <= f - L·(1-b)` (`BinaryProductLinearRow`), each M the finite derived interval endpoint (SM-13.2), recorded as `product.m_lower`/`product.m_upper` bound-evidence report entries with sources (SM-13.5); unbounded `f` → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4, D12);
+  - continuous×continuous: unreachable (builder rejects); the bridge returns a typed `UnsupportedFeature` defensively — no exact MILP path and no relaxation is emitted (SM-12.7, D23).
+- **`src/compiler/session.rs`** — `ConstructKind::BinaryProduct` now dispatches to the product bridge (the `UnsupportedFeature` placeholder is gone).
+- **`src/compiler/bridge/mod.rs`** — `pub(crate) mod product;`.
+
+### Per-construct evidence (TRACEABILITY.md)
+
+| Construct | Semantic definition | Accepted domain | Rejected domain | Native | Bridge | Origin roles | Reference formulation |
+|---|---|---|---|---|---|---|---|
+| Binary product (binary-binary) | `w = a·b` | two binary operands | non-binary operands | none (P32) | exact rows | `BinaryProductRow` | `w ≤ a`, `w ≤ b`, `w ≥ a + b − 1`, `0 ≤ w ≤ 1` |
+| Binary product (binary × linear) | `w = b·f` | one binary + one bounded linear operand | unbounded `f` (`UnboundedBigM`); non-binary operand | none | exact rows | `BinaryProductBoundRow`, `BinaryProductLinearRow` | `w ≥ L·b`, `w ≤ U·b`, `w ≥ f − U·(1−b)`, `w ≤ f − L·(1−b)` |
+| Binary product (continuous × continuous) | — (not exposed as exact) | — | typed `ContinuousTimesContinuousProduct` (SM-12.7, D23) | none | none — no compiled entities | — | — |
+
+Unsupported/unbounded failure behavior: unbounded linear operand → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4); continuous×continuous and non-binary operands → typed `ModelError`s with no compiled entities and no relaxation labeled exact (SM-12.7, D23). Feasible-set enumeration (binary-binary and binary-times-linear) and fixed-seed randomized direct evaluation are in `tests/common_constructs.rs`; the HiGHS reference-vs-portable equivalence is in `roml-highs/tests/formulation_equivalence.rs`.
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test common_constructs product` | 0 — **8 passed; 0 failed** |
+| `cargo test -p roml --test compiler_bridges` | 0 — **15 passed; 0 failed** |
+| `cargo test -p roml-highs --test formulation_equivalence product` | 0 — **1 passed; 0 failed** |
+
+### Full verification
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `cargo test -p roml --all-targets` | 0 | **759 passed; 0 failed; 0 ignored** (baseline 751 + 8 new) |
+| `cargo test -p roml-highs --all-targets` | 0 | **121 passed; 0 failed** (baseline 120 + 1 new) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+| `cargo public-api -p roml` | 0 | **18783 items** (unchanged — the product public surface landed with Task 17a) |
+
+### Acceptance criteria
+
+- `src/construct/product.rs` defines `BinaryProductConstraint` with `ProductOperand`; `ConstructKind::BinaryProduct` carries it; `derive_parameter_dependencies` covers linear-operand parameters — **met**.
+- `Model` exposes the binary-product builders returning stable `Construct` + output-variable handles (SM-12.8); continuous×continuous and non-binary operands are rejected with typed `ModelError`s and produce no compiled entities and no relaxation mislabeled exact (SM-12.6, SM-12.7, D23) — **met**.
+- Binary-binary compiles to the four exact rows; binary-times-bounded-linear compiles to the four exact product rows with finite derived M from the interval and recorded bound sources (SM-13.5); unbounded `f` → `CompileError::UnboundedBigM { construct, expression }` (SM-13.4, D12) — **met**.
+- Every generated entity carries `EntityOrigin::Construct { construct, role }` (SM-02.5) — **met**.
+- Feasible-set enumeration and HiGHS reference-vs-portable equivalence prove w = a·b and w = b·f exactly; the rejected continuous×continuous request emits no rows — **met**.
+
+### Deviations
+
+1. **Test assertion fix (Rule 1).** The `binary_binary_exact_feasible_set_matches_semantic` test initially asserted `compiled.variables.is_empty()` — but the compiled snapshot always includes the user variables; the correct assertion counts only `Construct`-origin generated variables. Fixed to count generated variables only.
+2. **`integer().bounds(0, 10)` test literals** were integers; the `Bounds::bounds` signature takes `f64` — fixed to `0.0`/`10.0`.
+3. **`BackendFeature::BinaryProduct` already declared** in Task 17a (the feature gate and HiGHS bridge declaration were additive then); Task 17c only wires the bridge body behind it.
+
+### Commit trail
+
+- `feat(model): add algebraic semantic constructs` — Task 17c implementation + tests + evidence (the packet Task 17 final commit). **OR review is requested** per the packet and the plan's review-gate section.
+
+---

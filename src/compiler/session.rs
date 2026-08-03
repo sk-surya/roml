@@ -425,11 +425,12 @@ impl CompilationSession {
                         next_row_index,
                     )?
                 }
-                ConstructKind::BinaryProduct(_) => {
-                    return Err(CompileError::UnsupportedFeature(
-                        "binary product bridge not yet implemented (P32 Task 17c)".into(),
-                    ));
-                }
+                ConstructKind::BinaryProduct(payload) => crate::compiler::bridge::product::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
                 // Crate-private P32 fixture scaffolding is never compiled.
                 ConstructKind::Fixture(_) => continue,
             };
