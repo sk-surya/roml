@@ -176,12 +176,12 @@ fn reconstruct_function_entry(
     bounds: ConstraintBounds,
     cells: &[(CellKey, ValueExpr, f64, Vec<ParamId>)],
 ) -> FunctionEntry {
-    // Terms sorted by var (WR-01) so the reconstructed expression agrees in
-    // term order with the canonical `Model::constraint_function` (both are
-    // deterministic, var-ordered reconstructions of the same coefficient
-    // index). The `set` is derived directly from the constraint bounds — the
-    // transitional legacy field is the single authority, and the real
-    // cross-check lives in `Model::take_snapshot`.
+    // Evaluated terms sorted by var (WR-01) so the reconstructed expression
+    // agrees in term order with the canonical `Model::constraint_function`
+    // (both are deterministic, var-ordered reconstructions of the same
+    // coefficient index). The `set` is derived directly from the constraint
+    // bounds — the transitional legacy field is the single authority, and the
+    // real cross-check lives in `Model::take_snapshot`.
     let mut terms: Vec<(VarId, f64)> = cells
         .iter()
         .filter_map(|(cell_key, _value_expr, evaluated_value, _deps)| {
@@ -198,11 +198,34 @@ fn reconstruct_function_entry(
     for (var, value) in terms {
         expr = expr.term(value, var);
     }
+    // F1: the symbolic view preserves each term's `ValueExpr` plus the
+    // sorted/deduplicated parameter dependencies, so P26's compiler does not
+    // have to re-join legacy cells to recover the parameterized row.
+    let mut symbolic: Vec<(VarId, ValueExpr)> = cells
+        .iter()
+        .filter_map(|(cell_key, value_expr, _, _)| {
+            if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                if c == con {
+                    return Some((cell_key.1, value_expr.clone()));
+                }
+            }
+            None
+        })
+        .collect();
+    symbolic.sort_by_key(|(var, _)| *var);
+    let mut dependencies: Vec<ParamId> = symbolic
+        .iter()
+        .flat_map(|(_, value_expr)| value_expr.dependencies())
+        .collect();
+    dependencies.sort();
+    dependencies.dedup();
     let set = ScalarSet::from(bounds);
     FunctionEntry {
         constraint: con,
         function: ScalarFunction::Linear(expr),
         set,
+        terms: symbolic,
+        dependencies,
     }
 }
 

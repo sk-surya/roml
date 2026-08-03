@@ -159,6 +159,89 @@ fn delta_carries_semantic_function_entries() {
 }
 
 // =========================================================================
+// 3a. Symbolic parameter expressions are preserved in the semantic IR (F1)
+// =========================================================================
+
+/// F1: a parameterized coefficient `p * x` must NOT become a bare constant in
+/// the semantic IR. `constraint_function`, the snapshot `FunctionEntry`, and
+/// the delta `FunctionEntry` all carry the SYMBOLIC `terms` (`ValueExpr`
+/// referencing `p`, not just the evaluated number) plus `dependencies == [p]`.
+/// After updating `p`, the semantic entries still carry the symbolic form.
+#[test]
+fn semantic_ir_preserves_symbolic_parameter_terms() {
+    let mut model = Model::new();
+    let p = model.add_parameter(2.0).unwrap();
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((p * x).le(10.0)).unwrap();
+    let r1 = model.commit().unwrap();
+
+    // 1. Canonical `constraint_function` carries the symbolic terms.
+    let fc = model.constraint_function(con).unwrap();
+    assert_eq!(
+        fc.terms.len(),
+        1,
+        "canonical function must carry the symbolic term for p*x"
+    );
+    assert_eq!(fc.terms[0].0, x, "symbolic term variable is x");
+    assert!(
+        fc.terms[0].1.has_dependencies(),
+        "symbolic ValueExpr must reference the parameter, not just the evaluated number"
+    );
+    assert_eq!(
+        fc.terms[0].1.dependencies(),
+        std::collections::HashSet::from([p]),
+        "the coefficient's ValueExpr depends on exactly p"
+    );
+    assert_eq!(fc.dependencies, vec![p], "function dependencies == [p]");
+
+    // 2. Snapshot FunctionEntry carries the symbolic terms.
+    let snap = model.take_snapshot().unwrap();
+    let snap_entry = snap
+        .functions
+        .iter()
+        .find(|e| e.constraint == con)
+        .expect("snapshot carries the function entry");
+    assert_eq!(snap_entry.terms.len(), 1);
+    assert_eq!(snap_entry.terms[0].0, x);
+    assert!(snap_entry.terms[0].1.has_dependencies());
+    assert_eq!(snap_entry.dependencies, vec![p], "snapshot dependencies == [p]");
+
+    // 3. Delta FunctionEntry carries the symbolic terms.
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r1)
+        .expect("constraint-add batch present");
+    let delta_entry = batch
+        .functions
+        .iter()
+        .find(|e| e.constraint == con)
+        .expect("delta carries the function entry");
+    assert_eq!(delta_entry.terms.len(), 1);
+    assert_eq!(delta_entry.terms[0].0, x);
+    assert!(
+        delta_entry.terms[0].1.has_dependencies(),
+        "delta symbolic ValueExpr must reference the parameter"
+    );
+    assert_eq!(delta_entry.dependencies, vec![p], "delta dependencies == [p]");
+
+    // 4. After updating `p`, the semantic entries STILL carry the symbolic form.
+    model.set_parameter(p, 5.0).unwrap();
+    model.commit().unwrap();
+    let fc2 = model.constraint_function(con).unwrap();
+    assert_eq!(fc2.dependencies, vec![p], "dependency survives parameter update");
+    assert!(fc2.terms[0].1.has_dependencies());
+    let snap2 = model.take_snapshot().unwrap();
+    let snap_entry2 = snap2
+        .functions
+        .iter()
+        .find(|e| e.constraint == con)
+        .expect("snapshot carries the function entry after update");
+    assert_eq!(snap_entry2.dependencies, vec![p]);
+    assert!(snap_entry2.terms[0].1.has_dependencies());
+}
+
+// =========================================================================
 // 3b. Constant-folding constraints reconstruct folded bounds in deltas
 // =========================================================================
 

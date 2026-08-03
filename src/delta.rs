@@ -327,6 +327,36 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
             for (var, value) in terms {
                 expr = expr.term(value, var);
             }
+            // F1: the symbolic view preserves each term's `ValueExpr` (the
+            // `SetCell` op carries the full parameterized expression, not just
+            // the evaluated number) plus the sorted/deduplicated parameter
+            // dependencies, so P26's compiler can rebuild the parameterized
+            // row without re-joining legacy cells.
+            let mut symbolic: Vec<(VarId, ValueExpr)> = operations
+                .iter()
+                .filter_map(|cell_op| {
+                    if let ModelOp::SetCell {
+                        cell_key,
+                        value_expr,
+                        ..
+                    } = cell_op
+                    {
+                        if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                            if c == *con {
+                                return Some((cell_key.1, value_expr.clone()));
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect();
+            symbolic.sort_by_key(|(var, _)| *var);
+            let mut dependencies: Vec<ParamId> = symbolic
+                .iter()
+                .flat_map(|(_, value_expr)| value_expr.dependencies())
+                .collect();
+            dependencies.sort();
+            dependencies.dedup();
             // CR-01: the ordinary constant-folding path inserts the row at the
             // declared bounds and then folds the expression constant into them
             // via a same-batch `SetConstraintBounds` op
@@ -347,6 +377,8 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
                 constraint: *con,
                 function: ScalarFunction::Linear(expr),
                 set,
+                terms: symbolic,
+                dependencies,
             });
         }
     }
