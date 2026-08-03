@@ -242,6 +242,7 @@ fn solution_exposes_solve_status_and_solve_metadata() {
         model_revision: ModelRevision::from_u64(3),
         effective_configuration: EffectiveConfig::default(),
         synchronization: SynchronizationMode::Delta,
+        ..SolveMetadata::default()
     };
 
     let solution = Solution::new(SolveStatus::Optimal).with_metadata(metadata.clone());

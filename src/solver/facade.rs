@@ -46,6 +46,10 @@ pub fn normalize_result(
             model_revision,
             effective_configuration: result.effective_configuration.clone(),
             synchronization,
+            // P25: the result carries no model reference; the fresh default
+            // lineage/instance ids are filled in when a model binds the
+            // solution (SM-02.7).
+            ..SolveMetadata::default()
         });
 
     if let Some(value) = result.solution.as_ref().and_then(|s| s.objective_value) {
