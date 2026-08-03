@@ -7,7 +7,7 @@
 //!
 //! The model never mutates solver state directly. All changes go through the ChangeLog.
 
-use crate::construct::{Construct, ConstructKind};
+use crate::construct::{Construct, ConstructKind, FormulationPreference};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::constraint::ConstraintBounds;
@@ -224,6 +224,8 @@ pub enum Change {
         /// (they cannot name the type). It becomes a public export in P32.
         #[doc(hidden)]
         kind: ConstructKind,
+        /// Per-construct formulation preference (F4).
+        preference: FormulationPreference,
         /// Whether the construct is active (constructs start active).
         active: bool,
     },

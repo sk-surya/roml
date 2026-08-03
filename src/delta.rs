@@ -5,7 +5,7 @@
 //! Each batch carries an explicit `from -> to` revision pair and an
 //! ordered list of typed operations.
 
-use crate::construct::{Construct, ConstructEntry, ConstructKind};
+use crate::construct::{Construct, ConstructEntry, ConstructKind, FormulationPreference};
 use crate::expr::LinExpr;
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
@@ -197,6 +197,8 @@ pub enum ModelOp {
         /// (they cannot name the type). It becomes a public export in P32.
         #[doc(hidden)]
         kind: ConstructKind,
+        /// Per-construct formulation preference (F4).
+        preference: FormulationPreference,
         /// Whether the construct is active.
         active: bool,
     },
@@ -438,6 +440,7 @@ fn reconstruct_construct_entries(operations: &[ModelOp]) -> Vec<ConstructEntry> 
         if let ModelOp::AddConstruct {
             construct,
             kind,
+            preference,
             active,
         } = op
         {
@@ -464,6 +467,9 @@ fn reconstruct_construct_entries(operations: &[ModelOp]) -> Vec<ConstructEntry> 
                 id: *construct,
                 kind: kind.clone(),
                 active: final_active,
+                // F4: the op carries the preference so the delta's construct
+                // entry round-trips it.
+                preference: *preference,
             });
         }
     }
