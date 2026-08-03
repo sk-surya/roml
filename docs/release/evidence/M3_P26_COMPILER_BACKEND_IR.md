@@ -144,4 +144,70 @@ Task 0 is itself the review: the backend-contract acceptance record above is the
 
 Task 0 (backend-contract amendment review gate): **PASSED** — B1–B6 dispositions recorded, A29–A31 compiler-facing consequences addressed, A32 amendment recorded before Task 5, untouched baseline captured at `main@9c2a9df`, no source code modified. Implementation tasks may begin.
 
+---
+
+## Task 5 — Define backend IR and exact compilation identity
+
+**Phase:** P26  **Requirements:** SM-02.4, SM-02.5, SM-03.3 (extension surface), SM-03.5, SM-03.6, SM-03.9, SM-13 (compiler foundations)
+**Status:** complete
+
+### TDD — RED failures (recorded before implementation)
+
+`cargo test -p roml --test compiler_identity` failed to compile against the untouched tree — the `roml::compiler` module and the entire compiler surface did not exist. Expected failure, recorded verbatim:
+
+```text
+error[E0432]: unresolved import `roml::advanced::CompiledObjectiveId`
+  --> tests/compiler_identity.rs:18:5
+   |
+18 |     CompiledObjectiveId, CompiledObjectiveLevel, CompiledObjectivePolicy, CompiledVariable,
+   |     ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+   |     no `CompiledObjectiveId` in `advanced`
+...
+error: could not compile `roml` (test "compiler_identity") due to 1 previous error
+```
+
+No production source existed; every new test failed at compile time with unresolved imports for the compiler surface (and, once the surface was wired, one assertion defect in the test harness was fixed — the snapshot-source-identity test was tightened to compare against the actual compiled-from `Model` instance).
+
+### Implementation
+
+- `src/compiler/mod.rs` — module wiring plus the `CompileError` family (design §19): `MissingOrigin`, `StaleCompilation`, `UnsupportedFeature`, `InvalidObjectivePolicy`, `IdentityOverflow`.
+- `src/compiler/backend_ir.rs` — `CompilationId(u64)` (opaque, checked atomic allocation, zero reserved, typed overflow); `RecipeFingerprint([u8; 32])` (deterministic FNV-1a-4 digest, evidence/cache only, never authority — D28); dense `CompiledVariableId`/`CompiledConstraintId`/`CompiledObjectiveId` (`pub u32`); `CompiledVariable`/`CompiledLinearRow`/`CompiledObjective`; `CompiledObjectivePolicy { None, Single, Weighted, Lexicographic }` (A32 adds `None`); `CompiledWeightedObjective`/`CompiledObjectiveLevel`; empty `#[non_exhaustive] BackendConstraint` extension surface (F-G: `native_constraints` always empty in P26); `BackendSnapshot`; `BackendDeltaBatch` (exact from/to compilation ids + revisions); the pinned 15-variant `#[non_exhaustive] BackendOp` (including `RemoveLinearCoefficient`, `RemoveObjectiveCoefficient`, `SetObjectivePolicy`); and `BackendSnapshotBuilder` whose finalization rejects any generated entity without an origin and any objective policy with a dangling objective, allocates a fresh `CompilationId` per state, and computes the deterministic recipe fingerprint + structured report.
+- `src/compiler/origin.rs` — `EntityOrigin` (`UserVariable`/`UserConstraint`/`UserObjective`/`Construct`/`SolveOverlay`), empty `#[non_exhaustive] GeneratedRole` marker, `OverlayId(u64)` (opaque, design §4.4), `OriginMap` with bidirectional queries (compiled → origin and origin → compiled) and a completeness validator.
+- `src/compiler/report.rs` — `CompilationReport` (recipe fingerprint, generated-entity inventory, formulation decisions) and `BackendIdentity` (name/version pair).
+- `src/lib.rs` — `pub mod compiler;`. `src/advanced.rs` — the compiler surface is re-exported through `advanced`, never the ordinary prelude (SM-03.x / API-07.2).
+- `tests/compiler_identity.rs` — 14 integration tests covering the plan bullets.
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test compiler_identity` | 0 — **14 passed; 0 failed** |
+| `cargo test -p roml --lib` | 0 — all pass, including 4 in-crate `backend_ir` tests (overflow saturation, zero-reserved, fingerprint determinism) |
+
+### Full verification
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | 0 (clean) |
+| `cargo test -p roml --all-targets` | 0 — **618 passed; 0 failed; 2 ignored** (baseline 600 + 18 new tests) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 (clean, warnings denied) |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 (docs generated, no warnings) |
+| `cargo check -p roml-highs --all-targets` | 0 (roml public-surface change is additive; `roml-highs` still compiles) |
+
+### Acceptance criteria
+
+All Task 5 acceptance criteria met:
+
+- `BackendSnapshot`/`BackendDeltaBatch` shapes match the packet interface contract field-for-field, including the packet's `recipe_fingerprint` field and **A32** (`CompiledObjectivePolicy::None` — B1 resolution).
+- `BackendOp` is `#[non_exhaustive]` and includes `RemoveLinearCoefficient { constraint, variable }`, `RemoveObjectiveCoefficient { objective, variable }`, and `SetObjectivePolicy(CompiledObjectivePolicy)` (B3 pinned enumeration).
+- `OriginMap` supports bidirectional queries and a completeness validator; builder finalization enforces the Task 5 stopping condition — **no generated entity can be finalized without a recorded origin** (D5, SM-02.5).
+- `RecipeFingerprint` is deterministic (equal compiled states → equal fingerprint) but never stale-state authority; exact `CompilationId` is the comparison key (D28, SM-03.9) — asserted by `recipe_fingerprints_are_deterministic_but_never_authority`.
+- The compiler surface is exported through `src/advanced.rs`, not the prelude.
+
+### Commit trail
+
+| # | SHA | Message |
+|---|---|---|
+| 1 | *(recorded in the phase commit-trail update)* | `feat(compiler): define backend IR and compilation identity` |
+
 <!-- Phase-level gate result (P26 boundary) filled after Task 7 review passes. -->

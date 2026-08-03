@@ -1,0 +1,257 @@
+//! Compiler origin mapping (design §4.4, §5; D5; SM-02.5).
+//!
+//! Every generated compiled entity must trace to a user entity, construct, or
+//! solve overlay through [`EntityOrigin`]. [`OriginMap`] provides bidirectional
+//! queries (compiled → origin and origin → compiled) and a completeness
+//! validator used by [`BackendSnapshotBuilder`](crate::compiler::backend_ir::BackendSnapshotBuilder)
+//! finalization: no compiled entity without an origin can be finalized.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::construct::Construct;
+use crate::identity::IdentityOverflow;
+use crate::model::{Constraint, Objective, Variable};
+
+use super::backend_ir::{
+    CompiledConstraintId, CompiledEntityRef, CompiledLinearRow, CompiledObjective,
+    CompiledObjectiveId, CompiledVariable, CompiledVariableId,
+};
+
+/// Opaque overlay identity (design §4.4).
+///
+/// Solve overlays are solve-scoped and never advance canonical revision; their
+/// generated entities carry a `SolveOverlay` origin with a distinct overlay id.
+/// P27 introduces the overlay lifecycle; the id is declared here as the
+/// origin-mapping foundation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OverlayId(u64);
+
+/// Per-family checked atomic counter (zero reserved; 0 never issued).
+static OVERLAY_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl OverlayId {
+    /// Allocate a fresh opaque overlay id. The first issued id is 1; zero is
+    /// reserved. Returns [`IdentityOverflow`] on counter exhaustion instead of
+    /// wrapping. Unused in P26 (overlay lifecycle lands in P27).
+    #[allow(dead_code)]
+    pub(crate) fn allocate() -> Result<Self, IdentityOverflow> {
+        match OVERLAY_ID_COUNTER.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pre| {
+            if pre == u64::MAX {
+                None // saturated: do not advance; report overflow
+            } else {
+                Some(pre + 1)
+            }
+        }) {
+            Ok(pre) => Ok(Self(pre + 1)),
+            Err(_) => Err(IdentityOverflow),
+        }
+    }
+}
+
+/// The role a generated entity plays for its originating construct or overlay
+/// (design §5).
+///
+/// An implementation-detail marker refined with the bridge tasks (P32/P33)
+/// and the overlay tasks (P27). The enum is `#[non_exhaustive]` and empty in
+/// P26: no construct/overlay generates entities yet, so no role value can be
+/// constructed.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GeneratedRole {}
+
+/// The origin of a generated compiled entity (design §4.4, §5; D5).
+///
+/// Every compiled entity maps to exactly one origin: a user variable /
+/// constraint / objective, a semantic construct (with a generated role), or a
+/// solve overlay (with a generated role).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EntityOrigin {
+    /// The compiled entity is a one-to-one projection of a user variable.
+    UserVariable(Variable),
+    /// The compiled entity is a one-to-one projection of a user constraint.
+    UserConstraint(Constraint),
+    /// The compiled entity is a one-to-one projection of a user objective.
+    UserObjective(Objective),
+    /// The compiled entity was generated for a semantic construct.
+    Construct {
+        /// The originating canonical construct.
+        construct: Construct,
+        /// The role the generated entity plays for that construct.
+        role: GeneratedRole,
+    },
+    /// The compiled entity was generated for a solve-scoped overlay.
+    SolveOverlay {
+        /// The originating overlay.
+        overlay: OverlayId,
+        /// The role the generated entity plays for that overlay.
+        role: GeneratedRole,
+    },
+}
+
+/// Bidirectional compiled-entity ↔ origin mapping (design §5; D5).
+///
+/// Forward queries map a compiled id to its [`EntityOrigin`]; reverse queries
+/// map an origin back to the compiled id(s) it produced. The completeness
+/// validator flags any compiled entity missing an origin — the check the
+/// snapshot builder uses at finalization.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OriginMap {
+    variables: HashMap<CompiledVariableId, EntityOrigin>,
+    constraints: HashMap<CompiledConstraintId, EntityOrigin>,
+    objectives: HashMap<CompiledObjectiveId, EntityOrigin>,
+}
+
+impl OriginMap {
+    /// Create an empty origin map.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of recorded origin entries.
+    pub fn len(&self) -> usize {
+        self.variables.len() + self.constraints.len() + self.objectives.len()
+    }
+
+    /// True when no origin has been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Record the origin of a compiled variable.
+    pub fn insert_variable(&mut self, id: CompiledVariableId, origin: EntityOrigin) {
+        self.variables.insert(id, origin);
+    }
+
+    /// Record the origin of a compiled row.
+    pub fn insert_constraint(&mut self, id: CompiledConstraintId, origin: EntityOrigin) {
+        self.constraints.insert(id, origin);
+    }
+
+    /// Record the origin of a compiled objective.
+    pub fn insert_objective(&mut self, id: CompiledObjectiveId, origin: EntityOrigin) {
+        self.objectives.insert(id, origin);
+    }
+
+    /// Look up the origin of a compiled variable (compiled → origin).
+    pub fn variable_origin(&self, id: CompiledVariableId) -> Option<&EntityOrigin> {
+        self.variables.get(&id)
+    }
+
+    /// Look up the origin of a compiled row (compiled → origin).
+    pub fn constraint_origin(&self, id: CompiledConstraintId) -> Option<&EntityOrigin> {
+        self.constraints.get(&id)
+    }
+
+    /// Look up the origin of a compiled objective (compiled → origin).
+    pub fn objective_origin(&self, id: CompiledObjectiveId) -> Option<&EntityOrigin> {
+        self.objectives.get(&id)
+    }
+
+    /// Look up the origin of a compiled entity by its reference (compiled →
+    /// origin).
+    pub fn origin_for(&self, entity: CompiledEntityRef) -> Option<&EntityOrigin> {
+        match entity {
+            CompiledEntityRef::Variable(id) => self.variable_origin(id),
+            CompiledEntityRef::Constraint(id) => self.constraint_origin(id),
+            CompiledEntityRef::Objective(id) => self.objective_origin(id),
+        }
+    }
+
+    /// Compiled variables that trace to `origin` (origin → compiled).
+    ///
+    /// Deterministic: results are sorted by compiled id.
+    pub fn variables_for_origin(&self, origin: &EntityOrigin) -> Vec<CompiledVariableId> {
+        let mut out: Vec<_> = self
+            .variables
+            .iter()
+            .filter(|(_, o)| *o == origin)
+            .map(|(id, _)| *id)
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Compiled rows that trace to `origin` (origin → compiled).
+    ///
+    /// Deterministic: results are sorted by compiled id.
+    pub fn constraints_for_origin(&self, origin: &EntityOrigin) -> Vec<CompiledConstraintId> {
+        let mut out: Vec<_> = self
+            .constraints
+            .iter()
+            .filter(|(_, o)| *o == origin)
+            .map(|(id, _)| *id)
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Compiled objectives that trace to `origin` (origin → compiled).
+    ///
+    /// Deterministic: results are sorted by compiled id.
+    pub fn objectives_for_origin(&self, origin: &EntityOrigin) -> Vec<CompiledObjectiveId> {
+        let mut out: Vec<_> = self
+            .objectives
+            .iter()
+            .filter(|(_, o)| *o == origin)
+            .map(|(id, _)| *id)
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// All compiled entities (any kind) that trace to `origin` (origin →
+    /// compiled).
+    ///
+    /// Deterministic: variables, then rows, then objectives, each sorted.
+    pub fn compiled_for_origin(&self, origin: &EntityOrigin) -> Vec<CompiledEntityRef> {
+        let mut out = Vec::new();
+        out.extend(
+            self.variables_for_origin(origin)
+                .into_iter()
+                .map(CompiledEntityRef::Variable),
+        );
+        out.extend(
+            self.constraints_for_origin(origin)
+                .into_iter()
+                .map(CompiledEntityRef::Constraint),
+        );
+        out.extend(
+            self.objectives_for_origin(origin)
+                .into_iter()
+                .map(CompiledEntityRef::Objective),
+        );
+        out
+    }
+
+    /// Completeness validator: return the compiled entities among
+    /// `variables`/`linear_rows`/`objectives` that have no recorded origin.
+    ///
+    /// Used by builder finalization to enforce D5 — no generated entity
+    /// without an origin. Deterministic: variables, then rows, then objectives,
+    /// in declaration order.
+    pub fn missing_origins(
+        &self,
+        variables: &[CompiledVariable],
+        linear_rows: &[CompiledLinearRow],
+        objectives: &[CompiledObjective],
+    ) -> Vec<CompiledEntityRef> {
+        let mut missing = Vec::new();
+        for variable in variables {
+            if !self.variables.contains_key(&variable.id) {
+                missing.push(CompiledEntityRef::Variable(variable.id));
+            }
+        }
+        for row in linear_rows {
+            if !self.constraints.contains_key(&row.id) {
+                missing.push(CompiledEntityRef::Constraint(row.id));
+            }
+        }
+        for objective in objectives {
+            if !self.objectives.contains_key(&objective.id) {
+                missing.push(CompiledEntityRef::Objective(objective.id));
+            }
+        }
+        missing
+    }
+}
