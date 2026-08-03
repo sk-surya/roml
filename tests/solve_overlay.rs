@@ -820,23 +820,24 @@ fn compile_overlay_produces_the_pinned_mapping_and_origins() {
     assert_eq!(compiled.overlay_id, overlay.id);
     assert_eq!(compiled.objective_policy_override, None);
 
-    // Operation sequence: temp fixing z, lock x/y (Exact), objective-lock row,
-    // cutoff row.
+    // Operation sequence (F1): the temporary-bound ops are AGGREGATED per
+    // variable and emitted deterministically in compiled-variable order
+    // (x=0, y=1, z=2), then the objective-lock row, then the cutoff row.
     assert_eq!(compiled.operations.len(), 5);
     assert!(matches!(
         &compiled.operations[0],
-        OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(2), bounds }
-            if *bounds == Bounds::new(1.5, 1.5)
-    ));
-    assert!(matches!(
-        &compiled.operations[1],
         OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(0), bounds }
             if *bounds == Bounds::new(3.0, 3.0)
     ));
     assert!(matches!(
-        &compiled.operations[2],
+        &compiled.operations[1],
         OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(1), bounds }
             if *bounds == Bounds::new(2.0, 2.0)
+    ));
+    assert!(matches!(
+        &compiled.operations[2],
+        OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(2), bounds }
+            if *bounds == Bounds::new(1.5, 1.5)
     ));
 
     // Objective-lock row: the compiled row for f(x) = 2x + y + 3 with the
@@ -1025,6 +1026,8 @@ fn temporary_fixings_and_locks_never_advance_the_model_revision() {
     // Task 9 guarantees revision invariance structurally: validate_for and
     // compile_overlay take `&Model` and cannot emit Change/ModelOp/revision.
     // Assert the read-only contract holds across the whole compile surface.
+    // (F1: the pair must be CONSISTENT — a conflicting temp fixing + lock is
+    // now rejected as `InfeasibleOverlay` instead of silently last-op-wins.)
     let mut model = Model::new();
     let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
     model.commit().unwrap();
@@ -1035,7 +1038,7 @@ fn temporary_fixings_and_locks_never_advance_the_model_revision() {
         lineage: model.lineage(),
         source_instance: None,
         source_revision: None,
-        values: BTreeMap::from([(x, 3.0)]),
+        values: BTreeMap::from([(x, 2.0)]),
     };
     let overlay = SolveOverlay::new(
         BTreeMap::from([(x, 2.0)]),
@@ -1048,6 +1051,266 @@ fn temporary_fixings_and_locks_never_advance_the_model_revision() {
 
     assert_eq!(model.current_revision(), rev);
     assert!(!model.has_pending_changes());
+}
+
+// ---------------------------------------------------------------------------
+// F1: overlay bounds RESTRICT (intersect) — never overwrite or loosen
+// ---------------------------------------------------------------------------
+
+/// F1(a,c): multiple overlay restrictions on ONE variable (a temporary fixing
+/// AND a consistent exact lock) are AGGREGATED into exactly ONE
+/// `SetTemporaryVariableBounds` op carrying the intersected bounds — not one
+/// op per restriction applied by replacement (order-dependent overwrite).
+#[test]
+fn overlay_aggregates_consistent_restrictions_into_one_op_per_variable() {
+    let (model, compiler, x, _y, _obj) = overlay_fixture();
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 2.0)]),
+    };
+    let overlay = SolveOverlay::new(
+        BTreeMap::from([(x, 2.0)]),
+        vec![exact_lock(assignment, LockSelector::AllAssigned)],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    let bound_ops: Vec<_> = compiled
+        .operations
+        .iter()
+        .filter(|op| matches!(op, OverlayOp::SetTemporaryVariableBounds { .. }))
+        .collect();
+    assert_eq!(
+        bound_ops.len(),
+        1,
+        "two consistent restrictions on one variable must aggregate into ONE op, got {}",
+        bound_ops.len()
+    );
+    assert!(
+        matches!(
+            bound_ops[0],
+            OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(0), bounds }
+                if *bounds == Bounds::new(2.0, 2.0)
+        ),
+        "the aggregated op must carry the intersection bounds, got {:?}",
+        bound_ops[0]
+    );
+}
+
+/// F1(d): a temporary fixing that CONTRADICTS an exact lock on the same
+/// variable (2 vs 3) is an infeasible conjunction — rejected at compile time
+/// with a typed `InfeasibleOverlay`, NOT silently last-op-wins.
+#[test]
+fn overlay_rejects_conflicting_temp_fixing_and_exact_lock() {
+    let (model, compiler, x, _y, _obj) = overlay_fixture();
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 3.0)]),
+    };
+    let overlay = SolveOverlay::new(
+        BTreeMap::from([(x, 2.0)]),
+        vec![exact_lock(assignment, LockSelector::AllAssigned)],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+    assert!(
+        matches!(err, OverlayError::InfeasibleOverlay { variable, .. } if variable == x),
+        "conflicting temp fixing + exact lock must be an infeasible conjunction, got {err:?}"
+    );
+}
+
+/// F1(d): two `Within` locks with disjoint bands on one variable are an
+/// infeasible conjunction — rejected at compile time before any op.
+#[test]
+fn overlay_rejects_disjoint_within_bands() {
+    let (model, compiler, x, _y, _obj) = overlay_fixture();
+    // Bands [1 - 0.4, 1 + 0.4] = [0.6, 1.4] and [5 - 0.4, 5 + 0.4] = [4.6, 5.4]
+    // are disjoint within the declared [0, 10] domain.
+    let band_lock = |value: f64| -> SolutionLock {
+        let assignment = PrimalAssignment {
+            lineage: model.lineage(),
+            source_instance: Some(model.instance()),
+            source_revision: Some(model.current_revision()),
+            values: BTreeMap::from([(x, value)]),
+        };
+        SolutionLock {
+            assignment,
+            selector: LockSelector::AllAssigned,
+            continuous: ContinuousLock::Within { absolute: 0.4 },
+        }
+    };
+    let overlay = SolveOverlay::new(
+        BTreeMap::new(),
+        vec![band_lock(1.0), band_lock(5.0)],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+    assert!(
+        matches!(err, OverlayError::InfeasibleOverlay { variable, .. } if variable == x),
+        "disjoint Within bands must be an infeasible conjunction, got {err:?}"
+    );
+}
+
+/// F1(b,e): a temporary fixing attempting to move a PERSISTENTLY FIXED
+/// variable is rejected — the value must lie within the canonical EFFECTIVE
+/// bounds ([4,4] for a variable persistently fixed to 4), never merely the
+/// declared bounds. The effective base can never be loosened.
+#[test]
+fn overlay_rejects_temp_fixing_conflicting_with_persistent_fix() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.fix(x, 4.0).unwrap();
+    model.commit().unwrap();
+    let (compiler, _) = compile_base(&model);
+
+    let overlay = SolveOverlay::new(BTreeMap::from([(x, 3.0)]), vec![], vec![], vec![]).unwrap();
+    let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            OverlayError::Assignment(AssignmentError::ValueOutOfBounds { variable, value, bounds })
+                if variable == x && value == 3.0 && bounds == Bounds::new(4.0, 4.0)
+        ),
+        "a temp fixing outside the effective [4,4] of a persistently fixed variable must be \
+         rejected, got {err:?}"
+    );
+}
+
+/// F1(b,e): an INACTIVE variable's effective base is [0,0] — a temporary
+/// fixing can never loosen it. A nonzero temp fixing is rejected.
+#[test]
+fn overlay_rejects_temp_fixing_loosening_inactive_variable_zero_base() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.set_variable_active(x, false).unwrap();
+    model.commit().unwrap();
+    let (compiler, _) = compile_base(&model);
+
+    let overlay = SolveOverlay::new(BTreeMap::from([(x, 1.0)]), vec![], vec![], vec![]).unwrap();
+    let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            OverlayError::Assignment(AssignmentError::ValueOutOfBounds { variable, value, .. })
+                if variable == x && value == 1.0
+        ),
+        "a temp fixing that would loosen an inactive variable's [0,0] effective base must be \
+         rejected, got {err:?}"
+    );
+}
+
+/// F1: through the FAÇADE a conflicting overlay fails at COMPILE time
+/// (`SolveError::Overlay`), the canonical model is unchanged (SM-07.3), and a
+/// subsequent plain solve still works — no overlay state leaked.
+#[test]
+fn conflicting_overlay_rejects_before_mutation_through_facade() {
+    let (mut model, _compiler, x, _y, obj) = overlay_fixture();
+    let (backend, _state) = OverlayTestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let _ = session.solve(&mut model).unwrap();
+    let rev = model.current_revision();
+
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 3.0)]),
+    };
+    let overlay = SolveOverlay::new(
+        BTreeMap::from([(x, 2.0)]),
+        vec![exact_lock(assignment, LockSelector::AllAssigned)],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let err = session
+        .solve_with_overlay(&mut model, SolveOptions::default(), &overlay, Some(obj))
+        .expect_err("a conflicting overlay must be rejected at compile time");
+    assert!(
+        matches!(
+            err,
+            SolveError::Overlay(OverlayError::InfeasibleOverlay { .. })
+        ),
+        "expected an InfeasibleOverlay compile rejection through the façade, got {err:?}"
+    );
+    assert_eq!(
+        model.current_revision(),
+        rev,
+        "revision unchanged (SM-07.3)"
+    );
+    assert!(!model.has_pending_changes());
+
+    // A subsequent plain solve still works — the rejected overlay left nothing.
+    session
+        .solve(&mut model)
+        .expect("clean solve after a rejected overlay");
+}
+
+/// F1(a): a consistent aggregated overlay (temp fixing + exact lock on the
+/// SAME variable) applies on the reference backend as ONE temporary-bound op —
+/// the backend holds the intersected bounds, and a Clean rollback restores the
+/// base exactly.
+#[test]
+fn reference_applies_aggregated_overlay_restrictions_as_one_op() {
+    let (model, _compiler, x, _y, _obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 2.0)]),
+    };
+    let overlay = SolveOverlay::new(
+        BTreeMap::from([(x, 2.0)]),
+        vec![exact_lock(assignment, LockSelector::AllAssigned)],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    let bound_ops = compiled
+        .operations
+        .iter()
+        .filter(|op| matches!(op, OverlayOp::SetTemporaryVariableBounds { .. }))
+        .count();
+    assert_eq!(
+        bound_ops, 1,
+        "the two consistent restrictions must aggregate"
+    );
+
+    let receipt = backend
+        .apply_overlay(&compiled)
+        .expect("apply must succeed");
+    assert_eq!(
+        backend
+            .compiled_variables
+            .get(&CompiledVariableId(0))
+            .map(|(b, _)| *b),
+        Some(Bounds::new(2.0, 2.0)),
+        "the aggregated op must apply the intersected bounds"
+    );
+
+    let outcome = backend
+        .rollback_overlay(&receipt)
+        .expect("rollback must succeed");
+    assert!(
+        matches!(outcome, OverlayRollbackOutcome::Clean { .. }),
+        "a fully applied overlay must roll back Clean, got {outcome:?}"
+    );
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
 }
 // ---------------------------------------------------------------------------
 // Task 10 — transactional reversible overlay execution (SM-07.3..SM-07.6)

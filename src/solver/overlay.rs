@@ -240,6 +240,19 @@ pub enum OverlayError {
         /// The invalid relative degradation tolerance.
         relative_tolerance: f64,
     },
+    /// The overlay restrictions on a variable, intersected against its
+    /// canonical EFFECTIVE base bounds, produce an EMPTY feasible region (F1).
+    ///
+    /// A temporary fixing / lock is a feasible-region RESTRICTION
+    /// (SM-06.3/06.5) and can never widen or contradict the effective base
+    /// (declared ∩ persistent fixing ∩ activity). The overlay is rejected
+    /// during compilation, before any backend mutation.
+    InfeasibleOverlay {
+        /// The affected variable.
+        variable: Variable,
+        /// The accumulated intersection at the point it became empty.
+        bounds: Bounds,
+    },
 }
 
 /// Compile a [`SolveOverlay`] against the compiler's exact current compiled
@@ -283,43 +296,58 @@ pub fn compile_overlay(
     let mut origin_additions = OriginMap::new();
     let mut next_row = compiler.next_row_index().unwrap_or(0);
 
-    // ── 1. temporary_fixings → SetTemporaryVariableBounds (equal bounds) ──
+    // ── 1+2. temporary fixings + locks → at most ONE SetTemporaryVariableBounds
+    // op per variable, carrying the INTERSECTION of every restriction with the
+    // canonical EFFECTIVE base bounds (F1) ──────────────────────────────────
+    //
+    // Previously each temporary fixing and each lock emitted its own
+    // `SetTemporaryVariableBounds` op, applied by REPLACEMENT in overlay
+    // order — order-dependent, with a later restriction OVERWRITING an earlier
+    // one and even LOOSENING the base (a persistently fixed or inactive
+    // variable's effective base could be widened). Now all restrictions on a
+    // variable are AGGREGATED first and intersected deterministically against
+    // the effective base (`effective_bounds()`: declared ∩ persistent fixing ∩
+    // activity); at most ONE op is emitted per variable, and an EMPTY
+    // intersection is rejected as [`OverlayError::InfeasibleOverlay`] before
+    // any op is produced.
+    let mut variable_restrictions: BTreeMap<Variable, Bounds> = BTreeMap::new();
+
     for (variable, value) in &overlay.temporary_fixings {
         validate_value_in_domain(model, *variable, *value)?;
-        let compiled =
-            compiler
-                .compiled_variable_id(*variable)
-                .ok_or(OverlayError::StaleCompilation {
-                    expected: Some(base_compilation),
-                    actual: None,
-                })?;
-        operations.push(OverlayOp::SetTemporaryVariableBounds {
-            variable: compiled,
-            bounds: Bounds::new(*value, *value),
-        });
+        intersect_overlay_restriction(
+            model,
+            *variable,
+            Bounds::new(*value, *value),
+            &mut variable_restrictions,
+        )?;
     }
 
-    // ── 2. locks → selector resolution → SetTemporaryVariableBounds ──────
     for lock in &overlay.locks {
         for (variable, value) in lock.resolve(model).map_err(OverlayError::Assignment)? {
-            let compiled =
-                compiler
-                    .compiled_variable_id(variable)
-                    .ok_or(OverlayError::StaleCompilation {
-                        expected: Some(base_compilation),
-                        actual: None,
-                    })?;
             let bounds = match lock.continuous {
                 ContinuousLock::Exact => Bounds::new(value, value),
                 ContinuousLock::Within { absolute } => {
                     continuous_band_bounds(model, variable, value, absolute)?
                 }
             };
-            operations.push(OverlayOp::SetTemporaryVariableBounds {
-                variable: compiled,
-                bounds,
-            });
+            intersect_overlay_restriction(model, variable, bounds, &mut variable_restrictions)?;
         }
+    }
+
+    // Emit one temporary-bound op per restricted variable, deterministically
+    // ordered by variable (BTreeMap iteration is sorted by `Variable`).
+    for (variable, bounds) in variable_restrictions {
+        let compiled =
+            compiler
+                .compiled_variable_id(variable)
+                .ok_or(OverlayError::StaleCompilation {
+                    expected: Some(base_compilation),
+                    actual: None,
+                })?;
+        operations.push(OverlayOp::SetTemporaryVariableBounds {
+            variable: compiled,
+            bounds,
+        });
     }
 
     // ── 3. objective_locks → AddTemporaryRow (degradation row) ───────────
@@ -425,8 +453,14 @@ pub fn compile_overlay(
     })
 }
 
-/// Validate an assigned value against the model's declared domain
+/// Validate an assigned value against the model's canonical EFFECTIVE bounds
 /// (tolerance-aware for integrality) — SM-06.6's "fail before any op".
+///
+/// F1(e): the gate is the effective bounds (declared ∩ persistent fixing ∩
+/// activity), NOT the declared domain — a temporary fixing that attempts to
+/// move a persistently fixed variable (effective `[fix, fix]`) or an inactive
+/// variable (effective `[0, 0]`) must be rejected, never silently compiled
+/// into a bounds op that LOOSENS the effective base.
 fn validate_value_in_domain(
     model: &Model,
     variable: Variable,
@@ -437,7 +471,11 @@ fn validate_value_in_domain(
         .ok_or(OverlayError::Assignment(AssignmentError::StaleVariable {
             variable,
         }))?;
-    let bounds = domain.bounds;
+    let bounds = model
+        .effective_bounds(variable)
+        .ok_or(OverlayError::Assignment(AssignmentError::StaleVariable {
+            variable,
+        }))?;
     // CR-01: a non-finite value is rejected FIRST — NaN passes both range
     // comparisons (both false) and +inf passes when the upper bound is itself
     // infinite. The overlay compiles to `Bounds::new(value, value)` pushed into
@@ -493,14 +531,56 @@ fn continuous_band_bounds(
     if !matches!(domain.var_type, VarType::Continuous) {
         return Err(OverlayError::WithinBandOnNonContinuous { variable });
     }
-    // WR-01: a lock is a feasible-region RESTRICTION (SM-06.3/06.5) and must
-    // never LOOSEN a declared bound — INTERSECT the band with the declared
-    // domain. Without the clip, a band extending past a declared bound (e.g.
-    // value 1.0, absolute 2.0 on `[0,10]` -> raw `[-1,3]`) lets the overlay
-    // solve return a solution violating the declared bounds.
-    let lower = (value - absolute).max(domain.bounds.lower);
-    let upper = (value + absolute).min(domain.bounds.upper);
+    // WR-01 + F1: a lock is a feasible-region RESTRICTION (SM-06.3/06.5) and
+    // must never LOOSEN a bound — INTERSECT the band with the canonical
+    // EFFECTIVE bounds (declared ∩ persistent fixing ∩ activity), not merely
+    // the declared domain. Without the clip, a band extending past a bound
+    // (e.g. value 1.0, absolute 2.0 on `[0,10]` -> raw `[-1,3]`) lets the
+    // overlay solve return a solution violating the effective bounds; and an
+    // inactive variable's effective `[0, 0]` base can never be widened.
+    let effective = model
+        .effective_bounds(variable)
+        .ok_or(OverlayError::Assignment(AssignmentError::StaleVariable {
+            variable,
+        }))?;
+    let lower = (value - absolute).max(effective.lower);
+    let upper = (value + absolute).min(effective.upper);
     Ok(Bounds::new(lower, upper))
+}
+
+/// Accumulate one overlay restriction on `variable` into `acc`, intersecting
+/// it (and any prior restrictions) against the canonical EFFECTIVE base
+/// bounds (F1).
+///
+/// The base is `model.effective_bounds(variable)` — declared ∩ persistent
+/// fixing ∩ activity — never the declared bounds alone, so a persistently
+/// fixed or inactive variable's effective base can never be loosened. An
+/// EMPTY intersection (a restriction that contradicts the base or another
+/// restriction) is a typed [`OverlayError::InfeasibleOverlay`], rejected
+/// before any op is produced.
+fn intersect_overlay_restriction(
+    model: &Model,
+    variable: Variable,
+    restriction: Bounds,
+    acc: &mut BTreeMap<Variable, Bounds>,
+) -> Result<(), OverlayError> {
+    let base = model
+        .effective_bounds(variable)
+        .ok_or(OverlayError::Assignment(AssignmentError::StaleVariable {
+            variable,
+        }))?;
+    let current = acc.get(&variable).copied().unwrap_or(base);
+    let lower = current.lower.max(restriction.lower);
+    let upper = current.upper.min(restriction.upper);
+    let intersected = Bounds::new(lower, upper);
+    if lower > upper {
+        return Err(OverlayError::InfeasibleOverlay {
+            variable,
+            bounds: intersected,
+        });
+    }
+    acc.insert(variable, intersected);
+    Ok(())
 }
 
 /// Resolve the compiled coefficients and constant of `objective` for a
