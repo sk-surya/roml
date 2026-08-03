@@ -3,7 +3,7 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P25 executed and verified; pending merge (phase PR)  
+**Status:** P25 accepted (merged via PR #27 at main@9c2a9df); P26 ready to plan  
 **Current phase:** P25 — semantic IR, lineage, metadata (complete; merge pending)  
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
 **Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
@@ -34,8 +34,8 @@ Before P25 code:
 
 | Phase | Status | Prerequisite | Evidence | Blocking decision |
 |---|---|---|---|---|
-| P25 Semantic IR/identity | Executed; verified 4/4 must-haves; merge pending | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (verified, `25-VERIFICATION.md`) | none |
-| P26 Compiler/backend IR | Blocked | P25 accepted | none | backend contract amendment review |
+| P25 Semantic IR/identity | Accepted | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (merged PR #27, `9c2a9df`) | none |
+| P26 Compiler/backend IR | Ready to execute | P25 accepted (PR #27, `9c2a9df`) | `.planning/phases/26-compiler-backend-ir/26-PLAN.md` | backend contract amendment review (plan gate) |
 | P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
 | P28 Starts/hints/SolvePlan | Blocked | P27 accepted | none | pinned HiGHS start API audit |
 | P29 IIS/conflicts | Blocked | P28 accepted | none | pinned/system HiGHS IIS capability |
