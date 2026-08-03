@@ -3,7 +3,10 @@
 //! Implication, equivalence, any (at-least-one), and all (all-ones) over binary
 //! variables compile to exact linear rows (no auxiliary variables, no Big-M).
 
-use crate::compiler::bridge::{resolve_variable, BridgeContext, BridgeFinalizer, BridgeOutput};
+use crate::compiler::bridge::{
+    resolve_variable, select_path, BridgeContext, BridgeFinalizer, BridgeOutput,
+};
+use crate::compiler::capability::BackendFeature;
 use crate::compiler::origin::GeneratedRole;
 use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
@@ -17,6 +20,16 @@ pub(crate) fn compile(
     next_variable_index: u32,
     next_row_index: u32,
 ) -> Result<BridgeOutput, CompileError> {
+    // SM-04.4 (WR-01): an unqualified `Boolean` feature is rejected, never
+    // silently compiled. No P32 backend declares a qualified native Boolean,
+    // so the exact linear rows are the bridge representation; a native path
+    // would land here and select it.
+    select_path(
+        ctx.capabilities,
+        ctx.policy,
+        BackendFeature::Boolean,
+        "boolean construct",
+    )?;
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
 
     match &payload.kind {
