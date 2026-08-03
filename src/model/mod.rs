@@ -355,30 +355,24 @@ impl Model {
     /// coefficient cells and the set from its bounds. The ordinary M2
     /// `LinExpr` path stays canonical (SM-01.5); this is the semantic IR
     /// view used by snapshots, deltas, and later compilers.
+    ///
+    /// F1: the linear function is reconstructed SYMBOLICALLY — its terms carry
+    /// `TermCoeff::Expr(ValueExpr)` sourced from the coefficient index's
+    /// `value_expr`, so a parameterized coefficient `p*x` keeps its symbolic
+    /// form inside the function (design §6) rather than a parallel
+    /// `terms`/`dependencies` view. Dependencies are DERIVED from the function
+    /// ([`ScalarFunction::parameter_dependencies`]), never stored.
     pub fn constraint_function(&self, con: ConId) -> Result<FunctionConstraint, ModelError> {
         if !self.constraints.contains(con) {
             return Err(ModelError::ConstraintNotFound(con));
         }
-        let expr = self.constraint_expression(con)?;
         let bounds = self
             .constraint_bounds(con)
             .ok_or(ModelError::ConstraintNotFound(con))?;
-        // F1: preserve the symbolic form. The coefficient index's
-        // `value_expr`/dependencies populate the symbolic `terms` and
-        // `dependencies` (sorted + deduplicated), so P26's compiler can
-        // rebuild the parameterized row without re-joining legacy cells.
-        let symbolic_terms = self.constraint_symbolic_terms(con);
-        let mut dependencies: Vec<ParamId> = symbolic_terms
-            .iter()
-            .flat_map(|(_, value_expr)| value_expr.dependencies())
-            .collect();
-        dependencies.sort();
-        dependencies.dedup();
+        let expr = self.constraint_symbolic_expression(con)?;
         Ok(FunctionConstraint {
             function: ScalarFunction::Linear(expr),
             set: ScalarSet::from(bounds),
-            terms: symbolic_terms,
-            dependencies,
         })
     }
 

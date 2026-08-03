@@ -6,7 +6,7 @@
 //! ordered list of typed operations.
 
 use crate::construct::{Construct, ConstructEntry, ConstructKind, FormulationPreference};
-use crate::expr::LinExpr;
+use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::{CellKey, CoefficientTarget};
@@ -341,38 +341,16 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
             {
                 continue;
             }
-            // The linear function is rebuilt from the constraint's `SetCell`
-            // cells, with terms sorted by var so the reconstructed term order
-            // is deterministic (WR-01) and agrees with the canonical
-            // `Model::constraint_function` and the snapshot reconstruction.
-            let mut terms: Vec<(VarId, f64)> = operations
-                .iter()
-                .filter_map(|cell_op| {
-                    if let ModelOp::SetCell {
-                        cell_key,
-                        evaluated_value,
-                        ..
-                    } = cell_op
-                    {
-                        if let CoefficientTarget::Constraint(c) = cell_key.0 {
-                            if c == *con {
-                                return Some((cell_key.1, *evaluated_value));
-                            }
-                        }
-                    }
-                    None
-                })
-                .collect();
-            terms.sort_by_key(|(var, _)| *var);
-            let mut expr = LinExpr::new();
-            for (var, value) in terms {
-                expr = expr.term(value, var);
-            }
-            // F1: the symbolic view preserves each term's `ValueExpr` (the
-            // `SetCell` op carries the full parameterized expression, not just
-            // the evaluated number) plus the sorted/deduplicated parameter
-            // dependencies, so P26's compiler can rebuild the parameterized
-            // row without re-joining legacy cells.
+            // F1: the linear function is rebuilt SYMBOLICALLY from the
+            // constraint's `SetCell` cells — each term carries
+            // `TermCoeff::Expr(ValueExpr)` sourced from the op's `value_expr`
+            // (the full parameterized expression, not just the evaluated
+            // number), so P26's compiler can rebuild the parameterized row
+            // without re-joining legacy cells. Dependencies are DERIVED from
+            // the function, never stored. Terms are sorted by var so the
+            // reconstructed term order is deterministic (WR-01) and agrees
+            // with the canonical `Model::constraint_function` and the snapshot
+            // reconstruction.
             let mut symbolic: Vec<(VarId, ValueExpr)> = operations
                 .iter()
                 .filter_map(|cell_op| {
@@ -392,12 +370,10 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
                 })
                 .collect();
             symbolic.sort_by_key(|(var, _)| *var);
-            let mut dependencies: Vec<ParamId> = symbolic
-                .iter()
-                .flat_map(|(_, value_expr)| value_expr.dependencies())
-                .collect();
-            dependencies.sort();
-            dependencies.dedup();
+            let mut expr = LinExpr::new();
+            for (var, value_expr) in symbolic {
+                expr = expr.term(TermCoeff::Expr(value_expr), var);
+            }
             // CR-01: the ordinary constant-folding path inserts the row at the
             // declared bounds and then folds the expression constant into them
             // via a same-batch `SetConstraintBounds` op
@@ -418,8 +394,6 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
                 constraint: *con,
                 function: ScalarFunction::Linear(expr),
                 set,
-                terms: symbolic,
-                dependencies,
             });
         }
     }

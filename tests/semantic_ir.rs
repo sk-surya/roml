@@ -11,9 +11,10 @@
 //! generation-safe construct arena survives add/clone/snapshot/activity/
 //! remove/rebuild (design §7, SM-01.3, SM-01.6).
 
+use roml::expr::TermCoeff;
 use roml::{
     continuous, ConstraintBounds, ConstraintExprExt, FunctionConstraint, IntoScalarFunction, Model,
-    ModelOp, ModelRevision, ScalarFunction, ScalarSet, ValueExpr,
+    ModelOp, ModelRevision, ScalarFunction, ScalarSet, ValueExpr, VarId,
 };
 
 // =========================================================================
@@ -160,54 +161,83 @@ fn delta_carries_semantic_function_entries() {
 // =========================================================================
 
 /// F1: a parameterized coefficient `p * x` must NOT become a bare constant in
-/// the semantic IR. `constraint_function`, the snapshot `FunctionEntry`, and
-/// the delta `FunctionEntry` all carry the SYMBOLIC `terms` (`ValueExpr`
-/// referencing `p`, not just the evaluated number) plus `dependencies == [p]`.
-/// After updating `p`, the semantic entries still carry the symbolic form.
+/// the semantic IR. The symbolic expression belongs INSIDE the scalar function
+/// (design §6): `constraint_function`, the snapshot `FunctionEntry`, and the
+/// delta `FunctionEntry` all carry `ScalarFunction::Linear(LinExpr)` whose
+/// terms hold `TermCoeff::Expr(ValueExpr)` referencing `p` — not a parallel
+/// `terms`/`dependencies` view. Dependencies are DERIVED, never stored
+/// ([`ScalarFunction::parameter_dependencies`]). After updating `p`, the
+/// semantic entries still carry the symbolic form.
 #[test]
 fn semantic_ir_preserves_symbolic_parameter_terms() {
+    fn coefficient_expr(function: &ScalarFunction, var: VarId) -> &ValueExpr {
+        match function {
+            ScalarFunction::Linear(expr) => {
+                let term = expr
+                    .terms()
+                    .iter()
+                    .find(|t| t.var == var)
+                    .expect("term for variable must be present");
+                match &term.coeff {
+                    TermCoeff::Expr(e) => e,
+                    TermCoeff::Constant(v) => {
+                        panic!("expected TermCoeff::Expr coefficient, got Constant({v})")
+                    }
+                }
+            }
+            // ScalarFunction is #[non_exhaustive]; M3 implements only Linear.
+            _ => panic!("expected a linear scalar function"),
+        }
+    }
+
     let mut model = Model::new();
     let p = model.add_parameter(2.0).unwrap();
     let x = model.add_variable(continuous()).unwrap();
     let con = model.add_constraint((p * x).le(10.0)).unwrap();
     let r1 = model.commit().unwrap();
 
-    // 1. Canonical `constraint_function` carries the symbolic terms.
+    // 1. Canonical `constraint_function` carries the symbolic coefficient
+    //    INSIDE its linear function (no parallel terms/dependencies view).
     let fc = model.constraint_function(con).unwrap();
-    assert_eq!(
-        fc.terms.len(),
-        1,
-        "canonical function must carry the symbolic term for p*x"
-    );
-    assert_eq!(fc.terms[0].0, x, "symbolic term variable is x");
+    let coeff = coefficient_expr(&fc.function, x);
     assert!(
-        fc.terms[0].1.has_dependencies(),
+        coeff.has_dependencies(),
         "symbolic ValueExpr must reference the parameter, not just the evaluated number"
     );
     assert_eq!(
-        fc.terms[0].1.dependencies(),
+        coeff.dependencies(),
         std::collections::HashSet::from([p]),
         "the coefficient's ValueExpr depends on exactly p"
     );
-    assert_eq!(fc.dependencies, vec![p], "function dependencies == [p]");
+    assert_eq!(
+        fc.parameter_dependencies(),
+        vec![p],
+        "derived function dependencies == [p]"
+    );
 
-    // 2. Snapshot FunctionEntry carries the symbolic terms.
+    // 2. Snapshot FunctionEntry carries the symbolic coefficient inside its
+    //    reconstructed function.
     let snap = model.take_snapshot().unwrap();
     let snap_entry = snap
         .functions
         .iter()
         .find(|e| e.constraint == con)
         .expect("snapshot carries the function entry");
-    assert_eq!(snap_entry.terms.len(), 1);
-    assert_eq!(snap_entry.terms[0].0, x);
-    assert!(snap_entry.terms[0].1.has_dependencies());
+    let snap_coeff = coefficient_expr(&snap_entry.function, x);
+    assert!(snap_coeff.has_dependencies());
     assert_eq!(
-        snap_entry.dependencies,
+        snap_coeff.dependencies(),
+        std::collections::HashSet::from([p]),
+        "snapshot coefficient ValueExpr depends on exactly p"
+    );
+    assert_eq!(
+        snap_entry.function.parameter_dependencies(),
         vec![p],
-        "snapshot dependencies == [p]"
+        "snapshot derived dependencies == [p]"
     );
 
-    // 3. Delta FunctionEntry carries the symbolic terms.
+    // 3. Delta FunctionEntry carries the symbolic coefficient inside its
+    //    reconstructed function.
     let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
     let batch = batches
         .iter()
@@ -218,36 +248,45 @@ fn semantic_ir_preserves_symbolic_parameter_terms() {
         .iter()
         .find(|e| e.constraint == con)
         .expect("delta carries the function entry");
-    assert_eq!(delta_entry.terms.len(), 1);
-    assert_eq!(delta_entry.terms[0].0, x);
+    let delta_coeff = coefficient_expr(&delta_entry.function, x);
     assert!(
-        delta_entry.terms[0].1.has_dependencies(),
+        delta_coeff.has_dependencies(),
         "delta symbolic ValueExpr must reference the parameter"
     );
     assert_eq!(
-        delta_entry.dependencies,
+        delta_coeff.dependencies(),
+        std::collections::HashSet::from([p]),
+        "delta coefficient ValueExpr depends on exactly p"
+    );
+    assert_eq!(
+        delta_entry.function.parameter_dependencies(),
         vec![p],
-        "delta dependencies == [p]"
+        "delta derived dependencies == [p]"
     );
 
-    // 4. After updating `p`, the semantic entries STILL carry the symbolic form.
+    // 4. After updating `p`, the semantic entries STILL carry the symbolic
+    //    form.
     model.set_parameter(p, 5.0).unwrap();
     model.commit().unwrap();
     let fc2 = model.constraint_function(con).unwrap();
     assert_eq!(
-        fc2.dependencies,
+        fc2.parameter_dependencies(),
         vec![p],
-        "dependency survives parameter update"
+        "derived dependency survives parameter update"
     );
-    assert!(fc2.terms[0].1.has_dependencies());
+    assert!(coefficient_expr(&fc2.function, x).has_dependencies());
     let snap2 = model.take_snapshot().unwrap();
     let snap_entry2 = snap2
         .functions
         .iter()
         .find(|e| e.constraint == con)
         .expect("snapshot carries the function entry after update");
-    assert_eq!(snap_entry2.dependencies, vec![p]);
-    assert!(snap_entry2.terms[0].1.has_dependencies());
+    assert_eq!(
+        snap_entry2.function.parameter_dependencies(),
+        vec![p],
+        "snapshot derived dependency survives parameter update"
+    );
+    assert!(coefficient_expr(&snap_entry2.function, x).has_dependencies());
 }
 
 // =========================================================================
