@@ -817,7 +817,11 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roml::advanced::{BackendSnapshot, CompilationPolicy, CompilationSession};
+    use roml::advanced::{
+        BackendDeltaBatch, BackendOp, BackendSnapshot, CompilationId, CompilationPolicy,
+        CompilationSession, CompiledObjectiveId, CompiledObjectiveLevel, CompiledObjectivePolicy,
+        CompiledWeightedObjective,
+    };
     use roml::compiler::capability::SupportLevel;
     use roml::delta::{DeltaBatch, ModelOp};
     use roml::model::{continuous, Bounds, VarType};
@@ -1046,6 +1050,145 @@ mod tests {
                 .contains("Highs_setStringOptionValue(output_flag)"),
             "unexpected message: {}",
             err.message
+        );
+    }
+
+    // ── F4: typed rejection of unsupported policies and future ops ───────────
+
+    /// A committed one-variable maximize-x model's compiled base plus a
+    /// trivial chained delta, with the HiGHS session holding the base.
+    fn weighted_lexicographic_fixture() -> (Model, HighsSession, BackendDeltaBatch, CompilationId) {
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous()).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut session = CompilationSession::new();
+        let base = session
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+
+        let r_next = snapshot.revision.next().unwrap();
+        let batch = DeltaBatch::new(
+            snapshot.revision,
+            r_next,
+            vec![ModelOp::SetActiveObjective { obj: None }],
+        )
+        .unwrap();
+        let delta = session
+            .compile_delta(
+                &batch,
+                base.compilation_id,
+                model.instance(),
+                &policy,
+                &caps,
+            )
+            .expect("delta must compile");
+        (model, highs, delta, base.compilation_id)
+    }
+
+    /// F4: a `CompiledObjectivePolicy::Weighted` policy (a P31 construct) must
+    /// be REJECTED with a typed error by the HiGHS projection — never silently
+    /// treated as no-active-objective — and the session's compiled state must
+    /// not advance.
+    #[test]
+    fn compiled_delta_with_weighted_policy_is_rejected_without_advancing() {
+        let (_model, mut highs, mut delta, base_id) = weighted_lexicographic_fixture();
+        delta.operations = vec![BackendOp::SetObjectivePolicy(
+            CompiledObjectivePolicy::Weighted(vec![CompiledWeightedObjective {
+                objective: CompiledObjectiveId(0),
+                weight: 1.0,
+            }]),
+        )];
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => {
+                panic!("a weighted policy must be rejected, not silently treated as no-active-objective")
+            }
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.category,
+            ErrorCategory::Unsupported,
+            "a weighted policy is an unsupported feature for the P26 projection"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(base_id),
+            "a rejected batch must not advance the session's compiled state"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::RequiresRebuild,
+            "a rejected batch leaves the session rebuild-required"
+        );
+    }
+
+    /// F4: a `CompiledObjectivePolicy::Lexicographic` policy is rejected the
+    /// same way — typed error, no silent success, no state advance.
+    #[test]
+    fn compiled_delta_with_lexicographic_policy_is_rejected_without_advancing() {
+        let (_model, mut highs, mut delta, base_id) = weighted_lexicographic_fixture();
+        delta.operations = vec![BackendOp::SetObjectivePolicy(
+            CompiledObjectivePolicy::Lexicographic(vec![CompiledObjectiveLevel {
+                objective: CompiledObjectiveId(0),
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            }]),
+        )];
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => {
+                panic!("a lexicographic policy must be rejected, not silently treated as no-active-objective")
+            }
+            Err(e) => e,
+        };
+        assert_eq!(err.category, ErrorCategory::Unsupported);
+        assert_eq!(
+            highs.current_compilation,
+            Some(base_id),
+            "a rejected batch must not advance the session's compiled state"
+        );
+    }
+
+    /// F4: a full snapshot rebuild whose objective policy is Weighted is also
+    /// rejected with a typed error (the projection must never silently treat a
+    /// weighted/lexicographic policy as no-active-objective).
+    #[test]
+    fn rebuild_from_snapshot_with_weighted_policy_is_rejected() {
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous()).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+        let mut session = CompilationSession::new();
+        let mut compiled = session
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        compiled.objective_policy =
+            CompiledObjectivePolicy::Weighted(vec![CompiledWeightedObjective {
+                objective: CompiledObjectiveId(0),
+                weight: 1.0,
+            }]);
+
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        let err = match highs.synchronize(Synchronization::CompiledRebuild(compiled)) {
+            Ok(_) => panic!("a weighted-policy snapshot must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(err.category, ErrorCategory::Unsupported);
+        assert_eq!(
+            highs.current_compilation, None,
+            "a rejected rebuild must not establish a compiled state"
         );
     }
 }

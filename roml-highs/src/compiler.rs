@@ -294,10 +294,21 @@ pub(crate) fn rebuild_from_backend_snapshot(
         CompiledObjectivePolicy::None => {
             *active_obj = None;
         }
-        // Weighted/Lexicographic are reachable only from the P31 canonical
-        // ObjectivePolicy (design §15); P26 does not emit them.
-        CompiledObjectivePolicy::Weighted(_) | CompiledObjectivePolicy::Lexicographic(_) => {
-            *active_obj = None;
+        // F4: Weighted/Lexicographic are reachable only from the P31 canonical
+        // ObjectivePolicy (design §15); P26 does not emit them and the
+        // single-objective HiGHS surface cannot represent them. Reject with a
+        // typed error instead of silently treating them as no-active-objective.
+        CompiledObjectivePolicy::Weighted(_) => {
+            return Err(BackendError::unsupported(
+                "weighted objective policy is not supported by the P26 HiGHS projection \
+                 (P31 compiles it)",
+            ));
+        }
+        CompiledObjectivePolicy::Lexicographic(_) => {
+            return Err(BackendError::unsupported(
+                "lexicographic objective policy is not supported by the P26 HiGHS projection \
+                 (P31 compiles it)",
+            ));
         }
     }
 
@@ -647,16 +658,36 @@ pub(crate) fn apply_backend_delta(
                         }
                         *active_obj = None;
                     }
-                    CompiledObjectivePolicy::Weighted(_)
-                    | CompiledObjectivePolicy::Lexicographic(_) => {
-                        *active_obj = None;
+                    // F4: Weighted/Lexicographic cannot be represented on the
+                    // single-objective HiGHS surface in P26 — reject with a
+                    // typed error, never silently treat as no-active-objective.
+                    CompiledObjectivePolicy::Weighted(_) => {
+                        return Err(BackendError::unsupported(
+                            "weighted objective policy is not supported by the P26 HiGHS \
+                             projection (P31 compiles it)",
+                        ));
+                    }
+                    CompiledObjectivePolicy::Lexicographic(_) => {
+                        return Err(BackendError::unsupported(
+                            "lexicographic objective policy is not supported by the P26 HiGHS \
+                             projection (P31 compiles it)",
+                        ));
                     }
                 }
             }
 
-            // `BackendOp` is #[non_exhaustive]: future ops are safely ignored
-            // by the HiGHS projection until the bridge tasks define them.
-            _ => {}
+            // `BackendOp` is #[non_exhaustive] (the pinned 15-variant
+            // enumeration, backend-contract point B3). F4: a FUTURE op variant
+            // this projection does not understand must be a hard typed error —
+            // never a silent no-op that would let a batch "succeed" without
+            // applying one of its operations. The wildcard is unreachable in
+            // P26 (all pinned variants are handled above) but is enforced by
+            // construction for the bridge tasks that add variants.
+            _ => {
+                return Err(BackendError::unsupported(
+                    "backend op variant not supported by this projection",
+                ));
+            }
         }
     }
     Ok(())
