@@ -300,25 +300,49 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
     let mut entries = Vec::new();
     for op in operations {
         if let ModelOp::AddConstraint { con, bounds } = op {
-            let mut expr = LinExpr::new();
-            for cell_op in operations {
-                if let ModelOp::SetCell {
-                    cell_key,
-                    evaluated_value,
-                    ..
-                } = cell_op
-                {
-                    if let CoefficientTarget::Constraint(c) = cell_key.0 {
-                        if c == *con {
-                            expr = expr.term(*evaluated_value, cell_key.1);
+            // The linear function is rebuilt from the constraint's `SetCell`
+            // cells, with terms sorted by var so the reconstructed term order
+            // is deterministic (WR-01) and agrees with the canonical
+            // `Model::constraint_function` and the snapshot reconstruction.
+            let mut terms: Vec<(VarId, f64)> = operations
+                .iter()
+                .filter_map(|cell_op| {
+                    if let ModelOp::SetCell {
+                        cell_key,
+                        evaluated_value,
+                        ..
+                    } = cell_op
+                    {
+                        if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                            if c == *con {
+                                return Some((cell_key.1, *evaluated_value));
+                            }
                         }
+                    }
+                    None
+                })
+                .collect();
+            terms.sort_by_key(|(var, _)| *var);
+            let mut expr = LinExpr::new();
+            for (var, value) in terms {
+                expr = expr.term(value, var);
+            }
+            // CR-01: the ordinary constant-folding path inserts the row at the
+            // declared bounds and then folds the expression constant into them
+            // via a same-batch `SetConstraintBounds` op
+            // (`add_constraint_spec_impl`). The last such op for this
+            // constraint is the effective set authority (mirroring the
+            // final-activity fold in `reconstruct_construct_entries`), so the
+            // reconstructed entry equals the model's canonical folded set.
+            let mut effective = *bounds;
+            for later in operations {
+                if let ModelOp::SetConstraintBounds { con: c, bounds } = later {
+                    if c == con {
+                        effective = *bounds;
                     }
                 }
             }
-            let set = ScalarSet::from(*bounds);
-            // Invariant (transitional legacy field): the set must be derived
-            // from the legacy bounds.
-            debug_assert_eq!(set, ScalarSet::from(*bounds));
+            let set = ScalarSet::from(effective);
             entries.push(FunctionEntry {
                 constraint: *con,
                 function: ScalarFunction::Linear(expr),

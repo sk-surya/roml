@@ -157,6 +157,125 @@ fn delta_carries_semantic_function_entries() {
 }
 
 // =========================================================================
+// 3b. Constant-folding constraints reconstruct folded bounds in deltas
+// =========================================================================
+
+/// CR-01: `add_constraint((x + 3.0).le(5.0))` folds the expression constant
+/// into the bounds via a same-batch `SetConstraintBounds` op. The delta's
+/// reconstructed `FunctionEntry.set` must equal the model's canonical folded
+/// set (`LessEqual(2.0)`), never the pre-adjustment declared bounds.
+#[test]
+fn delta_set_reflects_bounds_folded_from_expression_constant() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((x + 3.0).le(5.0)).unwrap();
+    let r1 = model.commit().unwrap();
+
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r1)
+        .expect("constraint-add batch present");
+    let entry = batch
+        .functions
+        .iter()
+        .find(|e| e.constraint == con)
+        .expect("delta carries the constraint's function entry");
+
+    // (x + 3) <= 5  =>  x <= 2.
+    let fc = model.constraint_function(con).unwrap();
+    assert_eq!(
+        entry.set, fc.set,
+        "delta set must equal the canonical folded set"
+    );
+    assert_eq!(entry.set, ScalarSet::LessEqual(ValueExpr::from(2.0)));
+}
+
+/// CR-01 variants: `.ge` folds the constant into the lower bound and
+/// `.between` folds it into both interval ends.
+#[test]
+fn delta_set_reflects_folded_bounds_for_ge_and_between() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    let ge = model.add_constraint((x + 3.0).ge(5.0)).unwrap();
+    let between = model.add_constraint((x + 3.0).between(1.0, 5.0)).unwrap();
+    let r1 = model.commit().unwrap();
+
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r1)
+        .expect("constraint-add batch present");
+
+    // (x + 3) >= 5  =>  x >= 2.
+    let ge_entry = batch
+        .functions
+        .iter()
+        .find(|e| e.constraint == ge)
+        .expect("ge function entry");
+    assert_eq!(
+        ge_entry.set,
+        model.constraint_function(ge).unwrap().set,
+        "ge delta set must equal the canonical folded set"
+    );
+    assert_eq!(ge_entry.set, ScalarSet::GreaterEqual(ValueExpr::from(2.0)));
+
+    // 1 <= (x + 3) <= 5  =>  -2 <= x <= 2.
+    let between_entry = batch
+        .functions
+        .iter()
+        .find(|e| e.constraint == between)
+        .expect("between function entry");
+    assert_eq!(
+        between_entry.set,
+        model.constraint_function(between).unwrap().set,
+        "between delta set must equal the canonical folded set"
+    );
+    assert_eq!(
+        between_entry.set,
+        ScalarSet::Interval {
+            lower: ValueExpr::from(-2.0),
+            upper: ValueExpr::from(2.0),
+        }
+    );
+}
+
+/// WR-01: the canonical `constraint_function` expression and the snapshot's
+/// reconstructed function entry must agree in term order (both sorted by var).
+#[test]
+fn constraint_expression_term_order_matches_snapshot() {
+    let mut model = Model::new();
+    let a = model.add_variable(continuous()).unwrap();
+    let b = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((a + 2.0 * b).le(10.0)).unwrap();
+
+    let canonical = model.constraint_function(con).unwrap();
+    let snap = model.take_snapshot().unwrap();
+    let snap_entry = snap
+        .functions
+        .iter()
+        .find(|e| e.constraint == con)
+        .expect("snapshot carries the function entry");
+
+    if let (ScalarFunction::Linear(canonical_expr), ScalarFunction::Linear(snap_expr)) =
+        (&canonical.function, &snap_entry.function)
+    {
+        assert_eq!(
+            canonical_expr, snap_expr,
+            "canonical and snapshot expressions must agree in term order"
+        );
+        // Terms are sorted by var (VarId implements Ord) so the order is
+        // deterministic across runs.
+        let vars: Vec<_> = canonical_expr.terms().iter().map(|t| t.var).collect();
+        let mut sorted = vars.clone();
+        sorted.sort();
+        assert_eq!(vars, sorted, "terms sorted by var");
+    } else {
+        panic!("expected linear functions");
+    }
+}
+
+// =========================================================================
 // 4. Transitional legacy fields are invariant-checked
 // =========================================================================
 

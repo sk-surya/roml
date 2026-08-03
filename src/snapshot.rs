@@ -176,18 +176,29 @@ fn reconstruct_function_entry(
     bounds: ConstraintBounds,
     cells: &[(CellKey, ValueExpr, f64, Vec<ParamId>)],
 ) -> FunctionEntry {
-    let mut expr = LinExpr::new();
-    for (cell_key, _value_expr, evaluated_value, _deps) in cells {
-        if let CoefficientTarget::Constraint(c) = cell_key.0 {
-            if c == con {
-                expr = expr.term(*evaluated_value, cell_key.1);
+    // Terms sorted by var (WR-01) so the reconstructed expression agrees in
+    // term order with the canonical `Model::constraint_function` (both are
+    // deterministic, var-ordered reconstructions of the same coefficient
+    // index). The `set` is derived directly from the constraint bounds — the
+    // transitional legacy field is the single authority, and the real
+    // cross-check lives in `Model::take_snapshot`.
+    let mut terms: Vec<(VarId, f64)> = cells
+        .iter()
+        .filter_map(|(cell_key, _value_expr, evaluated_value, _deps)| {
+            if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                if c == con {
+                    return Some((cell_key.1, *evaluated_value));
+                }
             }
-        }
+            None
+        })
+        .collect();
+    terms.sort_by_key(|(var, _)| *var);
+    let mut expr = LinExpr::new();
+    for (var, value) in terms {
+        expr = expr.term(value, var);
     }
     let set = ScalarSet::from(bounds);
-    // Invariant (transitional legacy field): the set must be derived from the
-    // legacy bounds. Re-derive to catch any divergence.
-    debug_assert_eq!(set, ScalarSet::from(bounds));
     FunctionEntry {
         constraint: con,
         function: ScalarFunction::Linear(expr),

@@ -754,16 +754,31 @@ impl Model {
     /// Reconstruct a linear expression from a constraint's coefficients.
     ///
     /// Uses cached coefficient values (not the ValueExpr).
+    ///
+    /// The coefficient index's `by_constraint` set is a `HashSet`, so its
+    /// iteration order is nondeterministic across runs (WR-01). The terms are
+    /// therefore sorted by `var` (`VarId` implements `Ord`) so the
+    /// reconstructed term order is deterministic and agrees with the
+    /// snapshot/delta function entries (which are var-ordered too).
     pub fn constraint_expression(&self, con: ConId) -> Result<LinExpr, ModelError> {
         if !self.constraints.contains(con) {
             return Err(ModelError::ConstraintNotFound(con));
         }
 
+        let mut terms: Vec<(VarId, f64)> = self
+            .coefficients
+            .for_constraint(con)
+            .filter_map(|coeff_id| {
+                self.coefficients
+                    .get(coeff_id)
+                    .map(|data| (data.var, data.cached_value))
+            })
+            .collect();
+        terms.sort_by_key(|(var, _)| *var);
+
         let mut expr = LinExpr::new();
-        for coeff_id in self.coefficients.for_constraint(con) {
-            if let Some(data) = self.coefficients.get(coeff_id) {
-                expr = expr.term(data.cached_value, data.var);
-            }
+        for (var, value) in terms {
+            expr = expr.term(value, var);
         }
 
         Ok(expr)
