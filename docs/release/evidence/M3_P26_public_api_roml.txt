@@ -112,13 +112,13 @@ pub roml::advanced::reference::ReferenceBackend::variables: std::collections::ha
 impl roml::solver::reference::ReferenceBackend
 pub fn roml::solver::reference::ReferenceBackend::apply_batch(&mut self, &roml::delta::DeltaBatch, &mut roml::sync::AdapterCursor) -> core::result::Result<roml::sync::ApplyOutcome, alloc::string::String>
 pub fn roml::solver::reference::ReferenceBackend::apply_compiled_delta(&mut self, &roml::compiler::backend_ir::BackendDeltaBatch) -> core::result::Result<(), roml::compiler::CompileError>
-pub fn roml::solver::reference::ReferenceBackend::apply_compiled_op(&mut self, &roml::compiler::backend_ir::BackendOp)
+pub fn roml::solver::reference::ReferenceBackend::apply_compiled_op(&mut self, &roml::compiler::backend_ir::BackendOp) -> core::result::Result<(), roml::compiler::CompileError>
 pub fn roml::solver::reference::ReferenceBackend::apply_op(&mut self, &roml::delta::ModelOp) -> core::result::Result<(), alloc::string::String>
 pub fn roml::solver::reference::ReferenceBackend::compiled_normalized_view(&self) -> roml::solver::reference::CompiledNormalizedView
 pub fn roml::solver::reference::ReferenceBackend::new() -> Self
 pub fn roml::solver::reference::ReferenceBackend::normalized_view(&self) -> roml::solver::reference::NormalizedView
 pub fn roml::solver::reference::ReferenceBackend::rebuild(&mut self, &roml::snapshot::ModelSnapshot, &mut roml::sync::AdapterCursor)
-pub fn roml::solver::reference::ReferenceBackend::rebuild_compiled(&mut self, &roml::compiler::backend_ir::BackendSnapshot)
+pub fn roml::solver::reference::ReferenceBackend::rebuild_compiled(&mut self, &roml::compiler::backend_ir::BackendSnapshot) -> core::result::Result<(), roml::compiler::CompileError>
 impl core::clone::Clone for roml::solver::reference::ReferenceBackend
 pub fn roml::solver::reference::ReferenceBackend::clone(&self) -> roml::solver::reference::ReferenceBackend
 impl core::default::Default for roml::solver::reference::ReferenceBackend
@@ -697,6 +697,8 @@ pub fn roml::compiler::capability::CompilationPolicy::from(T) -> T
 pub enum roml::advanced::CompileError
 pub roml::advanced::CompileError::IdentityOverflow
 pub roml::advanced::CompileError::InvalidObjectivePolicy(roml::compiler::backend_ir::CompiledObjectiveId)
+pub roml::advanced::CompileError::InvalidReference
+pub roml::advanced::CompileError::InvalidReference::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::advanced::CompileError::MissingOrigin
 pub roml::advanced::CompileError::MissingOrigin::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::advanced::CompileError::RebuildRequired(alloc::string::String)
@@ -1207,6 +1209,7 @@ pub unsafe fn roml::revision::RevisionError::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::revision::RevisionError
 pub fn roml::revision::RevisionError::from(T) -> T
 pub enum roml::advanced::SupportLevel
+pub roml::advanced::SupportLevel::Bridge
 pub roml::advanced::SupportLevel::Native
 pub roml::advanced::SupportLevel::Unsupported
 impl core::clone::Clone for roml::compiler::capability::SupportLevel
@@ -1656,6 +1659,8 @@ pub roml::advanced::BackendDeltaBatch::origin_additions: roml::compiler::origin:
 pub roml::advanced::BackendDeltaBatch::recipe_fingerprint: roml::compiler::backend_ir::RecipeFingerprint
 pub roml::advanced::BackendDeltaBatch::to_compilation: roml::compiler::backend_ir::CompilationId
 pub roml::advanced::BackendDeltaBatch::to_revision: roml::revision::ModelRevision
+impl roml::compiler::backend_ir::BackendDeltaBatch
+pub fn roml::compiler::backend_ir::BackendDeltaBatch::validate(&self, &roml::compiler::backend_ir::CompiledEntityRegistry) -> core::result::Result<(), roml::compiler::CompileError>
 impl core::clone::Clone for roml::compiler::backend_ir::BackendDeltaBatch
 pub fn roml::compiler::backend_ir::BackendDeltaBatch::clone(&self) -> roml::compiler::backend_ir::BackendDeltaBatch
 impl core::cmp::PartialEq for roml::compiler::backend_ir::BackendDeltaBatch
@@ -1837,6 +1842,8 @@ pub roml::advanced::BackendSnapshot::report: roml::compiler::report::Compilation
 pub roml::advanced::BackendSnapshot::source_instance: roml::identity::ModelInstanceId
 pub roml::advanced::BackendSnapshot::source_revision: roml::revision::ModelRevision
 pub roml::advanced::BackendSnapshot::variables: alloc::vec::Vec<roml::compiler::backend_ir::CompiledVariable>
+impl roml::compiler::backend_ir::BackendSnapshot
+pub fn roml::compiler::backend_ir::BackendSnapshot::validate(&self) -> core::result::Result<(), roml::compiler::CompileError>
 impl core::clone::Clone for roml::compiler::backend_ir::BackendSnapshot
 pub fn roml::compiler::backend_ir::BackendSnapshot::clone(&self) -> roml::compiler::backend_ir::BackendSnapshot
 impl core::cmp::PartialEq for roml::compiler::backend_ir::BackendSnapshot
@@ -2274,6 +2281,49 @@ impl<T> core::clone::CloneToUninit for roml::compiler::backend_ir::CompiledConst
 pub unsafe fn roml::compiler::backend_ir::CompiledConstraintId::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::compiler::backend_ir::CompiledConstraintId
 pub fn roml::compiler::backend_ir::CompiledConstraintId::from(T) -> T
+pub struct roml::advanced::CompiledEntityRegistry
+pub roml::advanced::CompiledEntityRegistry::objectives: alloc::collections::btree::set::BTreeSet<roml::compiler::backend_ir::CompiledObjectiveId>
+pub roml::advanced::CompiledEntityRegistry::rows: alloc::collections::btree::set::BTreeSet<roml::compiler::backend_ir::CompiledConstraintId>
+pub roml::advanced::CompiledEntityRegistry::variables: alloc::collections::btree::set::BTreeSet<roml::compiler::backend_ir::CompiledVariableId>
+impl core::clone::Clone for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::clone(&self) -> roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::cmp::Eq for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::cmp::PartialEq for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::eq(&self, &roml::compiler::backend_ir::CompiledEntityRegistry) -> bool
+impl core::default::Default for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::default() -> roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::fmt::Debug for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Freeze for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Send for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Sync for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Unpin for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::UnsafeUnpin for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::panic::unwind_safe::RefUnwindSafe for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::panic::unwind_safe::UnwindSafe for roml::compiler::backend_ir::CompiledEntityRegistry
+impl<T, U> core::convert::Into<U> for roml::compiler::backend_ir::CompiledEntityRegistry where U: core::convert::From<T>
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml::compiler::backend_ir::CompiledEntityRegistry where U: core::convert::Into<T>
+pub type roml::compiler::backend_ir::CompiledEntityRegistry::Error = core::convert::Infallible
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for roml::compiler::backend_ir::CompiledEntityRegistry where U: core::convert::TryFrom<T>
+pub type roml::compiler::backend_ir::CompiledEntityRegistry::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml::compiler::backend_ir::CompiledEntityRegistry where T: core::clone::Clone
+pub type roml::compiler::backend_ir::CompiledEntityRegistry::Owned = T
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::clone_into(&self, &mut T)
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::to_owned(&self) -> T
+impl<T> core::any::Any for roml::compiler::backend_ir::CompiledEntityRegistry where T: 'static + ?core::marker::Sized
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml::compiler::backend_ir::CompiledEntityRegistry where T: ?core::marker::Sized
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml::compiler::backend_ir::CompiledEntityRegistry where T: ?core::marker::Sized
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml::compiler::backend_ir::CompiledEntityRegistry where T: core::clone::Clone
+pub unsafe fn roml::compiler::backend_ir::CompiledEntityRegistry::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::from(T) -> T
 pub struct roml::advanced::CompiledLinearRow
 pub roml::advanced::CompiledLinearRow::bounds: roml::model::constraint::ConstraintBounds
 pub roml::advanced::CompiledLinearRow::coefficients: alloc::vec::Vec<(roml::compiler::backend_ir::CompiledVariableId, f64)>
@@ -2933,6 +2983,7 @@ pub struct roml::advanced::FeatureSupport
 pub roml::advanced::FeatureSupport::level: roml::compiler::capability::SupportLevel
 pub roml::advanced::FeatureSupport::limitations: roml::compiler::capability::FeatureLimitations
 impl roml::compiler::capability::FeatureSupport
+pub fn roml::compiler::capability::FeatureSupport::is_bridge(&self) -> bool
 pub fn roml::compiler::capability::FeatureSupport::is_native(&self) -> bool
 pub fn roml::compiler::capability::FeatureSupport::native(roml::compiler::capability::FeatureLimitations) -> Self
 pub fn roml::compiler::capability::FeatureSupport::unsupported(roml::compiler::capability::FeatureLimitations) -> Self
@@ -3706,6 +3757,7 @@ impl<T> core::convert::From<T> for roml::solution::SolutionStore
 pub fn roml::solution::SolutionStore::from(T) -> T
 pub struct roml::advanced::SolveMetadata
 pub roml::advanced::SolveMetadata::backend_name: alloc::string::String
+pub roml::advanced::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::advanced::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::advanced::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::advanced::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -3804,6 +3856,7 @@ pub unsafe fn roml::solver::request::SolveRequest::clone_to_uninit(&self, *mut u
 impl<T> core::convert::From<T> for roml::solver::request::SolveRequest
 pub fn roml::solver::request::SolveRequest::from(T) -> T
 pub struct roml::advanced::SolveResult
+pub roml::advanced::SolveResult::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::advanced::SolveResult::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::advanced::SolveResult::solution: core::option::Option<roml::solver::request::SolveSolution>
 pub roml::advanced::SolveResult::termination: roml::solver::backend::TerminationStatus
@@ -4149,6 +4202,7 @@ pub fn roml::advanced::BackendFixture::new_session(&self) -> core::result::Resul
 pub trait roml::advanced::BackendMetadata
 pub fn roml::advanced::BackendMetadata::capabilities(&self) -> roml::solver::backend::BackendCapabilities
 pub fn roml::advanced::BackendMetadata::name(&self) -> &str
+pub fn roml::advanced::BackendMetadata::typed_capabilities(&self) -> &roml::compiler::capability::BackendCapabilitySet
 pub trait roml::advanced::BackendSession
 pub fn roml::advanced::BackendSession::close(self) -> core::result::Result<(), roml::solver::backend::BackendError>
 pub fn roml::advanced::BackendSession::solve(&mut self, &roml::solver::request::SolveRequest) -> core::result::Result<roml::solver::request::SolveResult, roml::solver::backend::BackendError>
@@ -4372,6 +4426,8 @@ pub roml::compiler::backend_ir::BackendDeltaBatch::origin_additions: roml::compi
 pub roml::compiler::backend_ir::BackendDeltaBatch::recipe_fingerprint: roml::compiler::backend_ir::RecipeFingerprint
 pub roml::compiler::backend_ir::BackendDeltaBatch::to_compilation: roml::compiler::backend_ir::CompilationId
 pub roml::compiler::backend_ir::BackendDeltaBatch::to_revision: roml::revision::ModelRevision
+impl roml::compiler::backend_ir::BackendDeltaBatch
+pub fn roml::compiler::backend_ir::BackendDeltaBatch::validate(&self, &roml::compiler::backend_ir::CompiledEntityRegistry) -> core::result::Result<(), roml::compiler::CompileError>
 impl core::clone::Clone for roml::compiler::backend_ir::BackendDeltaBatch
 pub fn roml::compiler::backend_ir::BackendDeltaBatch::clone(&self) -> roml::compiler::backend_ir::BackendDeltaBatch
 impl core::cmp::PartialEq for roml::compiler::backend_ir::BackendDeltaBatch
@@ -4420,6 +4476,8 @@ pub roml::compiler::backend_ir::BackendSnapshot::report: roml::compiler::report:
 pub roml::compiler::backend_ir::BackendSnapshot::source_instance: roml::identity::ModelInstanceId
 pub roml::compiler::backend_ir::BackendSnapshot::source_revision: roml::revision::ModelRevision
 pub roml::compiler::backend_ir::BackendSnapshot::variables: alloc::vec::Vec<roml::compiler::backend_ir::CompiledVariable>
+impl roml::compiler::backend_ir::BackendSnapshot
+pub fn roml::compiler::backend_ir::BackendSnapshot::validate(&self) -> core::result::Result<(), roml::compiler::CompileError>
 impl core::clone::Clone for roml::compiler::backend_ir::BackendSnapshot
 pub fn roml::compiler::backend_ir::BackendSnapshot::clone(&self) -> roml::compiler::backend_ir::BackendSnapshot
 impl core::cmp::PartialEq for roml::compiler::backend_ir::BackendSnapshot
@@ -4578,6 +4636,49 @@ impl<T> core::clone::CloneToUninit for roml::compiler::backend_ir::CompiledConst
 pub unsafe fn roml::compiler::backend_ir::CompiledConstraintId::clone_to_uninit(&self, *mut u8)
 impl<T> core::convert::From<T> for roml::compiler::backend_ir::CompiledConstraintId
 pub fn roml::compiler::backend_ir::CompiledConstraintId::from(T) -> T
+pub struct roml::compiler::backend_ir::CompiledEntityRegistry
+pub roml::compiler::backend_ir::CompiledEntityRegistry::objectives: alloc::collections::btree::set::BTreeSet<roml::compiler::backend_ir::CompiledObjectiveId>
+pub roml::compiler::backend_ir::CompiledEntityRegistry::rows: alloc::collections::btree::set::BTreeSet<roml::compiler::backend_ir::CompiledConstraintId>
+pub roml::compiler::backend_ir::CompiledEntityRegistry::variables: alloc::collections::btree::set::BTreeSet<roml::compiler::backend_ir::CompiledVariableId>
+impl core::clone::Clone for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::clone(&self) -> roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::cmp::Eq for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::cmp::PartialEq for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::eq(&self, &roml::compiler::backend_ir::CompiledEntityRegistry) -> bool
+impl core::default::Default for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::default() -> roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::fmt::Debug for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Freeze for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Send for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Sync for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::Unpin for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::marker::UnsafeUnpin for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::panic::unwind_safe::RefUnwindSafe for roml::compiler::backend_ir::CompiledEntityRegistry
+impl core::panic::unwind_safe::UnwindSafe for roml::compiler::backend_ir::CompiledEntityRegistry
+impl<T, U> core::convert::Into<U> for roml::compiler::backend_ir::CompiledEntityRegistry where U: core::convert::From<T>
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml::compiler::backend_ir::CompiledEntityRegistry where U: core::convert::Into<T>
+pub type roml::compiler::backend_ir::CompiledEntityRegistry::Error = core::convert::Infallible
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for roml::compiler::backend_ir::CompiledEntityRegistry where U: core::convert::TryFrom<T>
+pub type roml::compiler::backend_ir::CompiledEntityRegistry::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml::compiler::backend_ir::CompiledEntityRegistry where T: core::clone::Clone
+pub type roml::compiler::backend_ir::CompiledEntityRegistry::Owned = T
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::clone_into(&self, &mut T)
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::to_owned(&self) -> T
+impl<T> core::any::Any for roml::compiler::backend_ir::CompiledEntityRegistry where T: 'static + ?core::marker::Sized
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml::compiler::backend_ir::CompiledEntityRegistry where T: ?core::marker::Sized
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml::compiler::backend_ir::CompiledEntityRegistry where T: ?core::marker::Sized
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml::compiler::backend_ir::CompiledEntityRegistry where T: core::clone::Clone
+pub unsafe fn roml::compiler::backend_ir::CompiledEntityRegistry::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml::compiler::backend_ir::CompiledEntityRegistry
+pub fn roml::compiler::backend_ir::CompiledEntityRegistry::from(T) -> T
 pub struct roml::compiler::backend_ir::CompiledLinearRow
 pub roml::compiler::backend_ir::CompiledLinearRow::bounds: roml::model::constraint::ConstraintBounds
 pub roml::compiler::backend_ir::CompiledLinearRow::coefficients: alloc::vec::Vec<(roml::compiler::backend_ir::CompiledVariableId, f64)>
@@ -5020,6 +5121,7 @@ pub unsafe fn roml::compiler::capability::CompilationPolicy::clone_to_uninit(&se
 impl<T> core::convert::From<T> for roml::compiler::capability::CompilationPolicy
 pub fn roml::compiler::capability::CompilationPolicy::from(T) -> T
 pub enum roml::compiler::capability::SupportLevel
+pub roml::compiler::capability::SupportLevel::Bridge
 pub roml::compiler::capability::SupportLevel::Native
 pub roml::compiler::capability::SupportLevel::Unsupported
 impl core::clone::Clone for roml::compiler::capability::SupportLevel
@@ -5158,6 +5260,7 @@ pub struct roml::compiler::capability::FeatureSupport
 pub roml::compiler::capability::FeatureSupport::level: roml::compiler::capability::SupportLevel
 pub roml::compiler::capability::FeatureSupport::limitations: roml::compiler::capability::FeatureLimitations
 impl roml::compiler::capability::FeatureSupport
+pub fn roml::compiler::capability::FeatureSupport::is_bridge(&self) -> bool
 pub fn roml::compiler::capability::FeatureSupport::is_native(&self) -> bool
 pub fn roml::compiler::capability::FeatureSupport::native(roml::compiler::capability::FeatureLimitations) -> Self
 pub fn roml::compiler::capability::FeatureSupport::unsupported(roml::compiler::capability::FeatureLimitations) -> Self
@@ -5551,6 +5654,8 @@ pub fn roml::compiler::session::CompilationSession::from(T) -> T
 pub enum roml::compiler::CompileError
 pub roml::compiler::CompileError::IdentityOverflow
 pub roml::compiler::CompileError::InvalidObjectivePolicy(roml::compiler::backend_ir::CompiledObjectiveId)
+pub roml::compiler::CompileError::InvalidReference
+pub roml::compiler::CompileError::InvalidReference::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::compiler::CompileError::MissingOrigin
 pub roml::compiler::CompileError::MissingOrigin::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::compiler::CompileError::RebuildRequired(alloc::string::String)
@@ -8599,6 +8704,9 @@ impl<T> core::convert::From<T> for roml::model::objective::Sense
 pub fn roml::model::objective::Sense::from(T) -> T
 pub enum roml::prelude::SolveError
 pub roml::prelude::SolveError::Commit(roml::model::ModelError)
+pub roml::prelude::SolveError::CompilationMismatch
+pub roml::prelude::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::prelude::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::prelude::SolveError::InvalidOptions(alloc::string::String)
 pub roml::prelude::SolveError::License(roml::solver::backend::BackendError)
 pub roml::prelude::SolveError::NoActiveObjective
@@ -9737,6 +9845,7 @@ impl<T> core::convert::From<T> for roml::solution::metadata::SynchronizationMode
 pub fn roml::solution::metadata::SynchronizationMode::from(T) -> T
 pub struct roml::solution::metadata::SolveMetadata
 pub roml::solution::metadata::SolveMetadata::backend_name: alloc::string::String
+pub roml::solution::metadata::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::solution::metadata::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::solution::metadata::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::solution::metadata::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -9974,6 +10083,7 @@ impl<T> core::convert::From<T> for roml::solution::SolutionStore
 pub fn roml::solution::SolutionStore::from(T) -> T
 pub struct roml::solution::SolveMetadata
 pub roml::solution::SolveMetadata::backend_name: alloc::string::String
+pub roml::solution::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::solution::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::solution::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::solution::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -10431,6 +10541,9 @@ pub fn roml::solver::conformance::run_sync_suite<F: roml::solver::session::Backe
 pub mod roml::solver::error
 pub enum roml::solver::error::SolveError
 pub roml::solver::error::SolveError::Commit(roml::model::ModelError)
+pub roml::solver::error::SolveError::CompilationMismatch
+pub roml::solver::error::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::solver::error::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::error::SolveError::InvalidOptions(alloc::string::String)
 pub roml::solver::error::SolveError::License(roml::solver::backend::BackendError)
 pub roml::solver::error::SolveError::NoActiveObjective
@@ -10516,7 +10629,7 @@ impl<T> core::borrow::BorrowMut<T> for roml::solver::facade::SolverSession<B> wh
 pub fn roml::solver::facade::SolverSession<B>::borrow_mut(&mut self) -> &mut T
 impl<T> core::convert::From<T> for roml::solver::facade::SolverSession<B>
 pub fn roml::solver::facade::SolverSession<B>::from(T) -> T
-pub fn roml::solver::facade::normalize_result(&roml::solver::request::SolveResult, roml::revision::ModelRevision, core::option::Option<roml::id::ObjId>, &str, roml::solution::metadata::SynchronizationMode, roml::identity::ModelLineageId, roml::identity::ModelInstanceId) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+pub fn roml::solver::facade::normalize_result(&roml::solver::request::SolveResult, roml::revision::ModelRevision, core::option::Option<roml::id::ObjId>, &str, roml::solution::metadata::SynchronizationMode, roml::identity::ModelLineageId, roml::identity::ModelInstanceId, roml::compiler::backend_ir::CompilationId) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
 pub mod roml::solver::options
 pub struct roml::solver::options::SolveOptions
 impl roml::solver::options::SolveOptions
@@ -10673,13 +10786,13 @@ pub roml::solver::reference::ReferenceBackend::variables: std::collections::hash
 impl roml::solver::reference::ReferenceBackend
 pub fn roml::solver::reference::ReferenceBackend::apply_batch(&mut self, &roml::delta::DeltaBatch, &mut roml::sync::AdapterCursor) -> core::result::Result<roml::sync::ApplyOutcome, alloc::string::String>
 pub fn roml::solver::reference::ReferenceBackend::apply_compiled_delta(&mut self, &roml::compiler::backend_ir::BackendDeltaBatch) -> core::result::Result<(), roml::compiler::CompileError>
-pub fn roml::solver::reference::ReferenceBackend::apply_compiled_op(&mut self, &roml::compiler::backend_ir::BackendOp)
+pub fn roml::solver::reference::ReferenceBackend::apply_compiled_op(&mut self, &roml::compiler::backend_ir::BackendOp) -> core::result::Result<(), roml::compiler::CompileError>
 pub fn roml::solver::reference::ReferenceBackend::apply_op(&mut self, &roml::delta::ModelOp) -> core::result::Result<(), alloc::string::String>
 pub fn roml::solver::reference::ReferenceBackend::compiled_normalized_view(&self) -> roml::solver::reference::CompiledNormalizedView
 pub fn roml::solver::reference::ReferenceBackend::new() -> Self
 pub fn roml::solver::reference::ReferenceBackend::normalized_view(&self) -> roml::solver::reference::NormalizedView
 pub fn roml::solver::reference::ReferenceBackend::rebuild(&mut self, &roml::snapshot::ModelSnapshot, &mut roml::sync::AdapterCursor)
-pub fn roml::solver::reference::ReferenceBackend::rebuild_compiled(&mut self, &roml::compiler::backend_ir::BackendSnapshot)
+pub fn roml::solver::reference::ReferenceBackend::rebuild_compiled(&mut self, &roml::compiler::backend_ir::BackendSnapshot) -> core::result::Result<(), roml::compiler::CompileError>
 impl core::clone::Clone for roml::solver::reference::ReferenceBackend
 pub fn roml::solver::reference::ReferenceBackend::clone(&self) -> roml::solver::reference::ReferenceBackend
 impl core::default::Default for roml::solver::reference::ReferenceBackend
@@ -10897,6 +11010,7 @@ pub unsafe fn roml::solver::request::SolveRequest::clone_to_uninit(&self, *mut u
 impl<T> core::convert::From<T> for roml::solver::request::SolveRequest
 pub fn roml::solver::request::SolveRequest::from(T) -> T
 pub struct roml::solver::request::SolveResult
+pub roml::solver::request::SolveResult::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::solver::request::SolveResult::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::solver::request::SolveResult::solution: core::option::Option<roml::solver::request::SolveSolution>
 pub roml::solver::request::SolveResult::termination: roml::solver::backend::TerminationStatus
@@ -11042,6 +11156,7 @@ pub fn roml::solver::session::BackendFixture::new_session(&self) -> core::result
 pub trait roml::solver::session::BackendMetadata
 pub fn roml::solver::session::BackendMetadata::capabilities(&self) -> roml::solver::backend::BackendCapabilities
 pub fn roml::solver::session::BackendMetadata::name(&self) -> &str
+pub fn roml::solver::session::BackendMetadata::typed_capabilities(&self) -> &roml::compiler::capability::BackendCapabilitySet
 pub trait roml::solver::session::BackendSession
 pub fn roml::solver::session::BackendSession::close(self) -> core::result::Result<(), roml::solver::backend::BackendError>
 pub fn roml::solver::session::BackendSession::solve(&mut self, &roml::solver::request::SolveRequest) -> core::result::Result<roml::solver::request::SolveResult, roml::solver::backend::BackendError>
@@ -11103,6 +11218,9 @@ impl<T> core::convert::From<T> for roml::solver::LpAlgorithm
 pub fn roml::solver::LpAlgorithm::from(T) -> T
 pub enum roml::solver::SolveError
 pub roml::solver::SolveError::Commit(roml::model::ModelError)
+pub roml::solver::SolveError::CompilationMismatch
+pub roml::solver::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::solver::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::SolveError::InvalidOptions(alloc::string::String)
 pub roml::solver::SolveError::License(roml::solver::backend::BackendError)
 pub roml::solver::SolveError::NoActiveObjective
@@ -12399,6 +12517,9 @@ impl<T> core::convert::From<T> for roml::model::objective::Sense
 pub fn roml::model::objective::Sense::from(T) -> T
 pub enum roml::SolveError
 pub roml::SolveError::Commit(roml::model::ModelError)
+pub roml::SolveError::CompilationMismatch
+pub roml::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::SolveError::InvalidOptions(alloc::string::String)
 pub roml::SolveError::License(roml::solver::backend::BackendError)
 pub roml::SolveError::NoActiveObjective
@@ -14471,6 +14592,7 @@ impl<T> core::convert::From<T> for roml::solution::SolutionStore
 pub fn roml::solution::SolutionStore::from(T) -> T
 pub struct roml::SolveMetadata
 pub roml::SolveMetadata::backend_name: alloc::string::String
+pub roml::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -14614,6 +14736,7 @@ pub unsafe fn roml::solver::request::SolveRequest::clone_to_uninit(&self, *mut u
 impl<T> core::convert::From<T> for roml::solver::request::SolveRequest
 pub fn roml::solver::request::SolveRequest::from(T) -> T
 pub struct roml::SolveResult
+pub roml::SolveResult::compilation_id: roml::compiler::backend_ir::CompilationId
 pub roml::SolveResult::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::SolveResult::solution: core::option::Option<roml::solver::request::SolveSolution>
 pub roml::SolveResult::termination: roml::solver::backend::TerminationStatus
@@ -14940,6 +15063,7 @@ pub fn roml::model::variable::VariableDef::from(T) -> T
 pub trait roml::BackendMetadata
 pub fn roml::BackendMetadata::capabilities(&self) -> roml::solver::backend::BackendCapabilities
 pub fn roml::BackendMetadata::name(&self) -> &str
+pub fn roml::BackendMetadata::typed_capabilities(&self) -> &roml::compiler::capability::BackendCapabilitySet
 pub trait roml::BackendSession
 pub fn roml::BackendSession::close(self) -> core::result::Result<(), roml::solver::backend::BackendError>
 pub fn roml::BackendSession::solve(&mut self, &roml::solver::request::SolveRequest) -> core::result::Result<roml::solver::request::SolveResult, roml::solver::backend::BackendError>
