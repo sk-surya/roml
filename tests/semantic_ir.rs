@@ -15,8 +15,8 @@ use roml::construct::{
     Construct, ConstructEntry, ConstructKind, FixturePayload, FormulationPreference,
 };
 use roml::{
-    continuous, ConstraintExprExt, FunctionConstraint, IntoScalarFunction, Model, ModelError,
-    ModelRevision, ScalarFunction, ScalarSet, ValueExpr,
+    continuous, ConstraintBounds, ConstraintExprExt, FunctionConstraint, IntoScalarFunction, Model,
+    ModelError, ModelOp, ModelRevision, ScalarFunction, ScalarSet, ValueExpr,
 };
 
 // =========================================================================
@@ -239,6 +239,66 @@ fn semantic_ir_preserves_symbolic_parameter_terms() {
         .expect("snapshot carries the function entry after update");
     assert_eq!(snap_entry2.dependencies, vec![p]);
     assert!(snap_entry2.terms[0].1.has_dependencies());
+}
+
+// =========================================================================
+// 3a2. Delta `functions` contract (F2)
+// =========================================================================
+
+/// F2 (a): a constraint added and removed in the SAME commit must not leave a
+/// stale `FunctionEntry` — the delta `functions` view is "constraints ADDED by
+/// this batch ... minus constraints removed by this batch".
+#[test]
+fn delta_functions_exclude_constraints_added_and_removed_in_same_batch() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((x).le(10.0)).unwrap();
+    model.remove_constraint(con).unwrap();
+    let r1 = model.commit().unwrap();
+
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r1)
+        .expect("add-then-remove batch present");
+    assert!(
+        !batch.functions.iter().any(|e| e.constraint == con),
+        "add-then-remove in one batch must not leave a stale FunctionEntry"
+    );
+}
+
+/// F2 (b): the delta `functions` view is narrowed — updates to PRE-EXISTING
+/// constraints ride the underlying ops (`SetConstraintBounds`/`SetCell`/
+/// `RemoveConstraint`), not the `functions` view. A bounds-only update to an
+/// existing constraint produces no `FunctionEntry`.
+#[test]
+fn delta_functions_contract_updates_ride_ops_not_functions_view() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    let con = model.add_constraint((x).le(10.0)).unwrap();
+    let r1 = model.commit().unwrap();
+
+    // A pre-existing constraint's bounds are updated in the next commit.
+    model.set_constraint_bounds(con, ConstraintBounds::le(5.0)).unwrap();
+    let r2 = model.commit().unwrap();
+    assert_ne!(r1, r2);
+
+    let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+    let batch = batches
+        .iter()
+        .find(|b| b.to == r2)
+        .expect("bounds-update batch present");
+    assert!(
+        batch.functions.is_empty(),
+        "updates to pre-existing constraints ride the ops, not the functions view"
+    );
+    assert!(
+        batch
+            .operations
+            .iter()
+            .any(|op| matches!(op, ModelOp::SetConstraintBounds { con: c, .. } if *c == con)),
+        "the update is carried by the underlying SetConstraintBounds op"
+    );
 }
 
 // =========================================================================
