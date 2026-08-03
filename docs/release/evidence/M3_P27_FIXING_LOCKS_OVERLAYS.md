@@ -167,3 +167,117 @@ Task 8 gate: **PASSED** — `cargo test -p roml --all-targets` (695) and `cargo 
 | # | SHA | Message |
 |---|---|---|
 | 1 | `d19b54c` | `feat(model): add first-class variable fixing` |
+
+---
+
+# Task 9 — assignments, solution locks, and the SolveOverlay contract
+
+**Requirements:** SM-06 (all clauses), SM-02.2 (secondary), the pinned SolveOverlay contract resolving issue #26 item 1
+**Plan:** `27-PLAN.md` Task 9
+**Commit:** `29ccf95` `feat(solve): add assignments and solution locks`
+**Status:** Task 9 complete — assignments, locks, and the overlay contract (types + compiler) implemented and verified. Execution (apply/rollback/receipts) is Task 10.
+
+## Scope
+
+Task 9 adds the public packet types for hard solution reuse and the pinned SolveOverlay contract:
+
+- `PrimalAssignment { lineage, source_instance, source_revision, values }` — a neutral partial value map; no feasibility/optimality claim (SM-06.1).
+- `Solution::primal_assignment` binds the SOLVED model's real lineage/instance/revision and the solution's user-variable values; compiler-only variables are excluded structurally (SM-06.2).
+- `SolutionLock` / `LockSelector { AllAssigned, IntegerAssigned, BinaryAssigned, Variables, Except }` / `ContinuousLock { Exact, Within { absolute } }` — distinct packet types (SM-06.3–06.5).
+- `SolveOverlay` contract (issue #26 item 1): contents (`temporary_fixings`/`locks`/`objective_locks`/`cutoffs`/`id: OverlayId`), objective override → `SetObjectivePolicy(CompiledObjectivePolicy::Single)`, fresh `CompilationId` `C_overlay` distinct from `C_base`, exact-base staleness rejection, before-mutation assignment/band/value validation (SM-06.6), and a `SolveOverlay` origin on every added temporary row (D5).
+
+## TDD — RED failures (recorded before implementation)
+
+`cargo test -p roml --test solve_overlay --no-run` failed to compile against the Task 8 tree — the new test referenced the intended public surface (`PrimalAssignment`, `SolutionLock`, `LockSelector`, `ContinuousLock`, `SolveOverlay`, `ObjectiveLock`, `ObjectiveCutoff`, `OverlayError`, `CutoffDirection`, `OverlayOp`, `compile_overlay`, `Solution::primal_assignment`), none of which existed. Expected failures, recorded verbatim (excerpt):
+
+```text
+error[E0432]: unresolved imports `roml::advanced::CutoffDirection`, `roml::advanced::OverlayOp`
+error[E0432]: unresolved imports `roml::AssignmentError`, `roml::ContinuousLock`, `roml::LockSelector`, `roml::ObjectiveCutoff`, `roml::ObjectiveLock`, `roml::OverlayError`, `roml::PrimalAssignment`, `roml::SolutionLock`, `roml::SolveOverlay`
+error[E0433]: cannot find `Generation` in `roml`
+```
+
+No production source existed for the assignment/lock/overlay surface; every new test failed at compile time.
+
+## Implementation
+
+### `src/assignment.rs` (new)
+- `PrimalAssignment { lineage, source_instance, source_revision, values: BTreeMap<Variable, f64> }` — public packet shape, `Clone, Debug, PartialEq`.
+- `PrimalAssignment::validate_for(&Model) -> Result<(), AssignmentError>` gates on lineage equality (D4), live generation via `variable_domain` (stale/removed → `StaleVariable`), and value/domain compatibility (`ValueOutOfBounds`, tolerance-aware for integrality on integer/binary variables). Instance/revision are provenance, never authority.
+- `PrimalAssignment::subset(&[Variable])` filters the value map preserving lineage/provenance; `PrimalAssignment::value(Variable)`.
+- `SolutionLock { assignment, selector, continuous }`, `LockSelector { AllAssigned, IntegerAssigned, BinaryAssigned, Variables(BTreeSet), Except(BTreeSet) }`, `ContinuousLock { Exact, Within { absolute } }` — packet shapes; `SolutionLock::resolve` (crate-private) validates the assignment then resolves the selected `(Variable, f64)` pairs deterministically.
+- `AssignmentError { LineageMismatch, StaleVariable, ValueOutOfBounds }`.
+
+### `src/solution/mod.rs`
+- `Solution::primal_assignment()` — binds `metadata.model_lineage`/`model_instance`/`model_revision` (CR-02: real solved identity, never `SolveMetadata::default()`) and the user-variable values already stored on the `Solution`.
+
+### `src/solver/overlay.rs` (new — types + compiler; execution is Task 10)
+- `SolveOverlay { id: OverlayId, temporary_fixings, locks, objective_locks, cutoffs }` with `SolveOverlay::new` allocating the overlay id through the checked counter.
+- `ObjectiveLock { objective, absolute_tolerance, relative_tolerance }`, `ObjectiveCutoff { objective, limit, direction }`, `CutoffDirection { Upper, Lower }`.
+- `CompiledOverlay { base_compilation, compilation_id, overlay_id, operations, origin_additions, objective_policy_override }`, `#[non_exhaustive] OverlayOp { SetTemporaryVariableBounds, AddTemporaryRow, RemoveTemporaryRow, SetObjectivePolicy }`.
+- `compile_overlay(model, compiler, overlay, objective_override) -> Result<CompiledOverlay, OverlayError>` implements the pinned mapping: temporary fixings → equal bounds; locks → selector-resolved `SetTemporaryVariableBounds` (`Exact` → `[v,v]`, `Within` → band, continuous-only); objective locks/cutoffs → `AddTemporaryRow` over the compiled objective's coefficients with a `SolveOverlay` origin; override → `SetObjectivePolicy(Single)`. Fresh `CompilationId` allocated for `C_overlay` (D28). Stale base (absent or compiler bound to another model instance) and invalid assignments/bands fail before any op (SM-06.6).
+
+### `src/compiler/origin.rs`
+- `GeneratedRole` gains `ObjectiveLockRow` and `CutoffRow` (enum stays `#[non_exhaustive]`); `OverlayId::allocate` is now used (the `#[allow(dead_code)]` removed).
+
+### `src/compiler/session.rs`
+- Additive `pub(crate)` accessors: `source_instance`, `compiled_variable_id`, `compiled_objective_id`, `next_row_index` (forward id resolution for the overlay compiler; no behavior change).
+
+### `src/model/mod.rs`
+- Additive read-only `Model::objective_sense(ObjId) -> Option<Sense>` (objective-lock degradation direction, design §15.2).
+
+### `src/lib.rs` / `src/advanced.rs`
+- Public surface: `PrimalAssignment`, `SolutionLock`, `LockSelector`, `ContinuousLock`, `SolveOverlay`, `ObjectiveLock`, `ObjectiveCutoff`, `OverlayError`, `CutoffDirection`, `AssignmentError` through the reviewed public root; `CompiledOverlay`, `OverlayOp`, `compile_overlay` through `advanced` (compiler-facing).
+
+### `tests/solve_overlay.rs` (new — 23 tests)
+- Assignment packet/provenance/validate_for (lineage, stale generation, out-of-domain, non-integral, clone reuse per D4); `Solution::primal_assignment` + `subset`; all five selectors and both continuous locks (including the `Within`-on-integer typed error); the pinned overlay contract compile (contents, override, fresh id, origins, stale rejection, before-mutation validation); revision invariance (overlay compile never advances the model).
+
+## Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test solve_overlay` | 0 — **23 passed; 0 failed** |
+
+## Full verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --all-targets` | 0 — **718 passed; 0 failed; 2 ignored** (baseline 695 + 23 new) |
+| `cargo test -p roml-highs --all-targets` | 0 — **114 passed; 0 failed** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — docs generated, no warnings |
+| `cargo test -p roml --doc` | 0 — doctests pass |
+| `cargo fmt --all -- --check` | 0 — formatting clean |
+
+No `roml-mosek`/`roml-xpress` command was run (M2 convention, out of scope).
+
+## Acceptance criteria
+
+- `PrimalAssignment` is a partial value map with lineage plus instance/revision provenance and makes no feasibility/optimality claim (SM-06.1) — **met**.
+- `Solution::primal_assignment()` returns a lineage-bound assignment whose values are the solution's user-variable values, excluding compiler-only variables; `PrimalAssignment::subset` produces selected subsets (SM-06.2) — **met**.
+- `SolutionLock`, `MipStart`, `VariableHints`, and persistent `VariableFixing` are distinct public types; starts/hints land as types in P28 and no conversion exists without explicit policy (SM-06.3, D8) — **met** for locks/fixings; the distinction is documented.
+- All five `LockSelector` variants and both `ContinuousLock` variants behave as specified; `Within` on a non-continuous variable is a typed error (SM-06.4, SM-06.5) — **met**.
+- Stale or unrelated assignments fail before backend mutation via `validate_for` gating (SM-06.6) — **met** (`compile_overlay_rejects_invalid_assignment_before_any_op`; a failed compile produces no ops).
+- `compile_overlay` implements the pinned `SolveOverlay` contract: contents enumerated, objective override maps to `SetObjectivePolicy`, the result tags the override solve with a fresh `CompilationId` distinct from the base, and the lifecycle runs against the exact base `CompilationId` (issue #26 item 1) — **met**.
+- SM-02.2 (secondary) closure: reusable assignments validate lineage + entity generations — **met** at the mechanism level (`PrimalAssignment::validate_for`); clause-level closure will be stated in `TRACEABILITY.md`.
+
+## Deviations from the plan
+
+1. **D9-1 — `OverlayError` gains two typed-error variants beyond the plan's enumerated list**: `WithinBandOnNonContinuous { variable }` and `InvalidLockBand { variable, absolute }`. The pinned contract REQUIRES a typed error for a `Within` band on an integer/binary variable ("an integer band cannot round-trip exactly"); the plan's enumerated `OverlayError { StaleCompilation, Assignment, ObjectiveNotFound, IdentityOverflow }` omits it. Correctness also requires rejecting a non-finite/negative `absolute`. Added to complete the pinned contract (Rule 2).
+2. **D9-2 — `Model::objective_sense` added** (additive read-only accessor, no behavior change). The objective-lock degradation row direction follows the objective's sense (design §15.2); no sense accessor existed.
+3. **D9-3 — objective-lock degradation rows are compiled with a zero reference optimum** in P27: `f(x) <= absolute_tolerance` (min) / `f(x) >= -absolute_tolerance` (max), with the objective's constant folded into the row bound. P31 supplies the real stage optimum `z` (`f(x) <= z + abs + rel*|z|`, design §15.2); the `relative_tolerance` therefore does not affect the P27 placeholder row RHS.
+4. **D9-4 — compile-time staleness rejects both an absent compiled base and a compiler bound to a different model instance** via the new `CompilationSession::source_instance` accessor, both as typed `OverlayError::StaleCompilation` before any op.
+
+## Reviewer findings
+
+Pending the P27 two-stage independent review at the phase boundary (plan §"Review gates").
+
+## Gate result
+
+Task 9 gate: **PASSED** — `cargo test -p roml --all-targets` (718) and `cargo test -p roml-highs --all-targets` (114) green; clippy `-D warnings` clean on both crates; `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` clean; `cargo fmt --all -- --check` clean; no `roml-mosek`/`roml-xpress` command run. The phase gates "locks never advance model revision" and "exact compilation mismatches reject before mutation" are structurally satisfied by Task 9's read-only compiler and before-mutation validation; their full end-to-end assertion (revision-invariance after a full overlay solve, apply-time stale rejection) is Task 10.
+
+## Task 9 commit trail
+
+| # | SHA | Message |
+|---|---|---|
+| 1 | `29ccf95` | `feat(solve): add assignments and solution locks` |

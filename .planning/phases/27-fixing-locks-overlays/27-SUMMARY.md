@@ -98,3 +98,67 @@ Declared/effective domain separation and first-class persistent fixing: `Variabl
 ## Self-Check: PASSED
 
 Created files exist (`tests/fixing_assignment.rs`, `docs/release/evidence/M3_P27_FIXING_LOCKS_OVERLAYS.md`); commit `d19b54c` exists in `git log`; all verification commands exit 0; no deletions or untracked files left behind.
+
+---
+
+# Task 9 — assignments, solution locks, and the SolveOverlay contract
+
+**Phase:** 27-fixing-locks-overlays  **Plan:** 01 (Task 9 of 3)
+**Requirements:** SM-06 (all clauses), SM-02.2 (secondary), the pinned SolveOverlay contract (issue #26 item 1)
+**Status:** complete
+**Commits:** `29ccf95` `feat(solve): add assignments and solution locks`
+**actuals:**
+```yaml
+tokens: 32000   # chars/4 over the realized Task 9 diff (≈128 KB)
+tasks: 1
+commits: 1
+```
+
+## One-liner
+
+Assignments, solution locks, and the pinned `SolveOverlay` contract (issue #26 item 1): `PrimalAssignment` (lineage + provenance, no feasibility/optimality claim, `validate_for` gating on lineage + generation + value/domain per SM-02.2/SM-06.6), `Solution::primal_assignment`, `SolutionLock`/`LockSelector`/`ContinuousLock`, and the overlay types + `compile_overlay` compiler (fresh `CompilationId`, `SetObjectivePolicy(Single)` override mapping, `SolveOverlay` origins on every added row, stale-base rejection before any op).
+
+## What was built
+
+- **`src/assignment.rs`** (new) — `PrimalAssignment { lineage, source_instance, source_revision, values: BTreeMap<Variable, f64> }` (SM-06.1), `validate_for` (lineage equality D4 + live generation + value/domain, tolerance-aware for integrality), `subset`, `value`, `AssignmentError { LineageMismatch, StaleVariable, ValueOutOfBounds }`. `SolutionLock`/`LockSelector` (AllAssigned/IntegerAssigned/BinaryAssigned/Variables/Except)/`ContinuousLock` (Exact/Within{absolute}) packet shapes; crate-private `resolve` selects the (variable, value) pairs deterministically.
+- **`src/solution/mod.rs`** — `Solution::primal_assignment` binds the SOLVED model's real lineage/instance/revision (CR-02) and the solution's user-variable values (SM-06.2).
+- **`src/solver/overlay.rs`** (new, types + compiler; execution is Task 10) — `SolveOverlay` (contents + `id: OverlayId` allocated at construction), `ObjectiveLock`, `ObjectiveCutoff`, `CutoffDirection`, `CompiledOverlay`, `#[non_exhaustive] OverlayOp`, `OverlayError`, and `compile_overlay` implementing the pinned overlay-to-compiled-IR mapping.
+- **`src/compiler/origin.rs`** — `GeneratedRole` gains `ObjectiveLockRow`/`CutoffRow`; `OverlayId::allocate` now used.
+- **`src/compiler/session.rs`** — additive `pub(crate)` forward-id accessors: `source_instance`, `compiled_variable_id`, `compiled_objective_id`, `next_row_index`.
+- **`src/model/mod.rs`** — additive read-only `Model::objective_sense` (objective-lock degradation direction, design §15.2).
+- **`src/lib.rs` / `src/advanced.rs`** — public-surface wiring: root exports the assignment/lock/overlay packet types; `advanced` exports `compile_overlay`/`CompiledOverlay`/`OverlayOp`.
+- **`tests/solve_overlay.rs`** (new) — 23 tests covering the four Task 9 test groups.
+
+## Verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test solve_overlay` | 0 — 23 passed |
+| `cargo test -p roml --all-targets` | 0 — 718 passed; 0 failed; 2 ignored (baseline 695 + 23 new) |
+| `cargo test -p roml-highs --all-targets` | 0 — 114 passed (no HiGHS surface touched by Task 9) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — clean |
+| `cargo test -p roml --doc` | 0 — doctests pass |
+| `cargo fmt --all -- --check` | 0 — clean |
+
+## Deviations from plan
+
+1. **`OverlayError` gains `WithinBandOnNonContinuous { variable }` and `InvalidLockBand { variable, absolute }`** beyond the plan's enumerated list. The pinned contract requires a typed error for a `Within` band on an integer/binary variable; correctness requires rejecting a non-finite/negative half-width (Rule 2).
+2. **`Model::objective_sense` added** (additive read-only accessor) — required for the objective-lock degradation row direction (design §15.2).
+3. **Objective-lock degradation rows compile with a zero reference optimum** in P27 (`f(x) <= abs_tol` min / `f(x) >= -abs_tol` max, constant folded into the bound). P31 supplies the real stage optimum `z` (design §15.2).
+4. **Compile-time staleness rejects an absent base AND a cross-model base** via the new `source_instance` accessor, both as typed `OverlayError::StaleCompilation` before any op.
+
+## Known Stubs
+
+- **Objective-lock row RHS** is a zero-reference placeholder in P27 (`relative_tolerance` unused at compile time); P31 materializes the stage-optimum RHS. Documented in `docs/release/evidence/M3_P27_FIXING_LOCKS_OVERLAYS.md` (deviation D9-3).
+- **`OverlayApplyReceipt` / `OverlayRollbackOutcome`** and the `OverlaySession` trait are intentionally NOT part of Task 9 — the plan places them in Task 10 (execution).
+
+## Phase-gate status for Task 9
+
+- "locks never advance model revision" — structurally satisfied: `validate_for`/`compile_overlay` are read-only on the model (no `Change`/`ModelOp`/revision advance); asserted by `temporary_fixings_and_locks_never_advance_the_model_revision`. The end-to-end overlay-solve revision-invariance assertion is Task 10.
+- "exact compilation mismatches reject before mutation" — structurally satisfied at compile time (stale-base rejection before any op); the apply-time stale rejection is Task 10.
+
+## Self-Check: PASSED
+
+Created files exist (`src/assignment.rs`, `src/solver/overlay.rs`, `tests/solve_overlay.rs`); commit `29ccf95` exists in `git log`; all verification commands exit 0; no deletions or untracked files left behind.
