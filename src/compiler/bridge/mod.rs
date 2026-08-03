@@ -300,7 +300,16 @@ pub(crate) fn select_path(
                 )))
             }
         }
-        CompilationPolicy::Portable => Ok(ConstructPath::Bridge),
+        CompilationPolicy::Portable => {
+            if bridge_available {
+                Ok(ConstructPath::Bridge)
+            } else {
+                Err(CompileError::UnsupportedFeature(format!(
+                    "{feature:?} requires an exact ROML bridge which this backend does not \
+                     declare ({context}; Portable policy)"
+                )))
+            }
+        }
         CompilationPolicy::NativeRequired => {
             if native_available {
                 Ok(ConstructPath::Native)
