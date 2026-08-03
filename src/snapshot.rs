@@ -58,7 +58,10 @@ pub struct ModelSnapshot {
     /// Populated by [`Model::take_snapshot`](crate::Model::take_snapshot) from
     /// the construct arena; the low-level [`take_snapshot`] projection starts
     /// empty because it receives no construct data.
-    pub constructs: Vec<ConstructEntry>,
+    ///
+    /// Crate-private (F3): `ConstructEntry` is not part of the public surface
+    /// until P32.
+    pub(crate) constructs: Vec<ConstructEntry>,
 }
 
 /// A variable in a snapshot.

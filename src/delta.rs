@@ -191,6 +191,11 @@ pub enum ModelOp {
         /// The added construct's stable identity.
         construct: Construct,
         /// The construct's exact semantic type.
+        ///
+        /// P25 (F3): `ConstructKind` is crate-private scaffolding; the field
+        /// is hidden from the public docs and unusable by external consumers
+        /// (they cannot name the type). It becomes a public export in P32.
+        #[doc(hidden)]
         kind: ConstructKind,
         /// Whether the construct is active.
         active: bool,
@@ -255,7 +260,10 @@ pub struct DeltaBatch {
 
     /// Canonical semantic construct entries reconstructed from the batch's
     /// `AddConstruct`/`SetConstructActive` operations (P25 Task 4, SM-01.4).
-    pub constructs: Vec<ConstructEntry>,
+    ///
+    /// Crate-private (F3): `ConstructEntry` is not part of the public surface
+    /// until P32.
+    pub(crate) constructs: Vec<ConstructEntry>,
 }
 
 impl DeltaBatch {

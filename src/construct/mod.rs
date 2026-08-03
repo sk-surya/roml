@@ -8,9 +8,19 @@
 //! `MinMax`, `AbsoluteValue`, `Boolean`, `Cardinality`, `BinaryProduct`,
 //! `PiecewiseLinear`, `SoftConstraint`) as the extension surface. P25 declares
 //! [`ConstructKind`] and its `#[non_exhaustive]` extension boundary but stores
-//! only the private [`FixturePayload`] until the per-construct modules land in
-//! P30/P32/P33 (P25 scope note: P25 must not pre-implement their
+//! only the crate-private [`FixturePayload`] until the per-construct modules
+//! land in P30/P32/P33 (P25 scope note: P25 must not pre-implement their
 //! formulations).
+//!
+//! # Crate-private in P25 (F3)
+//!
+//! The whole module is `pub(crate)` in P25: [`ConstructKind`],
+//! [`ConstructEntry`], [`FixturePayload`], and [`ConstructData`] are the
+//! internal construct scaffolding and are NOT exported publicly. The public
+//! exports are [`Construct`]/[`ConstructId`] and [`FormulationPreference`]
+//! (re-exported from the crate root). The per-construct variants and
+//! `ConstructKind`/`ConstructEntry` become public exports in P32 when the real
+//! per-construct payloads exist.
 
 use std::collections::HashMap;
 
@@ -82,11 +92,20 @@ pub struct ConstructData {
     /// The canonical construct entry.
     pub entry: ConstructEntry,
     /// Per-construct formulation preference.
+    ///
+    /// P25 (F3/F4): crate-private scaffolding. The field is written by the
+    /// arena and read by no crate code yet — F4 threads `preference` through
+    /// [`ConstructEntry`] and removes this field (single authority).
+    #[allow(dead_code)]
     pub preference: FormulationPreference,
     /// Derived parameter dependencies of the payload.
     pub parameter_dependencies: Vec<ParamId>,
     /// Entity metadata (also reachable through
     /// [`EntityRef::Construct`](crate::metadata::EntityRef::Construct)).
+    ///
+    /// P25 (F5): crate-private scaffolding with no readers — the model-level
+    /// metadata map is the single authority, so F5 removes this field.
+    #[allow(dead_code)]
     pub metadata: EntityMetadata,
 }
 
@@ -109,6 +128,11 @@ impl ConstructStore {
     }
 
     /// Allocate a fresh construct id and insert the entry. Active by default.
+    ///
+    /// P25 (F3): crate-private scaffolding exercised by the in-crate construct
+    /// lifecycle tests via `Model::add_construct_fixture`; the real per-kind
+    /// builder APIs land in P32.
+    #[allow(dead_code)]
     pub fn add(
         &mut self,
         kind: ConstructKind,

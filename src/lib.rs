@@ -14,7 +14,11 @@
 #![warn(missing_docs)]
 
 pub mod advanced;
-pub mod construct;
+// P25 (F3): the construct arena and its fixture scaffolding are crate-private.
+// `Construct`/`ConstructId` and `FormulationPreference` are re-exported
+// publicly below; `ConstructKind`/`ConstructEntry` and the fixture payload
+// become public exports in P32 when the real per-construct variants land.
+pub(crate) mod construct;
 pub mod delta;
 pub mod expr;
 pub mod function;
@@ -32,7 +36,7 @@ pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
-pub use construct::{Construct, ConstructEntry, ConstructKind, FormulationPreference};
+pub use construct::{Construct, FormulationPreference};
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use function::{
