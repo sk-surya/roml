@@ -3,10 +3,11 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** planned; implementation not started  
+**Status:** planned; P25 ready to execute  
 **Current phase:** P25 — semantic IR, lineage, metadata  
-**Planning branch:** `docs/m3-semantic-modeling-workflows`  
-**Authoritative baseline:** `main@d1f1ad38cec75abb671729df8efb87736861628c`  
+**Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
+**Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
+**Authoritative baseline:** `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`  
 **Design:** `docs/superpowers/specs/2026-08-02-semantic-modeling-and-solve-workflows-design.md`
 
 ## Approved owner direction
@@ -19,7 +20,7 @@
 
 ## Immediate next gate
 
-P25 may begin only after review of this planning branch and confirmation that the design/requirements/roadmap are internally consistent. Implementation starts from current reviewed `main`, not from an outdated planning SHA.
+The planning branch review is complete (PR #25 merged to `main@4d111cc`); the design/requirements/roadmap are internally consistent. P25 implementation is ready from the reviewed `main`.
 
 Before P25 code:
 
@@ -33,7 +34,7 @@ Before P25 code:
 
 | Phase | Status | Prerequisite | Evidence | Blocking decision |
 |---|---|---|---|---|
-| P25 Semantic IR/identity | Planned | M3 plan approval | none | none |
+| P25 Semantic IR/identity | Ready to execute | M3 plan approval | `.planning/phases/25-semantic-ir-foundation/25-PLAN.md` | none |
 | P26 Compiler/backend IR | Blocked | P25 accepted | none | backend contract amendment review |
 | P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
 | P28 Starts/hints/SolvePlan | Blocked | P27 accepted | none | pinned HiGHS start API audit |
