@@ -88,7 +88,7 @@ Eager expansion would destroy semantic intent and prevent backend-aware formulat
 
 ## 4. Identity model
 
-Three identities serve different purposes.
+Four identity values serve different purposes: three are authoritative for correctness, and the deterministic recipe fingerprint is an evidence/cache aid only.
 
 ```rust
 pub struct ModelLineageId(u64);
@@ -162,6 +162,8 @@ pub enum EntityOrigin {
 }
 ```
 
+`GeneratedRole` is an implementation-detail marker for the role a generated entity plays for its originating construct (refined in the implementation plan).
+
 Origin mapping supports:
 
 - IIS/conflict reports;
@@ -208,6 +210,8 @@ Existing `LinExpr`, `.le()`, `.ge()`, `.eq()`, and `.between()` remain the ordin
 
 ```rust
 pub type Construct = ConstructId;
+
+`ConstructId` is an opaque identity allocated by the generation-safe construct arena (defined in the implementation plan, P25).
 
 #[non_exhaustive]
 pub enum ConstructKind {
@@ -320,6 +324,8 @@ pub struct BackendDeltaBatch {
 }
 ```
 
+`BackendOp` is the delta-operation contract: explicit linear/objective coefficient operations including removal, plus objective-policy setting; the full enumeration is review-gated with the implementation plan (Task 7).
+
 M3 v1 keeps primitive linear changes incremental. Semantic construct changes may conservatively rebuild until recipe-level incremental equivalence is proven.
 
 ### 8.4 Objective policy in backend IR
@@ -363,6 +369,8 @@ pub struct BoundTrace {
     pub result: Interval,
 }
 ```
+
+`BoundSource` is an implementation-detail provenance marker for bound-trace entries.
 
 Rules:
 
@@ -469,6 +477,8 @@ pub struct SolvePlan {
     pub unsupported: UnsupportedFeaturePolicy,
 }
 ```
+
+`UnsupportedFeaturePolicy` (implementation detail) selects default rejection or explicit conversion for unqualified features; rejection is the default (§11.4).
 
 Existing `solve()` and `solve_with()` construct simple plans.
 
@@ -672,6 +682,7 @@ M3 policy:
 - solve overlays are not revisions;
 - semantic construct changes may rebuild;
 - parameter updates inside a bridge emit compiled deltas only after recipe stability and differential equivalence are proven;
+- recipe changes force a deterministic rebuild until differential equivalence is proven;
 - any uncertainty selects rebuild.
 
 ## 19. Failure semantics

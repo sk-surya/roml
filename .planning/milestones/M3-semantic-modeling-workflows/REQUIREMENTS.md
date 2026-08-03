@@ -152,5 +152,5 @@ Requirement IDs are stable for M3. Every implementation PR must list the IDs it 
 - **SM-15.4** portable/native formulation equivalence has deterministic corpus evidence.
 - **SM-15.5** primitive parameter-update and solve performance remain within P34 regression thresholds.
 - **SM-15.6** public documentation distinguishes semantic guarantees, native support, bridge support, and version limitations.
-- **SM-15.7** an independent review verifies future quadratic/nonlinear functions can extend `ScalarFunction`, backend IR, capabilities, and compiler recipes without replacing identity, provenance, solve plans, objective policies, or reporting.
+- **SM-15.7** an independent review verifies future quadratic/nonlinear functions can extend `ScalarFunction`, backend IR, capabilities, and compiler recipes without replacing identity, provenance, solve plans, objective policies, or reporting. The review must certify each listed component explicitly and record its findings in the P34 NLP-readiness evidence (`docs/release/evidence/M3_NLP_READINESS.md`).
 - **SM-15.8** no crate publication, tag, or release occurs without a separate explicit owner authorization.
