@@ -94,6 +94,21 @@ pub enum CompileError {
         entity: CompiledEntityRef,
     },
 
+    /// A delta batch's envelope is malformed (fifth review).
+    ///
+    /// Every `BackendDeltaBatch` must advance BOTH the exact compiled identity
+    /// (D28) and the canonical model revision: a batch whose
+    /// `from_compilation == to_compilation` would mutate state while retaining
+    /// the old exact identity, and a batch whose `from_revision >=
+    /// to_revision` would not advance the model. Both are rejected at the top
+    /// of `BackendDeltaBatch::validate` — before any op is simulated or
+    /// applied — so a malformed envelope never reaches a backend's native
+    /// state.
+    InvalidDeltaEnvelope {
+        /// Human-readable reason the envelope is invalid.
+        reason: String,
+    },
+
     /// The delta could not be proven incrementally equivalent — a
     /// deterministic rebuild is required (design §18, D22).
     ///
@@ -137,6 +152,9 @@ impl std::fmt::Display for CompileError {
             }
             Self::NonDenseCompilation { entity } => {
                 write!(f, "compiled ids are not dense (gap/overflow at {entity:?})")
+            }
+            Self::InvalidDeltaEnvelope { reason } => {
+                write!(f, "invalid delta envelope: {reason}")
             }
             Self::RebuildRequired(reason) => {
                 write!(

@@ -550,10 +550,37 @@ impl BackendDeltaBatch {
     /// - update/remove ops reference entities present in the evolving clone,
     ///   and the objective policy references an existing objective.
     ///
+    /// Before the op simulation the ENVELOPE is validated (fifth review): the
+    /// batch must advance both the exact compiled identity
+    /// (`from_compilation != to_compilation`, D28) and the canonical model
+    /// revision (`from_revision < to_revision`), otherwise a typed
+    /// [`CompileError::InvalidDeltaEnvelope`] is returned with no registry work.
+    ///
     /// Backends run this BEFORE applying any op, so a malformed batch — even
     /// one whose ops are self-consistent only when reordered — never partially
     /// mutates native state.
     pub fn validate(&self, existing: &CompiledEntityRegistry) -> Result<(), CompileError> {
+        // Envelope validation runs BEFORE any op simulation (fifth review): a
+        // batch must advance BOTH the exact compiled identity (D28) and the
+        // canonical model revision. A batch whose `from_compilation ==
+        // to_compilation` would mutate state while retaining the old exact
+        // identity, and a batch whose `from_revision >= to_revision` would not
+        // advance the model, are malformed — rejected without any registry
+        // work, so a malformed envelope never reaches a backend's native state.
+        if self.from_compilation == self.to_compilation {
+            return Err(CompileError::InvalidDeltaEnvelope {
+                reason: "identical from/to compilation ids".to_string(),
+            });
+        }
+        if self.from_revision >= self.to_revision {
+            return Err(CompileError::InvalidDeltaEnvelope {
+                reason: format!(
+                    "non-advancing revisions: from {} >= to {}",
+                    self.from_revision, self.to_revision
+                ),
+            });
+        }
+
         let mut present = existing.clone();
         for op in &self.operations {
             match op {
@@ -1382,6 +1409,84 @@ mod tests {
             origins,
         );
         assert!(batch.validate(&existing).is_ok());
+    }
+
+    // ── Envelope validation (fifth review) ───────────────────────────────────
+
+    /// Fifth review: a batch whose `from_compilation == to_compilation` is
+    /// rejected with a typed [`CompileError::InvalidDeltaEnvelope`] BEFORE any
+    /// op simulation — a batch that mutates state while retaining the old exact
+    /// identity (D28) is malformed.
+    #[test]
+    fn delta_validate_rejects_identical_from_to_compilation() {
+        let existing = CompiledEntityRegistry::default();
+        let from = CompilationId::allocate().unwrap();
+        let batch = BackendDeltaBatch {
+            from_compilation: from,
+            to_compilation: from,
+            from_revision: ModelRevision::ZERO,
+            to_revision: ModelRevision::from_u64(1),
+            operations: vec![BackendOp::AddVariable(test_var(0))],
+            origin_additions: {
+                let mut origins = OriginMap::new();
+                origins.insert_variable(CompiledVariableId(0), var_origin());
+                origins
+            },
+            recipe_fingerprint: RecipeFingerprint::for_operations(&[]),
+        };
+        assert!(
+            matches!(
+                batch.validate(&existing),
+                Err(CompileError::InvalidDeltaEnvelope { reason }) if reason.contains("identical")
+            ),
+            "expected InvalidDeltaEnvelope naming the identical ids, got {:?}",
+            batch.validate(&existing)
+        );
+    }
+
+    /// Fifth review: a batch whose `from_revision >= to_revision` is rejected
+    /// with a typed [`CompileError::InvalidDeltaEnvelope`] — a batch must
+    /// advance the canonical model revision.
+    #[test]
+    fn delta_validate_rejects_non_advancing_revision() {
+        let existing = CompiledEntityRegistry::default();
+        let batch = BackendDeltaBatch {
+            from_compilation: CompilationId::allocate().unwrap(),
+            to_compilation: CompilationId::allocate().unwrap(),
+            // from == to (and would equally hold for from > to): no advance.
+            from_revision: ModelRevision::from_u64(2),
+            to_revision: ModelRevision::from_u64(2),
+            operations: vec![BackendOp::AddVariable(test_var(0))],
+            origin_additions: {
+                let mut origins = OriginMap::new();
+                origins.insert_variable(CompiledVariableId(0), var_origin());
+                origins
+            },
+            recipe_fingerprint: RecipeFingerprint::for_operations(&[]),
+        };
+        assert!(
+            matches!(
+                batch.validate(&existing),
+                Err(CompileError::InvalidDeltaEnvelope { reason }) if reason.contains("revision")
+            ),
+            "expected InvalidDeltaEnvelope naming the non-advancing revisions, got {:?}",
+            batch.validate(&existing)
+        );
+    }
+
+    /// Fifth review: a batch whose envelope ADVANCES both the compilation id
+    /// (distinct from/to) and the revision (from < to) passes the envelope
+    /// checks; the op-level F1 checks still apply on top.
+    #[test]
+    fn delta_validate_accepts_advancing_envelope() {
+        let existing = CompiledEntityRegistry::default();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(CompiledVariableId(0), var_origin());
+        let batch = test_batch(vec![BackendOp::AddVariable(test_var(0))], origins);
+        assert!(
+            batch.validate(&existing).is_ok(),
+            "an advancing envelope plus valid ops must pass preflight"
+        );
     }
 
     // ── F2: unique dense ids + origin completeness in snapshot validation ────

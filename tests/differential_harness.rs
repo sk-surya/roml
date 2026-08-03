@@ -2941,3 +2941,170 @@ fn dx_compiled_valid_batch_still_applies_after_preflight() {
         "the added variable is present"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 10: Envelope validation (fifth review)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// A `BackendDeltaBatch` envelope must advance BOTH the exact compiled identity
+// (from_compilation != to_compilation, D28) and the canonical model revision
+// (from_revision < to_revision). A malformed envelope is rejected with a typed
+// `CompileError::InvalidDeltaEnvelope` BEFORE any op is simulated or applied —
+// the reference backend's compiled state (compilation id and revision) never
+// advances on a rejected envelope.
+
+/// Fifth review: a compiled delta batch whose `from_compilation ==
+/// to_compilation` is rejected with a typed `InvalidDeltaEnvelope` error
+/// before any mutation — the compiled state (compilation id and revision) must
+/// not advance.
+#[test]
+fn dx_compiled_delta_rejects_identical_from_to_compilation() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the envelope: identical from/to compilation ids while keeping
+    // `from_compilation` equal to the backend's held base so the stale check
+    // passes and the envelope check is the one that fires.
+    delta.to_compilation = base.compilation_id;
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("an identical from/to compilation envelope must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidDeltaEnvelope { .. }),
+        "expected InvalidDeltaEnvelope, got {err:?}"
+    );
+    // The compiled state must not advance on a rejected envelope.
+    assert_eq!(
+        backend.current_compilation,
+        Some(base.compilation_id),
+        "a rejected envelope must not advance the compiled state"
+    );
+    assert_eq!(
+        backend.compiled_revision, base.source_revision,
+        "a rejected envelope must not advance the compiled revision"
+    );
+}
+
+/// Fifth review: a compiled delta batch whose `from_revision >= to_revision`
+/// is rejected with a typed `InvalidDeltaEnvelope` error before any mutation —
+/// the compiled state must not advance.
+#[test]
+fn dx_compiled_delta_rejects_non_advancing_revision() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the envelope: the batch claims to reach the SAME canonical
+    // revision it starts from (from >= to) — a batch must advance the model
+    // revision. from_compilation still matches the base.
+    delta.to_revision = delta.from_revision;
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("a non-advancing revision envelope must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidDeltaEnvelope { .. }),
+        "expected InvalidDeltaEnvelope, got {err:?}"
+    );
+    assert_eq!(
+        backend.current_compilation,
+        Some(base.compilation_id),
+        "a rejected envelope must not advance the compiled state"
+    );
+    assert_eq!(
+        backend.compiled_revision, base.source_revision,
+        "a rejected envelope must not advance the compiled revision"
+    );
+}
+
+/// Fifth review: a VALID envelope (advancing compilation id + revision) still
+/// applies and advances BOTH the compiled state's exact id and its canonical
+/// revision.
+#[test]
+fn dx_compiled_delta_valid_envelope_advances_compilation_and_revision() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+
+    backend
+        .apply_compiled_delta(&delta)
+        .expect("a valid envelope must apply");
+    assert_eq!(
+        backend.current_compilation,
+        Some(delta.to_compilation),
+        "a valid envelope advances the compiled state's exact id"
+    );
+    assert_eq!(
+        backend.compiled_revision, delta.to_revision,
+        "a valid envelope advances the compiled canonical revision"
+    );
+}
