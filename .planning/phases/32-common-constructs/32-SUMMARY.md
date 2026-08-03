@@ -93,3 +93,51 @@ Full detail (RED failures, verification matrix, acceptance criteria, per-item di
 |---|---|---|
 | 1 | `8afa0e8` | `feat(compiler): add safe bridge infrastructure` |
 | 2 | (this commit) | `docs(32): summarize Task 15 evidence and deviations` |
+
+---
+
+# Phase [32] Task [16]: Add indicators, reification, Boolean, and cardinality
+
+Logical semantic constructs (design §7, §16) with exact payloads, the four validation rejections, native-or-bridge compilation through the Task 15 framework, reification as two implications, exact Boolean/cardinality rows, small-binary-domain feasible-set equivalence (semantic/reference/native/portable), and the A30 public-surface activation (`ConstructKind`/`ConstructEntry` public; `Fixture`/`FixturePayload`/`add_construct_fixture` crate-private).
+
+## What was built
+
+- **`src/construct/{indicator,reification,boolean,cardinality}.rs`** — `IndicatorConstraint` (binary activator, one-way direction, function-in-set), `ReificationConstraint` (function-in-set, separation tolerance, proven-integrality, builder-created binary `activator`), `BooleanConstraint` (implication/equivalence/any/all), `CardinalityConstraint` (exactly/at-most/at-least-k).
+- **`src/model/mod.rs`** — public builders `add_indicator`/`add_reify`/`add_boolean`/`add_cardinality` returning stable `Construct` handles with optional per-construct `FormulationPreference` (A29 single authority), recording `Change::ConstructAdded`; typed `ModelError` rejections for non-binary variables, duplicate cardinality inputs, invalid `k`, and continuous exact reification without separation.
+- **A30 (lib.rs)** — `pub mod construct;` + crate-root re-exports; `Fixture`/`FixturePayload`/`add_construct_fixture`/`ConstructData` crate-private; `cargo public-api` diff recorded (15983 → 17536; fixture scaffolding absent).
+- **`src/compiler/bridge/{indicator,reification,boolean,cardinality}.rs`** — exact bridges on the Task 15 framework: indicator native-or-finite-bound Big-M; reification two implications (unit gap iff proven integral, D14); boolean/cardinality exact rows.
+- **`src/compiler/{origin,capability,bounds,session,backend_ir,report,mod}.rs`** — per-construct `GeneratedRole`s, `FeatureSupport::bridge` + `BackendCapabilitySet::is_bridge`, additive `BackendFeature::{Reification,Boolean,Cardinality}`, `bound_big_m_implied_snapshot`, construct dispatch in `compile_snapshot`, report decision plumbing, `CompileError::MissingConstructReference`.
+- **`roml-highs/src/session.rs`** — logical-construct features declared `SupportLevel::Bridge` (P32's first bridge declarations, SM-04.2; no native claims, SM-04.3).
+- **Tests** — `tests/common_constructs.rs` (28) + `roml-highs/tests/formulation_equivalence.rs` (3) + in-crate highs bridge-declaration test (1).
+
+## Verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test common_constructs indicator` | 0 — 9 passed |
+| `cargo test -p roml-highs --test formulation_equivalence indicator` | 0 — 1 passed |
+| `cargo test -p roml --all-targets` | 0 — 734 passed; 0 failed (baseline 706 + 28) |
+| `cargo test -p roml-highs --all-targets` | 0 — 118 passed; 0 failed (baseline 114 + 4) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 — clean |
+| `cargo public-api -p roml` | 0 — 15983 → 17536 items (+1553 additive); fixture scaffolding absent |
+
+## Deviations from plan
+
+1. `ReificationConstraint.activator` added (the reify builder creates the binary result variable; the construct cannot compile without referencing it).
+2. `add_cardinality` takes `k: f64` (validated), stores `k: usize` — makes negative/non-integral `k` rejections testable (the plan's typed-error list).
+3. Native indicator selection emits the exact finite-bound row with role `IndicatorNative` + a `FormulationDecision` (the P26 IR has no native-constraint representation; no compiler-contract amendment).
+4. Reification of equality/interval relations is a typed build-time rejection (`UnsupportedReificationSet`) — the P32 two-implication contract covers le/ge thresholds.
+5. `BackendFeature::{Reification, Boolean, Cardinality}` added (additive, `#[non_exhaustive]`) so HiGHS can declare each construct's bridge support.
+6. `ConstructData` tightened to `pub(crate)` (A30 absent-from-public-api).
+
+Full detail (RED failures, per-construct evidence table, verification matrix, A30 diff, deviations, commit trail) is in `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md`.
+
+## Commit trail (Task 16)
+
+| # | SHA | Message |
+|---|---|---|
+| 3 | (this commit) | `feat(model): add logical semantic constructs` |
+| 4 | (this commit) | `docs(32): summarize Task 16 evidence and deviations` |
