@@ -784,6 +784,31 @@ impl Model {
         Ok(expr)
     }
 
+    /// Reconstruct the SYMBOLIC terms of a constraint from the coefficient
+    /// index (F1): each `(VarId, ValueExpr)` preserves the parameter-dependent
+    /// coefficient expression rather than only its evaluated number.
+    ///
+    /// Deterministic: terms are sorted by `var` (the same ordering as
+    /// [`Self::constraint_expression`] and the snapshot/delta reconstructions).
+    /// Used by [`Model::constraint_function`](crate::Model::constraint_function)
+    /// to populate the symbolic view of the semantic IR.
+    pub(crate) fn constraint_symbolic_terms(
+        &self,
+        con: ConId,
+    ) -> Vec<(VarId, ValueExpr)> {
+        let mut terms: Vec<(VarId, ValueExpr)> = self
+            .coefficients
+            .for_constraint(con)
+            .filter_map(|coeff_id| {
+                self.coefficients
+                    .get(coeff_id)
+                    .map(|data| (data.var, data.value_expr.clone()))
+            })
+            .collect();
+        terms.sort_by_key(|(var, _)| *var);
+        terms
+    }
+
     /// Reconstruct a linear expression from an objective's coefficients.
     ///
     /// Uses cached coefficient values (not the ValueExpr).

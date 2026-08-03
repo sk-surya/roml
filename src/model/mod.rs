@@ -363,9 +363,22 @@ impl Model {
         let bounds = self
             .constraint_bounds(con)
             .ok_or(ModelError::ConstraintNotFound(con))?;
+        // F1: preserve the symbolic form. The coefficient index's
+        // `value_expr`/dependencies populate the symbolic `terms` and
+        // `dependencies` (sorted + deduplicated), so P26's compiler can
+        // rebuild the parameterized row without re-joining legacy cells.
+        let symbolic_terms = self.constraint_symbolic_terms(con);
+        let mut dependencies: Vec<ParamId> = symbolic_terms
+            .iter()
+            .flat_map(|(_, value_expr)| value_expr.dependencies())
+            .collect();
+        dependencies.sort();
+        dependencies.dedup();
         Ok(FunctionConstraint {
             function: ScalarFunction::Linear(expr),
             set: ScalarSet::from(bounds),
+            terms: symbolic_terms,
+            dependencies,
         })
     }
 
