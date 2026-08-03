@@ -166,6 +166,7 @@ fn c2_full_rebuild() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     let receipt = session
@@ -409,6 +410,7 @@ fn c4_commuting_square() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
 
     // Session A: rebuild from r0, then apply delta r0->r1.
@@ -468,6 +470,7 @@ fn c4_commuting_square() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     // Session B: rebuild directly from r1.
@@ -558,6 +561,7 @@ fn c5_activity_toggle() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
 
     // Rebuild.
@@ -688,6 +692,7 @@ fn c6_objective_switch() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
 
     session
@@ -788,6 +793,7 @@ fn c7_unsupported_rejection() {
         parameters: vec![],
         cells: vec![],
         functions: vec![],
+        constructs: vec![],
     };
 
     let result = session.synchronize(Synchronization::Rebuild(snapshot));
@@ -890,6 +896,7 @@ fn c8_optimal_lp_status() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -950,6 +957,7 @@ fn c8_infeasible_lp_status() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -995,6 +1003,7 @@ fn c8_unbounded_lp_status() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1078,6 +1087,7 @@ fn c9_optimal_lp_with_extraction() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1149,6 +1159,7 @@ fn c9_infeasible_lp() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1196,6 +1207,7 @@ fn c9_unbounded_lp() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1251,6 +1263,7 @@ fn c9_optimal_mip() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1340,6 +1353,7 @@ fn c9_solution_extraction() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1414,6 +1428,7 @@ fn c9_objective_offset_constant() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
 
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
@@ -1677,6 +1692,7 @@ fn c13_active_objective_sense_change() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -1751,6 +1767,7 @@ fn c13_set_objective_cell_on_inactive_objective() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -1808,6 +1825,7 @@ fn c13_semicontinuous_rejected_before_any_mutation() {
         parameters: vec![],
         cells: vec![],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
     assert_eq!(session.revision(), r0);
@@ -1890,6 +1908,7 @@ fn c13_inactive_objective_sense_change() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -1953,6 +1972,7 @@ fn c14_rebuild_inactive_variable_fixed_to_zero() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -2016,6 +2036,7 @@ fn c15_rebuild_inactive_constraint_ignored() {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -2130,6 +2151,7 @@ fn c17_delta_set_cell_objective_updates_native_cost() {
         parameters: vec![],
         cells: vec![],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -2194,6 +2216,7 @@ fn c18_delta_remove_cell_objective_clears_cost() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -2259,6 +2282,7 @@ fn c19_delta_set_objective_cell_on_constraint_target_rejected() {
             dependencies: vec![],
         }],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
     assert_eq!(session.revision(), r0);
@@ -2329,6 +2353,7 @@ fn c20_delta_set_objective_cell_on_active_objective_applies_immediately() {
         parameters: vec![],
         cells: vec![],
         functions: vec![],
+        constructs: vec![],
     };
     session.synchronize(Synchronization::Rebuild(snap)).unwrap();
 
@@ -2388,6 +2413,7 @@ fn c21_rebuild_with_inverted_bounds_rejected() {
         parameters: vec![],
         cells: vec![],
         functions: vec![],
+        constructs: vec![],
     };
     let err = match session.synchronize(Synchronization::Rebuild(snap)) {
         Ok(_) => panic!("inverted bounds must be rejected by HiGHS"),

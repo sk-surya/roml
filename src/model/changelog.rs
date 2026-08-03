@@ -7,6 +7,7 @@
 //!
 //! The model never mutates solver state directly. All changes go through the ChangeLog.
 
+use crate::construct::{Construct, ConstructKind};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::constraint::ConstraintBounds;
@@ -210,13 +211,40 @@ pub enum Change {
         /// New value.
         new: f64,
     },
+
+    // ========== Construct Changes (P25 Task 4, design §7) ==========
+    /// A semantic construct was added (self-contained canonical change).
+    ConstructAdded {
+        /// The added construct's stable identity.
+        construct: Construct,
+        /// The construct's exact semantic type.
+        kind: ConstructKind,
+        /// Whether the construct is active (constructs start active).
+        active: bool,
+    },
+
+    /// A semantic construct was removed, invalidating its id.
+    ConstructRemoved {
+        /// The removed construct's identity.
+        construct: Construct,
+    },
+
+    /// A semantic construct's activity was toggled.
+    ConstructActivityChanged {
+        /// The affected construct.
+        construct: Construct,
+        /// Whether the construct is now active.
+        active: bool,
+    },
 }
 
 impl Change {
     /// Check if this change affects solver state.
     ///
     /// Some changes (like parameter value changes) only affect coefficients
-    /// and are tracked separately.
+    /// and are tracked separately. Construct changes are canonical changes
+    /// that flow through the delta (adapters treat them as no-ops until M3
+    /// compiles constructs; design §18 permits conservative rebuild).
     pub fn affects_solver(&self) -> bool {
         !matches!(self, Change::ParameterValueChanged { .. })
     }

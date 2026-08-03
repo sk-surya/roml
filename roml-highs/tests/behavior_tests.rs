@@ -126,6 +126,7 @@ fn binary_mip_snapshot() -> ModelSnapshot {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     }
 }
 
@@ -194,6 +195,7 @@ fn unique_lp_snapshot() -> ModelSnapshot {
             },
         ],
         functions: vec![],
+        constructs: vec![],
     }
 }
 

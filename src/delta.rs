@@ -5,6 +5,7 @@
 //! Each batch carries an explicit `from -> to` revision pair and an
 //! ordered list of typed operations.
 
+use crate::construct::{Construct, ConstructEntry, ConstructKind};
 use crate::expr::LinExpr;
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
@@ -180,6 +181,34 @@ pub enum ModelOp {
         /// The semi-continuous lower bound.
         lower: f64,
     },
+
+    /// Add a canonical semantic construct (design §7, P25 Task 4).
+    ///
+    /// Constructs are canonical entities, not backend rows; M3 v1 adapters
+    /// treat this as a no-op (SM-01.6: no backend index/handle enters
+    /// canonical state).
+    AddConstruct {
+        /// The added construct's stable identity.
+        construct: Construct,
+        /// The construct's exact semantic type.
+        kind: ConstructKind,
+        /// Whether the construct is active.
+        active: bool,
+    },
+
+    /// Remove a canonical semantic construct, invalidating its id.
+    RemoveConstruct {
+        /// The removed construct's identity.
+        construct: Construct,
+    },
+
+    /// Toggle a construct's activity.
+    SetConstructActive {
+        /// The affected construct.
+        construct: Construct,
+        /// Whether the construct is now active.
+        active: bool,
+    },
 }
 
 /// An immutable batch of operations transforming from one revision to another.
@@ -211,6 +240,10 @@ pub struct DeltaBatch {
     /// Canonical semantic function-in-set entries reconstructed from the
     /// batch's `AddConstraint`/`SetCell` operations (P25 Task 3, SM-01.4).
     pub functions: Vec<FunctionEntry>,
+
+    /// Canonical semantic construct entries reconstructed from the batch's
+    /// `AddConstruct`/`SetConstructActive` operations (P25 Task 4, SM-01.4).
+    pub constructs: Vec<ConstructEntry>,
 }
 
 impl DeltaBatch {
@@ -222,11 +255,13 @@ impl DeltaBatch {
             return None;
         }
         let functions = reconstruct_function_entries(&operations);
+        let constructs = reconstruct_construct_entries(&operations);
         Some(Self {
             from,
             to,
             operations,
             functions,
+            constructs,
         })
     }
 
@@ -292,6 +327,52 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
         }
     }
     entries.sort_by_key(|f| f.constraint);
+    entries
+}
+
+/// Reconstruct the canonical semantic construct entries carried by a batch
+/// from its `AddConstruct`/`SetConstructActive`/`RemoveConstruct` operations
+/// (P25 Task 4, design §7).
+///
+/// Constructs added by this batch are carried with their final activity after
+/// any later `SetConstructActive` op; constructs removed within the batch are
+/// excluded. Removed constructs are represented by the `RemoveConstruct` op.
+fn reconstruct_construct_entries(operations: &[ModelOp]) -> Vec<ConstructEntry> {
+    let mut entries = Vec::new();
+    for op in operations {
+        if let ModelOp::AddConstruct {
+            construct,
+            kind,
+            active,
+        } = op
+        {
+            // A construct removed within the same batch is not carried.
+            if operations
+                .iter()
+                .any(|o| matches!(o, ModelOp::RemoveConstruct { construct: c } if c == construct))
+            {
+                continue;
+            }
+            let mut final_active = *active;
+            for later in operations {
+                if let ModelOp::SetConstructActive {
+                    construct: c,
+                    active,
+                } = later
+                {
+                    if c == construct {
+                        final_active = *active;
+                    }
+                }
+            }
+            entries.push(ConstructEntry {
+                id: *construct,
+                kind: kind.clone(),
+                active: final_active,
+            });
+        }
+    }
+    entries.sort_by_key(|e| e.id);
     entries
 }
 

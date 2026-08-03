@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use crate::construct::ConstructEntry;
 use crate::expr::LinExpr;
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
@@ -51,6 +52,13 @@ pub struct ModelSnapshot {
     /// Canonical semantic function-in-set entries, reconstructed from the
     /// coefficient cells and constraint bounds (P25 Task 3, SM-01.4).
     pub functions: Vec<FunctionEntry>,
+
+    /// Canonical semantic construct entries (design §7, P25 Task 4, SM-01.4).
+    ///
+    /// Populated by [`Model::take_snapshot`](crate::Model::take_snapshot) from
+    /// the construct arena; the low-level [`take_snapshot`] projection starts
+    /// empty because it receives no construct data.
+    pub constructs: Vec<ConstructEntry>,
 }
 
 /// A variable in a snapshot.
@@ -128,6 +136,7 @@ impl ModelSnapshot {
             parameters: Vec::new(),
             cells: Vec::new(),
             functions: Vec::new(),
+            constructs: Vec::new(),
         }
     }
 
@@ -139,6 +148,7 @@ impl ModelSnapshot {
             && self.parameters.is_empty()
             && self.cells.is_empty()
             && self.functions.is_empty()
+            && self.constructs.is_empty()
     }
 
     /// Count of all entities in the snapshot.
@@ -149,6 +159,7 @@ impl ModelSnapshot {
             + self.parameters.len()
             + self.cells.len()
             + self.functions.len()
+            + self.constructs.len()
     }
 }
 
@@ -265,6 +276,9 @@ pub fn take_snapshot(
         parameters: params,
         cells: c,
         functions,
+        // The low-level projection receives no construct data; the canonical
+        // Model::take_snapshot populates this from the construct arena.
+        constructs: Vec::new(),
     }
 }
 

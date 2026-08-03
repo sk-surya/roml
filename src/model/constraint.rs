@@ -2,8 +2,7 @@
 //!
 //! Also hosts the canonical function-in-set conversion path (P25 Task 3): the
 //! ordinary `.le`/`.ge`/`.eq`/`.between` builders produce a
-//! [`ConstraintSpec`](crate::expr::ConstraintSpec), which converts to a
-//! [`FunctionConstraint`](crate::function::FunctionConstraint) through
+//! [`ConstraintSpec`], which converts to a [`FunctionConstraint`] through
 //! [`ScalarSet`] here. The coefficient index remains the single coefficient
 //! authority; the function-in-set view is derived (design §6, SM-01.1).
 
