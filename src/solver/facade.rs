@@ -8,6 +8,7 @@
 
 use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::CompilationPolicy;
+use crate::compiler::origin::OverlayId;
 use crate::compiler::session::CompilationSession;
 use crate::id::ObjId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
@@ -18,8 +19,13 @@ use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
 use crate::solution::{Solution, SolutionBuilder};
 use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 use crate::solver::options::SolveOptions;
-use crate::solver::request::{validate_request, SolveResult};
-use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
+use crate::solver::overlay::{
+    compile_overlay, OverlayApplyReceipt, OverlayRollbackOutcome, SolveOverlay,
+};
+use crate::solver::request::{validate_request, SolveRequest, SolveResult};
+use crate::solver::session::{
+    BackendMetadata, BackendSession, OverlaySession, SessionHealth, Synchronization,
+};
 use crate::solver::{SolveError, SolveStatus};
 use crate::sync::{AdapterCursor, AdapterHealth};
 
@@ -47,6 +53,7 @@ pub fn normalize_result(
     model_lineage: ModelLineageId,
     model_instance: ModelInstanceId,
     compilation_id: Option<CompilationId>,
+    overlay_id: Option<OverlayId>,
 ) -> Result<Solution, SolveError> {
     let status = SolveStatus::from_termination(result.termination)?;
 
@@ -68,6 +75,9 @@ pub fn normalize_result(
             // the backend solved. F5: the real solve path sets `Some(actual)`;
             // `None` is only ever a synthetic solution (no compiled state).
             compilation_id,
+            // P27 Task 10 (D28 overlay artifacts): `Some(overlay.id)` on an
+            // overlay solve; `None` for a plain solve.
+            overlay_id,
         });
 
     if let Some(value) = result.solution.as_ref().and_then(|s| s.objective_value) {
@@ -172,6 +182,70 @@ where
         model: &mut Model,
         options: SolveOptions,
     ) -> Result<Solution, SolveError> {
+        // 0-7. Validate, commit, and synchronize exactly as the plain solve
+        // path, establishing the exact base `CompilationId` (`C_base`).
+        let (request, committed, sync_mode) = self.synchronize_base(model, options)?;
+
+        // 8. Solve exactly once (the request was built and validated against
+        // the backend's typed capabilities in `synchronize_base`).
+        let result = self
+            .backend
+            .solve(&request)
+            .map_err(|e| SolveError::from_backend(false, e))?;
+
+        // F2 (SM-03.9): the exact `CompilationId` is the only stale-state
+        // authority. The backend must report the compiled state the façade
+        // synchronized to (the compiler's current compiled state). A result
+        // tagged with a DIFFERENT id means the solve ran against some other
+        // compiled state — reject it as a typed error, never accept it
+        // silently. F5: `result.compilation_id` is `Option<CompilationId>`;
+        // a `None` from a real backend result is still a mismatch (backends
+        // must populate `Some`).
+        let expected = self.compiler.current_compilation();
+        if expected != result.compilation_id {
+            return Err(SolveError::CompilationMismatch {
+                expected,
+                actual: result.compilation_id,
+            });
+        }
+
+        // 9. Normalize and attach metadata. The solved model's lineage and
+        // instance ids are bound here (CR-02, SM-02.7) — there is no separate
+        // model-binds-solution step; normalize_result must never fall back to
+        // fresh default ids. F2 threads the result's exact `CompilationId`
+        // into the metadata. A plain solve carries no overlay id.
+        let active_objective = model.active_objective();
+        normalize_result(
+            &result,
+            committed,
+            active_objective,
+            self.backend.name(),
+            sync_mode,
+            model.lineage(),
+            model.instance(),
+            result.compilation_id,
+            None,
+        )
+    }
+
+    /// Synchronize the backend to the model's committed canonical state,
+    /// establishing the exact base `CompilationId` (`C_base`).
+    ///
+    /// Shared by [`solve_with`](Self::solve_with) and
+    /// [`solve_with_overlay`](Self::solve_with_overlay). Steps 0-7 of the
+    /// plan's solve algorithm: validate options, validate the request against
+    /// the backend's authoritative typed capability set, commit, inspect
+    /// backend health/revision, apply the synchronization decision (snapshot
+    /// rebuild / sequential deltas / no sync), assert the post-sync invariant,
+    /// and bind the session to the model instance.
+    ///
+    /// Returns the validated [`SolveRequest`], the committed [`ModelRevision`],
+    /// and the [`SynchronizationMode`] for the solve's metadata.
+    fn synchronize_base(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+    ) -> Result<(SolveRequest, ModelRevision, SynchronizationMode), SolveError> {
         // 0. Validate options before any state change (extended in Task 4).
         options.validate()?;
 
@@ -286,47 +360,7 @@ where
         // a failed sync never leaves a stale binding.
         self.bound_instance = Some(model.instance());
 
-        // 8. Solve exactly once (the request was built and validated against
-        // the backend's typed capabilities in step 0b).
-        let result = self
-            .backend
-            .solve(&request)
-            .map_err(|e| SolveError::from_backend(false, e))?;
-
-        // F2 (SM-03.9): the exact `CompilationId` is the only stale-state
-        // authority. The backend must report the compiled state the façade
-        // synchronized to (the compiler's current compiled state). A result
-        // tagged with a DIFFERENT id means the solve ran against some other
-        // compiled state — reject it as a typed error, never accept it
-        // silently. F5: `result.compilation_id` is `Option<CompilationId>`;
-        // a `None` from a real backend result is still a mismatch (backends
-        // must populate `Some`).
-        let expected = self.compiler.current_compilation();
-        if expected != result.compilation_id {
-            return Err(SolveError::CompilationMismatch {
-                expected,
-                actual: result.compilation_id,
-            });
-        }
-
-        // 9. Normalize and attach metadata. The solved model's lineage and
-        // instance ids are bound here (CR-02, SM-02.7) — there is no separate
-        // model-binds-solution step; normalize_result must never fall back to
-        // fresh default ids. F2 threads the result's exact `CompilationId`
-        // into the metadata.
-        let active_objective = model.active_objective();
-        let solution = normalize_result(
-            &result,
-            committed,
-            active_objective,
-            self.backend.name(),
-            sync_mode,
-            model.lineage(),
-            model.instance(),
-            result.compilation_id,
-        )?;
-
-        Ok(solution)
+        Ok((request, committed, sync_mode))
     }
 
     /// Compile a canonical snapshot into a [`BackendSnapshot`] for this
@@ -468,6 +502,141 @@ where
     }
 }
 
+impl<B> SolverSession<B>
+where
+    B: BackendSession + SessionHealth + BackendMetadata + OverlaySession,
+{
+    /// Solve the current model under a reversible solve overlay (P27 Task 10,
+    /// design §12, SM-07.3..SM-07.6).
+    ///
+    /// The pinned lifecycle, executed transactionally from the caller's
+    /// perspective:
+    ///
+    /// ```text
+    /// commit canonical model
+    /// -> compile/synchronize canonical state          (C_base established)
+    /// -> compile overlay against the exact C_base     (fresh C_overlay)
+    /// -> apply overlay                                (C_base -> C_overlay)
+    /// -> solve                                         (result tagged C_overlay)
+    /// -> validate result.compilation_id == C_overlay  (NOT C_base — the
+    ///    compiler stays at C_base throughout the overlay solve)
+    /// -> rollback overlay (always attempted, even on solve/extraction
+    ///    failure)                                     (C_overlay -> C_base)
+    /// -> on RequiresRebuild, mark the backend RequiresRebuild (D7, D22)
+    /// -> verify C_base restored
+    /// -> normalize the result with compilation_id = C_overlay and
+    ///    overlay_id = Some(overlay.id)
+    /// ```
+    ///
+    /// Temporary fixings, solution locks, objective-lock rows, and cutoffs
+    /// never advance the canonical model revision (SM-07.3). An uncertain
+    /// rollback marks the session `RequiresRebuild`; the next solve forces a
+    /// snapshot rebuild before reuse (SM-07.5).
+    ///
+    /// # Errors
+    ///
+    /// - [`SolveError::Overlay`] — the overlay failed to compile (stale base,
+    ///   assignment/band/value validation, unknown objective) before any
+    ///   backend mutation;
+    /// - [`SolveError::Rollback`] — a backend error during apply, rollback, or
+    ///   post-rollback verification (the backend is marked `RequiresRebuild`);
+    /// - [`SolveError::CompilationMismatch`] — the solve result was tagged with
+    ///   a `CompilationId` other than `C_overlay` (extraction failure);
+    /// - the ordinary [`SolveError`] classes of [`solve_with`](Self::solve_with)
+    ///   (commit, options, synchronization, solve, status).
+    pub fn solve_with_overlay(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+        overlay: &SolveOverlay,
+        objective_override: Option<ObjId>,
+    ) -> Result<Solution, SolveError> {
+        // 0-7. Commit and synchronize exactly as `solve_with` so `C_base` is
+        // established (the overlay is NEVER compiled into the CompilationSession;
+        // `compiler.current_compilation()` stays `C_base` throughout).
+        let (request, committed, sync_mode) = self.synchronize_base(model, options)?;
+
+        // Compile the overlay against the exact base (the phase gate "exact
+        // compilation mismatches reject before mutation" — a stale/invalid
+        // overlay fails BEFORE any backend mutation).
+        let compiled = compile_overlay(model, &self.compiler, overlay, objective_override)
+            .map_err(SolveError::Overlay)?;
+
+        // Apply: backend C_base -> C_overlay. An apply failure leaves the
+        // backend marked RequiresRebuild (never a half-overlaid state silently
+        // reused).
+        let receipt = self
+            .backend
+            .apply_overlay(&compiled)
+            .map_err(SolveError::Rollback)?;
+
+        // Solve against C_overlay.
+        let result = match self.backend.solve(&request) {
+            Ok(result) => result,
+            Err(e) => {
+                let err = SolveError::from_backend(false, e);
+                // Rollback is ALWAYS attempted, even on solve failure (SM-07.4).
+                let _ = self.rollback_and_verify(&receipt);
+                return Err(err);
+            }
+        };
+
+        // Extraction gate: the result MUST be tagged with C_overlay — NOT
+        // `compiler.current_compilation()` (C_base), which would false-fail the
+        // overlay solve. A result tagged with anything else is a typed
+        // CompilationMismatch, and rollback is still attempted.
+        if result.compilation_id != Some(compiled.compilation_id) {
+            let err = SolveError::CompilationMismatch {
+                expected: Some(compiled.compilation_id),
+                actual: result.compilation_id,
+            };
+            let _ = self.rollback_and_verify(&receipt);
+            return Err(err);
+        }
+
+        // Rollback + verify C_base restored (SM-07.4, SM-07.5).
+        self.rollback_and_verify(&receipt)?;
+
+        // Normalize with compilation_id = C_overlay and overlay_id = Some.
+        // The active objective for an override solve is the override; a plain
+        // overlay solve keeps the model's active objective.
+        let active_objective = objective_override.or_else(|| model.active_objective());
+        normalize_result(
+            &result,
+            committed,
+            active_objective,
+            self.backend.name(),
+            sync_mode,
+            model.lineage(),
+            model.instance(),
+            Some(compiled.compilation_id),
+            Some(overlay.id),
+        )
+    }
+
+    /// Roll back an applied overlay and verify the base compiled state is
+    /// restored. Rollback is ALWAYS attempted on the overlay lifecycle's
+    /// failure paths (SM-07.4); an uncertain rollback marks the backend
+    /// `RequiresRebuild` (D7, D22).
+    fn rollback_and_verify(&mut self, receipt: &OverlayApplyReceipt) -> Result<(), SolveError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                // Post-rollback verification: C_base must be restored exactly.
+                self.backend
+                    .verify_overlay_clean()
+                    .map_err(SolveError::Rollback)
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { .. }) => {
+                // The backend has already marked itself RequiresRebuild; the
+                // overlay solve result is still valid, but the next solve will
+                // force a snapshot rebuild before reuse (D7 invariant).
+                Ok(())
+            }
+            Err(e) => Err(SolveError::Rollback(e)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +669,7 @@ mod tests {
                 reduced_costs: Some(vec![(make_var(0), 0.0)]),
             }),
             compilation_id: Some(CompilationId::allocate().unwrap()),
+            overlay_id: None,
         }
     }
 
@@ -519,6 +689,7 @@ mod tests {
             lineage,
             instance,
             Some(CompilationId::allocate().unwrap()),
+            None,
         )
         .expect("optimal must normalize");
 
@@ -557,6 +728,7 @@ mod tests {
                 reduced_costs: None,
             }),
             compilation_id: Some(CompilationId::allocate().unwrap()),
+            overlay_id: None,
         };
         let solution = normalize_result(
             &result,
@@ -567,6 +739,7 @@ mod tests {
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
             Some(CompilationId::allocate().unwrap()),
+            None,
         )
         .expect("feasible must normalize");
         assert_eq!(solution.status(), SolveStatus::Feasible);
@@ -586,6 +759,7 @@ mod tests {
             termination: TerminationStatus::Infeasible,
             solution: None,
             compilation_id: Some(CompilationId::allocate().unwrap()),
+            overlay_id: None,
         };
         let solution = normalize_result(
             &result,
@@ -596,6 +770,7 @@ mod tests {
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
             Some(CompilationId::allocate().unwrap()),
+            None,
         )
         .expect("infeasible must normalize to Ok(Solution)");
         assert_eq!(solution.status(), SolveStatus::Infeasible);
@@ -612,6 +787,7 @@ mod tests {
                 termination,
                 solution: None,
                 compilation_id: Some(CompilationId::allocate().unwrap()),
+                overlay_id: None,
             };
             let err = normalize_result(
                 &result,
@@ -622,6 +798,7 @@ mod tests {
                 ModelLineageId::allocate().unwrap(),
                 ModelInstanceId::allocate().unwrap(),
                 Some(CompilationId::allocate().unwrap()),
+                None,
             )
             .expect_err("uninterpretable termination must error");
             assert!(
@@ -658,6 +835,7 @@ mod tests {
                     reduced_costs: None,
                 }),
                 compilation_id: Some(CompilationId::allocate().unwrap()),
+                overlay_id: None,
             };
             let solution = normalize_result(
                 &result,
@@ -668,6 +846,7 @@ mod tests {
                 model.lineage(),
                 model.instance(),
                 Some(CompilationId::allocate().unwrap()),
+                None,
             )
             .expect("optimal must normalize");
 

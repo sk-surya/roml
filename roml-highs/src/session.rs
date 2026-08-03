@@ -35,12 +35,17 @@ use log::{info, warn};
 
 use crate::bindings::*;
 use crate::callback::{clear_callback, register_callback, CallbackState};
-use crate::compiler::{apply_backend_delta, rebuild_from_backend_snapshot};
+use crate::compiler::{
+    apply_backend_delta, missing_variable, normalize_bound, project_objective_policy,
+    rebuild_from_backend_snapshot,
+};
 use crate::error::{check_highs_status, from_native_status};
 use crate::lifecycle::HighsSession;
 use crate::solution::{extract_solution, map_termination_status};
 use roml::advanced::{
-    CompileError, CompiledConstraintId, CompiledEntityRegistry, CompiledVariableId,
+    CompilationId, CompileError, CompiledConstraintId, CompiledEntityRegistry,
+    CompiledObjectivePolicy, CompiledOverlay, CompiledVariableId, OverlayApplyReceipt, OverlayOp,
+    OverlayRollbackOutcome, OverlaySession,
 };
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
@@ -118,6 +123,10 @@ impl BackendSession for HighsSession {
                         // the established base so compiled deltas can be
                         // validated against it.
                         self.current_compilation = Some(snapshot.compilation_id);
+                        // P27 Task 10: track the active compiled objective
+                        // policy so an overlay objective override can be
+                        // restored on rollback.
+                        self.compiled_objective_policy = snapshot.objective_policy.clone();
                         // T-11-18: Invalidate stale solution after model mutation.
                         self.current_solution = None;
                         info!("Rebuild complete, cursor at revision {}", revision);
@@ -230,6 +239,16 @@ impl BackendSession for HighsSession {
                         // The exact compiled id of the target state becomes the
                         // session's current compiled state (D28).
                         self.current_compilation = Some(batch.to_compilation);
+                        // P27 Task 10: track the active compiled objective
+                        // policy — the batch's LAST SetObjectivePolicy op is
+                        // the target policy (A32 includes None).
+                        if let Some(roml::advanced::BackendOp::SetObjectivePolicy(policy)) =
+                            batch.operations.iter().rev().find(|op| {
+                                matches!(op, roml::advanced::BackendOp::SetObjectivePolicy(_))
+                            })
+                        {
+                            self.compiled_objective_policy = policy.clone();
+                        }
                         // T-11-18: Invalidate stale solution after model mutation.
                         self.current_solution = None;
                         info!(
@@ -386,6 +405,9 @@ impl BackendSession for HighsSession {
             // compiled state (checked above) and its exact id is the only
             // stale-state authority.
             compilation_id: Some(compilation_id),
+            // The session does not know the overlay id; the façade records
+            // `Some(overlay.id)` in the normalized metadata on an overlay solve.
+            overlay_id: None,
         })
     }
 
@@ -578,6 +600,307 @@ impl CallbackSession for HighsSession {
             if !self.raw.is_null() {
                 clear_callback(self.raw, state);
             }
+        }
+        Ok(())
+    }
+}
+
+// ── OverlaySession (P27 Task 10) ───────────────────────────────────────────────
+
+/// Prior native state captured by an overlay apply on the HiGHS session,
+/// enabling the transactional rollback (SM-07.4) and the post-rollback clean
+/// verification.
+pub(crate) struct HighsOverlayState {
+    /// The exact base compiled state the overlay was applied on top of.
+    base_compilation: CompilationId,
+    /// The overlay-compounded compiled state.
+    applied_compilation: CompilationId,
+    /// Prior bounds of every compiled variable the overlay temporarily set
+    /// (compiled id -> native (lb, ub)).
+    prior_bounds: HashMap<CompiledVariableId, (f64, f64)>,
+    /// Temporary native rows added by the overlay (compiled row id -> native
+    /// row index).
+    added_rows: Vec<(CompiledConstraintId, HighsInt)>,
+    /// The base compiled objective policy (restored on rollback).
+    prior_policy: CompiledObjectivePolicy,
+    /// The native row/column counts at apply (rollback's clean target).
+    base_row_count: HighsInt,
+    base_col_count: HighsInt,
+}
+
+impl OverlaySession for HighsSession {
+    /// Apply a compiled overlay against the exact base compiled state,
+    /// transitioning `C_base -> C_overlay`.
+    ///
+    /// Temporary bounds go through [`Highs_changeColBounds`] (recording the
+    /// prior bounds from `self.var_bounds`); temporary rows through
+    /// [`Highs_addRows`] (recording the native row index in the overlay state);
+    /// an objective override through the compiled-policy projection shared with
+    /// `roml::advanced::BackendOp::SetObjectivePolicy`. A stale base is
+    /// rejected BEFORE any native mutation (D28 exact-id authority).
+    fn apply_overlay(
+        &mut self,
+        overlay: &CompiledOverlay,
+    ) -> Result<OverlayApplyReceipt, BackendError> {
+        // Exact-id stale rejection before mutation (D28 / SM-03.9).
+        let actual = self.current_compilation.ok_or_else(|| {
+            BackendError::new(
+                "the HiGHS session has no compiled base to apply the overlay on top of",
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+        if actual != overlay.base_compilation {
+            return Err(BackendError::new(
+                format!(
+                    "stale overlay base: the overlay requires compilation {:?}, but the session \
+                     holds {:?} (D28 exact compilation authority)",
+                    overlay.base_compilation, actual
+                ),
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
+
+        let mut state = HighsOverlayState {
+            base_compilation: overlay.base_compilation,
+            applied_compilation: overlay.compilation_id,
+            prior_bounds: HashMap::new(),
+            added_rows: Vec::new(),
+            prior_policy: self.compiled_objective_policy.clone(),
+            // SAFETY: self.raw is a valid HiGHS instance handle.
+            base_row_count: unsafe { Highs_getNumRow(self.raw) },
+            base_col_count: unsafe { Highs_getNumCol(self.raw) },
+        };
+
+        for op in &overlay.operations {
+            match op {
+                OverlayOp::SetTemporaryVariableBounds { variable, bounds } => {
+                    let idx = self
+                        .col_map
+                        .get(*variable)
+                        .ok_or_else(|| missing_variable(*variable))?;
+                    let prior = self
+                        .var_bounds
+                        .get(variable)
+                        .copied()
+                        .ok_or_else(|| missing_variable(*variable))?;
+                    let lb = normalize_bound(bounds.lower, self.inf);
+                    let ub = normalize_bound(bounds.upper, self.inf);
+                    // SAFETY: raw is valid; idx is a live native column.
+                    unsafe {
+                        check_highs_status(
+                            Highs_changeColBounds(self.raw, idx, lb, ub),
+                            self.raw,
+                            "Highs_changeColBounds (overlay temporary bound)",
+                        )?;
+                    }
+                    // Record the FIRST prior bound only — a later overlay op on
+                    // the same variable must not overwrite the base capture.
+                    state.prior_bounds.entry(*variable).or_insert(prior);
+                    self.var_bounds.insert(*variable, (lb, ub));
+                }
+                OverlayOp::AddTemporaryRow { row } => {
+                    let lb = normalize_bound(row.bounds.lower, self.inf);
+                    let ub = normalize_bound(row.bounds.upper, self.inf);
+                    let mut indices: Vec<HighsInt> = Vec::with_capacity(row.coefficients.len());
+                    let mut values: Vec<f64> = Vec::with_capacity(row.coefficients.len());
+                    for (cid, value) in &row.coefficients {
+                        // F5: a coefficient referencing a compiled variable not
+                        // present in the held state is a typed error, not a
+                        // silent skip.
+                        let col = self
+                            .col_map
+                            .get(*cid)
+                            .ok_or_else(|| missing_variable(*cid))?;
+                        indices.push(col);
+                        values.push(*value);
+                    }
+                    let starts = [0 as HighsInt];
+                    // SAFETY: raw is valid; the arrays are populated for the
+                    // single new row; return code is checked immediately.
+                    let status = unsafe {
+                        Highs_addRows(
+                            self.raw,
+                            1,
+                            &lb,
+                            &ub,
+                            indices.len() as HighsInt,
+                            starts.as_ptr(),
+                            indices.as_ptr(),
+                            values.as_ptr(),
+                        )
+                    };
+                    if status != STATUS_OK {
+                        self.cursor.mark_rebuild();
+                        return Err(from_native_status(status, "Highs_addRows (overlay row)"));
+                    }
+                    // SAFETY: raw is valid. The added row is the last row.
+                    let native_row = unsafe { Highs_getNumRow(self.raw) } - 1;
+                    state.added_rows.push((row.id, native_row));
+                }
+                // RemoveTemporaryRow is a rollback-only op; apply does not
+                // produce it.
+                OverlayOp::RemoveTemporaryRow { row } => {
+                    return Err(BackendError::new(
+                        format!("apply_overlay does not accept RemoveTemporaryRow ({row:?})"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::RequiresRebuild,
+                    ));
+                }
+                OverlayOp::SetObjectivePolicy(policy) => {
+                    project_objective_policy(
+                        self.raw,
+                        policy,
+                        &self.col_map,
+                        &self.compiled_to_user_objective,
+                        &self.obj_costs,
+                        &self.obj_senses,
+                        &self.obj_offsets,
+                        &mut self.active_obj,
+                    )?;
+                    self.compiled_objective_policy = policy.clone();
+                }
+                // `OverlayOp` is `#[non_exhaustive]` (P27 contract): a FUTURE
+                // op variant this projection does not understand is a hard
+                // typed error — never a silent no-op.
+                _ => {
+                    return Err(BackendError::unsupported(
+                        "overlay op variant not supported by this projection",
+                    ));
+                }
+            }
+        }
+
+        self.current_compilation = Some(overlay.compilation_id);
+        self.overlay_state = Some(state);
+        Ok(OverlayApplyReceipt {
+            overlay_id: overlay.overlay_id,
+            base_compilation: overlay.base_compilation,
+            applied_compilation: overlay.compilation_id,
+        })
+    }
+
+    /// Roll back an applied overlay, transitioning `C_overlay -> C_base`.
+    ///
+    /// Restores each prior bound, deletes each added temporary row, restores
+    /// the base objective policy, and sets `current_compilation` back to the
+    /// base. Any failing native call returns
+    /// [`RequiresRebuild`](OverlayRollbackOutcome::RequiresRebuild) and marks
+    /// the session rebuild-required (D7 invariant). The added temporary rows
+    /// live at the END of the native model, so deleting them (in one set call)
+    /// leaves every base row's native index unchanged.
+    fn rollback_overlay(
+        &mut self,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<OverlayRollbackOutcome, BackendError> {
+        let state = self.overlay_state.as_ref().ok_or_else(|| {
+            BackendError::new(
+                "no applied overlay to roll back; the receipt does not match this session",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+        if state.applied_compilation != receipt.applied_compilation {
+            return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                reason: format!(
+                    "receipt applied compilation {:?} does not match the session's applied overlay {:?}",
+                    receipt.applied_compilation, state.applied_compilation
+                ),
+            });
+        }
+
+        // Restore prior bounds.
+        for (variable, (lb, ub)) in &state.prior_bounds {
+            let idx = match self.col_map.get(*variable) {
+                Some(idx) => idx,
+                None => {
+                    self.cursor.mark_rebuild();
+                    return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                        reason: format!(
+                            "restoring prior bound: compiled variable {variable:?} is absent"
+                        ),
+                    });
+                }
+            };
+            // SAFETY: raw is valid; idx is a live native column.
+            let ret = unsafe { Highs_changeColBounds(self.raw, idx, *lb, *ub) };
+            if ret != STATUS_OK {
+                self.cursor.mark_rebuild();
+                return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                    reason: format!(
+                        "restoring prior bound for {variable:?} failed (native code {ret})"
+                    ),
+                });
+            }
+            self.var_bounds.insert(*variable, (*lb, *ub));
+        }
+
+        // Delete the added temporary rows (all at the end of the native model).
+        if !state.added_rows.is_empty() {
+            let indices: Vec<HighsInt> =
+                state.added_rows.iter().map(|(_, native)| *native).collect();
+            // SAFETY: raw is valid; the set contains live native row indices.
+            let ret = unsafe {
+                Highs_deleteRowsBySet(self.raw, indices.len() as HighsInt, indices.as_ptr())
+            };
+            if ret != STATUS_OK {
+                self.cursor.mark_rebuild();
+                return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                    reason: format!("deleting overlay rows failed (native code {ret})"),
+                });
+            }
+        }
+
+        // Restore the base objective policy.
+        if let Err(e) = project_objective_policy(
+            self.raw,
+            &state.prior_policy,
+            &self.col_map,
+            &self.compiled_to_user_objective,
+            &self.obj_costs,
+            &self.obj_senses,
+            &self.obj_offsets,
+            &mut self.active_obj,
+        ) {
+            self.cursor.mark_rebuild();
+            return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                reason: format!("restoring the base objective policy failed: {e}"),
+            });
+        }
+        self.compiled_objective_policy = state.prior_policy.clone();
+
+        let restored = state.base_compilation;
+        self.current_compilation = Some(restored);
+        Ok(OverlayRollbackOutcome::Clean {
+            restored_compilation: restored,
+        })
+    }
+
+    /// Verify the native model is restored to the base after a `Clean`
+    /// rollback: the row/column counts match the base and the session's
+    /// compiled state is back at `C_base`.
+    fn verify_overlay_clean(&mut self) -> Result<(), BackendError> {
+        let state = self.overlay_state.as_ref().ok_or_else(|| {
+            BackendError::new(
+                "verify_overlay_clean called with no recorded overlay apply",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            )
+        })?;
+        // SAFETY: raw is a valid HiGHS instance handle; getters do not mutate.
+        let rows = unsafe { Highs_getNumRow(self.raw) };
+        let cols = unsafe { Highs_getNumCol(self.raw) };
+        if self.current_compilation != Some(state.base_compilation)
+            || rows != state.base_row_count
+            || cols != state.base_col_count
+        {
+            self.cursor.mark_rebuild();
+            return Err(BackendError::new(
+                "post-rollback verification failed: the native model does not match C_base",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            ));
         }
         Ok(())
     }
@@ -852,17 +1175,17 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 mod tests {
     use super::*;
     use roml::advanced::{
-        BackendDeltaBatch, BackendOp, BackendSnapshot, BackendSnapshotBuilder, CompilationId,
-        CompilationPolicy, CompilationSession, CompiledLinearRow, CompiledObjectiveId,
-        CompiledObjectiveLevel, CompiledObjectivePolicy, CompiledVariable, CompiledVariableId,
-        CompiledWeightedObjective, EntityOrigin, OriginMap,
+        compile_overlay, BackendDeltaBatch, BackendOp, BackendSnapshot, BackendSnapshotBuilder,
+        CompilationId, CompilationPolicy, CompilationSession, CompiledLinearRow,
+        CompiledObjectiveId, CompiledObjectiveLevel, CompiledObjectivePolicy, CompiledVariable,
+        CompiledVariableId, CompiledWeightedObjective, EntityOrigin, OriginMap,
     };
     use roml::compiler::capability::SupportLevel;
     use roml::delta::{DeltaBatch, ModelOp};
     use roml::id::Generation;
     use roml::model::{continuous, Bounds, ConstraintBounds, VarType};
     use roml::snapshot::ModelSnapshot;
-    use roml::{ConstraintExprExt, Model};
+    use roml::{ConstraintExprExt, CutoffDirection, Model, ObjectiveCutoff, SolveOverlay};
 
     /// A full typed capability set for the compiled-path tests (SM-04.4: an
     /// unqualified feature is rejected, never silently ignored).
@@ -1544,6 +1867,185 @@ mod tests {
         assert_eq!(
             highs.current_compilation, None,
             "a rejected rebuild must not establish a compiled state"
+        );
+    }
+
+    // ── P27 Task 10: HiGHS reversible overlay execution ───────────────────────
+
+    /// A full overlay apply -> solve -> rollback -> verify round-trip on the
+    /// HiGHS session. The temporary bound (x = 4) and the cutoff row
+    /// (x + y <= 6) change the solved objective; rollback restores the native
+    /// model to C_base exactly and a subsequent solve equals the base solve.
+    #[test]
+    fn highs_overlay_apply_solve_rollback_round_trip() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.add_constraint((x + y).le(10.0)).unwrap();
+        let obj = model.maximize(x + y).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let c_base = base.compilation_id;
+
+        let request = SolveRequest {
+            enable_output: Some(false),
+            ..SolveRequest::new()
+        };
+        let base_result = highs.solve(&request).expect("base solve must succeed");
+        let base_obj = base_result
+            .solution
+            .as_ref()
+            .and_then(|s| s.objective_value)
+            .expect("base objective value");
+        assert_eq!(base_obj, 10.0, "max x + y with x + y <= 10 is 10");
+        assert_eq!(base_result.compilation_id, Some(c_base));
+        let base_rows = unsafe { Highs_getNumRow(highs.raw) };
+
+        // Overlay: temp fixing x = 4 and cutoff f(x) <= 6 (f = x + y).
+        let overlay = SolveOverlay::new(
+            BTreeMap::from([(x, 4.0)]),
+            vec![],
+            vec![],
+            vec![ObjectiveCutoff {
+                objective: obj,
+                limit: 6.0,
+                direction: CutoffDirection::Upper,
+            }],
+        )
+        .expect("overlay id allocates");
+        let compiled =
+            compile_overlay(&model, &compiler, &overlay, None).expect("overlay compiles");
+        assert_eq!(compiled.base_compilation, c_base);
+        let c_overlay = compiled.compilation_id;
+
+        // Apply: C_base -> C_overlay; the native row count grows by one.
+        let receipt = highs.apply_overlay(&compiled).expect("apply must succeed");
+        assert_eq!(receipt.base_compilation, c_base);
+        assert_eq!(receipt.applied_compilation, c_overlay);
+        assert_eq!(highs.current_compilation, Some(c_overlay));
+        assert_eq!(
+            unsafe { Highs_getNumRow(highs.raw) },
+            base_rows + 1,
+            "the cutoff row must be added to the native model"
+        );
+
+        // Solve under the overlay: x fixed to 4, x + y <= 6 -> x = 4, y = 2,
+        // objective 6.
+        let overlay_result = highs.solve(&request).expect("overlay solve must succeed");
+        assert_eq!(overlay_result.compilation_id, Some(c_overlay));
+        assert_eq!(
+            overlay_result
+                .solution
+                .as_ref()
+                .and_then(|s| s.objective_value),
+            Some(6.0),
+            "the temp fixing and cutoff must constrain the overlay solve"
+        );
+
+        // Rollback: C_overlay -> C_base; the native row count returns to base.
+        let outcome = highs
+            .rollback_overlay(&receipt)
+            .expect("rollback must succeed");
+        assert!(
+            matches!(
+                outcome,
+                OverlayRollbackOutcome::Clean { restored_compilation } if restored_compilation == c_base
+            ),
+            "a fully applied overlay must roll back Clean, got {outcome:?}"
+        );
+        assert_eq!(highs.current_compilation, Some(c_base));
+        assert_eq!(
+            unsafe { Highs_getNumRow(highs.raw) },
+            base_rows,
+            "rollback must remove the overlay's temporary row"
+        );
+
+        // Verify clean: native model matches C_base.
+        highs
+            .verify_overlay_clean()
+            .expect("post-rollback verification");
+
+        // The base solve is reproduced exactly — no overlay leak.
+        let after = highs
+            .solve(&request)
+            .expect("post-rollback solve must succeed");
+        assert_eq!(after.compilation_id, Some(c_base));
+        assert_eq!(
+            after.solution.as_ref().and_then(|s| s.objective_value),
+            Some(base_obj),
+            "a solve after rollback must equal the base solve (no overlay leak)"
+        );
+    }
+
+    /// A stale overlay apply is rejected BEFORE any native mutation; the
+    /// session's compiled state and native model are unchanged.
+    #[test]
+    fn highs_stale_overlay_apply_rejects_before_mutation() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous()).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler_a = CompilationSession::new();
+        let base = compiler_a
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let held = highs.current_compilation.expect("base compiled");
+
+        // A SECOND independent compilation -> a DISTINCT exact id (D28).
+        let mut compiler_b = CompilationSession::new();
+        let compiled_b = compiler_b
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("second snapshot must compile");
+        assert_ne!(held, compiled_b.compilation_id);
+
+        // Compile the overlay against compiler_b's base (NOT the session's).
+        let overlay =
+            SolveOverlay::new(BTreeMap::from([(x, 1.0)]), vec![], vec![], vec![]).unwrap();
+        let compiled = compile_overlay(&model, &compiler_b, &overlay, None).unwrap();
+        assert_ne!(compiled.base_compilation, held);
+
+        let cols_before = unsafe { Highs_getNumCol(highs.raw) };
+        let err = highs
+            .apply_overlay(&compiled)
+            .expect_err("a stale overlay must be rejected at apply time");
+        assert_eq!(err.category, ErrorCategory::InvalidInput);
+        assert!(
+            err.message.contains("compilation") || err.message.contains("base"),
+            "the error must name the stale compilation, got: {}",
+            err.message
+        );
+        assert_eq!(
+            unsafe { Highs_getNumCol(highs.raw) },
+            cols_before,
+            "a rejected stale overlay must not mutate the native model"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(held),
+            "a rejected stale overlay must not change the session's compiled state"
         );
     }
 }

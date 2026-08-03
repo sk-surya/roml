@@ -152,6 +152,47 @@ pub enum OverlayOp {
     SetObjectivePolicy(CompiledObjectivePolicy),
 }
 
+/// The receipt returned by
+/// [`OverlaySession::apply_overlay`](crate::solver::session::OverlaySession::apply_overlay)
+/// (design §12; SM-07.4).
+///
+/// Explicit transactional apply/rollback receipts are the mechanism — a
+/// fallible rollback is never delegated solely to `Drop`. The receipt records
+/// the exact `(base, applied)` [`CompilationId`] pair so rollback can verify
+/// the exact state it must restore (D28).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayApplyReceipt {
+    /// The originating overlay.
+    pub overlay_id: OverlayId,
+    /// The exact compiled state the overlay was applied on top of (`C_base`).
+    pub base_compilation: CompilationId,
+    /// The overlay-compounded compiled state the backend now holds (`C_overlay`).
+    pub applied_compilation: CompilationId,
+}
+
+/// The outcome of
+/// [`OverlaySession::rollback_overlay`](crate::solver::session::OverlaySession::rollback_overlay)
+/// (design §12, §19; SM-07.4, SM-07.5).
+///
+/// A [`Clean`](Self::Clean) outcome restores the exact base compiled state.
+/// A [`RequiresRebuild`](Self::RequiresRebuild) outcome means the rollback
+/// could not be proven clean — the session MUST be rebuilt before reuse
+/// (D7 invariant: "rollback uncertainty forces backend rebuild"; D22).
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverlayRollbackOutcome {
+    /// The backend was restored to the exact base compiled state.
+    Clean {
+        /// The restored base `CompilationId`.
+        restored_compilation: CompilationId,
+    },
+    /// The backend state is uncertain after the failed rollback; it must be
+    /// rebuilt before the next solve.
+    RequiresRebuild {
+        /// Why the rollback could not be proven clean.
+        reason: String,
+    },
+}
+
 /// Error compiling (or, in Task 10, applying) a [`SolveOverlay`]
 /// (design §19; SM-06.6; issue #26 item 1).
 #[derive(Clone, Debug, PartialEq)]
