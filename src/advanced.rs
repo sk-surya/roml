@@ -31,8 +31,8 @@
 
 /// Backend session contract and synchronization types.
 pub use crate::solver::session::{
-    BackendFixture, BackendMetadata, BackendSession, CallbackSession, SessionHealth, SolutionView,
-    SyncReceipt, Synchronization,
+    BackendFixture, BackendMetadata, BackendSession, CallbackSession, OverlaySession,
+    SessionHealth, SolutionView, SyncReceipt, Synchronization,
 };
 
 /// Typed delta batches and model operations.
@@ -76,6 +76,29 @@ pub use crate::solution::{SolutionBuilder, SolutionStore};
 
 /// The model's change journal (raw event stream).
 pub use crate::model::changelog::Change;
+
+/// Declared variable domain and persistent fixing state (P27 Task 8,
+/// SM-05.1). Backend authors matching `ModelOp::SetVariableFixing` reach the
+/// fixing record here alongside the delta/change surface.
+pub use crate::model::variable::{FixingProvenance, SemiDomain, VariableDomain, VariableFixing};
+
+/// Primal assignments and solution locks (P27 Task 9, SM-06). The neutral
+/// partial value map and the solve-scoped lock types are canonical model
+/// surface (design §11); backend authors consume them through the overlay
+/// compiler below.
+pub use crate::assignment::{
+    AssignmentError, ContinuousLock, LockSelector, PrimalAssignment, SolutionLock,
+};
+
+/// Solve overlay contract, compiler, and transactional apply/rollback receipts
+/// (P27 Task 9 types + compiler, issue #26 item 1; P27 Task 10 execution). The
+/// overlay packet shapes are canonical solve surface; the compiled overlay,
+/// its operations, and the explicit apply/rollback receipts are the
+/// backend-facing forms Task 10 executes.
+pub use crate::solver::overlay::{
+    compile_overlay, CompiledOverlay, CutoffDirection, ObjectiveCutoff, ObjectiveLock,
+    OverlayApplyReceipt, OverlayError, OverlayOp, OverlayRollbackOutcome, SolveOverlay,
+};
 
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
