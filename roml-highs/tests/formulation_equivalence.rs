@@ -11,7 +11,7 @@ use roml::compiler::capability::CompilationPolicy;
 use roml::compiler::session::CompilationSession;
 use roml::construct::{
     AbsoluteValueVariant, BooleanKind, CardinalityKind, IndicatorDirection, MinMaxRelation,
-    MinMaxSense,
+    MinMaxSense, ProductOperand,
 };
 use roml::id::VarId;
 use roml::prelude::*;
@@ -352,5 +352,74 @@ fn absolute_value_highs_feasible_sets_match_semantic() {
     assert!(
         mismatches.is_empty(),
         "clamp HiGHS feasible set differs from semantic: {mismatches:?}"
+    );
+}
+
+#[test]
+fn binary_product_highs_feasible_sets_match_semantic() {
+    // Binary-binary: HiGHS finds the probe feasible iff w == a·b.
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    let (_, w) = model
+        .add_binary_product(ProductOperand::Binary(a), ProductOperand::Binary(b), None)
+        .unwrap();
+
+    let mut mismatches = Vec::new();
+    for av in 0..2 {
+        for bv in 0..2 {
+            for wv in 0..2 {
+                let semantic = (wv as f64) == ((av * bv) as f64);
+                let auto = highs_feasible_for_fixes(
+                    &model,
+                    &[(a, av as f64), (b, bv as f64), (w, wv as f64)],
+                    CompilationPolicy::Auto,
+                );
+                let portable = highs_feasible_for_fixes(
+                    &model,
+                    &[(a, av as f64), (b, bv as f64), (w, wv as f64)],
+                    CompilationPolicy::Portable,
+                );
+                if auto != semantic || portable != semantic {
+                    mismatches.push((av, bv, wv, semantic, auto, portable));
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "binary-binary HiGHS feasible set differs from semantic: {mismatches:?}"
+    );
+
+    // Binary-times-bounded-linear: HiGHS finds the probe feasible iff w == b·f.
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    let (_, w) = model.add_binary_times_linear(b, f.into(), None).unwrap();
+
+    let mut mismatches = Vec::new();
+    for bv in 0..2 {
+        for fv in -2..=2 {
+            for wv in -2..=2 {
+                let semantic = (wv as f64) == (bv as f64 * fv as f64);
+                let auto = highs_feasible_for_fixes(
+                    &model,
+                    &[(b, bv as f64), (f, fv as f64), (w, wv as f64)],
+                    CompilationPolicy::Auto,
+                );
+                let portable = highs_feasible_for_fixes(
+                    &model,
+                    &[(b, bv as f64), (f, fv as f64), (w, wv as f64)],
+                    CompilationPolicy::Portable,
+                );
+                if auto != semantic || portable != semantic {
+                    mismatches.push((bv, fv, wv, semantic, auto, portable));
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "binary-times-linear HiGHS feasible set differs from semantic: {mismatches:?}"
     );
 }
