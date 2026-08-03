@@ -121,6 +121,12 @@ pub fn normalize_result(
 pub struct SolverSession<B> {
     backend: B,
     compiler: CompilationSession,
+    /// The model instance whose compiled state the backend currently holds
+    /// (F1). `None` before the first successful synchronization. Used to
+    /// detect cross-model `SolverSession` reuse so a different model at an
+    /// overlapping revision never silently solves the previous model's
+    /// backend state.
+    bound_instance: Option<ModelInstanceId>,
 }
 
 impl<B> SolverSession<B>
@@ -132,6 +138,7 @@ where
         Self {
             backend,
             compiler: CompilationSession::new(),
+            bound_instance: None,
         }
     }
 
@@ -181,7 +188,27 @@ where
 
         let mut sync_mode = SynchronizationMode::NoChange;
 
-        if health == AdapterHealth::RequiresRebuild {
+        // F1 (cross-model session reuse): a `SolverSession` is bound to the
+        // ONE model instance whose state is currently compiled in the backend.
+        // When the incoming model is a DIFFERENT instance, the backend's
+        // compiled base belongs to another model — the revision-based decision
+        // below must NOT reuse it (two unrelated models at the same revision
+        // would otherwise solve the previous model's state). Force the full
+        // snapshot synchronization path: reset the per-model compiler so the
+        // new model compiles fresh (the compiler's source-instance guard would
+        // otherwise reject the cross-model recompile with `RebuildRequired`,
+        // D28), then re-establish the compiled base for THIS instance.
+        //
+        // `None` (first solve) needs no separate branch: a fresh backend is at
+        // revision ZERO, so the ordinary revision-based decision always
+        // synchronizes fully (compiled empty base + deltas) and never reaches
+        // the no-sync fast path.
+        let cross_model = self.bound_instance.is_some_and(|b| b != model.instance());
+        if cross_model {
+            self.compiler = CompilationSession::new();
+            self.rebuild_from_snapshot(model)?;
+            sync_mode = SynchronizationMode::Rebuild;
+        } else if health == AdapterHealth::RequiresRebuild {
             // 4. Requires rebuild -> snapshot rebuild.
             self.rebuild_from_snapshot(model)?;
             sync_mode = SynchronizationMode::Rebuild;
@@ -221,6 +248,11 @@ where
                 HealthEffect::RequiresRebuild,
             )));
         }
+
+        // F1: bind the session to the model instance whose compiled state the
+        // backend now holds. Bound only after a successful synchronization, so
+        // a failed sync never leaves a stale binding.
+        self.bound_instance = Some(model.instance());
 
         // 8. Solve exactly once.
         let request = options.into_request();
