@@ -1175,7 +1175,7 @@ fn indicator_feasible_sets_semantic_reference_native_portable_equal() {
     let vars = [z, x, y];
 
     // semantic: z=1 ⇒ x+y <= 1
-    let semantic = semantic_feasible(3, |a| !(a[0] == 1) || (a[1] + a[2] <= 1));
+    let semantic = semantic_feasible(3, |a| a[0] != 1 || (a[1] + a[2] <= 1));
 
     // reference: exact indicator row `x + y + M z <= 1 + M` with M = max(0, max(x+y) - 1) = 1
     let reference = reference_feasible(&[(&[1.0, 1.0, 1.0][..], ConstraintBounds::le(2.0))], 3);
@@ -1211,7 +1211,7 @@ fn indicator_when_zero_feasible_sets_match_semantic() {
     let vars = [z, x, y];
 
     // semantic: z=0 ⇒ x+y <= 1
-    let semantic = semantic_feasible(3, |a| !(a[0] == 0) || (a[1] + a[2] <= 1));
+    let semantic = semantic_feasible(3, |a| a[0] != 0 || (a[1] + a[2] <= 1));
 
     let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
     let portable = compiled_feasible_assignments(&compiled, &vars);
