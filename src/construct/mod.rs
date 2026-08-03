@@ -185,6 +185,20 @@ impl ConstructStore {
         preference: FormulationPreference,
     ) -> Result<Construct, IdentityOverflow> {
         let id = ConstructId::allocate()?;
+        self.add_with_id(id, kind, preference)
+    }
+
+    /// Insert a construct with a PRE-ALLOCATED id (IN-03 atomic builders).
+    ///
+    /// The caller reserves the id first (e.g. before creating the construct's
+    /// output/activator variable) so a construct-id failure cannot leave an
+    /// orphaned variable in the arena/changelog. Returns the pre-allocated id.
+    pub fn add_with_id(
+        &mut self,
+        id: Construct,
+        kind: ConstructKind,
+        preference: FormulationPreference,
+    ) -> Result<Construct, IdentityOverflow> {
         let parameter_dependencies = derive_parameter_dependencies(&kind);
         self.arena.insert(
             id,
@@ -249,5 +263,30 @@ pub(crate) fn derive_parameter_dependencies(kind: &ConstructKind) -> Vec<ParamId
         ConstructKind::BinaryProduct(payload) => payload.parameter_dependencies(),
         #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::ConstructId;
+
+    /// IN-03: a construct can be inserted with a PRE-ALLOCATED id, so a builder
+    /// can reserve the construct id BEFORE creating its output/activator
+    /// variable — a construct-id failure then cannot leave an orphaned variable
+    /// in the arena/changelog.
+    #[test]
+    fn store_add_with_id_inserts_pre_allocated_construct() {
+        let mut store = ConstructStore::new();
+        let id = ConstructId::allocate().expect("construct id allocation");
+        let kind = ConstructKind::Fixture(FixturePayload::new("atomic".to_string(), 1.0));
+        let returned = store
+            .add_with_id(id, kind.clone(), FormulationPreference::Auto)
+            .expect("pre-allocated insert must succeed");
+        assert_eq!(returned, id, "add_with_id returns the pre-allocated id");
+        let data = store.get(id).expect("construct present after add_with_id");
+        assert_eq!(data.entry.kind, kind);
+        assert!(data.entry.active);
+        assert_eq!(store.len(), 1);
     }
 }

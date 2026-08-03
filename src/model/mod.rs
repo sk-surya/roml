@@ -678,6 +678,11 @@ impl Model {
         }
         // The reification result is a fresh binary variable the construct owns
         // (design §16.2: `reify` creates and returns the indicator variable).
+        // IN-03 atomicity: reserve the construct id BEFORE creating the
+        // activator so a construct-id failure cannot leave an orphaned
+        // variable in the arena/changelog.
+        let id =
+            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
         let activator = self.add_variable_internal(Bounds::BINARY, VarType::Binary, None);
         let payload = ReificationConstraint {
             activator,
@@ -686,7 +691,7 @@ impl Model {
             separation_tolerance: separation,
             proven_integrality: proven,
         };
-        self.add_construct(ConstructKind::Reification(payload), preference)
+        self.add_construct_allocated(id, ConstructKind::Reification(payload), preference)
     }
 
     /// Add a Boolean construct (design §16.4, packet Task 16).
@@ -859,6 +864,11 @@ impl Model {
                 }
             }
         };
+        // IN-03 atomicity: reserve the construct id BEFORE creating the output
+        // variable so a construct-id failure cannot leave an orphaned variable
+        // in the arena/changelog.
+        let id =
+            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
         let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
         let payload = MinMaxConstraint {
             operands,
@@ -866,7 +876,8 @@ impl Model {
             sense,
             relation,
         };
-        let construct = self.add_construct(ConstructKind::MinMax(payload), preference)?;
+        let construct =
+            self.add_construct_allocated(id, ConstructKind::MinMax(payload), preference)?;
         Ok((construct, output))
     }
 
@@ -908,13 +919,19 @@ impl Model {
                 Bounds::new(lower, upper)
             }
         };
+        // IN-03 atomicity: reserve the construct id BEFORE creating the output
+        // variable so a construct-id failure cannot leave an orphaned variable
+        // in the arena/changelog.
+        let id =
+            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
         let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
         let payload = AbsoluteValueConstraint {
             expression,
             output,
             variant,
         };
-        let construct = self.add_construct(ConstructKind::AbsoluteValue(payload), preference)?;
+        let construct =
+            self.add_construct_allocated(id, ConstructKind::AbsoluteValue(payload), preference)?;
         Ok((construct, output))
     }
 
@@ -947,13 +964,19 @@ impl Model {
             }
             _ => unreachable!("builder validates exactly one binary operand"),
         };
+        // IN-03 atomicity: reserve the construct id BEFORE creating the output
+        // variable so a construct-id failure cannot leave an orphaned variable
+        // in the arena/changelog.
+        let id =
+            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
         let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
         let payload = BinaryProductConstraint {
             left,
             right,
             output,
         };
-        let construct = self.add_construct(ConstructKind::BinaryProduct(payload), preference)?;
+        let construct =
+            self.add_construct_allocated(id, ConstructKind::BinaryProduct(payload), preference)?;
         Ok((construct, output))
     }
 
@@ -1050,6 +1073,33 @@ impl Model {
             active: true,
         });
         Ok(construct)
+    }
+
+    /// Atomic construct-add with a PRE-ALLOCATED id (IN-03).
+    ///
+    /// A builder that creates a variable (output/activator) reserves the
+    /// construct id FIRST via [`crate::identity::ConstructId::allocate`], then
+    /// creates the variable, then calls this helper. Nothing fallible remains
+    /// after the id is reserved, so a construct-add failure can never leave an
+    /// orphaned variable in the arena/changelog.
+    fn add_construct_allocated(
+        &mut self,
+        id: Construct,
+        kind: ConstructKind,
+        preference: Option<FormulationPreference>,
+    ) -> Result<Construct, ModelError> {
+        let preference = preference.unwrap_or(FormulationPreference::Auto);
+        self.constructs
+            .add_with_id(id, kind.clone(), preference)
+            .map_err(|_| ModelError::IdentityOverflow)?;
+        // Constructs start active (design §7).
+        self.changelog.push(Change::ConstructAdded {
+            construct: id,
+            kind,
+            preference,
+            active: true,
+        });
+        Ok(id)
     }
 
     /// Require `var` to exist and be a binary variable (SM-12.2).
