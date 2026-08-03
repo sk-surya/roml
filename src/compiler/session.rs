@@ -54,6 +54,12 @@ struct CurrentCompilation {
     revision: ModelRevision,
     /// User variable -> compiled variable id.
     variable_ids: HashMap<VarId, CompiledVariableId>,
+    /// User variable -> activity (WR-02). `SetVariableActive` is not
+    /// incrementally compilable (it forces `RebuildRequired`), so activity is
+    /// FIXED between snapshot rebuilds — tracking it lets `compile_delta` fold
+    /// activity identically for bounds/fixing ops instead of silently diverging
+    /// from `compile_snapshot`'s `[0,0]` fold for an inactive variable.
+    variable_activity: HashMap<VarId, bool>,
     /// User constraint -> compiled row id.
     row_ids: HashMap<ConId, CompiledConstraintId>,
     /// User objective -> compiled objective id.
@@ -266,6 +272,7 @@ impl CompilationSession {
         let mut origin_map = OriginMap::new();
         let mut variables = Vec::with_capacity(snapshot.variables.len());
         let mut variable_ids = HashMap::new();
+        let mut variable_activity = HashMap::new();
         let mut compiled_to_variable = HashMap::new();
         for (index, v) in snapshot.variables.iter().enumerate() {
             let id = CompiledVariableId(index as u32);
@@ -291,6 +298,7 @@ impl CompilationSession {
                 name: None,
             });
             variable_ids.insert(v.id, id);
+            variable_activity.insert(v.id, v.active);
             compiled_to_variable.insert(id, v.id);
             origin_map.insert_variable(id, EntityOrigin::UserVariable(v.id));
         }
@@ -384,6 +392,7 @@ impl CompilationSession {
             compilation_id: compiled.compilation_id,
             revision: compiled.source_revision,
             variable_ids,
+            variable_activity,
             row_ids,
             objective_ids,
             compiled_to_variable,
@@ -485,6 +494,9 @@ impl CompilationSession {
                         name: None,
                     }));
                     w.variable_ids.insert(*var, id);
+                    // WR-02: a newly added variable is active (the canonical
+                    // `add_variable` has no inactive state).
+                    w.variable_activity.insert(*var, true);
                     w.compiled_to_variable.insert(id, *var);
                     origin_additions.insert_variable(id, EntityOrigin::UserVariable(*var));
                 }
@@ -514,6 +526,17 @@ impl CompilationSession {
                             "SetVariableBounds for unknown compiled variable ({var:?})"
                         ))
                     })?;
+                    // WR-02: a bounds change on an INACTIVE variable must not
+                    // silently diverge from `compile_snapshot` (which folds the
+                    // inactive variable to `[0,0]`). The delta carries the raw
+                    // declared bounds; force a rebuild so the snapshot fold
+                    // wins deterministically.
+                    if w.variable_activity.get(var) == Some(&false) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableBounds on inactive variable ({var:?}) must fold to [0, 0]; \
+                             rebuild required"
+                        )));
+                    }
                     operations.push(BackendOp::SetVariableBounds {
                         variable: id,
                         bounds: *bounds,
@@ -543,6 +566,17 @@ impl CompilationSession {
                             "SetVariableFixing for unknown compiled variable ({var:?})"
                         ))
                     })?;
+                    // WR-02: a fixing change on an INACTIVE variable must fold
+                    // identically to `compile_snapshot`'s `[0,0]`. The delta
+                    // carries the raw effective bounds (e.g. the declared
+                    // `[0,10]` after an unfix), which would diverge from the
+                    // rebuild; force a deterministic snapshot rebuild instead.
+                    if w.variable_activity.get(var) == Some(&false) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableFixing on inactive variable ({var:?}) must fold to [0, 0]; \
+                             rebuild required"
+                        )));
+                    }
                     operations.push(BackendOp::SetVariableBounds {
                         variable: id,
                         bounds: *effective_bounds,
@@ -880,6 +914,7 @@ impl CompilationSession {
             compilation_id: to_compilation,
             revision: delta.to,
             variable_ids: w.variable_ids,
+            variable_activity: w.variable_activity,
             row_ids: w.row_ids,
             objective_ids: w.objective_ids,
             compiled_to_variable: w.compiled_to_variable,
