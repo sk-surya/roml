@@ -39,7 +39,8 @@
 //!    the full state after rebuild includes both changes, and no delta is lost.
 
 use roml::advanced::{
-    BackendCapabilitySet, BackendFeature, CompilationSession, FeatureSupport, SupportLevel,
+    BackendCapabilitySet, BackendFeature, CompilationSession, CompiledVariableId, FeatureSupport,
+    SupportLevel,
 };
 use roml::compiler::capability::CompilationPolicy;
 use roml::delta::{DeltaBatch, ModelOp};
@@ -2355,6 +2356,191 @@ fn dx_fixed_seed_compiled_delta_equals_compiled_rebuild() {
     // Compare STATE, not identity: D28 requires every compiled state to carry
     // a distinct opaque `CompilationId`, so the rebuild and delta paths must
     // differ in id while agreeing on every state field.
+    assert!(
+        view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
+        "both paths must produce a compiled id"
+    );
+    assert_ne!(
+        view_a.compilation_id, view_b.compilation_id,
+        "D28: distinct compiled states get distinct ids (rebuild vs delta)"
+    );
+    assert_eq!(
+        view_a.revision, view_b.revision,
+        "compiled revision must match"
+    );
+    assert_eq!(
+        view_a.variables, view_b.variables,
+        "compiled variables must match"
+    );
+    assert_eq!(view_a.rows, view_b.rows, "compiled rows must match");
+    assert_eq!(
+        view_a.objectives, view_b.objectives,
+        "compiled objectives must match"
+    );
+    assert_eq!(
+        view_a.objective_policy, view_b.objective_policy,
+        "compiled objective policy must match"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 8: Compiled removal path (CR-01/CR-02)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The fixed-seed test above excludes removals (dense compiled ids are stable
+// across the delta path while a rebuild renumbers survivors). These tests
+// close the compiled removal surface end-to-end:
+//   (a) a compiled `RemoveVariable` delta purges the removed variable's
+//       coefficients from every compiled row/objective, and the compiled
+//       commuting square holds for a removal path (the removed variable is the
+//       LAST allocated, so surviving dense ids are stable across rebuild);
+//   (b) a compiled `RemoveObjective` of the ACTIVE objective leaves the
+//       compiled objective policy `None` — never a dangling
+//       `Single(removed_id)` — and the compiled commuting square holds.
+
+/// (a) CR-01: a compiled `RemoveVariable` delta purges the removed variable's
+/// coefficients from every compiled row and objective, and the compiled
+/// commuting square holds for the removal path.
+#[test]
+fn dx_compiled_remove_variable_purges_coefficients_and_holds_square() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let v0 = var_id(0);
+    let v1 = var_id(1);
+    let v2 = var_id(2);
+    let c0 = con_id(0);
+    let o0 = obj_id(0);
+
+    // r0 → r1: three variables, one constraint, one ACTIVE objective with
+    // coefficients on v0/v2. v2 is the last allocated, so removing it later
+    // leaves the surviving dense ids stable across the rebuild path.
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v0,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddVariable {
+                var: v1,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddVariable {
+                var: v2,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c0,
+                bounds: ConstraintBounds::le(10.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v0),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v1),
+                value_expr: ValueExpr::constant(3.0),
+                evaluated_value: 3.0,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v2),
+                value_expr: ValueExpr::constant(4.0),
+                evaluated_value: 4.0,
+            },
+            ModelOp::AddObjective {
+                obj: o0,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o0) },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o0), v0),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                constant: 0.0,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o0), v2),
+                value_expr: ValueExpr::constant(5.0),
+                evaluated_value: 5.0,
+                constant: 0.0,
+            },
+        ],
+    )
+    .unwrap();
+
+    // r1 → r2: remove v2.
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveVariable { var: v2 }]).unwrap();
+
+    // Track canonical state to build the authoritative final snapshot at r2.
+    let mut tracker = fresh();
+    let mut cursor = AdapterCursor::new();
+    rebuild_ok(&mut tracker, &mut cursor, &ModelSnapshot::empty(r0));
+    apply_ok(&mut tracker, &mut cursor, &batch1);
+    apply_ok(&mut tracker, &mut cursor, &batch2);
+    let final_view = tracker.normalized_view();
+    let final_snapshot = build_snapshot_from_view(r2, &final_view);
+    let empty_snapshot = ModelSnapshot::empty(r0);
+
+    // Path A: one compiled rebuild of the final state.
+    let mut session_a = CompilationSession::new();
+    let compiled_final = session_a
+        .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
+        .expect("final snapshot must compile");
+    let mut backend_a = fresh();
+    backend_a.rebuild_compiled(&compiled_final);
+    let view_a = backend_a.compiled_normalized_view();
+
+    // Path B: compiled rebuild of r0 + compiled deltas r0→r1→r2.
+    let mut session_b = CompilationSession::new();
+    let compiled_empty = session_b
+        .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
+        .expect("empty snapshot must compile");
+    let mut backend_b = fresh();
+    backend_b.rebuild_compiled(&compiled_empty);
+
+    let delta1 = session_b
+        .compile_delta(&batch1, compiled_empty.compilation_id, &policy, &caps)
+        .expect("batch1 must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta1)
+        .expect("batch1 must apply");
+    let delta2 = session_b
+        .compile_delta(&batch2, delta1.to_compilation, &policy, &caps)
+        .expect("batch2 (RemoveVariable) must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta2)
+        .expect("batch2 (RemoveVariable) must apply");
+    let view_b = backend_b.compiled_normalized_view();
+
+    // CR-01: no compiled row or objective may reference the removed variable's
+    // compiled id (CompiledVariableId(2)).
+    assert!(
+        view_b
+            .rows
+            .iter()
+            .all(|(_, _, coeffs)| !coeffs.iter().any(|(v, _)| *v == CompiledVariableId(2))),
+        "compiled rows must not reference the removed variable"
+    );
+    assert!(
+        view_b
+            .objectives
+            .iter()
+            .all(|(_, _, coeffs, _)| !coeffs.iter().any(|(v, _)| *v == CompiledVariableId(2))),
+        "compiled objectives must not reference the removed variable"
+    );
+
+    // The compiled commuting square must hold for the removal path.
     assert!(
         view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
         "both paths must produce a compiled id"

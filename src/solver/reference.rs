@@ -530,6 +530,18 @@ impl ReferenceBackend {
             }
             BackendOp::RemoveVariable(id) => {
                 self.compiled_variables.remove(id);
+                // Mirror the canonical `apply_op(ModelOp::RemoveVariable)`
+                // cleanup (CR-01): purge every `(CompiledVariableId, f64)`
+                // entry referencing the removed variable from all compiled row
+                // and objective coefficient vectors, so the compiled state
+                // never contains coefficients for a variable that no longer
+                // exists (the compiled commuting square holds for removals).
+                for (_, coeffs) in self.compiled_rows.values_mut() {
+                    coeffs.retain(|(v, _)| v != id);
+                }
+                for (_, coeffs, _) in self.compiled_objectives.values_mut() {
+                    coeffs.retain(|(v, _)| v != id);
+                }
             }
             BackendOp::SetVariableBounds { variable, bounds } => {
                 if let Some(entry) = self.compiled_variables.get_mut(variable) {
