@@ -66,6 +66,36 @@ fn sense_to_highs(sense: Sense) -> HighsInt {
     }
 }
 
+/// F5: a typed error for an op referencing a compiled variable not present in
+/// the held native state (no silent skip).
+fn missing_variable(id: CompiledVariableId) -> BackendError {
+    BackendError::new(
+        format!("compiled variable {id:?} is not present in the held native state"),
+        ErrorCategory::InvalidInput,
+        HealthEffect::RequiresRebuild,
+    )
+}
+
+/// F5: a typed error for an op referencing a compiled row not present in the
+/// held native state (no silent skip).
+fn missing_row(id: CompiledConstraintId) -> BackendError {
+    BackendError::new(
+        format!("compiled row {id:?} is not present in the held native state"),
+        ErrorCategory::InvalidInput,
+        HealthEffect::RequiresRebuild,
+    )
+}
+
+/// F5: a typed error for an op referencing a compiled objective not present in
+/// the held native state (no silent skip).
+fn missing_objective(id: CompiledObjectiveId) -> BackendError {
+    BackendError::new(
+        format!("compiled objective {id:?} is not present in the held native state"),
+        ErrorCategory::InvalidInput,
+        HealthEffect::RequiresRebuild,
+    )
+}
+
 /// Clear all column costs to zero (used before projecting an active
 /// objective, so stale costs from a previous objective never blend in).
 unsafe fn clear_all_costs(raw: *mut c_void) -> Result<(), BackendError> {
@@ -159,14 +189,26 @@ pub(crate) fn rebuild_from_backend_snapshot(
             let ub = normalize_bound(r.bounds.upper, inf);
             let row = Highs_getNumRow(raw);
 
-            // Resolve compiled variable ids to native column indices.
+            // Resolve compiled variable ids to native column indices. F5: a
+            // row coefficient referencing a compiled variable absent from this
+            // snapshot is a typed error, never a silent skip (the preflight
+            // snapshot.validate() catches it first; this is defense-in-depth).
             let mut indices: Vec<HighsInt> = Vec::with_capacity(r.coefficients.len());
             let mut values: Vec<f64> = Vec::with_capacity(r.coefficients.len());
             for (cid, value) in &r.coefficients {
-                if let Some(col) = col_map.get(*cid) {
-                    indices.push(col);
-                    values.push(*value);
-                }
+                let col = col_map.get(*cid).ok_or_else(|| {
+                    BackendError::new(
+                        format!(
+                            "row {:?} references compiled variable {cid:?} that is not present \
+                             in this snapshot",
+                            r.id
+                        ),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::RequiresRebuild,
+                    )
+                })?;
+                indices.push(col);
+                values.push(*value);
             }
             let status = Highs_addRow(
                 raw,
@@ -378,36 +420,36 @@ pub(crate) fn apply_backend_delta(
             }
 
             BackendOp::RemoveVariable(id) => {
-                if let Some(idx) = col_map.remove(*id) {
-                    unsafe {
-                        check_highs_status(
-                            Highs_deleteColsBySet(raw, 1, &[idx] as *const HighsInt),
-                            raw,
-                            "Highs_deleteColsBySet",
-                        )?;
-                    }
-                    col_map.reindex_after_delete(idx);
-                    var_bounds.remove(id);
-                    compiled_to_user_variable.remove(id);
-                    for costs in obj_costs.values_mut() {
-                        costs.remove(id);
-                    }
+                let idx = col_map.remove(*id).ok_or_else(|| missing_variable(*id))?;
+                unsafe {
+                    check_highs_status(
+                        Highs_deleteColsBySet(raw, 1, &[idx] as *const HighsInt),
+                        raw,
+                        "Highs_deleteColsBySet",
+                    )?;
+                }
+                col_map.reindex_after_delete(idx);
+                var_bounds.remove(id);
+                compiled_to_user_variable.remove(id);
+                for costs in obj_costs.values_mut() {
+                    costs.remove(id);
                 }
             }
 
             BackendOp::SetVariableBounds { variable, bounds } => {
-                if let Some(idx) = col_map.get(*variable) {
-                    let lb = normalize_bound(bounds.lower, inf);
-                    let ub = normalize_bound(bounds.upper, inf);
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeColBounds(raw, idx, lb, ub),
-                            raw,
-                            "Highs_changeColBounds",
-                        )?;
-                    }
-                    var_bounds.insert(*variable, (lb, ub));
+                let idx = col_map
+                    .get(*variable)
+                    .ok_or_else(|| missing_variable(*variable))?;
+                let lb = normalize_bound(bounds.lower, inf);
+                let ub = normalize_bound(bounds.upper, inf);
+                unsafe {
+                    check_highs_status(
+                        Highs_changeColBounds(raw, idx, lb, ub),
+                        raw,
+                        "Highs_changeColBounds",
+                    )?;
                 }
+                var_bounds.insert(*variable, (lb, ub));
             }
 
             BackendOp::AddLinearRow(r) => {
@@ -418,10 +460,12 @@ pub(crate) fn apply_backend_delta(
                     let mut indices: Vec<HighsInt> = Vec::with_capacity(r.coefficients.len());
                     let mut values: Vec<f64> = Vec::with_capacity(r.coefficients.len());
                     for (cid, value) in &r.coefficients {
-                        if let Some(col) = col_map.get(*cid) {
-                            indices.push(col);
-                            values.push(*value);
-                        }
+                        // F5: a coefficient referencing a compiled variable not
+                        // present in the held state is a typed error, not a
+                        // silent skip.
+                        let col = col_map.get(*cid).ok_or_else(|| missing_variable(*cid))?;
+                        indices.push(col);
+                        values.push(*value);
                     }
                     let status = Highs_addRow(
                         raw,
@@ -445,33 +489,33 @@ pub(crate) fn apply_backend_delta(
             }
 
             BackendOp::RemoveLinearRow(id) => {
-                if let Some(idx) = row_map.remove(*id) {
-                    unsafe {
-                        check_highs_status(
-                            Highs_deleteRowsBySet(raw, 1, &[idx] as *const HighsInt),
-                            raw,
-                            "Highs_deleteRowsBySet",
-                        )?;
-                    }
-                    row_map.reindex_after_delete(idx);
-                    con_bounds.remove(id);
-                    compiled_to_user_constraint.remove(id);
+                let idx = row_map.remove(*id).ok_or_else(|| missing_row(*id))?;
+                unsafe {
+                    check_highs_status(
+                        Highs_deleteRowsBySet(raw, 1, &[idx] as *const HighsInt),
+                        raw,
+                        "Highs_deleteRowsBySet",
+                    )?;
                 }
+                row_map.reindex_after_delete(idx);
+                con_bounds.remove(id);
+                compiled_to_user_constraint.remove(id);
             }
 
             BackendOp::SetLinearRowBounds { constraint, bounds } => {
-                if let Some(idx) = row_map.get(*constraint) {
-                    let lb = normalize_bound(bounds.lower, inf);
-                    let ub = normalize_bound(bounds.upper, inf);
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeRowBounds(raw, idx, lb, ub),
-                            raw,
-                            "Highs_changeRowBounds",
-                        )?;
-                    }
-                    con_bounds.insert(*constraint, (lb, ub));
+                let idx = row_map
+                    .get(*constraint)
+                    .ok_or_else(|| missing_row(*constraint))?;
+                let lb = normalize_bound(bounds.lower, inf);
+                let ub = normalize_bound(bounds.upper, inf);
+                unsafe {
+                    check_highs_status(
+                        Highs_changeRowBounds(raw, idx, lb, ub),
+                        raw,
+                        "Highs_changeRowBounds",
+                    )?;
                 }
+                con_bounds.insert(*constraint, (lb, ub));
             }
 
             BackendOp::SetLinearCoefficient {
@@ -479,14 +523,18 @@ pub(crate) fn apply_backend_delta(
                 variable,
                 value,
             } => {
-                if let (Some(row), Some(col)) = (row_map.get(*constraint), col_map.get(*variable)) {
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeCoeff(raw, row, col, *value),
-                            raw,
-                            "Highs_changeCoeff",
-                        )?;
-                    }
+                let row = row_map
+                    .get(*constraint)
+                    .ok_or_else(|| missing_row(*constraint))?;
+                let col = col_map
+                    .get(*variable)
+                    .ok_or_else(|| missing_variable(*variable))?;
+                unsafe {
+                    check_highs_status(
+                        Highs_changeCoeff(raw, row, col, *value),
+                        raw,
+                        "Highs_changeCoeff",
+                    )?;
                 }
             }
 
@@ -494,16 +542,20 @@ pub(crate) fn apply_backend_delta(
                 constraint,
                 variable,
             } => {
-                if let (Some(row), Some(col)) = (row_map.get(*constraint), col_map.get(*variable)) {
-                    // HiGHS has no direct "remove coefficient": setting to
-                    // zero achieves the same effect.
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeCoeff(raw, row, col, 0.0),
-                            raw,
-                            "Highs_changeCoeff (remove cell)",
-                        )?;
-                    }
+                let row = row_map
+                    .get(*constraint)
+                    .ok_or_else(|| missing_row(*constraint))?;
+                let col = col_map
+                    .get(*variable)
+                    .ok_or_else(|| missing_variable(*variable))?;
+                // HiGHS has no direct "remove coefficient": setting to
+                // zero achieves the same effect.
+                unsafe {
+                    check_highs_status(
+                        Highs_changeCoeff(raw, row, col, 0.0),
+                        raw,
+                        "Highs_changeCoeff (remove cell)",
+                    )?;
                 }
             }
 
@@ -521,6 +573,9 @@ pub(crate) fn apply_backend_delta(
             }
 
             BackendOp::RemoveObjective(id) => {
+                if !compiled_to_user_objective.contains_key(id) {
+                    return Err(missing_objective(*id));
+                }
                 let was_active = compiled_to_user_objective.get(id).copied() == *active_obj;
                 obj_senses.remove(id);
                 obj_costs.remove(id);
@@ -544,6 +599,12 @@ pub(crate) fn apply_backend_delta(
                 variable,
                 value,
             } => {
+                if !compiled_to_user_objective.contains_key(objective) {
+                    return Err(missing_objective(*objective));
+                }
+                if col_map.get(*variable).is_none() {
+                    return Err(missing_variable(*variable));
+                }
                 obj_costs
                     .entry(*objective)
                     .or_default()
@@ -565,6 +626,12 @@ pub(crate) fn apply_backend_delta(
                 objective,
                 variable,
             } => {
+                if !compiled_to_user_objective.contains_key(objective) {
+                    return Err(missing_objective(*objective));
+                }
+                if col_map.get(*variable).is_none() {
+                    return Err(missing_variable(*variable));
+                }
                 if *active_obj == compiled_to_user_objective.get(objective).copied() {
                     if let Some(col) = col_map.get(*variable) {
                         unsafe {
@@ -582,6 +649,9 @@ pub(crate) fn apply_backend_delta(
             }
 
             BackendOp::SetObjectiveConstant { objective, value } => {
+                if !compiled_to_user_objective.contains_key(objective) {
+                    return Err(missing_objective(*objective));
+                }
                 obj_offsets.insert(*objective, *value);
                 if *active_obj == compiled_to_user_objective.get(objective).copied() {
                     unsafe {
@@ -595,6 +665,9 @@ pub(crate) fn apply_backend_delta(
             }
 
             BackendOp::SetObjectiveSense { objective, sense } => {
+                if !compiled_to_user_objective.contains_key(objective) {
+                    return Err(missing_objective(*objective));
+                }
                 obj_senses.insert(*objective, *sense);
                 if *active_obj == compiled_to_user_objective.get(objective).copied() {
                     unsafe {

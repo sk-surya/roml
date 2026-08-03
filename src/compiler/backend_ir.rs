@@ -12,6 +12,7 @@
 //! that has no `OriginMap` entry, returning a typed [`CompileError`] (D5,
 //! SM-02.5). This is the Task 5 stopping condition.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::identity::{IdentityOverflow, ModelInstanceId};
@@ -402,6 +403,252 @@ pub enum BackendOp {
     },
     /// Set the active compiled objective policy (A32 includes `None`).
     SetObjectivePolicy(CompiledObjectivePolicy),
+}
+
+// ===========================================================================
+// Preflight reference validation (F5)
+// ===========================================================================
+
+/// The set of compiled entities a [`BackendDeltaBatch`] may reference (F5).
+///
+/// A backend constructs this from the compiled state it currently holds before
+/// validating an incoming batch; `Add*` ops inside the batch extend the set.
+/// Malformed batches whose ops reference entities outside this set are rejected
+/// with a typed [`CompileError::InvalidReference`] before any op is applied.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompiledEntityRegistry {
+    /// Compiled variables present in the target state.
+    pub variables: BTreeSet<CompiledVariableId>,
+    /// Compiled rows present in the target state.
+    pub rows: BTreeSet<CompiledConstraintId>,
+    /// Compiled objectives present in the target state.
+    pub objectives: BTreeSet<CompiledObjectiveId>,
+}
+
+impl BackendSnapshot {
+    /// Validate internal reference integrity (F5): every row and objective
+    /// coefficient references a compiled variable present in this snapshot,
+    /// and the objective policy references only compiled objectives present in
+    /// this snapshot. Returns a typed [`CompileError::InvalidReference`] on any
+    /// dangling reference — malformed backend IR is rejected, never silently
+    /// skipped.
+    ///
+    /// `BackendSnapshot` has all-`pub` fields and can be constructed directly
+    /// (bypassing [`BackendSnapshotBuilder::finalize`]), so backends run this
+    /// before reconstructing native state from a snapshot.
+    pub fn validate(&self) -> Result<(), CompileError> {
+        let variables: BTreeSet<CompiledVariableId> = self.variables.iter().map(|v| v.id).collect();
+
+        for row in &self.linear_rows {
+            for (vid, _) in &row.coefficients {
+                if !variables.contains(vid) {
+                    return Err(CompileError::InvalidReference {
+                        entity: CompiledEntityRef::Variable(*vid),
+                    });
+                }
+            }
+        }
+        for objective in &self.objectives {
+            for (vid, _) in &objective.coefficients {
+                if !variables.contains(vid) {
+                    return Err(CompileError::InvalidReference {
+                        entity: CompiledEntityRef::Variable(*vid),
+                    });
+                }
+            }
+        }
+        // Policy references must exist (mirrors builder finalization, re-checked
+        // for directly-constructed snapshots).
+        if let Some(id) = dangling_policy_objective(&self.objective_policy, &self.objectives) {
+            return Err(CompileError::InvalidReference {
+                entity: CompiledEntityRef::Objective(id),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl BackendDeltaBatch {
+    /// Validate every op's referenced IDs against the target state formed by
+    /// `existing` (the backend's current compiled state) plus the entities this
+    /// batch ADDS (F5): a row/objective coefficient references a compiled
+    /// variable that exists (or is added earlier in this batch); an
+    /// update/remove op references an existing entity; the objective policy
+    /// references an existing objective. A dangling reference is a typed
+    /// [`CompileError::InvalidReference`], never a silent skip.
+    ///
+    /// Backends run this BEFORE applying any op, so a malformed batch never
+    /// partially mutates native state.
+    pub fn validate(&self, existing: &CompiledEntityRegistry) -> Result<(), CompileError> {
+        let mut present = existing.clone();
+        for op in &self.operations {
+            match op {
+                BackendOp::AddVariable(v) => {
+                    present.variables.insert(v.id);
+                }
+                BackendOp::RemoveVariable(id) => {
+                    if !present.variables.contains(id) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*id),
+                        });
+                    }
+                }
+                BackendOp::SetVariableBounds { variable, .. } => {
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                BackendOp::AddLinearRow(r) => {
+                    present.rows.insert(r.id);
+                    for (cid, _) in &r.coefficients {
+                        if !present.variables.contains(cid) {
+                            return Err(CompileError::InvalidReference {
+                                entity: CompiledEntityRef::Variable(*cid),
+                            });
+                        }
+                    }
+                }
+                BackendOp::RemoveLinearRow(id) => {
+                    if !present.rows.contains(id) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Constraint(*id),
+                        });
+                    }
+                }
+                BackendOp::SetLinearRowBounds { constraint, .. } => {
+                    if !present.rows.contains(constraint) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Constraint(*constraint),
+                        });
+                    }
+                }
+                BackendOp::SetLinearCoefficient {
+                    constraint,
+                    variable,
+                    ..
+                } => {
+                    if !present.rows.contains(constraint) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Constraint(*constraint),
+                        });
+                    }
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                BackendOp::RemoveLinearCoefficient {
+                    constraint,
+                    variable,
+                } => {
+                    if !present.rows.contains(constraint) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Constraint(*constraint),
+                        });
+                    }
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                BackendOp::AddObjective(o) => {
+                    present.objectives.insert(o.id);
+                    for (cid, _) in &o.coefficients {
+                        if !present.variables.contains(cid) {
+                            return Err(CompileError::InvalidReference {
+                                entity: CompiledEntityRef::Variable(*cid),
+                            });
+                        }
+                    }
+                }
+                BackendOp::RemoveObjective(id) => {
+                    if !present.objectives.contains(id) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*id),
+                        });
+                    }
+                }
+                BackendOp::SetObjectiveCoefficient {
+                    objective,
+                    variable,
+                    ..
+                } => {
+                    if !present.objectives.contains(objective) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*objective),
+                        });
+                    }
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                BackendOp::RemoveObjectiveCoefficient {
+                    objective,
+                    variable,
+                } => {
+                    if !present.objectives.contains(objective) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*objective),
+                        });
+                    }
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                BackendOp::SetObjectiveConstant { objective, .. } => {
+                    if !present.objectives.contains(objective) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*objective),
+                        });
+                    }
+                }
+                BackendOp::SetObjectiveSense { objective, .. } => {
+                    if !present.objectives.contains(objective) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*objective),
+                        });
+                    }
+                }
+                BackendOp::SetObjectivePolicy(policy) => match policy {
+                    CompiledObjectivePolicy::None => {}
+                    CompiledObjectivePolicy::Single(id) => {
+                        if !present.objectives.contains(id) {
+                            return Err(CompileError::InvalidReference {
+                                entity: CompiledEntityRef::Objective(*id),
+                            });
+                        }
+                    }
+                    CompiledObjectivePolicy::Weighted(items) => {
+                        for item in items {
+                            if !present.objectives.contains(&item.objective) {
+                                return Err(CompileError::InvalidReference {
+                                    entity: CompiledEntityRef::Objective(item.objective),
+                                });
+                            }
+                        }
+                    }
+                    CompiledObjectivePolicy::Lexicographic(items) => {
+                        for item in items {
+                            if !present.objectives.contains(&item.objective) {
+                                return Err(CompileError::InvalidReference {
+                                    entity: CompiledEntityRef::Objective(item.objective),
+                                });
+                            }
+                        }
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Builder for [`BackendSnapshot`].

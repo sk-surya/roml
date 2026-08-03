@@ -98,9 +98,10 @@ pub use crate::solver::reference;
 pub use crate::compiler::{
     backend_ir::{
         BackendConstraint, BackendDeltaBatch, BackendOp, BackendSnapshot, BackendSnapshotBuilder,
-        CompilationId, CompiledConstraintId, CompiledEntityRef, CompiledLinearRow,
-        CompiledObjective, CompiledObjectiveId, CompiledObjectiveLevel, CompiledObjectivePolicy,
-        CompiledVariable, CompiledVariableId, CompiledWeightedObjective, RecipeFingerprint,
+        CompilationId, CompiledConstraintId, CompiledEntityRef, CompiledEntityRegistry,
+        CompiledLinearRow, CompiledObjective, CompiledObjectiveId, CompiledObjectiveLevel,
+        CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, CompiledWeightedObjective,
+        RecipeFingerprint,
     },
     capability::{
         BackendCapabilitySet, BackendFeature, CompilationPolicy, FeatureLimitations,

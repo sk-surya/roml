@@ -39,8 +39,10 @@
 //!    the full state after rebuild includes both changes, and no delta is lost.
 
 use roml::advanced::{
-    BackendCapabilitySet, BackendFeature, CompilationSession, CompiledObjectivePolicy,
-    CompiledVariableId, FeatureSupport, SupportLevel,
+    BackendCapabilitySet, BackendFeature, BackendOp, BackendSnapshotBuilder, CompilationSession,
+    CompileError, CompiledConstraintId, CompiledLinearRow, CompiledObjectiveId,
+    CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, EntityOrigin, FeatureSupport,
+    OriginMap, SupportLevel,
 };
 use roml::compiler::capability::CompilationPolicy;
 use roml::delta::{DeltaBatch, ModelOp};
@@ -2330,7 +2332,9 @@ fn dx_fixed_seed_compiled_delta_equals_compiled_rebuild() {
         .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
         .expect("final snapshot must compile");
     let mut backend_a = fresh();
-    backend_a.rebuild_compiled(&compiled_final);
+    backend_a
+        .rebuild_compiled(&compiled_final)
+        .expect("compiled rebuild must validate");
     let view_a = backend_a.compiled_normalized_view();
 
     // ── Path B: compiled rebuild of r0 + compiled deltas r0→rN ─────────────
@@ -2339,7 +2343,9 @@ fn dx_fixed_seed_compiled_delta_equals_compiled_rebuild() {
         .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
         .expect("empty snapshot must compile");
     let mut backend_b = fresh();
-    backend_b.rebuild_compiled(&compiled_empty);
+    backend_b
+        .rebuild_compiled(&compiled_empty)
+        .expect("compiled rebuild must validate");
 
     let mut from_compilation = compiled_empty.compilation_id;
     for batch in &batches {
@@ -2503,7 +2509,9 @@ fn dx_compiled_remove_variable_purges_coefficients_and_holds_square() {
         .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
         .expect("final snapshot must compile");
     let mut backend_a = fresh();
-    backend_a.rebuild_compiled(&compiled_final);
+    backend_a
+        .rebuild_compiled(&compiled_final)
+        .expect("compiled rebuild must validate");
     let view_a = backend_a.compiled_normalized_view();
 
     // Path B: compiled rebuild of r0 + compiled deltas r0→r1→r2.
@@ -2512,7 +2520,9 @@ fn dx_compiled_remove_variable_purges_coefficients_and_holds_square() {
         .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
         .expect("empty snapshot must compile");
     let mut backend_b = fresh();
-    backend_b.rebuild_compiled(&compiled_empty);
+    backend_b
+        .rebuild_compiled(&compiled_empty)
+        .expect("compiled rebuild must validate");
 
     let delta1 = session_b
         .compile_delta(
@@ -2655,7 +2665,9 @@ fn dx_compiled_remove_active_objective_clears_policy_and_holds_square() {
         .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
         .expect("final snapshot must compile");
     let mut backend_a = fresh();
-    backend_a.rebuild_compiled(&compiled_final);
+    backend_a
+        .rebuild_compiled(&compiled_final)
+        .expect("compiled rebuild must validate");
     let view_a = backend_a.compiled_normalized_view();
 
     // Path B: compiled rebuild of r0 + compiled deltas r0→r1→r2.
@@ -2664,7 +2676,9 @@ fn dx_compiled_remove_active_objective_clears_policy_and_holds_square() {
         .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
         .expect("empty snapshot must compile");
     let mut backend_b = fresh();
-    backend_b.rebuild_compiled(&compiled_empty);
+    backend_b
+        .rebuild_compiled(&compiled_empty)
+        .expect("compiled rebuild must validate");
 
     let delta1 = session_b
         .compile_delta(
@@ -2729,5 +2743,201 @@ fn dx_compiled_remove_active_objective_clears_policy_and_holds_square() {
     assert_eq!(
         view_a.objective_policy, view_b.objective_policy,
         "compiled objective policy must match"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 9: Preflight reference validation (F5)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The reference backend rejects malformed backend IR with a typed
+// `CompileError::InvalidReference` instead of silently skipping: a delta op
+// referencing a nonexistent compiled entity, a snapshot row coefficient
+// referencing an unknown compiled variable, and an unknown-ID update are all
+// rejected BEFORE any state is mutated. Valid batches still apply.
+
+/// F5: a compiled delta op referencing a nonexistent compiled variable is
+/// rejected with a typed `CompileError::InvalidReference` before any op is
+/// applied — never a silent skip.
+#[test]
+fn dx_compiled_delta_rejects_op_referencing_unknown_variable() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the batch: reference a compiled variable that does not exist.
+    delta.operations = vec![BackendOp::SetVariableBounds {
+        variable: CompiledVariableId(999),
+        bounds: Bounds::new(0.0, 1.0),
+    }];
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("an op referencing an unknown compiled variable must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidReference { .. }),
+        "expected InvalidReference, got {err:?}"
+    );
+    // The compiled state must not advance on a rejected batch.
+    assert_eq!(
+        backend.current_compilation,
+        Some(base.compilation_id),
+        "a rejected batch must not advance the compiled state"
+    );
+}
+
+/// F5: a snapshot whose row coefficient references a compiled variable absent
+/// from the snapshot is rejected with a typed error when reconstructing the
+/// compiled state — no silent omission of the coefficient.
+#[test]
+fn dx_compiled_snapshot_rejects_row_coefficient_referencing_unknown_variable() {
+    let source_instance = Model::new().instance();
+    let row = CompiledLinearRow {
+        id: CompiledConstraintId(0),
+        bounds: ConstraintBounds::le(10.0),
+        coefficients: vec![(CompiledVariableId(5), 1.0)],
+        name: None,
+    };
+    let mut origin_map = OriginMap::new();
+    origin_map.insert_variable(
+        CompiledVariableId(0),
+        EntityOrigin::UserVariable(VarId::new(0, Generation::new())),
+    );
+    origin_map.insert_constraint(
+        CompiledConstraintId(0),
+        EntityOrigin::UserConstraint(ConId::new(0, Generation::new())),
+    );
+    let snapshot = BackendSnapshotBuilder::new(source_instance, ModelRevision::ZERO)
+        .origin_map(origin_map)
+        .objective_policy(CompiledObjectivePolicy::None)
+        .add_variable(CompiledVariable {
+            id: CompiledVariableId(0),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            name: None,
+        })
+        .add_linear_row(row)
+        .finalize()
+        .expect("builder finalization checks origins, not coefficient references");
+
+    let mut backend = fresh();
+    let err = backend
+        .rebuild_compiled(&snapshot)
+        .expect_err("a row coefficient referencing an unknown compiled variable must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidReference { .. }),
+        "expected InvalidReference, got {err:?}"
+    );
+}
+
+/// F5: an unknown-ID update (an objective not present in the compiled state)
+/// is rejected with a typed error, not silently ignored.
+#[test]
+fn dx_compiled_unknown_id_update_is_rejected() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the batch: update an objective that does not exist.
+    delta.operations = vec![BackendOp::SetObjectiveConstant {
+        objective: CompiledObjectiveId(777),
+        value: 1.0,
+    }];
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("an unknown-ID objective update must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidReference { .. }),
+        "expected InvalidReference, got {err:?}"
+    );
+}
+
+/// F5: after the preflight validation is added, a VALID compiled batch still
+/// applies cleanly (the validator rejects only dangling references).
+#[test]
+fn dx_compiled_valid_batch_still_applies_after_preflight() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    backend
+        .apply_compiled_delta(&delta)
+        .expect("a valid compiled batch still applies after preflight validation");
+    assert_eq!(
+        backend.current_compilation,
+        Some(delta.to_compilation),
+        "a valid batch advances the compiled state"
+    );
+    assert_eq!(
+        backend.compiled_normalized_view().variables.len(),
+        1,
+        "the added variable is present"
     );
 }
