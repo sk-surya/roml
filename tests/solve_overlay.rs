@@ -580,6 +580,68 @@ fn within_band_produces_band_bounds_for_continuous_variables() {
     ));
 }
 
+/// WR-01: a `Within` band is INTERSECTED with the variable's declared domain —
+/// a lock is a feasible-region RESTRICTION (SM-06.3/06.5) and must never LOOSEN
+/// a declared bound. A band that extends past the domain clips to it; an
+/// overlay solve can then never return a solution violating the declared
+/// bounds (which would fail `validate_for` as `ValueOutOfBounds`).
+#[test]
+fn within_band_clips_to_the_declared_domain() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.commit().unwrap();
+    let (compiler, _) = compile_base(&model);
+
+    // value 1.0, absolute 2.0 -> raw band [-1, 3]; declared [0, 10] clips the
+    // lower bound to 0 (never loosens it below the domain).
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 1.0)]),
+    };
+    let lock = SolutionLock {
+        assignment,
+        selector: LockSelector::AllAssigned,
+        continuous: ContinuousLock::Within { absolute: 2.0 },
+    };
+    let overlay = SolveOverlay::new(BTreeMap::new(), vec![lock], vec![], vec![]).unwrap();
+    let compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    assert_eq!(compiled.operations.len(), 1);
+    assert!(
+        matches!(
+            &compiled.operations[0],
+            OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(0), bounds }
+                if *bounds == Bounds::new(0.0, 3.0)
+        ),
+        "a band extending below the declared lower bound must clip to it"
+    );
+
+    // value 9.0, absolute 2.0 -> raw band [7, 11]; declared [0, 10] clips the
+    // upper bound to 10.
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 9.0)]),
+    };
+    let lock = SolutionLock {
+        assignment,
+        selector: LockSelector::AllAssigned,
+        continuous: ContinuousLock::Within { absolute: 2.0 },
+    };
+    let overlay = SolveOverlay::new(BTreeMap::new(), vec![lock], vec![], vec![]).unwrap();
+    let compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    assert!(
+        matches!(
+            &compiled.operations[0],
+            OverlayOp::SetTemporaryVariableBounds { variable: CompiledVariableId(0), bounds }
+                if *bounds == Bounds::new(7.0, 10.0)
+        ),
+        "a band extending above the declared upper bound must clip to it"
+    );
+}
+
 #[test]
 fn within_band_on_integer_variable_is_a_typed_error() {
     let mut model = Model::new();
