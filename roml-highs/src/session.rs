@@ -1225,6 +1225,130 @@ mod tests {
         );
     }
 
+    // ── F3: unsupported policies rejected BEFORE any native mutation ────────
+
+    /// A maximize-x model (x on [0,1]) compiled to a base snapshot, with the
+    /// HiGHS session holding the base. Solving reports objective 1.0.
+    fn cost_probe_fixture() -> (CompilationSession, BackendSnapshot, HighsSession) {
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut session = CompilationSession::new();
+        let compiled = session
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(compiled.clone()))
+            .expect("base rebuild must succeed");
+        (session, compiled, highs)
+    }
+
+    /// F3: a snapshot rebuild carrying a Weighted policy is rejected BEFORE
+    /// `Highs_clear` — the native model is untouched (columns intact and the
+    /// objective cost still 1.0 on a subsequent solve).
+    #[test]
+    fn weighted_policy_rebuild_leaves_native_model_unchanged() {
+        let (_session, mut compiled, mut highs) = cost_probe_fixture();
+        let request = SolveRequest {
+            enable_output: Some(false),
+            ..SolveRequest::new()
+        };
+        let baseline = highs.solve(&request).expect("base solve must succeed");
+        assert_eq!(
+            baseline.solution.as_ref().and_then(|s| s.objective_value),
+            Some(1.0)
+        );
+        // SAFETY: highs.raw is a valid HiGHS instance handle.
+        let cols_before = unsafe { Highs_getNumCol(highs.raw) };
+
+        compiled.objective_policy =
+            CompiledObjectivePolicy::Weighted(vec![CompiledWeightedObjective {
+                objective: CompiledObjectiveId(0),
+                weight: 1.0,
+            }]);
+        let err = match highs.synchronize(Synchronization::CompiledRebuild(compiled)) {
+            Ok(_) => panic!("a weighted-policy rebuild must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(err.category, ErrorCategory::Unsupported);
+        // SAFETY: highs.raw is a valid HiGHS instance handle.
+        let cols_after = unsafe { Highs_getNumCol(highs.raw) };
+        assert_eq!(
+            cols_after, cols_before,
+            "a rejected weighted rebuild must not clear the native model"
+        );
+
+        let after = highs
+            .solve(&request)
+            .expect("solve after the rejected rebuild must succeed");
+        assert_eq!(
+            after.solution.as_ref().and_then(|s| s.objective_value),
+            Some(1.0),
+            "a rejected weighted rebuild must not clear native objective costs"
+        );
+    }
+
+    /// F3: a delta batch carrying a Weighted policy is rejected BEFORE the
+    /// cost clearing its `SetObjectivePolicy` arm would perform — the native
+    /// objective cost is intact on a subsequent solve.
+    #[test]
+    fn weighted_policy_delta_leaves_objective_costs_intact() {
+        let (mut session, compiled, mut highs) = cost_probe_fixture();
+        let request = SolveRequest {
+            enable_output: Some(false),
+            ..SolveRequest::new()
+        };
+        let baseline = highs.solve(&request).expect("base solve must succeed");
+        assert_eq!(
+            baseline.solution.as_ref().and_then(|s| s.objective_value),
+            Some(1.0)
+        );
+
+        let r_next = compiled.source_revision.next().unwrap();
+        let batch = DeltaBatch::new(
+            compiled.source_revision,
+            r_next,
+            vec![ModelOp::SetActiveObjective { obj: None }],
+        )
+        .unwrap();
+        let mut delta = session
+            .compile_delta(
+                &batch,
+                compiled.compilation_id,
+                compiled.source_instance,
+                &CompilationPolicy::Auto,
+                &full_caps(),
+            )
+            .expect("delta must compile");
+        delta.operations = vec![BackendOp::SetObjectivePolicy(
+            CompiledObjectivePolicy::Weighted(vec![CompiledWeightedObjective {
+                objective: CompiledObjectiveId(0),
+                weight: 1.0,
+            }]),
+        )];
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => panic!("a weighted-policy delta must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(err.category, ErrorCategory::Unsupported);
+
+        let after = highs
+            .solve(&request)
+            .expect("solve after the rejected delta must succeed");
+        assert_eq!(
+            after.solution.as_ref().and_then(|s| s.objective_value),
+            Some(1.0),
+            "a rejected weighted-policy delta must not clear native objective costs"
+        );
+    }
+
     // ── F5: preflight validation of snapshots and deltas ─────────────────────
 
     /// F5: a compiled delta op referencing a compiled variable not present in

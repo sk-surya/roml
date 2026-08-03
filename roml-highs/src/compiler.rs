@@ -139,6 +139,26 @@ pub(crate) fn rebuild_from_backend_snapshot(
     obj_offsets: &mut HashMap<CompiledObjectiveId, f64>,
     active_obj: &mut Option<ObjId>,
 ) -> Result<(), BackendError> {
+    // F3: reject an unsupported objective policy BEFORE any native mutation —
+    // Weighted/Lexicographic are P31 constructs the single-objective HiGHS
+    // surface cannot represent. The check runs before `Highs_clear`, so a
+    // rejected rebuild leaves the native model (columns/rows/costs) untouched.
+    match &snapshot.objective_policy {
+        CompiledObjectivePolicy::Weighted(_) => {
+            return Err(BackendError::unsupported(
+                "weighted objective policy is not supported by the P26 HiGHS projection \
+                 (P31 compiles it)",
+            ));
+        }
+        CompiledObjectivePolicy::Lexicographic(_) => {
+            return Err(BackendError::unsupported(
+                "lexicographic objective policy is not supported by the P26 HiGHS projection \
+                 (P31 compiles it)",
+            ));
+        }
+        _ => {}
+    }
+
     // Step 1: Clear the HiGHS model (preserves options/settings).
     // SAFETY: `raw` is guaranteed valid by the caller.
     check_highs_status(unsafe { Highs_clear(raw) }, raw, "Highs_clear")?;
@@ -386,6 +406,30 @@ pub(crate) fn apply_backend_delta(
     obj_offsets: &mut HashMap<CompiledObjectiveId, f64>,
     active_obj: &mut Option<ObjId>,
 ) -> Result<(), BackendError> {
+    // F3: reject an unsupported objective policy op BEFORE any native
+    // mutation — including the cost clearing the `SetObjectivePolicy` arm
+    // would otherwise perform first. A rejected batch leaves the native
+    // model (including objective costs) untouched.
+    for op in &batch.operations {
+        if let BackendOp::SetObjectivePolicy(policy) = op {
+            match policy {
+                CompiledObjectivePolicy::Weighted(_) => {
+                    return Err(BackendError::unsupported(
+                        "weighted objective policy is not supported by the P26 HiGHS \
+                         projection (P31 compiles it)",
+                    ));
+                }
+                CompiledObjectivePolicy::Lexicographic(_) => {
+                    return Err(BackendError::unsupported(
+                        "lexicographic objective policy is not supported by the P26 HiGHS \
+                         projection (P31 compiles it)",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
     for op in &batch.operations {
         match op {
             BackendOp::AddVariable(v) => {
