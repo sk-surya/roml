@@ -1118,6 +1118,51 @@ fn reference_backend_overlay_apply_rollback_round_trip() {
     backend.verify_overlay_clean().unwrap();
 }
 
+/// WR-04: a mid-apply failure on the reference backend leaves NO partial
+/// mutation — the apply is transactional (fully applied or fully rejected).
+/// Op 1 mutates a compiled variable, op 2 references an unknown compiled
+/// variable and fails; the compiled state must equal the base EXACTLY (op 1's
+/// mutation is rolled back), `current_compilation` is unchanged, and there is
+/// no half-overlaid state that would fail a later rollback.
+#[test]
+fn reference_backend_mid_apply_failure_is_transactional() {
+    let (model, _compiler, x, _y, _obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let held = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    // Compile a VALID single-temp-fixing overlay, then append a SECOND op that
+    // references an unknown compiled variable — op 1 mutates, op 2 fails.
+    let overlay = SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![], vec![], vec![]).unwrap();
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    compiled
+        .operations
+        .push(OverlayOp::SetTemporaryVariableBounds {
+            variable: CompiledVariableId(999),
+            bounds: Bounds::new(3.0, 3.0),
+        });
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("the second op must fail apply");
+    assert_eq!(
+        err.category,
+        ErrorCategory::InvalidInput,
+        "an unknown compiled variable is invalid input"
+    );
+    assert_eq!(
+        backend.compiled_normalized_view(),
+        base_view,
+        "a mid-apply failure must leave the compiled state exactly at the base \
+         (op 1's mutation is rolled back)"
+    );
+    assert_eq!(
+        backend.current_compilation,
+        Some(held),
+        "a mid-apply failure must not advance the compiled state"
+    );
+}
+
 /// A stale `CompiledOverlay` (base_compilation != the backend's current
 /// compiled state) is rejected BEFORE any mutation — the compiled maps and
 /// `current_compilation` are unchanged (phase gate "exact compilation
