@@ -9,6 +9,9 @@
 use std::time::Duration;
 
 use roml::advanced::CompilationId;
+use roml::compiler::capability::{
+    BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
+};
 use roml::prelude::*;
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
@@ -35,7 +38,30 @@ struct RecordingBackend {
     /// The exact `CompilationId` of the compiled state held after the most
     /// recent compiled synchronization (F2 / SM-03.9).
     current_compilation: Option<CompilationId>,
+    /// The authoritative typed capability set (F3, SM-04.1).
+    typed_caps: BackendCapabilitySet,
     state: std::rc::Rc<std::cell::RefCell<RecordingState>>,
+}
+
+/// The full M2-native typed capability surface (F3 default for test backends).
+fn full_typed_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
 }
 
 impl RecordingBackend {
@@ -49,6 +75,7 @@ impl RecordingBackend {
                 revision: ModelRevision::ZERO,
                 health: AdapterHealth::Ready,
                 current_compilation: None,
+                typed_caps: full_typed_capabilities(),
                 state: state.clone(),
             },
             state,
@@ -62,6 +89,9 @@ impl BackendMetadata for RecordingBackend {
     }
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
+    }
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_caps
     }
 }
 

@@ -9,10 +9,27 @@ use roml::advanced::*;
 use roml::compiler::capability::{BackendCapabilitySet, BackendFeature, FeatureSupport};
 use roml::model::{Bounds, Sense, VarType};
 
+/// The full M2-native typed capability surface (F3 default for test backends).
+fn full_typed_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(feature, FeatureSupport::native(Default::default()));
+    }
+    set
+}
+
 /// A minimal backend-author session implementing the frozen contract.
 struct MiniSession {
     revision: ModelRevision,
     health: AdapterHealth,
+    /// The authoritative typed capability set (F3, SM-04.1).
+    typed_caps: BackendCapabilitySet,
 }
 
 impl BackendSession for MiniSession {
@@ -72,6 +89,9 @@ impl BackendMetadata for MiniSession {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
     }
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_caps
+    }
 }
 
 /// A backend author can implement the frozen contract and synchronize a delta
@@ -81,6 +101,7 @@ fn backend_contract_implementable_from_advanced() {
     let mut session = MiniSession {
         revision: ModelRevision::ZERO,
         health: AdapterHealth::Ready,
+        typed_caps: full_typed_capabilities(),
     };
     let r1 = ModelRevision::from_u64(1);
     let batch = DeltaBatch::new(

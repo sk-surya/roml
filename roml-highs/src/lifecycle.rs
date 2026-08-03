@@ -20,7 +20,8 @@ use crate::bindings;
 use crate::callback::CallbackState;
 use crate::index_map::IndexMap;
 use roml::advanced::{
-    CompilationId, CompiledConstraintId, CompiledObjectiveId, CompiledVariableId,
+    BackendCapabilitySet, CompilationId, CompiledConstraintId, CompiledObjectiveId,
+    CompiledVariableId,
 };
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::objective::Sense;
@@ -84,6 +85,12 @@ pub struct HighsSession {
     /// `to_compilation`; a `CompiledDeltaBatch` whose `from_compilation` does
     /// not match is rejected before any op is applied (WR-1).
     pub(crate) current_compilation: Option<CompilationId>,
+
+    /// The version-aware authoritative typed capability set (F3, SM-04.1),
+    /// computed once at construction from the runtime HiGHS version. The
+    /// `BackendMetadata::typed_capabilities()` accessor returns this; the flat
+    /// `capabilities()` compat view is derived from it.
+    pub(crate) typed_capabilities: BackendCapabilitySet,
 
     /// Solution from the most recent solve, if available.
     pub(crate) current_solution: Option<SolveSolution>,
@@ -177,6 +184,11 @@ impl HighsSession {
         let version_minor = unsafe { bindings::Highs_versionMinor() };
         let version_patch = unsafe { bindings::Highs_versionPatch() };
 
+        // F3 (SM-04.1): the authoritative typed capability set is fixed at
+        // construction (version-aware); the flat compat view is derived from it.
+        let typed_capabilities =
+            crate::session::highs_capability_set(version_major, version_minor, version_patch);
+
         info!(
             "HiGHS session created: {} (v{}.{}.{})",
             version_string, version_major, version_minor, version_patch
@@ -203,6 +215,7 @@ impl HighsSession {
             compiled_to_user_constraint: HashMap::new(),
             compiled_to_user_objective: HashMap::new(),
             current_compilation: None,
+            typed_capabilities,
             current_solution: None,
             last_status: None,
             callback_state: None,

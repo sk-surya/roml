@@ -15,6 +15,7 @@
 //! for the full design rationale.
 
 use crate::compiler::backend_ir::{BackendDeltaBatch, BackendSnapshot};
+use crate::compiler::capability::BackendCapabilitySet;
 use crate::delta::DeltaBatch;
 use crate::id::{ConId, VarId};
 use crate::revision::ModelRevision;
@@ -147,7 +148,19 @@ pub trait BackendMetadata {
     fn name(&self) -> &str;
 
     /// Declared capabilities of this backend.
+    ///
+    /// The legacy flat record (D27) — a source-compatible **derived compat
+    /// view**, NOT authoritative. Compilation gating and request validation
+    /// use [`typed_capabilities`](Self::typed_capabilities).
     fn capabilities(&self) -> BackendCapabilities;
+
+    /// The backend's authoritative typed capability set (D10, SM-04.1, F3).
+    ///
+    /// The façade gates compilation and request validation on THIS view; the
+    /// flat [`capabilities`](Self::capabilities) is a compat view derived from
+    /// it. A backend whose typed view lacks a feature must never have that
+    /// feature silently compiled or requested.
+    fn typed_capabilities(&self) -> &BackendCapabilitySet;
 }
 
 #[cfg(test)]

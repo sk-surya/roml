@@ -222,6 +222,87 @@ fn identity_compile_rejects_mip_against_lp_only_backend() {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Typed capability authority (F3, SM-04.4)
+// ---------------------------------------------------------------------------
+
+/// F3(c): `compile_snapshot` gates on `BackendFeature::Lp` ALWAYS — a backend
+/// without LP cannot compile ANY snapshot, even a continuous-only one. An
+/// unqualified backend gets a typed `UnsupportedFeature("Lp")` rejection.
+#[test]
+fn compile_snapshot_gates_on_lp_for_continuous_models() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.add_constraint((x).le(10.0)).unwrap();
+    model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+
+    let err = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &caps_without(BackendFeature::Lp),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f == "Lp"),
+        "expected UnsupportedFeature(Lp), got {err:?}"
+    );
+}
+
+/// F3(d): `NativeRequired` policy rejects a feature the backend does not
+/// provide natively — the policy is no longer ignored.
+#[test]
+fn compile_snapshot_enforces_native_required_policy() {
+    let mut model = Model::new();
+    let x = model.add_variable(integer().bounds(0.0, 10.0)).unwrap();
+    model.add_constraint((x).le(10.0)).unwrap();
+    model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+
+    let err = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::NativeRequired,
+            &caps_without(BackendFeature::Mip),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f.contains("Mip") && f.contains("NativeRequired")),
+        "expected a NativeRequired rejection naming Mip, got {err:?}"
+    );
+}
+
+/// F3(d): `Portable` policy requires a portable bridge formulation, and P26
+/// has no bridges (they land with P32) — so a feature with no native support
+/// and no bridge is rejected with a typed `UnsupportedFeature`.
+#[test]
+fn compile_snapshot_rejects_portable_policy_without_bridge() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.add_constraint((x).le(10.0)).unwrap();
+    model.commit().unwrap();
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+
+    let err = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Portable,
+            &caps_without(BackendFeature::Lp),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f.contains("Lp") && f.contains("bridge")),
+        "expected a Portable rejection naming the missing bridge, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 2. Compiled delta — exact from/to ids and op mapping
 // ---------------------------------------------------------------------------
 

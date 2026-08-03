@@ -25,6 +25,7 @@ use roml::advanced::{
     BackendOp, BackendSnapshot, CompilationId, CompiledObjectiveId, CompiledObjectivePolicy,
     CompiledVariableId, EntityOrigin, OriginMap,
 };
+use roml::compiler::capability::BackendCapabilitySet;
 use roml::delta::ModelOp;
 use roml::id::{ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -129,6 +130,33 @@ struct TestBackend {
     compiled_to_user_variable: HashMap<CompiledVariableId, VarId>,
     /// Compiled id -> user objective, maintained by the compiled sync path.
     compiled_to_user_objective: HashMap<CompiledObjectiveId, ObjId>,
+    /// The authoritative typed capability set the façade gates on (F3).
+    /// Defaults to the full M2 native surface; a test may override it to prove
+    /// the typed view is the façade's source of truth even when the flat
+    /// `capabilities()` view lies.
+    typed_caps: BackendCapabilitySet,
+}
+
+/// The full M2-native typed capability surface (F3 default for test backends).
+fn full_typed_capabilities() -> BackendCapabilitySet {
+    use roml::compiler::capability::{BackendFeature, FeatureSupport, SupportLevel};
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
 }
 
 impl TestBackend {
@@ -158,6 +186,7 @@ impl TestBackend {
                 state: state.clone(),
                 compiled_to_user_variable: HashMap::new(),
                 compiled_to_user_objective: HashMap::new(),
+                typed_caps: full_typed_capabilities(),
             },
             state,
         )
@@ -405,6 +434,9 @@ impl BackendMetadata for TestBackend {
     }
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
+    }
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_caps
     }
 }
 
@@ -1111,5 +1143,77 @@ fn facade_rejects_result_tagged_with_wrong_compilation_id() {
     assert!(
         matches!(err, SolveError::CompilationMismatch { .. }),
         "expected CompilationMismatch, got {err:?}"
+    );
+}
+
+// ── F3: typed capabilities authoritative (SM-04.1, SM-04.4) ──────────────────
+
+/// F3(a): the façade's compilation gating uses the backend's TYPED capability
+/// set — never the flat `capabilities()` compat view. A backend whose flat
+/// view lies (`all()`) but whose typed view lacks `Lp` cannot compile even a
+/// continuous model: the solve fails with a typed synchronization error.
+#[test]
+fn facade_gates_on_typed_capabilities_not_flat_view() {
+    use roml::compiler::capability::{BackendFeature, FeatureSupport, SupportLevel};
+
+    let (mut backend, _state) = TestBackend::new();
+    // Flat `capabilities()` says `all()` (lies), typed says NO Lp.
+    let mut typed = full_typed_capabilities();
+    typed.set(
+        BackendFeature::Lp,
+        FeatureSupport {
+            level: SupportLevel::Unsupported,
+            limitations: Default::default(),
+        },
+    );
+    backend.typed_caps = typed;
+
+    let mut session = SolverSession::new(backend);
+    let (mut model, _x, _y) = build_constant_model();
+    let err = session
+        .solve(&mut model)
+        .expect_err("a backend whose typed view lacks Lp cannot compile any snapshot");
+    assert!(
+        matches!(err, SolveError::Synchronization(_)),
+        "the compile failure must surface as a synchronization error, got {err:?}"
+    );
+}
+
+/// F3(a): the production façade wires request validation through the typed
+/// `validate_request` — a MIP option against a typed view without `Mip` is
+/// rejected before any synchronization (SM-04.4).
+#[test]
+fn facade_uses_typed_validate_request_for_options() {
+    use roml::compiler::capability::{BackendFeature, FeatureSupport, SupportLevel};
+
+    let (mut backend, _state) = TestBackend::new();
+    // Flat `capabilities()` says `all()`, but the typed view lacks Mip.
+    let mut typed = full_typed_capabilities();
+    typed.set(
+        BackendFeature::Mip,
+        FeatureSupport {
+            level: SupportLevel::Unsupported,
+            limitations: Default::default(),
+        },
+    );
+    backend.typed_caps = typed;
+
+    let mut session = SolverSession::new(backend);
+    let (mut model, _x, _y) = build_constant_model();
+
+    // A continuous model with default options solves fine (Lp + incremental
+    // features are native in the typed view).
+    session
+        .solve(&mut model)
+        .expect("continuous solve succeeds");
+
+    // The same model with a MIP gap option is rejected by the typed
+    // validate_request — never silently passed to the backend.
+    let err = session
+        .solve_with(&mut model, SolveOptions::new().relative_gap(0.01))
+        .expect_err("a MIP option against a no-Mip typed view must be rejected");
+    assert!(
+        matches!(err, SolveError::InvalidOptions(_)),
+        "expected InvalidOptions from the typed validate_request, got {err:?}"
     );
 }

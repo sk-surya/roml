@@ -421,11 +421,12 @@ impl BackendMetadata for HighsSession {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        // D27 source-compatible compat view derived from the typed capability
-        // set (SM-04.2). The typed set is authoritative for the features it can
-        // express; the flat-only facts below are preserved for the M2 surface.
-        let typed =
-            highs_capability_set(self.version_major, self.version_minor, self.version_patch);
+        // D27 source-compatible compat view derived from the AUTHORITATIVE
+        // typed capability set (SM-04.2, F3). This flat view is deliberately
+        // non-authoritative: compilation gating and request validation use
+        // `typed_capabilities()`. Only NATIVE support maps onto the flat
+        // flags (a bridge-supported feature would not claim native support).
+        let typed = &self.typed_capabilities;
         BackendCapabilities {
             lp: typed.supports(BackendFeature::Lp),
             mip: typed.supports(BackendFeature::Mip),
@@ -446,6 +447,10 @@ impl BackendMetadata for HighsSession {
             semiinteger: false,
             parameter_update: false,
         }
+    }
+
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_capabilities
     }
 }
 

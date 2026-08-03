@@ -16,16 +16,14 @@ use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
 use crate::solution::{Solution, SolutionBuilder};
-use crate::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
+use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 use crate::solver::options::SolveOptions;
-use crate::solver::request::SolveResult;
+use crate::solver::request::{validate_request, SolveResult};
 use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
 use crate::solver::{SolveError, SolveStatus};
 use crate::sync::{AdapterCursor, AdapterHealth};
 
-use crate::compiler::capability::{
-    BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
-};
+use crate::compiler::capability::BackendCapabilitySet;
 
 /// Normalize a backend [`SolveResult`] into a user-facing [`Solution`].
 ///
@@ -177,6 +175,22 @@ where
         // 0. Validate options before any state change (extended in Task 4).
         options.validate()?;
 
+        // 0b. F3 (SM-04.4): validate the request against the backend's
+        // AUTHORITATIVE typed capability set BEFORE any state change. A
+        // requested option whose feature the backend does not support natively
+        // is rejected — never silently passed to the backend.
+        let request = options.into_request();
+        let capabilities = self.compilation_capabilities();
+        let rejections = validate_request(&request, &capabilities);
+        if !rejections.is_empty() {
+            let reason = rejections
+                .iter()
+                .map(|r| format!("{}: {}", r.key, r.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(SolveError::InvalidOptions(reason));
+        }
+
         // 1. Commit; fail before backend mutation on error (D5).
         let committed = model.commit().map_err(SolveError::Commit)?;
 
@@ -261,8 +275,8 @@ where
         // a failed sync never leaves a stale binding.
         self.bound_instance = Some(model.instance());
 
-        // 8. Solve exactly once.
-        let request = options.into_request();
+        // 8. Solve exactly once (the request was built and validated against
+        // the backend's typed capabilities in step 0b).
         let result = self
             .backend
             .solve(&request)
@@ -432,46 +446,13 @@ where
         Ok(())
     }
 
-    /// Build the typed capability set the compiler gates on, derived from the
-    /// backend's flat M2 capability contract (D27 compat view). The M2-native
-    /// surface maps onto the typed incremental features; flat-only fields have
-    /// no typed equivalent and do not gate primitive linear compilation.
+    /// The typed capability set the compiler and request validation gate on.
+    /// F3 (SM-04.1): the backend's `typed_capabilities()` is AUTHORITATIVE —
+    /// the flat `capabilities()` compat view is never used for gating (a flat
+    /// view can lie; the typed view cannot).
     fn compilation_capabilities(&self) -> BackendCapabilitySet {
-        let flat = self.backend.capabilities();
-        flat_to_typed_for_compilation(&flat)
+        self.backend.typed_capabilities().clone()
     }
-}
-
-/// Map the flat M2 capability contract onto the typed feature surface for
-/// compilation gating (SM-04.4). This is a private compile-gating view derived
-/// from the backend's own `BackendMetadata::capabilities()` output — the
-/// transitional flat→typed conversion helper removed by Task 6 was a public
-/// helper; this one stays private to the façade.
-fn flat_to_typed_for_compilation(flat: &BackendCapabilities) -> BackendCapabilitySet {
-    let mut set = BackendCapabilitySet::new();
-    let mut declare = |feature: BackendFeature, supported: bool| {
-        if supported {
-            set.set(
-                feature,
-                FeatureSupport {
-                    level: SupportLevel::Native,
-                    limitations: Default::default(),
-                },
-            );
-        }
-    };
-    declare(BackendFeature::Lp, flat.lp);
-    declare(BackendFeature::Mip, flat.mip);
-    declare(BackendFeature::IncrementalBounds, flat.set_bounds);
-    declare(
-        BackendFeature::IncrementalRows,
-        flat.add_variable && flat.add_constraint,
-    );
-    declare(
-        BackendFeature::IncrementalCoefficients,
-        flat.set_coefficient,
-    );
-    set
 }
 
 #[cfg(test)]
