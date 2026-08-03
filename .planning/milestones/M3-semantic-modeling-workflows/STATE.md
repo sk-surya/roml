@@ -3,8 +3,8 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** planned; P25 ready to execute  
-**Current phase:** P25 — semantic IR, lineage, metadata  
+**Status:** P25 executed and verified; pending merge (phase PR)  
+**Current phase:** P25 — semantic IR, lineage, metadata (complete; merge pending)  
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
 **Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
 **Authoritative baseline:** `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`  
@@ -34,7 +34,7 @@ Before P25 code:
 
 | Phase | Status | Prerequisite | Evidence | Blocking decision |
 |---|---|---|---|---|
-| P25 Semantic IR/identity | Ready to execute | M3 plan approval | `.planning/phases/25-semantic-ir-foundation/25-PLAN.md` | none |
+| P25 Semantic IR/identity | Executed; verified 4/4 must-haves; merge pending | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (verified, `25-VERIFICATION.md`) | none |
 | P26 Compiler/backend IR | Blocked | P25 accepted | none | backend contract amendment review |
 | P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
 | P28 Starts/hints/SolvePlan | Blocked | P27 accepted | none | pinned HiGHS start API audit |
