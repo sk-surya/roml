@@ -205,3 +205,26 @@
 **Reason:** two clones can preserve lineage and have equal revision numbers while containing different canonical states, and finite hashes are not exact identity.
 
 **Consequence:** canonical state is identified by `(ModelInstanceId, ModelRevision)`. Backend results, overlay receipts, conflict data, and origin maps must agree on exact `CompilationId` before use. The four identity values and their roles are: `ModelLineageId` (assignment compatibility across related clones), `ModelInstanceId` (identity of one concrete model clone), `CompilationId` (exact backend state used by solutions, overlays, and IIS results), and `RecipeFingerprint` (deterministic evidence/cache aid only — never a correctness authority).
+## A29 — Formulation preference is part of the canonical construct entry
+
+**Amendment to D-plan interface contract (accepted during P25 re-verification, blocking review F4).** `ConstructEntry` gains `preference: FormulationPreference`; the preference threads through `Change::ConstructAdded`, `ModelOp::AddConstruct`, and snapshot/delta reconstruction. `ConstructData.preference` is removed — the entry is the single authority.
+
+**Reason:** P26 must honor `Auto`/`Portable`/`NativeRequired` while compiling only from canonical snapshots/deltas; without the field the preference existed only in the live arena.
+
+**Consequence:** `ConstructEntry { id, kind, active, preference }` is the canonical per-construct record from P25 onward.
+
+## A30 — P25 construct fixture payload is crate-private
+
+**Amendment (blocking review F3).** The P25 fixture scaffolding (`FixturePayload`, `ConstructData`, `Model::add_construct_fixture`, and the `ConstructKind::Fixture` variant) is crate-private; the construct module is `pub(crate)` and only `Construct` and `FormulationPreference` are exported. `ConstructKind`/`ConstructEntry` become public exports when the real per-construct variants land (P32+); the `#[non_exhaustive]` extension boundary stays.
+
+**Reason:** the plan requires a private fixture payload; a public fixture variant would ship test scaffolding in the API and invite misuse before real constructs exist.
+
+**Consequence:** P25 construct-lifecycle tests live in-crate (`#[cfg(test)]`); `ModelSnapshot.constructs` remains `pub #[doc(hidden)]` so external crates can build snapshot literals.
+
+## A31 — DeltaBatch semantic entries carry a narrowed contract
+
+**Amendment (blocking review F2).** `DeltaBatch.functions`/`constructs` are the view of entities **added** by the batch with final folded bounds, minus entities removed by the same batch. Updates to pre-existing functions ride the underlying ops (`SetCell`/`SetConstraintBounds`/`RemoveConstraint`); full before/after semantic entries for pre-existing functions are deferred until recipe-level incremental equivalence is proven (design §8).
+
+**Reason:** a self-contained full semantic delta for updates requires incremental equivalence evidence that M3 v1 deliberately defers; the narrowed contract must be explicit so P26 does not assume coverage it will not get.
+
+**Consequence:** P26 consumes the ops for updates and the semantic entries for added entities; any consumer must not treat `functions` as exhaustive for pre-existing constraints.

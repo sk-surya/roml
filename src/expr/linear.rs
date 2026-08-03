@@ -9,7 +9,7 @@ use crate::value_expr::ValueExpr;
 /// Coefficient type in a linear expression term.
 ///
 /// Can be a constant, a parameter, or a more complex expression.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TermCoeff {
     /// A constant coefficient.
     Constant(f64),
@@ -54,7 +54,7 @@ impl From<ParamId> for TermCoeff {
 }
 
 /// A term in a linear expression: coefficient * variable.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Term {
     /// The coefficient (constant or parameter-based).
     pub coeff: TermCoeff,
@@ -84,7 +84,7 @@ impl Term {
 /// if they want to.
 ///
 /// Terms with the same variable are automatically combined when compiled.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LinExpr {
     /// Terms in the expression.
     pub terms: Vec<Term>,
@@ -239,6 +239,26 @@ impl LinExpr {
         }
 
         result
+    }
+
+    /// Derive the parameter dependencies of this expression (F1).
+    ///
+    /// Dependencies are DERIVED from each coefficient's `ValueExpr`, never
+    /// stored: the result is sorted and deduplicated so it is deterministic.
+    /// A `TermCoeff::Constant` contributes nothing; a `TermCoeff::Expr`
+    /// contributes its `ValueExpr::dependencies()`.
+    pub fn parameter_dependencies(&self) -> Vec<ParamId> {
+        let mut deps: Vec<ParamId> = self
+            .terms
+            .iter()
+            .flat_map(|term| match &term.coeff {
+                TermCoeff::Constant(_) => Vec::new(),
+                TermCoeff::Expr(e) => e.dependencies().into_iter().collect(),
+            })
+            .collect();
+        deps.sort();
+        deps.dedup();
+        deps
     }
 }
 
@@ -754,18 +774,68 @@ impl Model {
     /// Reconstruct a linear expression from a constraint's coefficients.
     ///
     /// Uses cached coefficient values (not the ValueExpr).
+    ///
+    /// The coefficient index's `by_constraint` set is a `HashSet`, so its
+    /// iteration order is nondeterministic across runs (WR-01). The terms are
+    /// therefore sorted by `var` (`VarId` implements `Ord`) so the
+    /// reconstructed term order is deterministic and agrees with the
+    /// snapshot/delta function entries (which are var-ordered too).
     pub fn constraint_expression(&self, con: ConId) -> Result<LinExpr, ModelError> {
         if !self.constraints.contains(con) {
             return Err(ModelError::ConstraintNotFound(con));
         }
 
+        let mut terms: Vec<(VarId, f64)> = self
+            .coefficients
+            .for_constraint(con)
+            .filter_map(|coeff_id| {
+                self.coefficients
+                    .get(coeff_id)
+                    .map(|data| (data.var, data.cached_value))
+            })
+            .collect();
+        terms.sort_by_key(|(var, _)| *var);
+
         let mut expr = LinExpr::new();
-        for coeff_id in self.coefficients.for_constraint(con) {
-            if let Some(data) = self.coefficients.get(coeff_id) {
-                expr = expr.term(data.cached_value, data.var);
-            }
+        for (var, value) in terms {
+            expr = expr.term(value, var);
         }
 
+        Ok(expr)
+    }
+
+    /// Reconstruct the SYMBOLIC linear function of a constraint from the
+    /// coefficient index (F1): each term carries `TermCoeff::Expr(ValueExpr)`
+    /// sourced from the coefficient's `value_expr`, so a parameterized
+    /// coefficient `p*x` keeps its symbolic form rather than only its evaluated
+    /// number. The symbolic expression lives INSIDE the returned `LinExpr` — it
+    /// is the single authority for the row's coefficients.
+    ///
+    /// Deterministic: terms are sorted by `var` (the same ordering as
+    /// [`Self::constraint_expression`] and the snapshot/delta reconstructions).
+    /// Used by [`Model::constraint_function`](crate::Model::constraint_function).
+    ///
+    /// `constraint_expression` remains the EVALUATED convenience API (it uses
+    /// `cached_value`); this is the symbolic canonical form.
+    pub(crate) fn constraint_symbolic_expression(&self, con: ConId) -> Result<LinExpr, ModelError> {
+        if !self.constraints.contains(con) {
+            return Err(ModelError::ConstraintNotFound(con));
+        }
+        let mut terms: Vec<(VarId, ValueExpr)> = self
+            .coefficients
+            .for_constraint(con)
+            .filter_map(|coeff_id| {
+                self.coefficients
+                    .get(coeff_id)
+                    .map(|data| (data.var, data.value_expr.clone()))
+            })
+            .collect();
+        terms.sort_by_key(|(var, _)| *var);
+
+        let mut expr = LinExpr::new();
+        for (var, value_expr) in terms {
+            expr = expr.term(TermCoeff::Expr(value_expr), var);
+        }
         Ok(expr)
     }
 

@@ -83,6 +83,8 @@ fn full_rebuild<F: BackendFixture>(fixture: &F) {
         objectives: vec![],
         parameters: vec![],
         cells: vec![],
+        functions: vec![],
+        constructs: vec![],
     };
 
     let receipt = session

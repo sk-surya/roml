@@ -7,6 +7,7 @@
 //!
 //! The model never mutates solver state directly. All changes go through the ChangeLog.
 
+use crate::construct::{Construct, ConstructKind, FormulationPreference};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::constraint::ConstraintBounds;
@@ -210,16 +211,38 @@ pub enum Change {
         /// New value.
         new: f64,
     },
-}
 
-impl Change {
-    /// Check if this change affects solver state.
-    ///
-    /// Some changes (like parameter value changes) only affect coefficients
-    /// and are tracked separately.
-    pub fn affects_solver(&self) -> bool {
-        !matches!(self, Change::ParameterValueChanged { .. })
-    }
+    // ========== Construct Changes (P25 Task 4, design §7) ==========
+    /// A semantic construct was added (self-contained canonical change).
+    ConstructAdded {
+        /// The added construct's stable identity.
+        construct: Construct,
+        /// The construct's exact semantic type.
+        ///
+        /// P25 (F3): `ConstructKind` is crate-private scaffolding; the field
+        /// is hidden from the public docs and unusable by external consumers
+        /// (they cannot name the type). It becomes a public export in P32.
+        #[doc(hidden)]
+        kind: ConstructKind,
+        /// Per-construct formulation preference (F4).
+        preference: FormulationPreference,
+        /// Whether the construct is active (constructs start active).
+        active: bool,
+    },
+
+    /// A semantic construct was removed, invalidating its id.
+    ConstructRemoved {
+        /// The removed construct's identity.
+        construct: Construct,
+    },
+
+    /// A semantic construct's activity was toggled.
+    ConstructActivityChanged {
+        /// The affected construct.
+        construct: Construct,
+        /// Whether the construct is now active.
+        active: bool,
+    },
 }
 
 /// Tracks all changes since last solver sync.

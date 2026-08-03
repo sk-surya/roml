@@ -82,6 +82,8 @@ fn q5_objective_offset() {
             evaluated_value: 2.0,
             dependencies: vec![],
         }],
+        functions: vec![],
+        constructs: vec![],
     };
 
     session
@@ -171,6 +173,8 @@ fn q5_dual_values() {
                 dependencies: vec![],
             },
         ],
+        functions: vec![],
+        constructs: vec![],
     };
 
     session
@@ -276,6 +280,8 @@ fn q5_reduced_costs() {
                 dependencies: vec![],
             },
         ],
+        functions: vec![],
+        constructs: vec![],
     };
 
     session
@@ -425,6 +431,8 @@ fn q5_status_infeasible_or_unbounded() {
             evaluated_value: 1.0,
             dependencies: vec![],
         }],
+        functions: vec![],
+        constructs: vec![],
     };
 
     session
@@ -703,6 +711,8 @@ fn time_limit_mip_snapshot() -> ModelSnapshot {
         }],
         parameters: vec![],
         cells,
+        functions: vec![],
+        constructs: vec![],
     }
 }
 
@@ -786,6 +796,8 @@ fn iteration_limit_lp_snapshot() -> ModelSnapshot {
         }],
         parameters: vec![],
         cells,
+        functions: vec![],
+        constructs: vec![],
     }
 }
 

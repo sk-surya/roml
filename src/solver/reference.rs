@@ -210,6 +210,11 @@ impl ReferenceBackend {
             ModelOp::SetSemiContinuousBound { var, lower } => {
                 self.semicontinuous.insert(*var, *lower);
             }
+            // P25 Task 4: constructs are canonical entities, not backend rows
+            // (SM-01.6). The reference backend does not compile them yet.
+            ModelOp::AddConstruct { .. }
+            | ModelOp::RemoveConstruct { .. }
+            | ModelOp::SetConstructActive { .. } => {}
         }
         Ok(())
     }

@@ -40,9 +40,16 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
+use crate::construct::{
+    derive_parameter_dependencies, Construct, ConstructEntry, ConstructKind, ConstructStore,
+    FixturePayload, FormulationPreference,
+};
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
+use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
+use crate::identity::{ModelInstanceId, ModelLineageId};
+use crate::metadata::{EntityMetadata, EntityRef};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::Solution;
@@ -66,6 +73,8 @@ pub enum ModelError {
     ParameterNotFound(ParamId),
     /// The specified coefficient was not found.
     CoefficientNotFound(CoeffId),
+    /// The specified construct was not found (stale/removed construct id).
+    ConstructNotFound(Construct),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
     /// Binary bounds must lie within `[0, 1]`.
@@ -76,6 +85,8 @@ pub enum ModelError {
     NaNValue(&'static str),
     /// Revision counter overflow.
     RevisionOverflow,
+    /// An opaque identity counter was exhausted (ids never wrap).
+    IdentityOverflow,
 }
 
 impl std::fmt::Display for ModelError {
@@ -86,6 +97,9 @@ impl std::fmt::Display for ModelError {
             Self::ObjectiveNotFound(id) => write!(f, "Objective not found: {:?}", id),
             Self::ParameterNotFound(id) => write!(f, "Parameter not found: {:?}", id),
             Self::CoefficientNotFound(id) => write!(f, "Coefficient not found: {:?}", id),
+            Self::ConstructNotFound(id) => {
+                write!(f, "Construct not found (stale or removed): {id:?}")
+            }
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
             Self::InvalidBinaryBounds => {
                 write!(
@@ -96,6 +110,9 @@ impl std::fmt::Display for ModelError {
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
+            Self::IdentityOverflow => {
+                write!(f, "identity counter exhausted (ids never wrap)")
+            }
         }
     }
 }
@@ -121,7 +138,14 @@ impl std::error::Error for ModelError {}
 /// - Only one objective can be active at a time
 /// - Parameter changes propagate to all dependent coefficients
 /// - All mutations are logged for solver consumption
-#[derive(Clone, Debug, Default)]
+///
+/// # Identity and metadata (P25)
+///
+/// Every model carries an opaque [`ModelLineageId`] and [`ModelInstanceId`]
+/// (design §4). `Clone` preserves lineage but allocates a new instance id
+/// (SM-02.7). Entity metadata is keyed by [`EntityRef`] and is canonical but
+/// non-solver-affecting: metadata changes never advance the revision.
+#[derive(Debug)]
 pub struct Model {
     /// Variable storage.
     pub(crate) variables: VariableStore,
@@ -147,6 +171,64 @@ pub struct Model {
 
     /// Synchronization coordinator for revisioned delta batch management.
     pub(crate) coordinator: crate::sync::SyncCoordinator,
+
+    /// The lineage identity of this model (design §4.1). Shared by clones.
+    lineage: ModelLineageId,
+    /// The instance identity of this live model object (design §4.2).
+    instance: ModelInstanceId,
+    /// Canonical but non-solver-affecting entity metadata (design §5).
+    metadata: std::collections::HashMap<EntityRef, EntityMetadata>,
+    /// The generation-safe construct arena (design §7, P25 Task 4).
+    constructs: ConstructStore,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            variables: VariableStore::default(),
+            constraints: ConstraintStore::default(),
+            objectives: ObjectiveStore::default(),
+            parameters: ParameterStore::default(),
+            coefficients: CoefficientIndex::default(),
+            changelog: ChangeLog::default(),
+            transaction: Transaction::default(),
+            name: None,
+            constants: ModelConstants::default(),
+            semicontinuous_lower: std::collections::HashMap::new(),
+            coordinator: crate::sync::SyncCoordinator::default(),
+            // A fresh model allocates fresh lineage and instance ids. Zero is
+            // reserved, so `Model::new` never collides with a sentinel.
+            lineage: ModelLineageId::allocate().expect("model lineage counter exhausted"),
+            instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
+            metadata: std::collections::HashMap::new(),
+            constructs: ConstructStore::new(),
+        }
+    }
+}
+
+impl Clone for Model {
+    fn clone(&self) -> Self {
+        Self {
+            variables: self.variables.clone(),
+            constraints: self.constraints.clone(),
+            objectives: self.objectives.clone(),
+            parameters: self.parameters.clone(),
+            coefficients: self.coefficients.clone(),
+            changelog: self.changelog.clone(),
+            transaction: self.transaction.clone(),
+            name: self.name.clone(),
+            constants: self.constants.clone(),
+            semicontinuous_lower: self.semicontinuous_lower.clone(),
+            coordinator: self.coordinator.clone(),
+            // Clone preserves lineage but allocates a NEW instance id
+            // (SM-02.7, D28: a derived Clone would silently copy the instance).
+            lineage: self.lineage,
+            instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
+            metadata: self.metadata.clone(),
+            // Constructs survive clone with the same ids, kinds, and activity.
+            constructs: self.constructs.clone(),
+        }
+    }
 }
 
 /// Model-level constants used by algebraic introspection (slack and violation
@@ -197,6 +279,207 @@ impl Model {
     /// Create a new named model (P22 target constructor).
     pub fn named(name: impl Into<String>) -> Self {
         Self::with_name(name)
+    }
+
+    // ========== Lineage, Instance, and Metadata ==========
+
+    /// The lineage identity of this model (design §4.1, SM-02.1).
+    ///
+    /// Independent models receive distinct lineages; [`Clone`](Self::clone)
+    /// preserves the lineage. Lineage governs assignment reuse compatibility
+    /// across clones.
+    pub fn lineage(&self) -> ModelLineageId {
+        self.lineage
+    }
+
+    /// The instance identity of this live model object (design §4.2, SM-02.7).
+    ///
+    /// Every live model has a distinct instance id; cloning allocates a new
+    /// instance while preserving the lineage, so divergent clones with equal
+    /// revisions are never confused.
+    pub fn instance(&self) -> ModelInstanceId {
+        self.instance
+    }
+
+    /// Attach metadata to an entity.
+    ///
+    /// Metadata is canonical but non-solver-affecting: it never advances the
+    /// model revision or emits a solver-facing change (EXECUTION.md
+    /// "Incremental semantics", design §5).
+    ///
+    /// Fallible (D10, WR-05): a stale/removed entity id is rejected with the
+    /// entity's typed `*NotFound` error — metadata is never stored against a
+    /// dead entity. The entity stores are the liveness authority.
+    pub fn set_metadata(
+        &mut self,
+        entity: EntityRef,
+        metadata: EntityMetadata,
+    ) -> Result<(), ModelError> {
+        match entity {
+            EntityRef::Variable(var) if !self.variables.contains(var) => {
+                return Err(ModelError::VariableNotFound(var));
+            }
+            EntityRef::Constraint(con) if !self.constraints.contains(con) => {
+                return Err(ModelError::ConstraintNotFound(con));
+            }
+            EntityRef::Objective(obj) if !self.objectives.contains(obj) => {
+                return Err(ModelError::ObjectiveNotFound(obj));
+            }
+            EntityRef::Parameter(param) if !self.parameters.contains(param) => {
+                return Err(ModelError::ParameterNotFound(param));
+            }
+            EntityRef::Construct(construct) if !self.constructs.contains(construct) => {
+                return Err(ModelError::ConstructNotFound(construct));
+            }
+            _ => {}
+        }
+        self.metadata.insert(entity, metadata);
+        Ok(())
+    }
+
+    /// Read the metadata attached to an entity, if any.
+    pub fn metadata(&self, entity: EntityRef) -> Option<&EntityMetadata> {
+        self.metadata.get(&entity)
+    }
+
+    /// Remove the metadata attached to an entity, returning it if present.
+    pub fn remove_metadata(&mut self, entity: EntityRef) -> Option<EntityMetadata> {
+        self.metadata.remove(&entity)
+    }
+
+    /// Reconstruct the canonical function-in-set form of a constraint
+    /// (design §6, P25 Task 3).
+    ///
+    /// The coefficient index is the single coefficient authority (SM-01.1):
+    /// the linear function is rebuilt deterministically from the constraint's
+    /// coefficient cells and the set from its bounds. The ordinary M2
+    /// `LinExpr` path stays canonical (SM-01.5); this is the semantic IR
+    /// view used by snapshots, deltas, and later compilers.
+    ///
+    /// F1: the linear function is reconstructed SYMBOLICALLY — its terms carry
+    /// `TermCoeff::Expr(ValueExpr)` sourced from the coefficient index's
+    /// `value_expr`, so a parameterized coefficient `p*x` keeps its symbolic
+    /// form inside the function (design §6) rather than a parallel
+    /// `terms`/`dependencies` view. Dependencies are DERIVED from the function
+    /// ([`ScalarFunction::parameter_dependencies`]), never stored.
+    pub fn constraint_function(&self, con: ConId) -> Result<FunctionConstraint, ModelError> {
+        if !self.constraints.contains(con) {
+            return Err(ModelError::ConstraintNotFound(con));
+        }
+        let bounds = self
+            .constraint_bounds(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?;
+        let expr = self.constraint_symbolic_expression(con)?;
+        Ok(FunctionConstraint {
+            function: ScalarFunction::Linear(expr),
+            set: ScalarSet::from(bounds),
+        })
+    }
+
+    // ========== Construct Operations ==========
+
+    /// Add a canonical semantic construct from a P25 fixture payload
+    /// (design §7, P25 Task 4).
+    ///
+    /// Crate-private (F3): the fixture payload is P25-internal scaffolding.
+    /// The public per-construct builder APIs (`add_indicator`, `add_minmax`,
+    /// ...) land with the per-construct modules in P30/P32/P33, at which point
+    /// [`ConstructKind`]/[`ConstructEntry`] become public exports. The
+    /// returned [`Construct`] is stable and generation-safe; removal
+    /// invalidates it.
+    ///
+    /// Fallible (D10): a construct id counter exhaustion returns a typed
+    /// error rather than wrapping.
+    ///
+    /// P25 (F3): exercised only by the in-crate construct lifecycle tests.
+    #[allow(dead_code)]
+    pub(crate) fn add_construct_fixture(
+        &mut self,
+        payload: FixturePayload,
+        preference: FormulationPreference,
+    ) -> Result<Construct, ModelError> {
+        let kind = ConstructKind::Fixture(payload);
+        let construct = self
+            .constructs
+            .add(kind.clone(), preference)
+            .map_err(|_| ModelError::IdentityOverflow)?;
+        // Constructs start active (design §7).
+        self.changelog.push(Change::ConstructAdded {
+            construct,
+            kind,
+            preference,
+            active: true,
+        });
+        Ok(construct)
+    }
+
+    /// Read a construct entry by id.
+    ///
+    /// Crate-private (F3): `ConstructEntry` is not part of the public surface
+    /// until P32. Returns a typed error for a stale/removed id (D10).
+    ///
+    /// P25 (F3): exercised only by the in-crate construct lifecycle tests.
+    #[allow(dead_code)]
+    pub(crate) fn construct(&self, id: Construct) -> Result<&ConstructEntry, ModelError> {
+        self.constructs
+            .get(id)
+            .map(|d| &d.entry)
+            .ok_or(ModelError::ConstructNotFound(id))
+    }
+
+    /// Set a construct's activity.
+    ///
+    /// Fallible (D10): a stale/removed construct id is rejected.
+    pub fn set_construct_active(&mut self, id: Construct, active: bool) -> Result<(), ModelError> {
+        let data = self
+            .constructs
+            .get_mut(id)
+            .ok_or(ModelError::ConstructNotFound(id))?;
+        if data.entry.active != active {
+            data.entry.active = active;
+            self.changelog.push(Change::ConstructActivityChanged {
+                construct: id,
+                active,
+            });
+        }
+        Ok(())
+    }
+
+    /// Remove a construct, invalidating its id (design §7).
+    ///
+    /// Fallible (D10): a stale/removed construct id is rejected; removing an
+    /// already-removed id fails rather than being a no-op.
+    pub fn remove_construct(&mut self, id: Construct) -> Result<(), ModelError> {
+        if !self.constructs.contains(id) {
+            return Err(ModelError::ConstructNotFound(id));
+        }
+        self.constructs.remove(id);
+        // WR-06: cascade construct metadata so the valid attach-metadata-then-
+        // remove sequence does not trip `validate_invariants` with an orphaned
+        // construct-metadata entry.
+        self.metadata.remove(&EntityRef::Construct(id));
+        self.changelog
+            .push(Change::ConstructRemoved { construct: id });
+        Ok(())
+    }
+
+    /// The number of live constructs.
+    pub fn num_constructs(&self) -> usize {
+        self.constructs.len()
+    }
+
+    /// Parameter dependencies of a construct, derived from its payload.
+    ///
+    /// The stored cache is invariant-checked against the payload derivation in
+    /// `validate_invariants`.
+    pub fn construct_parameter_dependencies(
+        &self,
+        id: Construct,
+    ) -> Result<&[ParamId], ModelError> {
+        self.constructs
+            .get(id)
+            .map(|d| d.parameter_dependencies.as_slice())
+            .ok_or(ModelError::ConstructNotFound(id))
     }
 
     // ========== Variable Operations ==========
@@ -311,6 +594,8 @@ impl Model {
         }
 
         self.variables.remove(var);
+        // WR-05: cascade metadata so add/remove churn leaves no orphaned entry.
+        self.metadata.remove(&EntityRef::Variable(var));
         self.changelog.push(Change::VariableRemoved { var });
         Ok(())
     }
@@ -579,6 +864,8 @@ impl Model {
         }
 
         self.constraints.remove(con);
+        // WR-05: cascade metadata so add/remove churn leaves no orphaned entry.
+        self.metadata.remove(&EntityRef::Constraint(con));
         self.changelog.push(Change::ConstraintRemoved { con });
         Ok(())
     }
@@ -671,6 +958,8 @@ impl Model {
         }
 
         self.objectives.remove(obj);
+        // WR-05: cascade metadata so add/remove churn leaves no orphaned entry.
+        self.metadata.remove(&EntityRef::Objective(obj));
         self.changelog.push(Change::ObjectiveRemoved { obj });
         Ok(())
     }
@@ -1344,14 +1633,49 @@ impl Model {
             .collect();
 
         let revision = self.coordinator.revision();
-        Ok(crate::snapshot::take_snapshot(
+        let mut snapshot = crate::snapshot::take_snapshot(
             revision,
             &variables,
             &constraints,
             &objectives,
             &parameters,
             &cells,
-        ))
+        );
+
+        // Invariant (SM-01.1, P25 Task 3): the snapshot's reconstructed
+        // semantic function/set entries must agree with the model's canonical
+        // reconstruction from the coefficient index. Every transitional
+        // legacy field is guarded by this check.
+        for entry in &snapshot.functions {
+            if let Ok(fc) = self.constraint_function(entry.constraint) {
+                debug_assert_eq!(
+                    entry.set, fc.set,
+                    "snapshot semantic set diverges from the coefficient index"
+                );
+                // WR-01/WR-02: the reconstructed function expression must also
+                // agree with the canonical reconstruction. Both sides are now
+                // var-ordered deterministic rebuilds of the same coefficient
+                // index, so divergence here would indicate a real
+                // second-coefficient-authority bug (e.g. CR-01's pre-adjusted
+                // bounds), not a benign ordering difference.
+                debug_assert_eq!(
+                    entry.function, fc.function,
+                    "snapshot semantic function diverges from the coefficient index"
+                );
+            }
+        }
+
+        // Canonical semantic construct entries from the arena (design §7,
+        // P25 Task 4). Sorted by id for deterministic output.
+        let mut constructs: Vec<ConstructEntry> = self
+            .constructs
+            .iter()
+            .map(|(_, data)| data.entry.clone())
+            .collect();
+        constructs.sort_by_key(|c| c.id);
+        snapshot.constructs = constructs;
+
+        Ok(snapshot)
     }
 
     /// Validate all model invariants. Returns a list of violations.
@@ -1468,6 +1792,43 @@ impl Model {
                 if !self.coefficients.contains(coeff_id) {
                     violations.push(format!("by_param index has dead coefficient {coeff_id:?}"));
                 }
+            }
+        }
+
+        // 8. Function-in-set consistency (P25 Task 3, SM-01.1): the
+        // transitional legacy constraint bounds must convert to the same
+        // ScalarSet as the canonical function-in-set view reconstructed from
+        // the coefficient index — there is no second coefficient authority.
+        for (con, data) in self.constraints.iter() {
+            let legacy_set = ScalarSet::from(data.bounds);
+            if let Ok(fc) = self.constraint_function(con) {
+                if legacy_set != fc.set {
+                    violations.push(format!(
+                        "constraint {con:?} legacy bounds diverge from semantic set (bounds {data:?}, function {fc:?})"
+                    ));
+                }
+            }
+        }
+
+        // 9. Construct store integrity (P25 Task 4, design §7):
+        //    - every construct metadata entry references a live construct;
+        //    - the cached parameter-dependency list equals a re-derivation
+        //      from the payload (invariant proving cache correctness).
+        for entity in self.metadata.keys() {
+            if let EntityRef::Construct(construct) = entity {
+                if !self.constructs.contains(*construct) {
+                    violations.push(format!(
+                        "construct metadata references dead construct {construct:?}"
+                    ));
+                }
+            }
+        }
+        for (id, data) in self.constructs.iter() {
+            let derived = derive_parameter_dependencies(&data.entry.kind);
+            if derived != data.parameter_dependencies {
+                violations.push(format!(
+                    "construct {id:?} parameter-dependency cache diverges from payload derivation"
+                ));
             }
         }
 
@@ -1814,6 +2175,21 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::ActiveObjectiveChanged { new, .. } => Ok(ModelOp::SetActiveObjective { obj: new }),
         Change::ParameterValueChanged { param, new, .. } => {
             Ok(ModelOp::SetParameter { param, value: new })
+        }
+        Change::ConstructAdded {
+            construct,
+            kind,
+            preference,
+            active,
+        } => Ok(ModelOp::AddConstruct {
+            construct,
+            kind,
+            preference,
+            active,
+        }),
+        Change::ConstructRemoved { construct } => Ok(ModelOp::RemoveConstruct { construct }),
+        Change::ConstructActivityChanged { construct, active } => {
+            Ok(ModelOp::SetConstructActive { construct, active })
         }
     }
 }
@@ -2364,5 +2740,315 @@ mod tests {
 
         // combined value: 2.0 + 3.0 = 5.0
         assert!((model.coefficient(id1).unwrap().cached_value - 5.0).abs() < 1e-9);
+    }
+}
+
+// ── Construct lifecycle (P25 Task 4, design §7) ────────────────────────────
+//
+// Moved IN-CRATE from tests/semantic_ir.rs (F3): these exercise the
+// crate-private fixture scaffolding (`FixturePayload`, `ConstructKind::Fixture`,
+// `add_construct_fixture`, `Model::construct`, and the pub(crate) snapshot /
+// delta `.constructs` fields), which is not part of the public surface until
+// P32.
+#[cfg(test)]
+mod construct_tests {
+    // `ConstructKind` is single-variant (`Fixture`) in P25. The tests keep the
+    // defensive `if let ... else panic!` shape for P32's variant expansion, so
+    // the pattern is currently irrefutable.
+    #![allow(irrefutable_let_patterns)]
+
+    use super::*;
+
+    fn fixture(key: &str, value: f64) -> FixturePayload {
+        FixturePayload {
+            key: key.to_string(),
+            value,
+        }
+    }
+
+    #[test]
+    fn construct_add_returns_stable_id_and_payload_round_trips() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("cap", 100.0), FormulationPreference::Auto)
+            .unwrap();
+
+        let entry = model.construct(k).unwrap();
+        assert_eq!(entry.id, k, "add returns the stable construct id");
+        assert!(entry.active, "constructs start active");
+        if let ConstructKind::Fixture(p) = &entry.kind {
+            assert_eq!(p.key, "cap");
+            assert_eq!(p.value, 100.0);
+        } else {
+            panic!("expected fixture payload");
+        }
+    }
+
+    #[test]
+    fn construct_clone_preserves_ids_and_activity() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("cap", 50.0), FormulationPreference::Portable)
+            .unwrap();
+        model.set_construct_active(k, false).unwrap();
+
+        let cloned = model.clone();
+        let entry = cloned.construct(k).unwrap();
+        assert_eq!(entry.id, k, "clone preserves the construct id");
+        assert!(!entry.active, "clone preserves activity");
+        if let ConstructKind::Fixture(p) = &entry.kind {
+            assert_eq!(p.value, 50.0);
+        }
+        assert_eq!(cloned.num_constructs(), model.num_constructs());
+    }
+
+    #[test]
+    fn construct_snapshot_and_delta_round_trip() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("on", 1.0), FormulationPreference::Auto)
+            .unwrap();
+        let r1 = model.commit().unwrap();
+
+        // Snapshot carries every construct entry.
+        let snap = model.take_snapshot().unwrap();
+        assert_eq!(snap.constructs.len(), 1);
+        assert_eq!(snap.constructs[0].id, k);
+        assert!(snap.constructs[0].active);
+
+        // Delta carries the added construct entry.
+        let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+        let batch = batches
+            .iter()
+            .find(|b| b.to == r1)
+            .expect("construct-add batch present");
+        assert_eq!(batch.constructs.len(), 1);
+        assert_eq!(batch.constructs[0].id, k);
+
+        // Deterministic snapshot round-trip.
+        assert_eq!(snap, model.take_snapshot().unwrap());
+    }
+
+    #[test]
+    fn construct_activity_toggling_reflected_in_snapshot() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("t", 2.0), FormulationPreference::NativeRequired)
+            .unwrap();
+        model.set_construct_active(k, false).unwrap();
+
+        let snap = model.take_snapshot().unwrap();
+        assert!(
+            !snap.constructs[0].active,
+            "inactive construct reflected in snapshot"
+        );
+    }
+
+    #[test]
+    fn construct_remove_invalidates_id_and_stale_ids_rejected() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("gone", 7.0), FormulationPreference::Auto)
+            .unwrap();
+        assert_eq!(model.num_constructs(), 1);
+
+        model.remove_construct(k).unwrap();
+        assert_eq!(model.num_constructs(), 0);
+
+        // Stale id is rejected with a typed error.
+        match model.construct(k) {
+            Err(ModelError::ConstructNotFound(id)) => assert_eq!(id, k),
+            other => panic!("expected ConstructNotFound, got {other:?}"),
+        }
+        assert!(model.set_construct_active(k, true).is_err());
+        assert!(model.remove_construct(k).is_err());
+    }
+
+    #[test]
+    fn construct_store_survives_rebuild() {
+        let mut model = Model::new();
+        model
+            .add_construct_fixture(fixture("a", 1.0), FormulationPreference::Auto)
+            .unwrap();
+        let k2 = model
+            .add_construct_fixture(fixture("b", 2.0), FormulationPreference::Portable)
+            .unwrap();
+        model.set_construct_active(k2, false).unwrap();
+
+        // Snapshot captures the construct store.
+        let snap = model.take_snapshot().unwrap();
+        assert_eq!(snap.constructs.len(), 2);
+
+        // Rebuild: a fresh empty model restored from the snapshot carries the
+        // same construct content (kind + activity), with fresh ids.
+        let mut rebuilt = Model::new();
+        // Track each rebuilt entry's fresh id so the reconstruction can be
+        // looked up by id instead of relying on order coincidence (IN-03).
+        let mut rebuilt_ids: Vec<(ConstructEntry, Construct)> = Vec::new();
+        for entry in &snap.constructs {
+            let payload = if let ConstructKind::Fixture(p) = &entry.kind {
+                p.clone()
+            } else {
+                panic!("expected fixture payload");
+            };
+            let id = rebuilt
+                .add_construct_fixture(payload, FormulationPreference::Auto)
+                .unwrap();
+            if !entry.active {
+                rebuilt.set_construct_active(id, false).unwrap();
+            }
+            rebuilt_ids.push((entry.clone(), id));
+        }
+        assert_eq!(rebuilt.num_constructs(), 2);
+
+        // Rebuilding from the same snapshot reproduces equal construct content:
+        // look each rebuilt entry up by its fresh id and assert the full
+        // `ConstructEntry` (kind + activity) matches the original (IN-03).
+        let rebuilt_snap = rebuilt.take_snapshot().unwrap();
+        assert_eq!(rebuilt_snap.constructs.len(), snap.constructs.len());
+        for (original, new_id) in &rebuilt_ids {
+            let rebuilt_entry = rebuilt_snap
+                .constructs
+                .iter()
+                .find(|e| e.id == *new_id)
+                .expect("rebuilt construct present in snapshot");
+            assert_eq!(
+                rebuilt_entry.kind, original.kind,
+                "rebuilt construct kind must match the original"
+            );
+            assert_eq!(
+                rebuilt_entry.active, original.active,
+                "rebuilt construct activity must match the original"
+            );
+        }
+    }
+
+    #[test]
+    fn construct_metadata_usable_via_entity_ref() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("meta", 1.0), FormulationPreference::Auto)
+            .unwrap();
+
+        let meta = EntityMetadata {
+            description: Some("a construct".to_string()),
+            ..EntityMetadata::default()
+        };
+        model
+            .set_metadata(EntityRef::Construct(k), meta.clone())
+            .unwrap();
+        assert_eq!(
+            model.metadata(EntityRef::Construct(k)),
+            Some(&meta),
+            "EntityRef::Construct is usable now (design §4.4)"
+        );
+        assert!(model.validate_invariants().is_ok());
+    }
+
+    /// F4: `FormulationPreference` must round-trip through the construct entry,
+    /// the snapshot, and the delta so P26 can honor Auto/Portable/NativeRequired
+    /// from canonical snapshots/deltas.
+    #[test]
+    fn construct_preference_round_trips_through_snapshot_and_delta() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("pref", 1.0), FormulationPreference::NativeRequired)
+            .unwrap();
+        let r1 = model.commit().unwrap();
+
+        // The canonical entry carries the preference.
+        let entry = model.construct(k).unwrap();
+        assert_eq!(
+            entry.preference,
+            FormulationPreference::NativeRequired,
+            "entry must carry the preference"
+        );
+
+        // Snapshot carries it.
+        let snap = model.take_snapshot().unwrap();
+        let snap_entry = snap
+            .constructs
+            .iter()
+            .find(|e| e.id == k)
+            .expect("snapshot carries the construct entry");
+        assert_eq!(
+            snap_entry.preference,
+            FormulationPreference::NativeRequired,
+            "snapshot entry must carry the preference"
+        );
+
+        // Delta carries it.
+        let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+        let batch = batches
+            .iter()
+            .find(|b| b.to == r1)
+            .expect("construct-add batch present");
+        let delta_entry = batch
+            .constructs
+            .iter()
+            .find(|e| e.id == k)
+            .expect("delta carries the construct entry");
+        assert_eq!(
+            delta_entry.preference,
+            FormulationPreference::NativeRequired,
+            "delta entry must carry the preference"
+        );
+
+        // Rebuild from the snapshot preserves it.
+        let mut rebuilt = Model::new();
+        for entry in &snap.constructs {
+            let payload = if let ConstructKind::Fixture(p) = &entry.kind {
+                p.clone()
+            } else {
+                panic!("expected fixture payload");
+            };
+            let id = rebuilt
+                .add_construct_fixture(payload, entry.preference)
+                .unwrap();
+            if !entry.active {
+                rebuilt.set_construct_active(id, false).unwrap();
+            }
+        }
+        let rebuilt_snap = rebuilt.take_snapshot().unwrap();
+        let rebuilt_entry = rebuilt_snap
+            .constructs
+            .iter()
+            .find(|e| e.id != k)
+            .expect("rebuilt construct present in snapshot");
+        assert_eq!(
+            rebuilt_entry.preference,
+            FormulationPreference::NativeRequired,
+            "rebuild from snapshot preserves the preference"
+        );
+    }
+
+    /// WR-06: removing a construct must cascade its metadata, so the valid
+    /// attach-metadata-then-remove sequence does not trip `validate_invariants`
+    /// with an orphaned construct-metadata entry.
+    #[test]
+    fn construct_remove_cascades_metadata_and_invariants_pass() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("meta", 1.0), FormulationPreference::Auto)
+            .unwrap();
+        model
+            .set_metadata(
+                EntityRef::Construct(k),
+                EntityMetadata {
+                    description: Some("doomed".to_string()),
+                    ..EntityMetadata::default()
+                },
+            )
+            .unwrap();
+
+        model.remove_construct(k).unwrap();
+        assert!(
+            model.metadata(EntityRef::Construct(k)).is_none(),
+            "construct metadata cascaded on removal"
+        );
+        assert!(
+            model.validate_invariants().is_ok(),
+            "no orphaned construct metadata after removal"
+        );
     }
 }
