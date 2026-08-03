@@ -281,3 +281,144 @@ Task 9 gate: **PASSED** — `cargo test -p roml --all-targets` (718) and `cargo 
 | # | SHA | Message |
 |---|---|---|
 | 1 | `29ccf95` | `feat(solve): add assignments and solution locks` |
+
+---
+
+# Task 10 — Execute reversible overlays transactionally
+
+**Requirements:** SM-07.3, SM-07.4, SM-07.5, SM-07.6
+**Plan:** `27-PLAN.md` Task 10
+**Commit:** `9d7a597` `feat(solve): add reversible solve overlays`
+**Status:** Task 10 complete — transactional reversible overlay execution implemented and verified on the reference backend and the HiGHS session.
+
+## Scope
+
+Task 10 executes the pinned overlay lifecycle (design §12) transactionally from the caller's perspective:
+
+```text
+commit canonical model
+-> compile/synchronize canonical state          (C_base established)
+-> compile overlay against the exact C_base     (fresh C_overlay, D28)
+-> apply overlay                                (C_base -> C_overlay; OverlayApplyReceipt)
+-> solve                                        (result tagged C_overlay)
+-> validate result.compilation_id == C_overlay  (NOT C_base — the compiler stays at C_base)
+-> rollback overlay (always attempted)          (C_overlay -> C_base; explicit receipt)
+-> on RequiresRebuild mark the backend RequiresRebuild (D7, D22)
+-> verify C_base restored
+-> normalize with compilation_id = C_overlay and overlay_id = Some(overlay.id)
+```
+
+It closes:
+- **SM-07.3** — temporary fixings, solution locks, objective-lock rows, and cutoffs never mutate the canonical model revision (revision-invariance assertion after a full overlay solve);
+- **SM-07.4** — explicit `OverlayApplyReceipt`/`OverlayRollbackOutcome`, rollback always attempted on failure;
+- **SM-07.5** — rollback uncertainty marks the backend `RequiresRebuild` and the next solve forces a snapshot rebuild;
+- **SM-07.6** — the failure-injection matrix (validation/compile/apply/solve/extraction/rollback/post-rollback) proves no overlay leaks into any later solve; every later clean solve equals a fresh rebuild (phase gate 4).
+
+## TDD — RED failures (recorded before implementation)
+
+`cargo test -p roml --test solve_overlay --no-run` failed to compile against the Task 9 tree — the new Task 10 tests referenced the intended new surface, none of which existed. Expected failures, recorded verbatim (excerpt):
+
+```text
+error[E0432]: unresolved imports `roml::advanced::OverlayApplyReceipt`,
+              `roml::advanced::OverlayRollbackOutcome`, `roml::advanced::OverlaySession`
+```
+
+`OverlayApplyReceipt`/`OverlayRollbackOutcome`/`OverlaySession`/`solve_with_overlay`/
+`SolveError::Overlay`/`SolveError::Rollback`/`SolveMetadata.overlay_id`/
+`SolveResult.overlay_id` were all absent; every new test failed at compile time.
+
+## Implementation
+
+### `src/solver/overlay.rs`
+- `OverlayApplyReceipt { overlay_id, base_compilation, applied_compilation }` and `OverlayRollbackOutcome { Clean { restored_compilation }, RequiresRebuild { reason } }` — the explicit transactional receipts (SM-07.4).
+
+### `src/solver/session.rs`
+- New bounded optional `pub trait OverlaySession { apply_overlay, rollback_overlay, verify_overlay_clean }` alongside `SessionHealth`/`SolutionView` (design §12: a fallible rollback is explicit, not delegated solely to `Drop`).
+
+### `src/solver/reference.rs`
+- `OverlaySession for ReferenceBackend`: apply records prior compiled bounds + added temporary rows + prior policy + a deterministic base view, then applies the ops and transitions `current_compilation` → `C_overlay`; a stale base is rejected before mutation. Rollback restores the prior bounds, removes the temporary rows, restores the policy, and transitions → `C_base`; verify asserts the compiled state equals the base view exactly.
+
+### `src/solver/facade.rs`
+- `solve_with` refactored to share a private `synchronize_base` helper (validate → commit → synchronize → bind) with `solve_with_overlay`, so the plain solve path is unchanged (D27).
+- New `pub fn solve_with_overlay(&mut self, model, options, overlay, objective_override) -> Result<Solution, SolveError>` (in an `impl` block bounded on `OverlaySession`): compile against `compiler.current_compilation()` (`C_base`), apply, solve, validate `result.compilation_id == compiled_overlay.compilation_id` (NOT `compiler.current_compilation()`, which stays `C_base` — the false-fail trap the plan flags), rollback always attempted, mark `RequiresRebuild` on uncertainty, verify `C_base` restored, normalize with `compilation_id = C_overlay` and `overlay_id = Some(overlay.id)`.
+- `normalize_result` gains an `overlay_id: Option<OverlayId>` parameter (pre-release additive) so the overlay solve's metadata records the exact `OverlayId` (D28 overlay artifacts).
+
+### `src/solver/error.rs`
+- `SolveError::Overlay(OverlayError)` — the overlay failed to compile before any backend mutation (SM-06.6); `SolveError::Rollback(BackendError)` — a backend error during the apply/rollback/verify lifecycle (backend marked `RequiresRebuild`). The extraction-mismatch path reuses `SolveError::CompilationMismatch`.
+
+### `src/solver/request.rs` / `src/solution/metadata.rs`
+- `SolveResult.overlay_id: Option<OverlayId>` and `SolveMetadata.overlay_id: Option<OverlayId>` (default `None`); the façade sets `Some(overlay.id)` on overlay solves (D28/SM-03.9 overlay artifacts).
+
+### `roml-highs/src/compiler.rs` / `roml-highs/src/session.rs` / `roml-highs/src/lifecycle.rs`
+- New `project_objective_policy` helper (extracted from the `BackendOp::SetObjectivePolicy` arm) shared by the delta path and the overlay apply/rollback.
+- `OverlaySession for HighsSession`: apply translates `SetTemporaryVariableBounds` → `Highs_changeColBounds` (recording prior bounds from `self.var_bounds`), `AddTemporaryRow` → `Highs_addRows` (recording the native row index), `SetObjectivePolicy` → the compiled-policy projection; `current_compilation` → `C_overlay`. Rollback restores each prior bound, deletes each added row via `Highs_deleteRowsBySet` (the temp rows live at the END of the native model, so base row indices are unchanged), restores the base policy, → `C_base`; any failing native call returns `RequiresRebuild` and marks the cursor. Verify checks the native row/column counts and `current_compilation` match `C_base`.
+- `HighsSession` gains `compiled_objective_policy` (maintained by `synchronize`) and `overlay_state: Option<HighsOverlayState>`.
+
+### `src/advanced.rs`
+- `OverlaySession` exported through the advanced backend-authoring surface; `OverlayApplyReceipt`/`OverlayRollbackOutcome` through the overlay re-export.
+
+### `tests/solve_overlay.rs` (13 new Task 10 tests, 36 total)
+- Reference-backend apply → rollback → verify round-trip; stale-apply rejection before mutation.
+- Façade-level `solve_with_overlay`: result tagged `C_overlay` + `overlay_id`, revision invariance, C_base restored, clean solve equals fresh rebuild; overlay solve validates against `C_overlay` not `C_base`; invalid overlay rejected before mutation.
+- Rollback uncertainty → `RequiresRebuild`; the next solve forces a snapshot rebuild and equals a fresh rebuild.
+- Failure-injection matrix at validation/compile/apply/solve/extraction/rollback/post-rollback, each asserting canonical-revision invariance and clean-solve-equals-fresh-rebuild.
+
+### `roml-highs/src/session.rs` (2 new HiGHS overlay tests, 116 total)
+- Full overlay apply → solve → rollback → verify round-trip: temp bound + cutoff change the solved objective (max x+y = 10 base; temp fix x=4 + cutoff x+y<=6 → objective 6), rollback restores C_base and the native row count, a subsequent solve equals the base solve (no leak).
+- Stale overlay apply rejected before native mutation (column count and `current_compilation` unchanged).
+
+## Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test solve_overlay -- --nocapture` | 0 — **36 passed; 0 failed** (23 Task 9 + 13 Task 10) |
+
+## Full verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --all-targets` | 0 — **731 passed; 0 failed; 2 ignored** (baseline 718 + 13 new) |
+| `cargo test -p roml-highs --all-targets` | 0 — **116 passed; 0 failed** (baseline 114 + 2 new) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 — docs generated, no warnings |
+| `cargo test -p roml --doc` | 0 — doctests pass |
+| `cargo fmt --all -- --check` | 0 — formatting clean |
+
+No `roml-mosek`/`roml-xpress` command was run (M2 convention, out of scope).
+
+## Acceptance criteria
+
+- Temporary fixings, solution locks, objective-lock rows, and cutoffs never mutate the canonical model revision (SM-07.3) — **met** (`solve_with_overlay_tags_result_with_overlay_compilation_and_restores_base` asserts `model.current_revision()` unchanged and no pending changes after a full overlay solve).
+- Overlay application and rollback are transactional from the caller's perspective, with explicit `OverlayApplyReceipt`/`OverlayRollbackOutcome` and rollback always attempted on failure (SM-07.4) — **met** (facade `rollback_and_verify` runs on solve/extraction failure; `OverlayRollbackOutcome::Clean`/`RequiresRebuild`).
+- Rollback uncertainty marks the backend `RequiresRebuild` and the next solve rebuilds (SM-07.5) — **met** (`rollback_uncertainty_marks_requires_rebuild_and_forces_rebuild` observes the rebuild counter increase and clean-solve-equals-fresh).
+- The failure-injection matrix (validation/compile/apply/solve/extraction/rollback/post-rollback) proves no overlay leaks into a later solve; each later clean solve equals a fresh rebuild (SM-07.6) — **met** (the phase gate "no overlay leaks after any injected failure").
+- Exact `CompilationId` mismatches reject before mutation; the override solve's result records the fresh overlay `CompilationId` and `overlay_id` (phase gate "exact compilation mismatches reject before mutation"; SM-03.9 overlay artifacts) — **met** (stale-apply rejection tests on both backends; `SolveError::CompilationMismatch` on extraction; metadata records `C_overlay` + `overlay_id`).
+- Locks never advance the model revision (phase gate "locks never advance model revision") — **met** (revision-invariance assertion).
+- HiGHS temporary bounds/rows qualified through pinned `highs-sys` (`Highs_changeColBounds`/`Highs_addRows`/`Highs_deleteRowsBySet`); unqualified behavior is a typed error — **met** (unknown `OverlayOp` variants and missing compiled variables are typed errors; `Highs_addRows` path asserted end-to-end).
+
+## Deviations from the plan
+
+1. **D10-1 — `Highs_deletionRow` does not exist in the pinned `highs-sys` 1.15.0 bindings.** The plan's rollback bullet names `Highs_deletionRow`; the pinned bindings expose `Highs_deleteRowsBySet` (already used by `RemoveLinearRow`). The HiGHS overlay rollback deletes the added temporary rows via `Highs_deleteRowsBySet`. Functional intent unchanged (remove the added rows).
+2. **D10-2 — apply-time stale rejection is a typed `BackendError`, not an `OverlayError::StaleCompilation`.** `OverlaySession::apply_overlay` returns `Result<_, BackendError>` (the plan's pinned trait signature), so a backend cannot return `OverlayError::StaleCompilation`. The backend returns a `BackendError` with `ErrorCategory::InvalidInput` whose message names the expected/actual compilations, BEFORE any mutation. The phase gate "exact compilation mismatches reject before mutation" is preserved.
+3. **D10-3 — apply-stage failures map to `SolveError::Rollback`.** The plan names exactly two new `SolveError` variants (`Overlay(OverlayError)` and `Rollback(BackendError)`) and lists apply among the backend errors to map. A failed `apply_overlay` is a `BackendError`; it maps to `SolveError::Rollback` (the only BackendError-carrying overlay variant) and the backend marks itself `RequiresRebuild`.
+4. **D10-4 — `normalize_result` gains an `overlay_id: Option<OverlayId>` parameter** (pre-release additive). The plan requires the overlay solve's metadata to record `overlay_id = Some(overlay.id)`; the shared normalization helper is the single place that builds `SolveMetadata`. Plain-solve call sites pass `None`.
+
+## Native/backend evidence
+
+`roml-highs` applies temporary bounds via `Highs_changeColBounds`, temporary rows via `Highs_addRows`, and removes them via `Highs_deleteRowsBySet` — all through the pinned `highs-sys` 1.15.0 bindings (`roml-highs/src/bindings.rs`). The overlay round-trip test proves the native model returns to `C_base` exactly (row/column counts, objective value, `current_compilation`), and the stale-apply test proves no native mutation on rejection.
+
+## Phase-gate status for Task 10
+
+All four ROADMAP gate clauses are now evidenced end-to-end:
+1. **fix/unfix survives rebuild** — closed by Task 8 (`fixing_survives_snapshot_rebuild`).
+2. **locks never advance model revision** — closed by Task 10 (`solve_with_overlay_tags_result_with_overlay_compilation_and_restores_base`).
+3. **exact compilation mismatches reject before mutation** — closed by Tasks 9-10 (compile-time stale rejection + apply-time stale rejection on both backends).
+4. **no overlay leaks after any injected failure** — closed by Task 10 (failure-injection matrix + subsequent-solve leak checks on both the façade test backend and HiGHS).
+
+## Task 10 commit trail
+
+| # | SHA | Message |
+|---|---|---|
+| 1 | `9d7a597` | `feat(solve): add reversible solve overlays` |

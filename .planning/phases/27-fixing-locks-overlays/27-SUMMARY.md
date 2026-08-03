@@ -162,3 +162,64 @@ Assignments, solution locks, and the pinned `SolveOverlay` contract (issue #26 i
 ## Self-Check: PASSED
 
 Created files exist (`src/assignment.rs`, `src/solver/overlay.rs`, `tests/solve_overlay.rs`); commit `29ccf95` exists in `git log`; all verification commands exit 0; no deletions or untracked files left behind.
+
+---
+
+# Task 10 — Execute reversible overlays transactionally
+
+**Phase:** 27-fixing-locks-overlays  **Plan:** 01 (Task 10 of 3)
+**Requirements:** SM-07.3, SM-07.4, SM-07.5, SM-07.6
+**Status:** complete
+**Commits:** `9d7a597` `feat(solve): add reversible solve overlays`
+**actuals:**
+```yaml
+tokens: 30710   # chars/4 over the realized Task 10 implementation diff (122,842 bytes)
+tasks: 1
+commits: 1
+```
+
+## One-liner
+
+Transactional reversible overlay execution: explicit `OverlayApplyReceipt`/`OverlayRollbackOutcome` + the `OverlaySession` trait (apply/rollback/verify), `SolverSession::solve_with_overlay` running the pinned lifecycle (synchronize to `C_base` → compile overlay → apply → solve → validate against `C_overlay` → always-attempted rollback → `RequiresRebuild` on uncertainty → verify `C_base` → normalize with `C_overlay` + `overlay_id`), reference-backend and HiGHS implementations (temp bounds/rows via `Highs_changeColBounds`/`Highs_addRows`/`Highs_deleteRowsBySet`), and a failure-injection matrix proving no overlay leaks into any later solve.
+
+## What was built
+
+- **`src/solver/overlay.rs`** — `OverlayApplyReceipt` / `OverlayRollbackOutcome` (explicit transactional receipts, SM-07.4).
+- **`src/solver/session.rs`** — new bounded `OverlaySession` trait (`apply_overlay`/`rollback_overlay`/`verify_overlay_clean`); fallible rollback is explicit, never Drop-only (design §12).
+- **`src/solver/reference.rs`** — `OverlaySession for ReferenceBackend`: prior-bounds/row/policy capture, apply → `C_overlay`, rollback → exact `C_base`, verify equals the base view; stale apply rejected before mutation.
+- **`src/solver/facade.rs`** — `solve_with` refactored onto a shared `synchronize_base` helper (plain path unchanged, D27); `solve_with_overlay` implements the pinned lifecycle; `normalize_result` gains `overlay_id`.
+- **`src/solver/error.rs`** — `SolveError::Overlay(OverlayError)` and `SolveError::Rollback(BackendError)`; extraction reuses `CompilationMismatch`.
+- **`src/solver/request.rs` / `src/solution/metadata.rs`** — `overlay_id: Option<OverlayId>` on `SolveResult`/`SolveMetadata`.
+- **`roml-highs`** — `OverlaySession for HighsSession` (temp bounds/rows/policy via pinned `highs-sys`), `project_objective_policy` helper shared with the delta path, `compiled_objective_policy` + `overlay_state` tracking, `Highs_deleteRowsBySet` for row removal.
+- **`tests/solve_overlay.rs`** — 13 new tests (36 total); **`roml-highs/src/session.rs`** — 2 HiGHS overlay tests (116 total).
+
+## Verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test solve_overlay` | 0 — 36 passed |
+| `cargo test -p roml --all-targets` | 0 — 731 passed; 0 failed; 2 ignored (baseline 718 + 13 new) |
+| `cargo test -p roml-highs --all-targets` | 0 — 116 passed (baseline 114 + 2 new) |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — clean |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 — clean |
+| `cargo test -p roml --doc` | 0 — doctests pass |
+| `cargo fmt --all -- --check` | 0 — clean |
+
+## Deviations from plan
+
+1. **`Highs_deletionRow` does not exist in pinned `highs-sys` 1.15.0** — the HiGHS overlay rollback deletes added rows via `Highs_deleteRowsBySet` (the existing `RemoveLinearRow` path).
+2. **Apply-time stale rejection is a typed `BackendError`, not `OverlayError::StaleCompilation`** — the pinned `OverlaySession::apply_overlay` returns `BackendError`; the backend returns a `BackendError` (InvalidInput) naming the expected/actual compilations before any mutation.
+3. **Apply-stage failures map to `SolveError::Rollback`** — the plan names exactly two new `SolveError` variants; a failed apply (a `BackendError`) maps to the `Rollback` variant and the backend marks itself `RequiresRebuild`.
+4. **`normalize_result` gains an `overlay_id` parameter** (pre-release additive) so the overlay solve's metadata records `Some(overlay.id)`.
+
+## Phase-gate status for Task 10
+
+- "locks never advance model revision" — **closed end-to-end** (revision-invariance after a full overlay solve).
+- "exact compilation mismatches reject before mutation" — **closed end-to-end** (compile-time + apply-time stale rejection on both backends).
+- "no overlay leaks after any injected failure" — **closed** (failure-injection matrix at validation/compile/apply/solve/extraction/rollback/post-rollback; every later clean solve equals a fresh rebuild).
+
+## Self-Check: PASSED
+
+All verification commands exit 0; Task 10 tests (13) and HiGHS overlay tests (2) pass; commit recorded below.
