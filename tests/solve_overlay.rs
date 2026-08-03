@@ -1725,6 +1725,42 @@ fn reference_rejects_overlay_dangling_objective_policy() {
     assert_eq!(backend.compiled_normalized_view(), base_view);
 }
 
+/// F5 (third round): an added temporary row whose `SolveOverlay` origin embeds
+/// a DIFFERENT overlay id is rejected at preflight — a row attributed to
+/// overlay B must never be applied as overlay A.
+#[test]
+fn reference_rejects_overlay_origin_for_other_overlay() {
+    let (model, _compiler, x, _y, obj) = overlay_fixture();
+    let (compiler, mut backend, _) = reference_backend_at_base(&model);
+    let c_base = backend.current_compilation.expect("base compiled");
+    let base_view = backend.compiled_normalized_view();
+
+    let overlay = sample_overlay(x, obj);
+    let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+    // Rewrite every added row's origin to attribute it to a DIFFERENT overlay.
+    let other = SolveOverlay::new(BTreeMap::<roml::VarId, f64>::new(), vec![], vec![], vec![])
+        .expect("other overlay id allocates");
+    for row_id in compiled.operations.iter().filter_map(|op| match op {
+        OverlayOp::AddTemporaryRow { row } => Some(row.id),
+        _ => None,
+    }) {
+        compiled.origin_additions.insert_constraint(
+            row_id,
+            EntityOrigin::SolveOverlay {
+                overlay: other.id,
+                role: GeneratedRole::CutoffRow,
+            },
+        );
+    }
+
+    let err = backend
+        .apply_overlay(&compiled)
+        .expect_err("a row attributed to another overlay must be rejected");
+    assert_eq!(err.category, ErrorCategory::InvalidInput);
+    assert_eq!(backend.current_compilation, Some(c_base));
+    assert_eq!(backend.compiled_normalized_view(), base_view);
+}
+
 /// F2: a rollback-only `RemoveTemporaryRow` in the apply stream is rejected at
 /// preflight.
 #[test]

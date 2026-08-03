@@ -2466,6 +2466,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn highs_rejects_overlay_origin_for_other_overlay() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let held = highs.current_compilation.expect("base compiled");
+        let cols_before = unsafe { Highs_getNumCol(highs.raw) };
+
+        // Provenance: every added row must be attributed to THIS overlay, not
+        // a different one. The overlay carries an objective lock so an
+        // `AddTemporaryRow` exists to tamper.
+        let obj = model.active_objective().expect("active objective");
+        let overlay = roml::SolveOverlay::new(
+            BTreeMap::from([(x, 2.0)]),
+            vec![],
+            vec![roml::ObjectiveLock {
+                objective: obj,
+                absolute_tolerance: 1e-6,
+                relative_tolerance: 0.0,
+            }],
+            vec![],
+        )
+        .expect("overlay id allocates");
+        let mut compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+        let other =
+            roml::SolveOverlay::new(BTreeMap::<roml::VarId, f64>::new(), vec![], vec![], vec![])
+                .expect("other overlay id allocates");
+        for row_id in compiled.operations.iter().filter_map(|op| match op {
+            OverlayOp::AddTemporaryRow { row } => Some(row.id),
+            _ => None,
+        }) {
+            compiled.origin_additions.insert_constraint(
+                row_id,
+                EntityOrigin::SolveOverlay {
+                    overlay: other.id,
+                    role: roml::advanced::GeneratedRole::CutoffRow,
+                },
+            );
+        }
+
+        let err = highs
+            .apply_overlay(&compiled)
+            .expect_err("a row attributed to another overlay must be rejected at preflight");
+        assert_eq!(err.category, ErrorCategory::InvalidInput);
+        assert_eq!(
+            unsafe { Highs_getNumCol(highs.raw) },
+            cols_before,
+            "a preflight-rejected overlay must not mutate the native model"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(held),
+            "a preflight-rejected overlay must not change the exact compiled identity"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::RequiresRebuild,
+            "a preflight rejection must mark the session RequiresRebuild"
+        );
+    }
+
     /// F3: a FORGED rollback receipt (mismatched `overlay_id`,
     /// `base_compilation`, or `applied_compilation`) is rollback UNCERTAINTY —
     /// the session returns `RequiresRebuild` (never a `Clean` rollback) AND
