@@ -1837,6 +1837,102 @@ fn rollback_uncertainty_marks_requires_rebuild_and_forces_rebuild() {
     );
 }
 
+/// F3: a FORGED rollback receipt (mismatched `overlay_id`, `base_compilation`,
+/// or `applied_compilation`) on the reference backend is rollback UNCERTAINTY
+/// — it returns `RequiresRebuild`, never a `Clean` rollback, and the applied
+/// overlay state is NOT silently reported as restored.
+#[test]
+fn reference_forged_receipt_returns_requires_rebuild() {
+    /// Apply a real overlay and roll back with a FORGED receipt, asserting the
+    /// outcome is `RequiresRebuild` (never a `Clean` rollback) and the applied
+    /// state is not reported as restored.
+    fn forge_case(name: &str, forge: impl Fn(&OverlayApplyReceipt) -> OverlayApplyReceipt) {
+        let (model, _compiler, x, _y, _obj) = overlay_fixture();
+        let (compiler, mut backend, _) = reference_backend_at_base(&model);
+        let overlay = trivial_overlay(x);
+        let compiled = compile_overlay(&model, &compiler, &overlay, None).unwrap();
+        let receipt = backend.apply_overlay(&compiled).unwrap();
+        let forged = forge(&receipt);
+        let outcome = backend
+            .rollback_overlay(&forged)
+            .expect("rollback of a forged receipt must be an outcome, not an error");
+        assert!(
+            matches!(outcome, OverlayRollbackOutcome::RequiresRebuild { .. }),
+            "forged {name}: a mismatched receipt must be RequiresRebuild, got {outcome:?}"
+        );
+        assert_eq!(
+            backend.current_compilation,
+            Some(compiled.compilation_id),
+            "forged {name}: the uncertain overlay state must NOT be reported as Clean-restored"
+        );
+    }
+
+    let ghost_overlay_id = SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![])
+        .unwrap()
+        .id;
+    forge_case("overlay_id", |r: &OverlayApplyReceipt| {
+        OverlayApplyReceipt {
+            overlay_id: ghost_overlay_id,
+            ..r.clone()
+        }
+    });
+    forge_case("base_compilation", |r: &OverlayApplyReceipt| {
+        OverlayApplyReceipt {
+            base_compilation: r.applied_compilation,
+            ..r.clone()
+        }
+    });
+    forge_case("applied_compilation", |r: &OverlayApplyReceipt| {
+        OverlayApplyReceipt {
+            applied_compilation: r.base_compilation,
+            ..r.clone()
+        }
+    });
+}
+
+/// F3: the FAÇADE DEFENSIVELY forces the next solve to rebuild on ANY
+/// `RequiresRebuild` rollback outcome — even when the backend did NOT mark
+/// itself (health stays `Ready`). A subsequent plain solve rebuilds and equals
+/// a fresh rebuild (no overlay leak).
+#[test]
+fn facade_forces_rebuild_on_requires_rebuild_without_backend_mark() {
+    let (mut model, _compiler, x, _y, _obj) = overlay_fixture();
+    let (backend, state) = OverlayTestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let _ = session.solve(&mut model).unwrap();
+    let rev = model.current_revision();
+    let rebuilds_before = state.borrow().rebuilds;
+
+    // The backend returns RequiresRebuild WITHOUT self-marking (health stays
+    // Ready) — proving the façade does not trust the backend to have marked.
+    state.borrow_mut().fail_rollback_unmarked = true;
+    let overlay = trivial_overlay(x);
+    let result = session.solve_with_overlay(&mut model, SolveOptions::default(), &overlay, None);
+    assert!(result.is_ok(), "the overlay solve result is still valid");
+    assert_eq!(model.current_revision(), rev);
+    state.borrow_mut().fail_rollback_unmarked = false;
+
+    assert_eq!(
+        state.borrow().health,
+        AdapterHealth::Ready,
+        "the backend never self-marked"
+    );
+    let clean = session
+        .solve(&mut model)
+        .expect("clean solve after an unmarked RequiresRebuild rollback");
+    assert!(
+        state.borrow().rebuilds > rebuilds_before,
+        "the façade must force a snapshot rebuild even when the backend did not mark itself"
+    );
+    assert_eq!(clean.metadata().overlay_id, None);
+    let (fresh_obj, _) = fresh_solve(&mut model.clone());
+    assert_eq!(
+        clean.objective_value(),
+        fresh_obj,
+        "a clean solve after an unmarked uncertain rollback must equal a fresh rebuild"
+    );
+}
+
 // ── 4. Failure injection matrix (SM-07.6) ────────────────────────────────────
 
 /// A deterministic fresh-session solve of `model` (the "fresh rebuild"
@@ -2140,6 +2236,11 @@ struct OverlayFaultState {
     /// state.
     fail_apply_mid: bool,
     fail_rollback: bool,
+    /// F3: return `OverlayRollbackOutcome::RequiresRebuild` WITHOUT marking the
+    /// session `RequiresRebuild` (health stays `Ready`) — proving the façade
+    /// DEFENSIVELY forces the next solve to rebuild instead of trusting the
+    /// backend to have self-marked.
+    fail_rollback_unmarked: bool,
     fail_verify: bool,
     report_wrong_compilation: Option<CompilationId>,
     current_compilation: Option<CompilationId>,
@@ -2156,6 +2257,7 @@ impl Default for OverlayFaultState {
             fail_apply: false,
             fail_apply_mid: false,
             fail_rollback: false,
+            fail_rollback_unmarked: false,
             fail_verify: false,
             report_wrong_compilation: None,
             current_compilation: None,
@@ -2561,6 +2663,13 @@ impl OverlaySession for OverlayTestBackend {
         receipt: &OverlayApplyReceipt,
     ) -> Result<OverlayRollbackOutcome, BackendError> {
         let mut s = self.state.borrow_mut();
+        if s.fail_rollback_unmarked {
+            // F3: return RequiresRebuild WITHOUT marking the session — the
+            // façade must defensively force the next rebuild anyway.
+            return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                reason: "injected unmarked rollback failure".into(),
+            });
+        }
         if s.fail_rollback {
             s.health = AdapterHealth::RequiresRebuild;
             s.current_compilation = None;

@@ -44,8 +44,8 @@ use crate::lifecycle::HighsSession;
 use crate::solution::{extract_solution, map_termination_status};
 use roml::advanced::{
     CompilationId, CompileError, CompiledConstraintId, CompiledEntityRegistry,
-    CompiledObjectivePolicy, CompiledOverlay, CompiledVariableId, OverlayApplyReceipt, OverlayOp,
-    OverlayRollbackOutcome, OverlaySession,
+    CompiledObjectivePolicy, CompiledOverlay, CompiledVariableId, OverlayApplyReceipt, OverlayId,
+    OverlayOp, OverlayRollbackOutcome, OverlaySession,
 };
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
@@ -611,6 +611,8 @@ impl CallbackSession for HighsSession {
 /// enabling the transactional rollback (SM-07.4) and the post-rollback clean
 /// verification.
 pub(crate) struct HighsOverlayState {
+    /// The originating overlay (F3: part of the full receipt tuple validation).
+    overlay_id: OverlayId,
     /// The exact base compiled state the overlay was applied on top of.
     base_compilation: CompilationId,
     /// The overlay-compounded compiled state.
@@ -698,6 +700,7 @@ impl OverlaySession for HighsSession {
         }
 
         let mut state = HighsOverlayState {
+            overlay_id: overlay.overlay_id,
             base_compilation: overlay.base_compilation,
             applied_compilation: overlay.compilation_id,
             prior_bounds: HashMap::new(),
@@ -851,17 +854,32 @@ impl OverlaySession for HighsSession {
         receipt: &OverlayApplyReceipt,
     ) -> Result<OverlayRollbackOutcome, BackendError> {
         let state = self.overlay_state.as_ref().ok_or_else(|| {
+            self.cursor.mark_rebuild();
             BackendError::new(
                 "no applied overlay to roll back; the receipt does not match this session",
                 ErrorCategory::Internal,
                 HealthEffect::RequiresRebuild,
             )
         })?;
-        if state.applied_compilation != receipt.applied_compilation {
+        // F3: validate the FULL receipt tuple (overlay_id, base_compilation,
+        // applied_compilation) against the recorded overlay state AND mark the
+        // session `RequiresRebuild` before returning — a forged receipt is
+        // rollback UNCERTAINTY and the uncertain state must never be reused.
+        if state.overlay_id != receipt.overlay_id
+            || state.base_compilation != receipt.base_compilation
+            || state.applied_compilation != receipt.applied_compilation
+        {
+            self.cursor.mark_rebuild();
             return Ok(OverlayRollbackOutcome::RequiresRebuild {
                 reason: format!(
-                    "receipt applied compilation {:?} does not match the session's applied overlay {:?}",
-                    receipt.applied_compilation, state.applied_compilation
+                    "receipt (overlay {:?}, base {:?}, applied {:?}) does not match the \
+                     session's applied overlay (overlay {:?}, base {:?}, applied {:?})",
+                    receipt.overlay_id,
+                    receipt.base_compilation,
+                    receipt.applied_compilation,
+                    state.overlay_id,
+                    state.base_compilation,
+                    state.applied_compilation,
                 ),
             });
         }
@@ -2445,6 +2463,102 @@ mod tests {
             highs.cursor.health,
             AdapterHealth::RequiresRebuild,
             "a preflight rejection must mark the session RequiresRebuild"
+        );
+    }
+
+    /// F3: a FORGED rollback receipt (mismatched `overlay_id`,
+    /// `base_compilation`, or `applied_compilation`) is rollback UNCERTAINTY —
+    /// the session returns `RequiresRebuild` (never a `Clean` rollback) AND
+    /// marks itself `RequiresRebuild` so the uncertain state is never reused.
+    #[test]
+    fn highs_forged_receipt_marks_requires_rebuild() {
+        use std::collections::BTreeMap;
+
+        /// Apply a real overlay and roll back with a FORGED receipt, asserting
+        /// the outcome is `RequiresRebuild` AND the session marks itself
+        /// `RequiresRebuild`.
+        fn forge_case(
+            model: &Model,
+            compiler: &CompilationSession,
+            base: &BackendSnapshot,
+            x: roml::VarId,
+            name: &str,
+            forge: impl Fn(&OverlayApplyReceipt) -> OverlayApplyReceipt,
+        ) {
+            let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+            highs
+                .synchronize(Synchronization::CompiledRebuild(base.clone()))
+                .expect("base rebuild must succeed");
+
+            let overlay =
+                roml::SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![], vec![], vec![])
+                    .expect("overlay id allocates");
+            let compiled = compile_overlay(model, compiler, &overlay, None)
+                .expect("overlay compiles against the exact base");
+            let receipt = highs.apply_overlay(&compiled).expect("apply must succeed");
+            let forged = forge(&receipt);
+            let outcome = highs
+                .rollback_overlay(&forged)
+                .expect("rollback of a forged receipt must be an outcome");
+            assert!(
+                matches!(outcome, OverlayRollbackOutcome::RequiresRebuild { .. }),
+                "forged {name}: a mismatched receipt must be RequiresRebuild, got {outcome:?}"
+            );
+            assert_eq!(
+                highs.cursor.health,
+                AdapterHealth::RequiresRebuild,
+                "forged {name}: the session must mark itself RequiresRebuild"
+            );
+        }
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+
+        let ghost_overlay_id = roml::SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![])
+            .unwrap()
+            .id;
+        forge_case(
+            &model,
+            &compiler,
+            &base,
+            x,
+            "overlay_id",
+            |r: &OverlayApplyReceipt| OverlayApplyReceipt {
+                overlay_id: ghost_overlay_id,
+                ..r.clone()
+            },
+        );
+        forge_case(
+            &model,
+            &compiler,
+            &base,
+            x,
+            "base_compilation",
+            |r: &OverlayApplyReceipt| OverlayApplyReceipt {
+                base_compilation: r.applied_compilation,
+                ..r.clone()
+            },
+        );
+        forge_case(
+            &model,
+            &compiler,
+            &base,
+            x,
+            "applied_compilation",
+            |r: &OverlayApplyReceipt| OverlayApplyReceipt {
+                applied_compilation: r.base_compilation,
+                ..r.clone()
+            },
         );
     }
 }
