@@ -25,7 +25,7 @@ M3 delivers:
 - canonical semantic constructs;
 - a compiler boundary between canonical model state and backend state;
 - typed backend capabilities and formulation reports;
-- model lineage and provenance;
+- model lineage, per-clone instance identity, exact compilation identity, and provenance;
 - persistent variable fixing by effective bound tightening;
 - partial primal assignments, solution locking, MIP starts, and variable hints with distinct semantics;
 - reversible solve overlays;
@@ -50,6 +50,7 @@ A ROML modeler should be able to answer all of these questions from public APIs 
 8. Which higher-priority objective values constrained later stages?
 9. Did a PWL formulation introduce binaries, and why?
 10. Can the backend be safely reused for the next solve?
+11. Does this result or report refer to the exact compiled state currently being inspected?
 
 ## Scope boundaries
 
@@ -58,6 +59,7 @@ A ROML modeler should be able to answer all of these questions from public APIs 
 - linear and mixed-integer canonical functions;
 - semantic construct storage and revision tracking;
 - solver-neutral backend IR;
+- exact state identity across lineages, divergent clones, revisions, and compilations;
 - portable exact MILP bridges;
 - selected normalized native backend primitives;
 - origin mapping and compilation reports;
@@ -92,6 +94,7 @@ M3 is not a feature dump. Every feature must have:
 - one or more explicit representations;
 - a capability/bridge decision;
 - origin mapping;
+- exact state identity where artifacts cross boundaries;
 - deterministic rebuild behavior;
 - focused semantic tests;
 - backend conformance evidence;
@@ -103,23 +106,23 @@ Features that cannot meet this bar remain deferred.
 
 ### Canonical model
 
-Owns identity, metadata, functions, sets, constructs, objective policies, declared domains, persistent fixings, parameters, revisions, and canonical deltas.
+Owns lineage/instance identity, metadata, functions, sets, constructs, objective policies, declared domains, persistent fixings, parameters, revisions, and canonical deltas.
 
 ### Compiler
 
-Owns capability negotiation, bridge selection, bound analysis, generated entities, origin maps, representation fingerprints, compiled snapshots/deltas, and reports.
+Owns exact compilation identity, capability negotiation, bridge selection, bound analysis, generated entities, origin maps, non-authoritative recipe fingerprints, compiled snapshots/deltas, and reports.
 
 ### Solve orchestration
 
-Owns canonical synchronization, solve overlays, starts, hints, objective staging, rollback, effective-plan reporting, and result projection.
+Owns canonical synchronization, solve overlays, starts, hints, objective staging, rollback, effective-plan reporting, exact compilation checks, and result projection.
 
 ### Backend
 
-Owns translation from backend IR into an official solver API, native feature application, version-specific capability declarations, native diagnostics, lifecycle, and result extraction.
+Owns translation from backend IR into an official solver API, native feature application, version-specific capability declarations, native diagnostics, lifecycle, and result extraction tagged with exact compilation identity.
 
 ### Analysis/reporting
 
-Owns normalized conflict semantics, mapping compiled findings to original entities, violation reporting, and human/structured output.
+Owns normalized conflict semantics, exact compiled-state validation, mapping compiled findings to original entities, violation reporting, and human/structured output.
 
 ## Acceptance criteria
 
@@ -127,20 +130,22 @@ Owns normalized conflict semantics, mapping compiled findings to original entiti
 2. Canonical snapshots contain semantic constructs rather than only their expanded rows.
 3. A compiler produces deterministic backend IR and complete origin maps.
 4. A backend session never receives mutable canonical model internals.
-5. Persistent fix/unfix restores declared bounds correctly and synchronizes incrementally where supported.
-6. Solution locks are temporary and cannot leak into subsequent solves.
-7. MIP starts and hints do not alter the feasible region.
-8. Unsupported starts/hints are not silently ignored.
-9. HiGHS IIS support is version-qualified and reports original ROML names and provenance.
-10. Soft constraints produce correct violation algebra, values, and objective penalties.
-11. Lexicographic native and portable execution agree on qualified test models.
-12. Indicators and other exact constructs never use unproven Big-M values.
-13. Convex PWL epigraphs and concave PWL hypographs avoid binaries.
-14. Exact nonconvex PWL graphs use a qualified native/SOS2/binary formulation.
-15. Every generated backend entity has an origin.
-16. Randomized compiled-delta execution remains equivalent to compiled rebuild.
-17. Public API, rustdoc, migration, package, and fresh-consumer checks pass.
-18. An independent review verifies that adding quadratic/nonlinear scalar functions would extend rather than replace the architecture.
+5. Shared lineage, distinct clone instance identity, and exact compilation identity are tested against divergent clones with equal revision numbers.
+6. Persistent fix/unfix restores declared bounds correctly and synchronizes incrementally where supported.
+7. Solution locks are temporary and cannot leak into subsequent solves.
+8. MIP starts and hints do not alter the feasible region.
+9. Unsupported starts/hints are not silently ignored.
+10. HiGHS IIS support is version-qualified and reports original ROML names and provenance.
+11. Soft constraints produce correct violation algebra, values, and objective penalties.
+12. Lexicographic native and portable execution agree on qualified test models.
+13. Indicators and other exact constructs never use unproven Big-M values.
+14. Convex PWL epigraphs and concave PWL hypographs avoid binaries.
+15. Exact nonconvex PWL graphs use a qualified native/SOS2/binary formulation.
+16. Every generated backend entity has an origin.
+17. Randomized compiled-delta execution remains equivalent to compiled rebuild.
+18. Stale results, overlays, and conflict maps are rejected by exact `CompilationId`, not only fingerprints.
+19. Public API, rustdoc, migration, package, and fresh-consumer checks pass.
+20. An independent review verifies that adding quadratic/nonlinear scalar functions would extend rather than replace the architecture.
 
 ## Success metrics
 
@@ -148,6 +153,7 @@ Owns normalized conflict semantics, mapping compiled findings to original entiti
 - Zero generated entities without origin records.
 - Zero Big-M bridges without finite proof or explicit user value.
 - Zero overlay-leak failures in injected-failure tests.
+- Zero stale-state mappings accepted across distinct compilation IDs.
 - Exact semantic agreement between portable and native formulations on the qualification corpus.
 - Existing primitive parameter-update benchmarks regress by no more than the threshold defined in P34.
 - New users can build, solve, lock, soften, diagnose, and lexicographically optimize from compiled public examples alone.
