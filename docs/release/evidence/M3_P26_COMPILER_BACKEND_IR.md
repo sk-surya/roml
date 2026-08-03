@@ -424,3 +424,15 @@ Contract-level findings verified against the code and fixed with TDD on the bran
 6. **F6 — traceability.** TRACEABILITY corrected to clause-level: SM-03.1–03.8 closed, SM-03.9 partial (results/metadata carry exact `CompilationId`; overlay artifacts P27, analysis P29); SM-04.1/04.3/04.4 closed, SM-04.2 partial (Native/Bridge representation; bridge features P32), SM-04.5 deferred to P28.
 
 **Final public-API diff vs P25 final capture: +1005 / −14** distinct pub items (pre-release additive: `SolveResult.compilation_id`, `SolveMetadata.compilation_id`, `BackendMetadata::typed_capabilities`, `SupportLevel::Bridge`, `SolveError::CompilationMismatch`, `CompileError::InvalidReference`, `CompiledEntityRegistry`, validate methods). Re-verification: all findings RESOLVED; `cargo test -p roml --all-targets` **659 pass**, `roml-highs` **107 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged.
+
+### Fourth review round — blocking independent review (PR #28, preflight boundary)
+
+Verified and fixed with TDD on the branch:
+
+1. **F1 — delta validation not operation-order correct** (`9515698`): `BackendDeltaBatch::validate` now simulates the batch against a working registry — `Remove*` deletes (a later `Set*` on a removed id fails), `Add*` rejects duplicates (`CompileError::DuplicateEntity`), every `Add*` requires an origin in `origin_additions` (`MissingOrigin`). Tests: remove-then-set rejected, duplicate add rejected, add-without-origin rejected, valid ordered batch accepted.
+2. **F2 — snapshot validation lacks uniqueness/density/origin checks** (`2699828`): `BackendSnapshot::validate` enforces unique ids, dense 0..n ranges (`NonDenseCompilation`), and origin completeness via a shared `validate_id_family` helper, before reference checks. Four tests.
+3. **F3 — unsupported policies rejected after mutation** (`11710e9`): weighted/lexicographic rejection hoisted before `Highs_clear` in rebuild and before any cost clearing in the delta path; rejected rebuild/delta leaves the native model untouched. Two native-state-probe tests (objective cost preserved).
+4. **F4 — no-sync path without a compiled base** (`b035a12`): the `backend_rev == committed` branch now forces a snapshot rebuild when `compiler.current_compilation()` is `None` — a fresh revision-zero model's first solve compiles; the second no-change solve keeps no-sync. Two façade tests.
+5. **F5 — synthetic solutions fabricate CompilationId** (`a7dd0d6`): `SolveMetadata.compilation_id`/`SolveResult.compilation_id` are `Option<CompilationId>` (pre-release field-type change); `Default` → `None`; `normalize_result` sets `Some(actual)`; the façade treats a `None` from a real backend as a mismatch; synthetic `Solution::new`/`from_values` carry `None`. Tests: default has None, synthetic has None, real solves carry Some, mismatch rejection still enforced.
+
+Re-verification: all findings RESOLVED; `cargo test -p roml --all-targets` **669 pass**, `roml-highs` **111 pass**, clippy `-D warnings` clean. M2 guarded surface unchanged.
