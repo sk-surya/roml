@@ -39,7 +39,7 @@ use crate::compiler::{apply_backend_delta, rebuild_from_backend_snapshot};
 use crate::error::{check_highs_status, from_native_status};
 use crate::lifecycle::HighsSession;
 use crate::solution::{extract_solution, map_termination_status};
-use roml::advanced::{CompiledConstraintId, CompiledVariableId};
+use roml::advanced::{CompileError, CompiledConstraintId, CompiledVariableId};
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
 };
@@ -100,6 +100,10 @@ impl BackendSession for HighsSession {
                 match result {
                     Ok(()) => {
                         self.cursor.mark_ready(revision);
+                        // D28/SM-03.9 (WR-1): record the exact compiled id of
+                        // the established base so compiled deltas can be
+                        // validated against it.
+                        self.current_compilation = Some(snapshot.compilation_id);
                         // T-11-18: Invalidate stale solution after model mutation.
                         self.current_solution = None;
                         info!("Rebuild complete, cursor at revision {}", revision);
@@ -121,6 +125,40 @@ impl BackendSession for HighsSession {
                     batch.to_revision,
                     batch.operations.len()
                 );
+
+                // D28/SM-03.9 (WR-1): the exact `CompilationId` is the ONLY
+                // stale-state authority. Reject a batch whose `from_compilation`
+                // does not match the session's current compiled state — never
+                // apply against `from_revision` alone (two divergent clones at
+                // equal `ModelRevision` have distinct `CompilationId`s). This
+                // check runs BEFORE any operation is applied, so a rejected
+                // batch never mutates the native model.
+                let actual = match self.current_compilation {
+                    Some(id) => id,
+                    None => {
+                        let e = BackendError::new(
+                            "compiled delta has no compiled base in the HiGHS session; \
+                             establish a compiled base first (D28)",
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        );
+                        self.cursor.mark_rebuild();
+                        return Err(e);
+                    }
+                };
+                if actual != batch.from_compilation {
+                    let compile_err = CompileError::StaleCompilation {
+                        expected: batch.from_compilation,
+                        actual,
+                    };
+                    let e = BackendError::new(
+                        format!("{compile_err}"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::Recoverable,
+                    );
+                    self.cursor.mark_rebuild();
+                    return Err(e);
+                }
 
                 // Reject a batch whose base revision doesn't match the cursor
                 // BEFORE applying any operation, so a failed batch never
@@ -158,6 +196,9 @@ impl BackendSession for HighsSession {
                 match result {
                     Ok(()) => {
                         self.cursor.mark_ready(batch.to_revision);
+                        // The exact compiled id of the target state becomes the
+                        // session's current compiled state (D28).
+                        self.current_compilation = Some(batch.to_compilation);
                         // T-11-18: Invalidate stale solution after model mutation.
                         self.current_solution = None;
                         info!(
@@ -757,7 +798,106 @@ fn set_option(raw: *mut c_void, key: &str, value: &str) -> Result<(), BackendErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roml::advanced::{BackendSnapshot, CompilationPolicy, CompilationSession};
     use roml::compiler::capability::SupportLevel;
+    use roml::delta::{DeltaBatch, ModelOp};
+    use roml::model::{continuous, Bounds, VarType};
+    use roml::snapshot::ModelSnapshot;
+    use roml::{ConstraintExprExt, Model};
+
+    /// A full typed capability set for the compiled-path tests (SM-04.4: an
+    /// unqualified feature is rejected, never silently ignored).
+    fn full_caps() -> BackendCapabilitySet {
+        let mut set = BackendCapabilitySet::new();
+        for feature in [
+            BackendFeature::Lp,
+            BackendFeature::Mip,
+            BackendFeature::IncrementalBounds,
+            BackendFeature::IncrementalRows,
+            BackendFeature::IncrementalCoefficients,
+        ] {
+            set.set(
+                feature,
+                FeatureSupport {
+                    level: SupportLevel::Native,
+                    limitations: Default::default(),
+                },
+            );
+        }
+        set
+    }
+
+    /// WR-1 (D28/SM-03.9): the exact `CompilationId` is the only stale-state
+    /// authority. A `CompiledDeltaBatch` whose `from_compilation` does not
+    /// match the session's current compiled state is rejected with a typed
+    /// error BEFORE any op is applied — never applied against `from_revision`
+    /// alone.
+    #[test]
+    fn compiled_delta_rejects_stale_from_compilation() {
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+
+        // A committed model at revision r1.
+        let mut model = Model::new();
+        let x = model.add_variable(continuous()).unwrap();
+        model.add_constraint((x).le(10.0)).unwrap();
+        model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+        let r1 = snapshot.revision;
+
+        // Establish the model snapshot as the session's compiled base.
+        let mut session_a = CompilationSession::new();
+        let base: BackendSnapshot = session_a
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+
+        // A SECOND, unrelated compilation (an empty base at the same revision)
+        // compiles a delta whose `from_compilation` does not match the base the
+        // session holds. `from_revision` matches the cursor, so only the exact
+        // `CompilationId` check can catch the stale state.
+        let mut session_b = CompilationSession::new();
+        let empty: BackendSnapshot = session_b
+            .compile_snapshot(model.instance(), &ModelSnapshot::empty(r1), &policy, &caps)
+            .expect("empty snapshot must compile");
+        let r2 = r1.next().unwrap();
+        let batch = DeltaBatch::new(
+            r1,
+            r2,
+            vec![ModelOp::AddVariable {
+                var: roml::id::VarId::new(99, roml::id::Generation::new()),
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            }],
+        )
+        .unwrap();
+        let delta = session_b
+            .compile_delta(&batch, empty.compilation_id, &policy, &caps)
+            .expect("delta must compile against the other base");
+        assert_ne!(
+            delta.from_compilation, base.compilation_id,
+            "the delta must be compiled against a DIFFERENT compiled base"
+        );
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => panic!("stale from_compilation must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "a stale compiled delta is invalid input"
+        );
+        assert!(
+            err.message.contains("compilation"),
+            "the error must name the stale compilation, got: {}",
+            err.message
+        );
+    }
 
     #[test]
     fn highs_capability_set_declares_m2_native_and_m3_unsupported() {
