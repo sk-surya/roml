@@ -82,6 +82,22 @@ pub use crate::model::changelog::Change;
 /// fixing record here alongside the delta/change surface.
 pub use crate::model::variable::{FixingProvenance, SemiDomain, VariableDomain, VariableFixing};
 
+/// Primal assignments and solution locks (P27 Task 9, SM-06). The neutral
+/// partial value map and the solve-scoped lock types are canonical model
+/// surface (design §11); backend authors consume them through the overlay
+/// compiler below.
+pub use crate::assignment::{
+    AssignmentError, ContinuousLock, LockSelector, PrimalAssignment, SolutionLock,
+};
+
+/// Solve overlay contract and compiler (P27 Task 9, issue #26 item 1). The
+/// overlay packet shapes are canonical solve surface; the compiled overlay
+/// and its operations are the backend-facing form Task 10 executes.
+pub use crate::solver::overlay::{
+    compile_overlay, CompiledOverlay, CutoffDirection, ObjectiveCutoff, ObjectiveLock,
+    OverlayError, OverlayOp, SolveOverlay,
+};
+
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
 

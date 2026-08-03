@@ -135,6 +135,38 @@ impl CompilationSession {
         self.current.as_ref().map(|c| c.compilation_id)
     }
 
+    /// The model instance the compiled base belongs to, if any (P27 Task 9
+    /// overlay compiler: a stale/cross-model base is rejected before any
+    /// overlay op).
+    pub(crate) fn source_instance(&self) -> Option<ModelInstanceId> {
+        self.source_instance
+    }
+
+    /// Resolve a user variable to its compiled variable id in the current
+    /// compiled base (P27 Task 9 overlay compiler; additive, no behavior
+    /// change).
+    pub(crate) fn compiled_variable_id(&self, v: VarId) -> Option<CompiledVariableId> {
+        self.current
+            .as_ref()
+            .and_then(|c| c.variable_ids.get(&v).copied())
+    }
+
+    /// Resolve a user objective to its compiled objective id in the current
+    /// compiled base (P27 Task 9 overlay compiler; additive, no behavior
+    /// change).
+    pub(crate) fn compiled_objective_id(&self, o: ObjId) -> Option<CompiledObjectiveId> {
+        self.current
+            .as_ref()
+            .and_then(|c| c.objective_ids.get(&o).copied())
+    }
+
+    /// The next dense compiled row index in the current compiled base (the
+    /// starting point for overlay temporary-row ids; additive, no behavior
+    /// change).
+    pub(crate) fn next_row_index(&self) -> Option<u32> {
+        self.current.as_ref().map(|c| c.next_row_index)
+    }
+
     /// The user variable for a compiled variable id, if known.
     pub fn user_variable(&self, compiled: CompiledVariableId) -> Option<VarId> {
         self.current

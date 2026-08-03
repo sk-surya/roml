@@ -33,8 +33,8 @@ static OVERLAY_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl OverlayId {
     /// Allocate a fresh opaque overlay id. The first issued id is 1; zero is
     /// reserved. Returns [`IdentityOverflow`] on counter exhaustion instead of
-    /// wrapping. Unused in P26 (overlay lifecycle lands in P27).
-    #[allow(dead_code)]
+    /// wrapping. Used by [`SolveOverlay::new`](crate::solver::overlay::SolveOverlay::new)
+    /// (P27) and referenced by every overlay-generated entity and receipt.
     pub(crate) fn allocate() -> Result<Self, IdentityOverflow> {
         match OVERLAY_ID_COUNTER.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pre| {
             if pre == u64::MAX {
@@ -53,12 +53,17 @@ impl OverlayId {
 /// (design §5).
 ///
 /// An implementation-detail marker refined with the bridge tasks (P32/P33)
-/// and the overlay tasks (P27). The enum is `#[non_exhaustive]` and empty in
-/// P26: no construct/overlay generates entities yet, so no role value can be
-/// constructed.
+/// and the overlay tasks (P27). P27 adds the solve-overlay row roles; the enum
+/// stays `#[non_exhaustive]` so bridge roles can extend it without breaking
+/// match arms.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GeneratedRole {}
+pub enum GeneratedRole {
+    /// A temporary row added for an [`ObjectiveLock`](crate::solver::overlay::ObjectiveLock).
+    ObjectiveLockRow,
+    /// A temporary row added for an [`ObjectiveCutoff`](crate::solver::overlay::ObjectiveCutoff).
+    CutoffRow,
+}
 
 /// The origin of a generated compiled entity (design §4.4, §5; D5).
 ///
