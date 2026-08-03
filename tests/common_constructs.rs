@@ -20,11 +20,15 @@ use roml::compiler::session::CompilationSession;
 use roml::compiler::CompileError;
 use roml::construct::{
     AbsoluteValueVariant, BooleanKind, CardinalityKind, ConstructKind, FormulationPreference,
-    IndicatorDirection, MinMaxRelation, MinMaxSense, ProductOperand,
+    IndicatorConstraint, IndicatorDirection, MinMaxRelation, MinMaxSense, ProductOperand,
+    ReificationConstraint,
 };
-use roml::id::VarId;
+use roml::expr::LinExpr;
+use roml::function::{ScalarFunction, ScalarSet};
+use roml::id::{Generation, ParamId, VarId};
 use roml::model::ModelError;
 use roml::prelude::*;
+use roml::value_expr::ValueExpr;
 use roml::ConstraintBounds;
 use roml::ModelRevision;
 
@@ -604,6 +608,48 @@ fn builders_store_exact_payloads_and_preference() {
         }
         other => panic!("expected Cardinality payload, got {other:?}"),
     }
+}
+
+#[test]
+fn indicator_parameter_dependencies_include_set_threshold_parameters() {
+    // WR-03: the set's `ValueExpr` threshold can reference a parameter, which
+    // the indicator bridge evaluates at compile time (`one_sided_implications`).
+    // The payload's parameter dependencies must attribute the threshold
+    // parameter to the construct (F1), not only the function's coefficients.
+    let z = VarId::new(0, Generation::new());
+    let x = VarId::new(1, Generation::new());
+    let p = ParamId::new(7, Generation::new());
+    let payload = IndicatorConstraint {
+        activator: z,
+        direction: IndicatorDirection::WhenOne,
+        function: ScalarFunction::Linear(LinExpr::new().term(1.0, x)),
+        set: ScalarSet::LessEqual(ValueExpr::param(p)),
+    };
+    let deps = payload.parameter_dependencies();
+    assert!(
+        deps.contains(&p),
+        "set-threshold parameter must be an indicator dependency, got {deps:?}"
+    );
+}
+
+#[test]
+fn reification_parameter_dependencies_include_set_threshold_parameters() {
+    // WR-03 mirror for the reification payload.
+    let b = VarId::new(0, Generation::new());
+    let x = VarId::new(1, Generation::new());
+    let p = ParamId::new(9, Generation::new());
+    let payload = ReificationConstraint {
+        activator: b,
+        function: ScalarFunction::Linear(LinExpr::new().term(1.0, x)),
+        set: ScalarSet::GreaterEqual(ValueExpr::param(p)),
+        separation_tolerance: Some(0.1),
+        proven_integrality: false,
+    };
+    let deps = payload.parameter_dependencies();
+    assert!(
+        deps.contains(&p),
+        "set-threshold parameter must be a reification dependency, got {deps:?}"
+    );
 }
 
 #[test]
