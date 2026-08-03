@@ -113,6 +113,22 @@ impl RecipeFingerprint {
 
         Self(digest(&enc.buf))
     }
+
+    /// Compute a deterministic fingerprint over a delta batch's operations.
+    ///
+    /// The compiled delta carries no full target state (only the operations
+    /// that transform the from-state into it), so the batch fingerprint is a
+    /// deterministic digest of the ordered operations. It is evidence/cache
+    /// support only and is **never** stale-state authority (D28, SM-03.9).
+    pub(crate) fn for_operations(operations: &[BackendOp]) -> Self {
+        let mut enc = RecipeEncoder::new();
+        enc.push_u8(2); // delta-recipe format version
+        enc.push_u64(operations.len() as u64);
+        for op in operations {
+            op.encode(&mut enc);
+        }
+        Self(digest(&enc.buf))
+    }
 }
 
 /// A dense compiled variable id, distinct from the user [`VarId`](crate::VarId)
@@ -275,6 +291,15 @@ pub struct BackendSnapshot {
 /// pairs. The compiler allocates a fresh `CompilationId` per target state;
 /// divergent clones with equal `ModelRevision` never share a `CompilationId`
 /// (D28).
+///
+/// # Origin completeness (SM-02.5 / truth 5)
+///
+/// A delta adds generated compiled entities (e.g. `AddVariable`); the
+/// [`origin_additions`](Self::origin_additions) map records the
+/// `EntityOrigin` of every entity ADDED by this batch, so the target
+/// compiled state remains origin-complete and the backend can map compiled
+/// solution values back to user entities. Removals and updates reference
+/// compiled ids already present in the from-state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackendDeltaBatch {
     /// The exact compiled state this batch applies on top of.
@@ -287,7 +312,9 @@ pub struct BackendDeltaBatch {
     pub to_revision: ModelRevision,
     /// Ordered backend operations.
     pub operations: Vec<BackendOp>,
-    /// Deterministic recipe fingerprint of the target state (evidence only).
+    /// Origins of the entities added by this batch (SM-02.5).
+    pub origin_additions: OriginMap,
+    /// Deterministic fingerprint over the batch's operations (evidence only).
     pub recipe_fingerprint: RecipeFingerprint,
 }
 
@@ -658,6 +685,100 @@ impl CompiledObjectivePolicy {
                     enc.push_f64(item.absolute_tolerance);
                     enc.push_f64(item.relative_tolerance);
                 }
+            }
+        }
+    }
+}
+
+impl BackendOp {
+    /// Deterministic encoding of one backend op for the delta fingerprint.
+    fn encode(&self, enc: &mut RecipeEncoder) {
+        match self {
+            BackendOp::AddVariable(v) => {
+                enc.push_u8(0);
+                v.encode(enc);
+            }
+            BackendOp::RemoveVariable(id) => {
+                enc.push_u8(1);
+                enc.push_u32(id.0);
+            }
+            BackendOp::SetVariableBounds { variable, bounds } => {
+                enc.push_u8(2);
+                enc.push_u32(variable.0);
+                enc.push_f64(bounds.lower);
+                enc.push_f64(bounds.upper);
+            }
+            BackendOp::AddLinearRow(r) => {
+                enc.push_u8(3);
+                r.encode(enc);
+            }
+            BackendOp::RemoveLinearRow(id) => {
+                enc.push_u8(4);
+                enc.push_u32(id.0);
+            }
+            BackendOp::SetLinearRowBounds { constraint, bounds } => {
+                enc.push_u8(5);
+                enc.push_u32(constraint.0);
+                enc.push_f64(bounds.lower);
+                enc.push_f64(bounds.upper);
+            }
+            BackendOp::SetLinearCoefficient {
+                constraint,
+                variable,
+                value,
+            } => {
+                enc.push_u8(6);
+                enc.push_u32(constraint.0);
+                enc.push_u32(variable.0);
+                enc.push_f64(*value);
+            }
+            BackendOp::RemoveLinearCoefficient {
+                constraint,
+                variable,
+            } => {
+                enc.push_u8(7);
+                enc.push_u32(constraint.0);
+                enc.push_u32(variable.0);
+            }
+            BackendOp::AddObjective(o) => {
+                enc.push_u8(8);
+                o.encode(enc);
+            }
+            BackendOp::RemoveObjective(id) => {
+                enc.push_u8(9);
+                enc.push_u32(id.0);
+            }
+            BackendOp::SetObjectiveCoefficient {
+                objective,
+                variable,
+                value,
+            } => {
+                enc.push_u8(10);
+                enc.push_u32(objective.0);
+                enc.push_u32(variable.0);
+                enc.push_f64(*value);
+            }
+            BackendOp::RemoveObjectiveCoefficient {
+                objective,
+                variable,
+            } => {
+                enc.push_u8(11);
+                enc.push_u32(objective.0);
+                enc.push_u32(variable.0);
+            }
+            BackendOp::SetObjectiveConstant { objective, value } => {
+                enc.push_u8(12);
+                enc.push_u32(objective.0);
+                enc.push_f64(*value);
+            }
+            BackendOp::SetObjectiveSense { objective, sense } => {
+                enc.push_u8(13);
+                enc.push_u32(objective.0);
+                enc.push_u8(sense_tag(*sense));
+            }
+            BackendOp::SetObjectivePolicy(policy) => {
+                enc.push_u8(14);
+                policy.encode(enc);
             }
         }
     }

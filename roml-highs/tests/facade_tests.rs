@@ -20,6 +20,10 @@
 
 use std::time::Duration;
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, BackendSnapshot, CompilationPolicy, CompilationSession,
+    FeatureSupport, SupportLevel,
+};
 use roml::model::{Bounds, Model};
 use roml::prelude::*;
 use roml::solver::session::{BackendSession, SessionHealth, Synchronization};
@@ -337,7 +341,34 @@ fn rejected_unsupported_delta_marks_session_rebuild_not_terminal(
     let r1 = model.commit()?;
 
     let mut session = HighsSession::try_new()?;
-    session.synchronize(Synchronization::Rebuild(model.take_snapshot()?))?;
+    // Compile the canonical snapshot into backend IR for the compiled session
+    // (P26 Task 7); the session no longer accepts a canonical `ModelSnapshot`.
+    let mut capabilities = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        capabilities.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    let mut compiler = CompilationSession::new();
+    let compiled: BackendSnapshot = compiler
+        .compile_snapshot(
+            model.instance(),
+            &model.take_snapshot()?,
+            &CompilationPolicy::Auto,
+            &capabilities,
+        )
+        .expect("snapshot must compile");
+    session.synchronize(Synchronization::CompiledRebuild(compiled))?;
     assert_eq!(session.health(), AdapterHealth::Ready);
 
     // Advance the model with an unsupported operation (semi-continuous

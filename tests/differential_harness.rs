@@ -38,6 +38,10 @@
 //!    not possible. Verifies the delta batch is preserved in the journal,
 //!    the full state after rebuild includes both changes, and no delta is lost.
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, CompilationSession, FeatureSupport, SupportLevel,
+};
+use roml::compiler::capability::CompilationPolicy;
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, ParamId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -47,6 +51,7 @@ use roml::snapshot::{take_snapshot, ModelSnapshot};
 use roml::solver::reference::{NormalizedView, ReferenceBackend};
 use roml::sync::{AdapterCursor, ApplyOutcome, SyncCoordinator};
 use roml::value_expr::ValueExpr;
+use roml::Model;
 use std::collections::HashMap;
 
 // ── ID helpers ───────────────────────────────────────────────────────────────
@@ -1174,8 +1179,13 @@ fn build_snapshot_from_view(rev: ModelRevision, view: &NormalizedView) -> ModelS
         constraints.insert(*id, (*bounds, *active));
     }
 
-    // Extract objective constants from the view's objective_cells
+    // Extract objective constants from the view's authoritative
+    // per-objective constant map (falling back to the first cell's constant
+    // for backends/views that predate the `objective_constants` field).
     let mut obj_constants: HashMap<ObjId, f64> = HashMap::new();
+    for (oid, constant) in &view.objective_constants {
+        obj_constants.insert(*oid, *constant);
+    }
     for (ckey, _val, constant) in &view.objective_cells {
         if let CoefficientTarget::Objective(oid) = ckey.0 {
             obj_constants.entry(oid).or_insert(*constant);
@@ -2041,5 +2051,333 @@ fn dx_semicontinuous_partial_apply() {
         backend.normalized_view(),
         direct_backend.normalized_view(),
         "rebuild path must be deterministic regardless of prior state"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 7: Fixed-seed compiled-delta vs compiled-rebuild equality (P26 Task 7)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The compiled commuting square on backend IR (SM-03.7, must-have truth 2):
+//     compiled_rebuild(project(snapshot rN))
+//         == apply(compiled_rebuild(project(snapshot r0)), compiled_deltas r0→rN)
+//
+// Random PRIMITIVE LINEAR op sequences (additive/update only — the identity
+// compiler's incremental surface) are generated with a fixed seed, split into
+// batches, compiled to `BackendDeltaBatch`es via a `CompilationSession`, and
+// applied to a `ReferenceBackend` compiled state. The result is compared
+// against one compiled rebuild of the final canonical state. Deletions are
+// excluded because dense compiled ids are stable across the delta path while a
+// rebuild renumbers survivors; the removal surface is exercised by the
+// compiler's op-mapping tests.
+
+/// Generate a random primitive-linear op that the identity compiler can lower
+/// incrementally (no entity removals, no activity/type/parameter/construct
+/// ops). Entity additions use incrementing indices so the dense compiled ids
+/// allocated in delta order align with the sorted snapshot order.
+#[allow(clippy::too_many_arguments)]
+fn gen_compilable_op(
+    rng: &mut impl rand::Rng,
+    next_var: &mut u32,
+    next_con: &mut u32,
+    next_obj: &mut u32,
+    live_vars: &mut Vec<VarId>,
+    live_cons: &mut Vec<ConId>,
+    live_objs: &mut Vec<ObjId>,
+) -> ModelOp {
+    let has_vars = !live_vars.is_empty();
+    let has_cons = !live_cons.is_empty();
+    let has_objs = !live_objs.is_empty();
+
+    // Weight toward adding when the pool is small.
+    let n_total = live_vars.len() + live_cons.len() + live_objs.len();
+    let add_weight = if n_total < 6 { 55u32 } else { 25u32 };
+    let roll: u32 = rng.random_range(0..100);
+
+    if roll < add_weight {
+        let kind: u32 = rng.random_range(0..3);
+        match kind {
+            0 => {
+                let v = var_id(*next_var);
+                *next_var += 1;
+                live_vars.push(v);
+                let lb = rng.random_range(0.0..10.0);
+                let ub = rng.random_range(lb..=lb + 50.0);
+                ModelOp::AddVariable {
+                    var: v,
+                    bounds: Bounds::new(lb, ub),
+                    var_type: VarType::Continuous,
+                }
+            }
+            1 => {
+                let c = con_id(*next_con);
+                *next_con += 1;
+                live_cons.push(c);
+                ModelOp::AddConstraint {
+                    con: c,
+                    bounds: ConstraintBounds::le(rng.random_range(10.0..200.0)),
+                }
+            }
+            _ => {
+                let o = obj_id(*next_obj);
+                *next_obj += 1;
+                live_objs.push(o);
+                ModelOp::AddObjective {
+                    obj: o,
+                    sense: if rng.random_bool(0.5) {
+                        Sense::Minimize
+                    } else {
+                        Sense::Maximize
+                    },
+                }
+            }
+        }
+    } else {
+        // Mutate an existing entity.
+        let mut choices: Vec<u32> = Vec::new();
+        if has_vars {
+            choices.push(0); // SetVariableBounds
+        }
+        if has_cons {
+            choices.push(1); // SetConstraintBounds
+        }
+        if has_vars && has_cons {
+            choices.push(2); // SetCell
+            choices.push(3); // RemoveCell
+        }
+        if has_objs {
+            choices.push(4); // SetActiveObjective
+            if has_vars {
+                choices.push(5); // SetObjectiveCell
+            }
+            choices.push(6); // SetObjectiveSense
+            choices.push(7); // SetObjectiveConstant
+        }
+        if choices.is_empty() {
+            // Fallback: add a variable.
+            let v = var_id(*next_var);
+            *next_var += 1;
+            live_vars.push(v);
+            return ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            };
+        }
+        let pick = choices[rng.random_range(0..choices.len())];
+        match pick {
+            0 => {
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                let lb = rng.random_range(0.0..10.0);
+                let ub = rng.random_range(lb..=lb + 50.0);
+                ModelOp::SetVariableBounds {
+                    var: v,
+                    bounds: Bounds::new(lb, ub),
+                }
+            }
+            1 => {
+                let c = live_cons[rng.random_range(0..live_cons.len())];
+                ModelOp::SetConstraintBounds {
+                    con: c,
+                    bounds: ConstraintBounds::le(rng.random_range(10.0..200.0)),
+                }
+            }
+            2 => {
+                let c = live_cons[rng.random_range(0..live_cons.len())];
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                let val = rng.random_range(-20.0..20.0);
+                ModelOp::SetCell {
+                    cell_key: (CoefficientTarget::Constraint(c), v),
+                    value_expr: ValueExpr::constant(val),
+                    evaluated_value: val,
+                }
+            }
+            3 => {
+                let c = live_cons[rng.random_range(0..live_cons.len())];
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                ModelOp::RemoveCell {
+                    cell_key: (CoefficientTarget::Constraint(c), v),
+                }
+            }
+            4 => {
+                let obj_pick: Option<ObjId> = if rng.random_bool(0.7) {
+                    Some(live_objs[rng.random_range(0..live_objs.len())])
+                } else {
+                    None
+                };
+                ModelOp::SetActiveObjective { obj: obj_pick }
+            }
+            5 => {
+                let o = live_objs[rng.random_range(0..live_objs.len())];
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                let val = rng.random_range(-20.0..20.0);
+                let constant = rng.random_range(-50.0..50.0);
+                ModelOp::SetObjectiveCell {
+                    cell_key: (CoefficientTarget::Objective(o), v),
+                    value_expr: ValueExpr::constant(val),
+                    evaluated_value: val,
+                    constant,
+                }
+            }
+            6 => {
+                let o = live_objs[rng.random_range(0..live_objs.len())];
+                ModelOp::SetObjectiveSense {
+                    obj: o,
+                    sense: if rng.random_bool(0.5) {
+                        Sense::Minimize
+                    } else {
+                        Sense::Maximize
+                    },
+                }
+            }
+            _ => {
+                let o = live_objs[rng.random_range(0..live_objs.len())];
+                ModelOp::SetObjectiveConstant {
+                    obj: o,
+                    constant: rng.random_range(-50.0..50.0),
+                }
+            }
+        }
+    }
+}
+
+/// A full-support capability set for the compiled path.
+fn compiled_test_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
+#[test]
+fn dx_fixed_seed_compiled_delta_equals_compiled_rebuild() {
+    use rand::SeedableRng;
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(4242);
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+
+    // ── Generate random primitive-linear batches with a fixed seed ────────
+    let r0 = ModelRevision::ZERO;
+    let num_batches = 4;
+    let ops_per_batch = 20;
+
+    let mut next_var: u32 = 0;
+    let mut next_con: u32 = 0;
+    let mut next_obj: u32 = 0;
+    let mut live_vars: Vec<VarId> = Vec::new();
+    let mut live_cons: Vec<ConId> = Vec::new();
+    let mut live_objs: Vec<ObjId> = Vec::new();
+
+    let mut batches: Vec<DeltaBatch> = Vec::new();
+    let mut current_rev = r0;
+
+    for _batch_idx in 0..num_batches {
+        let from = current_rev;
+        let to = current_rev.next().unwrap();
+        let mut ops = Vec::new();
+        for _ in 0..ops_per_batch {
+            ops.push(gen_compilable_op(
+                &mut rng,
+                &mut next_var,
+                &mut next_con,
+                &mut next_obj,
+                &mut live_vars,
+                &mut live_cons,
+                &mut live_objs,
+            ));
+        }
+        if let Some(batch) = DeltaBatch::new(from, to, ops) {
+            batches.push(batch);
+            current_rev = to;
+        }
+    }
+
+    // ── Track canonical state to build the authoritative final snapshot ────
+    let mut tracker = fresh();
+    let mut cursor = AdapterCursor::new();
+    rebuild_ok(&mut tracker, &mut cursor, &ModelSnapshot::empty(r0));
+    for batch in &batches {
+        apply_ok(&mut tracker, &mut cursor, batch);
+    }
+    let final_view = tracker.normalized_view();
+    let final_snapshot = build_snapshot_from_view(current_rev, &final_view);
+    let empty_snapshot = ModelSnapshot::empty(r0);
+
+    // ── Path A: one compiled rebuild of the final state ────────────────────
+    let mut session_a = CompilationSession::new();
+    let compiled_final = session_a
+        .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
+        .expect("final snapshot must compile");
+    let mut backend_a = fresh();
+    backend_a.rebuild_compiled(&compiled_final);
+    let view_a = backend_a.compiled_normalized_view();
+
+    // ── Path B: compiled rebuild of r0 + compiled deltas r0→rN ─────────────
+    let mut session_b = CompilationSession::new();
+    let compiled_empty = session_b
+        .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
+        .expect("empty snapshot must compile");
+    let mut backend_b = fresh();
+    backend_b.rebuild_compiled(&compiled_empty);
+
+    let mut from_compilation = compiled_empty.compilation_id;
+    for batch in &batches {
+        let compiled_delta = session_b
+            .compile_delta(batch, from_compilation, &policy, &caps)
+            .expect("primitive linear delta must compile");
+        assert_eq!(
+            compiled_delta.from_compilation, from_compilation,
+            "compiled delta from id must chain"
+        );
+        backend_b
+            .apply_compiled_delta(&compiled_delta)
+            .expect("compiled delta must apply to the reference backend");
+        from_compilation = compiled_delta.to_compilation;
+    }
+    let view_b = backend_b.compiled_normalized_view();
+
+    // ── The compiled commuting square must hold ────────────────────────────
+    // Compare STATE, not identity: D28 requires every compiled state to carry
+    // a distinct opaque `CompilationId`, so the rebuild and delta paths must
+    // differ in id while agreeing on every state field.
+    assert!(
+        view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
+        "both paths must produce a compiled id"
+    );
+    assert_ne!(
+        view_a.compilation_id, view_b.compilation_id,
+        "D28: distinct compiled states get distinct ids (rebuild vs delta)"
+    );
+    assert_eq!(
+        view_a.revision, view_b.revision,
+        "compiled revision must match"
+    );
+    assert_eq!(
+        view_a.variables, view_b.variables,
+        "compiled variables must match"
+    );
+    assert_eq!(view_a.rows, view_b.rows, "compiled rows must match");
+    assert_eq!(
+        view_a.objectives, view_b.objectives,
+        "compiled objectives must match"
+    );
+    assert_eq!(
+        view_a.objective_policy, view_b.objective_policy,
+        "compiled objective policy must match"
     );
 }

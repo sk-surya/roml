@@ -28,16 +28,18 @@
 //! - T-11-18: Solution invalidated after model mutation (synchronize clears it)
 //! - T-11-19: Invalid options return `Err`; caller can inspect rejected list
 
+use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 
 use log::{info, warn};
 
 use crate::bindings::*;
 use crate::callback::{clear_callback, register_callback, CallbackState};
+use crate::compiler::{apply_backend_delta, rebuild_from_backend_snapshot};
 use crate::error::{check_highs_status, from_native_status};
 use crate::lifecycle::HighsSession;
-use crate::projection::{apply_delta_batch, rebuild_from_snapshot};
 use crate::solution::{extract_solution, map_termination_status};
+use roml::advanced::{CompiledConstraintId, CompiledVariableId};
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
 };
@@ -58,25 +60,34 @@ use roml::LpAlgorithm;
 // ── BackendSession ──────────────────────────────────────────────────────────────
 
 impl BackendSession for HighsSession {
-    /// Apply a [`Synchronization`] — either a full rebuild from snapshot or
-    /// an incremental delta batch.
+    /// Apply a [`Synchronization`] — a compiled rebuild from a
+    /// `BackendSnapshot` or a compiled incremental delta batch.
     ///
     /// On success, invalidates any cached solution (T-11-18) and returns the
     /// updated cursor and health.
+    ///
+    /// P26 (Task 7): the HiGHS session synchronizes through backend IR only.
+    /// No canonical `ModelSnapshot`/`DeltaBatch` reaches this session after
+    /// the migration (SM-03.2); the `SolverSession` façade compiles canonical
+    /// state first. The canonical `Synchronization::Rebuild`/`DeltaBatch`
+    /// variants are not handled here.
     fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
         match sync {
-            Synchronization::Rebuild(snapshot) => {
-                let revision = snapshot.revision;
+            Synchronization::CompiledRebuild(snapshot) => {
+                let revision = snapshot.source_revision;
                 info!(
-                    "Rebuilding HiGHS session from snapshot at revision {}",
+                    "Rebuilding HiGHS session from compiled backend snapshot at revision {}",
                     revision
                 );
 
-                let result = rebuild_from_snapshot(
+                let result = rebuild_from_backend_snapshot(
                     self.raw,
                     &snapshot,
                     &mut self.col_map,
                     &mut self.row_map,
+                    &mut self.compiled_to_user_variable,
+                    &mut self.compiled_to_user_constraint,
+                    &mut self.compiled_to_user_objective,
                     self.inf,
                     &mut self.var_bounds,
                     &mut self.con_bounds,
@@ -103,25 +114,22 @@ impl BackendSession for HighsSession {
                 }
             }
 
-            Synchronization::DeltaBatch(batch) => {
+            Synchronization::CompiledDeltaBatch(batch) => {
                 info!(
-                    "Applying delta batch r{} -> r{} ({} ops)",
-                    batch.from,
-                    batch.to,
+                    "Applying compiled delta r{} -> r{} ({} ops)",
+                    batch.from_revision,
+                    batch.to_revision,
                     batch.operations.len()
                 );
 
                 // Reject a batch whose base revision doesn't match the cursor
-                // BEFORE applying any operation. Applying first and failing at
-                // cursor.advance would leave the HiGHS model partially mutated
-                // (dirty state) while the cursor still reports Ready — exactly
-                // the partial-apply defect the differential harness guards
-                // against. The reference backend checks this up front.
-                if batch.from != self.cursor.applied_revision {
+                // BEFORE applying any operation, so a failed batch never
+                // leaves the HiGHS model partially mutated.
+                if batch.from_revision != self.cursor.applied_revision {
                     let e = BackendError::new(
                         format!(
-                            "delta batch from {} does not match cursor at {}",
-                            batch.from, self.cursor.applied_revision
+                            "compiled delta from {} does not match cursor at {}",
+                            batch.from_revision, self.cursor.applied_revision
                         ),
                         ErrorCategory::InvalidInput,
                         HealthEffect::Recoverable,
@@ -130,11 +138,14 @@ impl BackendSession for HighsSession {
                     return Err(e);
                 }
 
-                let result = apply_delta_batch(
+                let result = apply_backend_delta(
                     self.raw,
                     &batch,
                     &mut self.col_map,
                     &mut self.row_map,
+                    &mut self.compiled_to_user_variable,
+                    &mut self.compiled_to_user_constraint,
+                    &mut self.compiled_to_user_objective,
                     self.inf,
                     &mut self.var_bounds,
                     &mut self.con_bounds,
@@ -146,17 +157,13 @@ impl BackendSession for HighsSession {
 
                 match result {
                     Ok(()) => {
-                        self.cursor.advance(&batch).map_err(|e| {
-                            self.cursor.mark_terminal();
-                            BackendError::new(
-                                format!("cursor failed to advance after delta: {}", e),
-                                ErrorCategory::Internal,
-                                HealthEffect::Terminal,
-                            )
-                        })?;
+                        self.cursor.mark_ready(batch.to_revision);
                         // T-11-18: Invalidate stale solution after model mutation.
                         self.current_solution = None;
-                        info!("Delta batch applied, cursor at revision {}", batch.to);
+                        info!(
+                            "Compiled delta applied, cursor at revision {}",
+                            batch.to_revision
+                        );
                     }
                     Err(e) => {
                         // Map the failure onto the cursor health from the
@@ -167,6 +174,21 @@ impl BackendSession for HighsSession {
                         return Err(e);
                     }
                 }
+            }
+
+            // The canonical variants are intentionally NOT handled: after the
+            // P26 migration the HiGHS session synchronizes through backend IR
+            // only (SM-03.2). A canonical sync request is a caller bug; the
+            // cursor is marked RequiresRebuild so the caller re-synchronizes
+            // through the compiled path.
+            Synchronization::Rebuild(_) | Synchronization::DeltaBatch(_) => {
+                self.cursor.mark_rebuild();
+                return Err(BackendError::new(
+                    "canonical synchronization is not supported by the compiled HiGHS session; \
+                     compile canonical state to backend IR first (P26 migration, SM-03.8)",
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ));
             }
         }
 
@@ -193,29 +215,40 @@ impl BackendSession for HighsSession {
         let effective_config = negotiate_options(self.raw, request)?;
 
         // Step 2: Register callback if a handler is set.
-        let cb_state: Option<*mut CallbackState> =
-            if let Some(handler) = self.callback_handler.take() {
-                info!("Registering MIP callback handler");
-                let col_map_ptr: *const crate::index_map::IndexMap<VarId> = &self.col_map;
-                let row_map_ptr: *const crate::index_map::IndexMap<ConId> = &self.row_map;
-                // SAFETY: self.raw is a valid HiGHS instance handle. col_map and
-                // row_map remain valid for the duration of the solve. The returned
-                // state pointer is stored in self.callback_state and cleaned up
-                // after solve completes.
-                let num_col = unsafe { Highs_getNumCol(self.raw) };
-                match register_callback(self.raw, handler, col_map_ptr, row_map_ptr, num_col) {
-                    Ok(state) => {
-                        self.callback_state = Some(state);
-                        Some(state)
-                    }
-                    Err(e) => {
-                        warn!("Failed to register MIP callback: {}", e);
-                        None
-                    }
+        let cb_state: Option<*mut CallbackState> = if let Some(handler) =
+            self.callback_handler.take()
+        {
+            info!("Registering MIP callback handler");
+            let col_map_ptr: *const crate::index_map::IndexMap<CompiledVariableId> = &self.col_map;
+            let row_map_ptr: *const crate::index_map::IndexMap<CompiledConstraintId> =
+                &self.row_map;
+            let compiled_to_user_ptr: *const HashMap<CompiledVariableId, VarId> =
+                &self.compiled_to_user_variable;
+            // SAFETY: self.raw is a valid HiGHS instance handle. col_map,
+            // row_map, and compiled_to_user_variable remain valid for the
+            // duration of the solve. The returned state pointer is stored
+            // in self.callback_state and cleaned up after solve completes.
+            let num_col = unsafe { Highs_getNumCol(self.raw) };
+            match register_callback(
+                self.raw,
+                handler,
+                col_map_ptr,
+                row_map_ptr,
+                compiled_to_user_ptr,
+                num_col,
+            ) {
+                Ok(state) => {
+                    self.callback_state = Some(state);
+                    Some(state)
                 }
-            } else {
-                None
-            };
+                Err(e) => {
+                    warn!("Failed to register MIP callback: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Step 3: Run the solve.
         // SAFETY: self.raw is a valid HiGHS instance handle. Highs_run is
@@ -240,8 +273,16 @@ impl BackendSession for HighsSession {
         self.last_status = Some(status);
         info!("Solve completed with status: {:?}", status);
 
-        // Step 5: Extract solution data.
-        let solution = extract_solution(self.raw, &status, &self.col_map, &self.row_map);
+        // Step 5: Extract solution data (compiled ids are mapped back to user
+        // ids via the origin-derived compiled->user maps, SM-02.5).
+        let solution = extract_solution(
+            self.raw,
+            &status,
+            &self.col_map,
+            &self.row_map,
+            &self.compiled_to_user_variable,
+            &self.compiled_to_user_constraint,
+        );
         self.current_solution = solution.clone();
 
         // Step 6: Clean up callback state.

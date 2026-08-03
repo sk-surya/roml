@@ -14,6 +14,7 @@
 //! See `.planning/phases/10-backend-contract-migration-closure/10-CONTEXT.md`
 //! for the full design rationale.
 
+use crate::compiler::backend_ir::{BackendDeltaBatch, BackendSnapshot};
 use crate::delta::DeltaBatch;
 use crate::id::{ConId, VarId};
 use crate::revision::ModelRevision;
@@ -27,11 +28,28 @@ use crate::sync::{AdapterCursor, AdapterHealth};
 ///
 /// Each variant carries the data the session needs to advance its
 /// internal state.
+///
+/// # Compiled synchronization (P26 Task 7, design §22)
+///
+/// M3 amends the advanced backend synchronization contract: the ordinary M2
+/// path (the `SolverSession` façade and the HiGHS session) flows through
+/// backend IR via [`CompiledRebuild`](Self::CompiledRebuild) /
+/// [`CompiledDeltaBatch`](Self::CompiledDeltaBatch) — the compiler lowers
+/// canonical snapshots/deltas into [`BackendSnapshot`]/[`BackendDeltaBatch`]
+/// before any backend mutation (the P26 gate). The canonical
+/// [`Rebuild`](Self::Rebuild)/[`DeltaBatch`](Self::DeltaBatch) variants remain
+/// for the shared conformance suite and for backend authors who have not yet
+/// migrated (SM-03.8 migration guide); the production HiGHS session handles
+/// only the compiled variants.
 pub enum Synchronization {
     /// Apply a delta batch (incremental replay).
     DeltaBatch(DeltaBatch),
     /// Rebuild from a full model snapshot.
     Rebuild(ModelSnapshot),
+    /// Apply a compiled delta batch (backend IR incremental replay).
+    CompiledDeltaBatch(BackendDeltaBatch),
+    /// Rebuild from a compiled backend snapshot (backend IR).
+    CompiledRebuild(BackendSnapshot),
 }
 
 /// Receipt returned after a successful synchronization.

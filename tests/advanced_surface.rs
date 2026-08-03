@@ -25,6 +25,12 @@ impl BackendSession for MiniSession {
             Synchronization::Rebuild(snapshot) => {
                 self.revision = snapshot.revision;
             }
+            Synchronization::CompiledDeltaBatch(batch) => {
+                self.revision = batch.to_revision;
+            }
+            Synchronization::CompiledRebuild(snapshot) => {
+                self.revision = snapshot.source_revision;
+            }
         }
         self.health = AdapterHealth::Ready;
         Ok(SyncReceipt {

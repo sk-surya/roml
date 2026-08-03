@@ -29,7 +29,8 @@ use log::{info, warn};
 
 use crate::bindings::*;
 use crate::index_map::IndexMap;
-use roml::id::{ConId, VarId};
+use roml::advanced::{CompiledConstraintId, CompiledVariableId};
+use roml::id::VarId;
 use roml::solver::backend::BackendError;
 use roml::solver::callback::{CallbackData, CallbackHandler};
 
@@ -42,11 +43,15 @@ use roml::solver::callback::{CallbackData, CallbackHandler};
 pub(crate) struct CallbackState {
     /// Boxed ROML callback handler.
     pub handler: Box<dyn CallbackHandler>,
-    /// Pointer to the session's `col_map` (VarId → HiGHS column index).
-    pub col_map: *const IndexMap<VarId>,
-    /// Pointer to the session's `row_map` (ConId → HiGHS row index).
+    /// Pointer to the session's `col_map` (CompiledVariableId → HiGHS column
+    /// index, P26 compiled path).
+    pub col_map: *const IndexMap<CompiledVariableId>,
+    /// Pointer to the session's `row_map` (CompiledConstraintId → HiGHS row
+    /// index, P26 compiled path).
     #[allow(dead_code)]
-    pub row_map: *const IndexMap<ConId>,
+    pub row_map: *const IndexMap<CompiledConstraintId>,
+    /// Pointer to the session's compiled-id → user-variable map (SM-02.5).
+    pub compiled_to_user_variable: *const HashMap<CompiledVariableId, VarId>,
     /// The HiGHS instance handle.
     #[allow(dead_code)]
     pub highs_ptr: *mut c_void,
@@ -179,8 +184,9 @@ pub(crate) unsafe extern "C" fn callback_trampoline(
 pub(crate) fn register_callback(
     raw: *mut c_void,
     handler: Box<dyn CallbackHandler>,
-    col_map: *const IndexMap<VarId>,
-    row_map: *const IndexMap<ConId>,
+    col_map: *const IndexMap<CompiledVariableId>,
+    row_map: *const IndexMap<CompiledConstraintId>,
+    compiled_to_user_variable: *const HashMap<CompiledVariableId, VarId>,
     num_cols: i32,
 ) -> Result<*mut CallbackState, BackendError> {
     // SAFETY: Box::into_raw gives us a raw pointer we control.
@@ -190,6 +196,7 @@ pub(crate) fn register_callback(
         handler,
         col_map,
         row_map,
+        compiled_to_user_variable,
         highs_ptr: raw,
         num_cols,
     }));
@@ -292,9 +299,11 @@ unsafe fn build_callback_data(
     // column map length is the iteration bound (version-portable — the P24
     // CI system job compiles against system HiGHS 1.9.0 headers).
     if !cd_out.mip_solution.is_null() && !state.col_map.is_null() {
-        // SAFETY: col_map is valid for the duration of the solve.
-        // We dereference the raw pointer to read mapped indices.
+        // SAFETY: col_map and compiled_to_user_variable are valid for the
+        // duration of the solve. We dereference the raw pointers to read the
+        // mapped indices and translate compiled ids back to user ids (SM-02.5).
         let col_map_ref = &*state.col_map;
+        let compiled_to_user = &*state.compiled_to_user_variable;
         let rev = col_map_ref.reverse_map();
         if !rev.is_empty() {
             // SAFETY: mip_solution is the full incumbent solution (one entry
@@ -303,8 +312,10 @@ unsafe fn build_callback_data(
             let solution_slice =
                 unsafe { std::slice::from_raw_parts(cd_out.mip_solution, rev.len()) };
             for (hi_idx, &val) in solution_slice.iter().enumerate() {
-                if let Some(&var_id) = rev.get(&(hi_idx as i32)) {
-                    var_values.insert(var_id, val);
+                if let Some(compiled) = rev.get(&(hi_idx as i32)).copied() {
+                    if let Some(&var_id) = compiled_to_user.get(&compiled) {
+                        var_values.insert(var_id, val);
+                    }
                 }
             }
         }
@@ -341,6 +352,7 @@ mod tests {
             handler: Box::new(AcceptHandler),
             col_map: std::ptr::null(),
             row_map: std::ptr::null(),
+            compiled_to_user_variable: std::ptr::null(),
             highs_ptr: std::ptr::null_mut(),
             num_cols: 0,
         };
@@ -377,6 +389,7 @@ mod tests {
             handler: Box::new(CountingHandler(calls.clone())),
             col_map: std::ptr::null(),
             row_map: std::ptr::null(),
+            compiled_to_user_variable: std::ptr::null(),
             highs_ptr: std::ptr::null_mut(),
             num_cols: 0,
         };

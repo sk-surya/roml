@@ -78,6 +78,12 @@ impl BackendSession for RecordingBackend {
             Synchronization::DeltaBatch(batch) => {
                 self.revision = batch.to;
             }
+            Synchronization::CompiledRebuild(snapshot) => {
+                self.revision = snapshot.source_revision;
+            }
+            Synchronization::CompiledDeltaBatch(batch) => {
+                self.revision = batch.to_revision;
+            }
         }
         self.health = AdapterHealth::Ready;
         Ok(SyncReceipt {

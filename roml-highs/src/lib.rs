@@ -18,7 +18,8 @@
 //! - `bindings`: Re-exports from `highs-sys` plus ROML constant aliases.
 //! - `error`: `BackendError` construction helpers for HiGHS failures.
 //! - `lifecycle`: [`HighsSession`] construction, ownership, and Drop.
-//! - `projection`: Snapshot-to-HiGHS rebuild and delta application.
+//! - `compiler`: Backend IR → HiGHS native rebuild and delta application
+//!   (P26 Task 7; the HiGHS session receives no canonical `ModelSnapshot`).
 //! - `session`: `BackendSession` trait implementation (thin delegation).
 //! - `solution`: Status mapping and solution extraction.
 //! - `callback`: Callback bridge for MIP lazy constraints/interrupts.
@@ -63,11 +64,11 @@ compile_error!("features `bundled` and `system` are mutually exclusive; activate
 
 mod bindings;
 mod callback;
+mod compiler;
 mod error;
 mod facade;
 mod index_map;
 mod lifecycle;
-mod projection;
 mod session;
 mod solution;
 

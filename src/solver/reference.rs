@@ -16,6 +16,11 @@
 
 use std::collections::HashMap;
 
+use crate::compiler::backend_ir::{
+    BackendDeltaBatch, BackendOp, BackendSnapshot, CompilationId, CompiledConstraintId,
+    CompiledObjectiveId, CompiledObjectivePolicy, CompiledVariableId,
+};
+use crate::compiler::CompileError;
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::{CellKey, CoefficientTarget};
@@ -29,7 +34,7 @@ use crate::value_expr::ValueExpr;
 ///
 /// Stores all entity state in HashMaps exactly as the model would.
 /// Used for correctness comparisons, not optimization.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ReferenceBackend {
     /// The model revision this backend is synchronized to.
     pub revision: ModelRevision,
@@ -60,6 +65,55 @@ pub struct ReferenceBackend {
 
     /// Objective constants: ObjId → constant (tracked for SetCell routing to objective_cells)
     pub objective_constants: HashMap<ObjId, f64>,
+
+    // ── Compiled-IR projection (P26 Task 7) ────────────────────────────────
+    //
+    // The compiled path consumes `BackendSnapshot`/`BackendDeltaBatch`
+    // directly (SM-03.2: backends consume backend IR). The reference backend
+    // proves the compiled commuting square:
+    //   compiled_rebuild(snapshot rN)
+    //       == apply(compiled_rebuild(snapshot r0), compiled_deltas r0→rN)
+    // Compiled ids are dense indices; the canonical `variables`/`constraints`/
+    // `objectives` maps above remain for the M2 characterization path.
+    /// Compiled variables: id → (bounds, var_type).
+    pub compiled_variables: HashMap<CompiledVariableId, (Bounds, VarType)>,
+    /// Compiled rows: id → (bounds, coefficients).
+    #[allow(clippy::type_complexity)]
+    pub compiled_rows:
+        HashMap<CompiledConstraintId, (ConstraintBounds, Vec<(CompiledVariableId, f64)>)>,
+    /// Compiled objectives: id → (sense, coefficients, constant).
+    #[allow(clippy::type_complexity)]
+    pub compiled_objectives:
+        HashMap<CompiledObjectiveId, (Sense, Vec<(CompiledVariableId, f64)>, f64)>,
+    /// Active compiled objective policy.
+    pub compiled_objective_policy: CompiledObjectivePolicy,
+    /// Exact compiled id of the current compiled state (None when never set).
+    pub current_compilation: Option<CompilationId>,
+    /// Canonical revision of the current compiled state.
+    pub compiled_revision: ModelRevision,
+}
+
+impl Default for ReferenceBackend {
+    fn default() -> Self {
+        Self {
+            revision: ModelRevision::ZERO,
+            variables: HashMap::new(),
+            semicontinuous: HashMap::new(),
+            constraints: HashMap::new(),
+            objectives: HashMap::new(),
+            active_objective: None,
+            parameters: HashMap::new(),
+            constraint_cells: HashMap::new(),
+            objective_cells: HashMap::new(),
+            objective_constants: HashMap::new(),
+            compiled_variables: HashMap::new(),
+            compiled_rows: HashMap::new(),
+            compiled_objectives: HashMap::new(),
+            compiled_objective_policy: CompiledObjectivePolicy::None,
+            current_compilation: None,
+            compiled_revision: ModelRevision::ZERO,
+        }
+    }
 }
 
 /// Methods used by backend contract tests and adapters.
@@ -152,6 +206,7 @@ impl ReferenceBackend {
             }
             ModelOp::RemoveObjective { obj } => {
                 self.objectives.remove(obj);
+                self.objective_constants.remove(obj);
                 if self.active_objective == Some(*obj) {
                     self.active_objective = None;
                 }
@@ -182,6 +237,13 @@ impl ReferenceBackend {
             } => {
                 self.objective_cells
                     .insert(*cell_key, (value_expr.clone(), *evaluated_value, *constant));
+                // Keep the per-objective constant authority in sync (API-03.5):
+                // `SetObjectiveCell` reports the constant exactly once, so the
+                // objective's constant must not be lost when its last cell is
+                // later removed.
+                if let CoefficientTarget::Objective(obj_id) = cell_key.0 {
+                    self.objective_constants.insert(obj_id, *constant);
+                }
             }
             ModelOp::SetParameter { param, value } => {
                 self.parameters.insert(*param, *value);
@@ -358,10 +420,27 @@ impl ReferenceBackend {
             .collect();
         cells.sort_by_key(|(k, _)| *k);
 
+        // Reconcile each objective cell's cached constant with the
+        // authoritative per-objective constant (`objective_constants`). The
+        // per-cell cache can go stale when a variable's cells are removed
+        // (`RemoveVariable` prunes cells but leaves surviving cells' cached
+        // constants unchanged), so the view reports the authoritative value —
+        // this is what keeps the canonical commuting square (delta vs rebuild)
+        // closed for objective constants.
         let mut obj_cells: Vec<_> = self
             .objective_cells
             .iter()
-            .map(|(k, (_, value, constant))| (*k, *value, *constant))
+            .map(|(k, (_, value, constant))| {
+                let constant = match k.0 {
+                    CoefficientTarget::Objective(obj_id) => self
+                        .objective_constants
+                        .get(&obj_id)
+                        .copied()
+                        .unwrap_or(*constant),
+                    CoefficientTarget::Constraint(_) => *constant,
+                };
+                (*k, *value, constant)
+            })
             .collect();
         obj_cells.sort_by_key(|(k, ..)| *k);
 
@@ -372,6 +451,13 @@ impl ReferenceBackend {
             .collect();
         params.sort_by_key(|(id, _)| *id);
 
+        let mut objective_constants: Vec<_> = self
+            .objective_constants
+            .iter()
+            .map(|(id, constant)| (*id, *constant))
+            .collect();
+        objective_constants.sort_by_key(|(id, _)| *id);
+
         NormalizedView {
             revision: self.revision,
             active_objective: self.active_objective,
@@ -381,8 +467,225 @@ impl ReferenceBackend {
             parameters: params,
             cells,
             objective_cells: obj_cells,
+            objective_constants,
         }
     }
+
+    // ── Compiled-IR projection (P26 Task 7) ────────────────────────────────
+
+    /// Rebuild the compiled state from a [`BackendSnapshot`] (deterministic
+    /// full compiled projection).
+    pub fn rebuild_compiled(&mut self, snapshot: &BackendSnapshot) {
+        self.compiled_variables.clear();
+        self.compiled_rows.clear();
+        self.compiled_objectives.clear();
+
+        for v in &snapshot.variables {
+            self.compiled_variables.insert(v.id, (v.bounds, v.var_type));
+        }
+        for r in &snapshot.linear_rows {
+            self.compiled_rows
+                .insert(r.id, (r.bounds, r.coefficients.clone()));
+        }
+        for o in &snapshot.objectives {
+            self.compiled_objectives
+                .insert(o.id, (o.sense, o.coefficients.clone(), o.constant));
+        }
+
+        self.compiled_objective_policy = snapshot.objective_policy.clone();
+        self.current_compilation = Some(snapshot.compilation_id);
+        self.compiled_revision = snapshot.source_revision;
+    }
+
+    /// Apply a compiled delta batch to the compiled state.
+    ///
+    /// The batch's `from_compilation` must equal the current compiled state's
+    /// id (D28): a stale batch is rejected with
+    /// [`CompileError::StaleCompilation`] before any op is applied.
+    pub fn apply_compiled_delta(&mut self, batch: &BackendDeltaBatch) -> Result<(), CompileError> {
+        let actual = self.current_compilation.ok_or_else(|| {
+            CompileError::RebuildRequired("reference backend has no compiled base".into())
+        })?;
+        if actual != batch.from_compilation {
+            return Err(CompileError::StaleCompilation {
+                expected: batch.from_compilation,
+                actual,
+            });
+        }
+
+        for op in &batch.operations {
+            self.apply_compiled_op(op);
+        }
+
+        self.current_compilation = Some(batch.to_compilation);
+        self.compiled_revision = batch.to_revision;
+        Ok(())
+    }
+
+    /// Apply a single compiled backend op to the compiled state.
+    pub fn apply_compiled_op(&mut self, op: &BackendOp) {
+        match op {
+            BackendOp::AddVariable(v) => {
+                self.compiled_variables.insert(v.id, (v.bounds, v.var_type));
+            }
+            BackendOp::RemoveVariable(id) => {
+                self.compiled_variables.remove(id);
+            }
+            BackendOp::SetVariableBounds { variable, bounds } => {
+                if let Some(entry) = self.compiled_variables.get_mut(variable) {
+                    entry.0 = *bounds;
+                }
+            }
+            BackendOp::AddLinearRow(r) => {
+                self.compiled_rows
+                    .insert(r.id, (r.bounds, r.coefficients.clone()));
+            }
+            BackendOp::RemoveLinearRow(id) => {
+                self.compiled_rows.remove(id);
+            }
+            BackendOp::SetLinearRowBounds { constraint, bounds } => {
+                if let Some(entry) = self.compiled_rows.get_mut(constraint) {
+                    entry.0 = *bounds;
+                }
+            }
+            BackendOp::SetLinearCoefficient {
+                constraint,
+                variable,
+                value,
+            } => {
+                if let Some(entry) = self.compiled_rows.get_mut(constraint) {
+                    upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+                }
+            }
+            BackendOp::RemoveLinearCoefficient {
+                constraint,
+                variable,
+            } => {
+                if let Some(entry) = self.compiled_rows.get_mut(constraint) {
+                    entry.1.retain(|(v, _)| v != variable);
+                }
+            }
+            BackendOp::AddObjective(o) => {
+                self.compiled_objectives
+                    .insert(o.id, (o.sense, o.coefficients.clone(), o.constant));
+            }
+            BackendOp::RemoveObjective(id) => {
+                self.compiled_objectives.remove(id);
+            }
+            BackendOp::SetObjectiveCoefficient {
+                objective,
+                variable,
+                value,
+            } => {
+                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
+                    upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+                }
+            }
+            BackendOp::RemoveObjectiveCoefficient {
+                objective,
+                variable,
+            } => {
+                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
+                    entry.1.retain(|(v, _)| v != variable);
+                }
+            }
+            BackendOp::SetObjectiveConstant { objective, value } => {
+                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
+                    entry.2 = *value;
+                }
+            }
+            BackendOp::SetObjectiveSense { objective, sense } => {
+                if let Some(entry) = self.compiled_objectives.get_mut(objective) {
+                    entry.0 = *sense;
+                }
+            }
+            BackendOp::SetObjectivePolicy(policy) => {
+                self.compiled_objective_policy = policy.clone();
+            }
+        }
+    }
+
+    /// Produce a deterministic normalized view of the compiled state.
+    ///
+    /// Sorted vectors keyed by compiled ids, used for the compiled-delta vs
+    /// compiled-rebuild equality check (the compiled commuting square).
+    pub fn compiled_normalized_view(&self) -> CompiledNormalizedView {
+        let mut variables: Vec<_> = self
+            .compiled_variables
+            .iter()
+            .map(|(id, (bounds, var_type))| (*id, *bounds, *var_type))
+            .collect();
+        variables.sort_by_key(|(id, _, _)| *id);
+
+        let mut rows: Vec<_> = self
+            .compiled_rows
+            .iter()
+            .map(|(id, (bounds, coefficients))| (*id, *bounds, coefficients.clone()))
+            .collect();
+        rows.sort_by_key(|(id, _, _)| *id);
+
+        let mut objectives: Vec<_> = self
+            .compiled_objectives
+            .iter()
+            .map(|(id, (sense, coefficients, constant))| {
+                (*id, *sense, coefficients.clone(), *constant)
+            })
+            .collect();
+        objectives.sort_by_key(|(id, ..)| *id);
+
+        CompiledNormalizedView {
+            revision: self.compiled_revision,
+            compilation_id: self.current_compilation,
+            variables,
+            rows,
+            objectives,
+            objective_policy: self.compiled_objective_policy.clone(),
+        }
+    }
+}
+
+/// Upsert one `(CompiledVariableId, f64)` coefficient into a deterministic
+/// var-ordered coefficient list.
+fn upsert_compiled_coefficient(
+    coefficients: &mut Vec<(CompiledVariableId, f64)>,
+    variable: CompiledVariableId,
+    value: f64,
+) {
+    if let Some(entry) = coefficients.iter_mut().find(|(v, _)| *v == variable) {
+        entry.1 = value;
+    } else {
+        coefficients.push((variable, value));
+        coefficients.sort_by_key(|(v, _)| *v);
+    }
+}
+
+/// A deterministic normalized view of the compiled state for comparison
+/// (P26 Task 7).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledNormalizedView {
+    /// The canonical revision of the compiled state.
+    pub revision: ModelRevision,
+    /// The exact compiled state id (None when never set).
+    pub compilation_id: Option<CompilationId>,
+    /// Compiled variables as `(id, bounds, var_type)`.
+    pub variables: Vec<(CompiledVariableId, Bounds, VarType)>,
+    /// Compiled rows as `(id, bounds, coefficients)`.
+    #[allow(clippy::type_complexity)]
+    pub rows: Vec<(
+        CompiledConstraintId,
+        ConstraintBounds,
+        Vec<(CompiledVariableId, f64)>,
+    )>,
+    /// Compiled objectives as `(id, sense, coefficients, constant)`.
+    #[allow(clippy::type_complexity)]
+    pub objectives: Vec<(
+        CompiledObjectiveId,
+        Sense,
+        Vec<(CompiledVariableId, f64)>,
+        f64,
+    )>,
+    /// Active compiled objective policy.
+    pub objective_policy: CompiledObjectivePolicy,
 }
 
 /// A normalized, deterministic view of backend state for comparison.
@@ -404,6 +707,8 @@ pub struct NormalizedView {
     pub cells: Vec<(CellKey, f64)>,
     /// Objective cells as `(cell, evaluated_value, constant)`.
     pub objective_cells: Vec<(CellKey, f64, f64)>,
+    /// Per-objective constant offsets as `(obj, constant)` (API-03.5).
+    pub objective_constants: Vec<(ObjId, f64)>,
 }
 
 #[cfg(test)]
