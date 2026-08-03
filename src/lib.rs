@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod advanced;
+pub mod compiler;
 // P25 (F3): the construct arena and its fixture scaffolding are crate-private.
 // `Construct`/`ConstructId` and `FormulationPreference` are re-exported
 // publicly below; `ConstructKind`/`ConstructEntry` and the fixture payload
