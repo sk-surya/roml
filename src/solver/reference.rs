@@ -827,6 +827,24 @@ impl OverlaySession for ReferenceBackend {
             ));
         }
 
+        // F2: run the COMPLETE overlay preflight against the exact live
+        // compiled registry BEFORE any mutation — malformed envelopes, missing
+        // origins, row-id collisions, dangling objective policies, and
+        // rollback-only ops are all rejected here, before the staged copy-on-
+        // write even starts.
+        let registry = CompiledEntityRegistry {
+            variables: self.compiled_variables.keys().copied().collect(),
+            rows: self.compiled_rows.keys().copied().collect(),
+            objectives: self.compiled_objectives.keys().copied().collect(),
+        };
+        if let Err(e) = overlay.validate(&registry) {
+            return Err(BackendError::new(
+                format!("overlay failed preflight validation: {e}"),
+                ErrorCategory::InvalidInput,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
+
         let mut state = OverlayApplyState {
             base_compilation: overlay.base_compilation,
             applied_compilation: overlay.compilation_id,
