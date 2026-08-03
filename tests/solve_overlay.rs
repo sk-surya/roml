@@ -47,7 +47,7 @@ use roml::advanced::{
 };
 use roml::compiler::capability::CompilationPolicy;
 use roml::model::objective::Sense;
-use roml::model::{binary, continuous, integer, Bounds, ConstraintBounds};
+use roml::model::{binary, continuous, integer, parameter, Bounds, ConstraintBounds};
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendError, ErrorCategory, HealthEffect, TerminationStatus};
 use roml::solver::reference::ReferenceBackend;
@@ -585,6 +585,56 @@ fn within_band_produces_band_bounds_for_continuous_variables() {
 /// a declared bound. A band that extends past the domain clips to it; an
 /// overlay solve can then never return a solution violating the declared
 /// bounds (which would fail `validate_for` as `ValueOutOfBounds`).
+/// WR-03: an objective with a PARAMETERIZED coefficient compiles an
+/// objective-lock/cutoff row correctly — the coefficients are resolved from
+/// the COMPILED BASE's evaluated values (not from `as_constant()` on the
+/// symbolic `price * x`, which returns None and produced a misleading
+/// `ObjectiveNotFound` even though the objective exists and is compiled).
+#[test]
+fn parameterized_objective_compiles_overlay_rows() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let price = model.add_parameter(parameter(2.0).named("price")).unwrap();
+    // `add_objective_coefficient(obj, x, price)` stores the SYMBOLIC
+    // parameterized cell (ValueExpr::Param), which is exactly the case
+    // `objective_compiled_terms`' `as_constant()` cannot handle.
+    let obj = model.add_objective(Sense::Maximize);
+    model.add_objective_coefficient(obj, x, price).unwrap();
+    model.commit().unwrap();
+    let (compiler, _) = compile_base(&model);
+
+    // An objective lock AND a cutoff referencing the parameterized objective
+    // must compile; the evaluated coefficient 2.0 comes from the compiled base.
+    let overlay = SolveOverlay::new(
+        BTreeMap::new(),
+        vec![],
+        vec![ObjectiveLock {
+            objective: obj,
+            absolute_tolerance: 1e-6,
+            relative_tolerance: 1e-6,
+        }],
+        vec![ObjectiveCutoff {
+            objective: obj,
+            limit: 5.0,
+            direction: CutoffDirection::Upper,
+        }],
+    )
+    .unwrap();
+    let compiled = compile_overlay(&model, &compiler, &overlay, None)
+        .expect("a parameterized objective must compile overlay rows (WR-03)");
+
+    assert_eq!(compiled.operations.len(), 2);
+    for op in &compiled.operations {
+        if let OverlayOp::AddTemporaryRow { row } = op {
+            assert_eq!(
+                row.coefficients,
+                vec![(CompiledVariableId(0), 2.0)],
+                "the overlay row must carry the evaluated coefficient from the compiled base"
+            );
+        }
+    }
+}
+
 #[test]
 fn within_band_clips_to_the_declared_domain() {
     let mut model = Model::new();

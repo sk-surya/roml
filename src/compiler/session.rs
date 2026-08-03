@@ -70,6 +70,13 @@ struct CurrentCompilation {
     compiled_to_row: HashMap<CompiledConstraintId, ConId>,
     /// Compiled objective id -> user objective.
     compiled_to_objective: HashMap<CompiledObjectiveId, ObjId>,
+    /// Compiled objective id -> evaluated coefficient vector (WR-03). The
+    /// authoritative coefficients the backend holds; the overlay compiler
+    /// resolves temporary rows from these instead of re-deriving from the
+    /// canonical symbolic expression.
+    compiled_objective_coefficients: HashMap<CompiledObjectiveId, Vec<(CompiledVariableId, f64)>>,
+    /// Compiled objective id -> evaluated constant (WR-03).
+    compiled_objective_constants: HashMap<CompiledObjectiveId, f64>,
     /// Next dense compiled variable index.
     next_variable_index: u32,
     /// Next dense compiled row index.
@@ -164,6 +171,24 @@ impl CompilationSession {
         self.current
             .as_ref()
             .and_then(|c| c.objective_ids.get(&o).copied())
+    }
+
+    /// The compiled objective's evaluated coefficient vector and constant from
+    /// the compiled base (WR-03; P27 Task 9 overlay compiler). `None` only when
+    /// the objective is genuinely absent from the compiled base — the overlay
+    /// compiler resolves temporary rows from these authoritative evaluated
+    /// values, never by re-deriving from the canonical symbolic expression
+    /// (`as_constant()` returns `None` for parameterized/composite
+    /// coefficients).
+    pub(crate) fn compiled_objective_terms(
+        &self,
+        o: ObjId,
+    ) -> Option<(Vec<(CompiledVariableId, f64)>, f64)> {
+        let current = self.current.as_ref()?;
+        let cid = *current.objective_ids.get(&o)?;
+        let coefficients = current.compiled_objective_coefficients.get(&cid)?.clone();
+        let constant = *current.compiled_objective_constants.get(&cid)?;
+        Some((coefficients, constant))
     }
 
     /// The next dense compiled row index in the current compiled base (the
@@ -340,6 +365,8 @@ impl CompilationSession {
         let mut objectives = Vec::with_capacity(snapshot.objectives.len());
         let mut objective_ids = HashMap::new();
         let mut compiled_to_objective = HashMap::new();
+        let mut compiled_objective_coefficients = HashMap::new();
+        let mut compiled_objective_constants = HashMap::new();
         for (index, o) in snapshot.objectives.iter().enumerate() {
             let id = CompiledObjectiveId(index as u32);
             let coefficients: Vec<(CompiledVariableId, f64)> = snapshot
@@ -352,6 +379,12 @@ impl CompilationSession {
                     _ => None,
                 })
                 .collect();
+            // WR-03: record the evaluated coefficients/constant of the compiled
+            // objective (the authoritative values the backend holds) so the
+            // overlay compiler can resolve temporary rows without re-deriving
+            // from the canonical symbolic expression.
+            compiled_objective_coefficients.insert(id, coefficients.clone());
+            compiled_objective_constants.insert(id, o.constant);
             objectives.push(CompiledObjective {
                 id,
                 sense: o.sense,
@@ -398,6 +431,8 @@ impl CompilationSession {
             compiled_to_variable,
             compiled_to_row,
             compiled_to_objective,
+            compiled_objective_coefficients,
+            compiled_objective_constants,
             next_variable_index: compiled.variables.len() as u32,
             next_row_index: compiled.linear_rows.len() as u32,
             next_objective_index: compiled.objectives.len() as u32,
@@ -756,6 +791,10 @@ impl CompilationSession {
                     }));
                     w.objective_ids.insert(*obj, id);
                     w.compiled_to_objective.insert(id, *obj);
+                    // WR-03: keep the compiled objective coefficient/constant
+                    // tracking in sync across delta batches.
+                    w.compiled_objective_coefficients.insert(id, Vec::new());
+                    w.compiled_objective_constants.insert(id, 0.0);
                     origin_additions.insert_objective(id, EntityOrigin::UserObjective(*obj));
                 }
 
@@ -779,6 +818,9 @@ impl CompilationSession {
                     }
                     w.objective_ids.remove(obj);
                     w.compiled_to_objective.remove(&id);
+                    // WR-03: drop the removed objective's coefficient tracking.
+                    w.compiled_objective_coefficients.remove(&id);
+                    w.compiled_objective_constants.remove(&id);
                 }
 
                 // A32: `SetActiveObjective { obj: None }` compiles to
@@ -845,6 +887,15 @@ impl CompilationSession {
                         objective: oid,
                         value: *constant,
                     });
+                    // WR-03: keep the compiled objective coefficient/constant
+                    // tracking in sync (replace the coefficient cell, preserve
+                    // deterministic compiled order).
+                    if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid) {
+                        cells.retain(|(cid, _)| *cid != vid);
+                        cells.push((vid, *evaluated_value));
+                        cells.sort_by_key(|(cid, _)| *cid);
+                    }
+                    w.compiled_objective_constants.insert(oid, *constant);
                 }
 
                 ModelOp::SetObjectiveSense { obj, sense } => {
@@ -869,6 +920,9 @@ impl CompilationSession {
                         objective: id,
                         value: *constant,
                     });
+                    // WR-03: keep the compiled objective constant tracking in
+                    // sync.
+                    w.compiled_objective_constants.insert(id, *constant);
                 }
 
                 // `SetParameter` is a provable NO-OP on backend IR: no compiled
@@ -920,6 +974,8 @@ impl CompilationSession {
             compiled_to_variable: w.compiled_to_variable,
             compiled_to_row: w.compiled_to_row,
             compiled_to_objective: w.compiled_to_objective,
+            compiled_objective_coefficients: w.compiled_objective_coefficients,
+            compiled_objective_constants: w.compiled_objective_constants,
             next_variable_index: w.next_variable_index,
             next_row_index: w.next_row_index,
             next_objective_index: w.next_objective_index,

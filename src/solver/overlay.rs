@@ -312,7 +312,7 @@ pub fn compile_overlay(
 
     // ── 3. objective_locks → AddTemporaryRow (degradation row) ───────────
     for lock in &overlay.objective_locks {
-        let (coefficients, constant) = objective_compiled_terms(model, compiler, lock.objective)?;
+        let (coefficients, constant) = objective_compiled_terms(compiler, lock.objective)?;
         // P27 compiles the degradation row with a zero reference optimum `z`
         // (the row RHS is the absolute tolerance; P31 supplies the real stage
         // optimum and the relative term). Direction follows the objective's
@@ -345,7 +345,7 @@ pub fn compile_overlay(
 
     // ── 4. cutoffs → AddTemporaryRow ─────────────────────────────────────
     for cutoff in &overlay.cutoffs {
-        let (coefficients, constant) = objective_compiled_terms(model, compiler, cutoff.objective)?;
+        let (coefficients, constant) = objective_compiled_terms(compiler, cutoff.objective)?;
         let rhs = cutoff.limit - constant;
         let bounds = match cutoff.direction {
             CutoffDirection::Upper => ConstraintBounds::le(rhs),
@@ -479,31 +479,20 @@ fn continuous_band_bounds(
 /// Resolve the compiled coefficients and constant of `objective` for a
 /// temporary row (the compiled row for `f(x)`).
 ///
-/// The objective must exist in the compiled base (exact id authority); its
-/// canonical coefficients are mapped to compiled variable ids and returned in
-/// deterministic sorted order.
+/// WR-03: the coefficients come from the COMPILED BASE (`compiler`'s evaluated
+/// objective coefficient vector) — the exact values the backend holds — never
+/// by re-deriving from the canonical symbolic expression. `as_constant()` on a
+/// parameterized/composite coefficient returns `None` and previously produced a
+/// misleading `ObjectiveNotFound` for a legitimate compiled objective.
+/// `ObjectiveNotFound` is now reported ONLY when the objective is genuinely
+/// absent from the compiled base.
 fn objective_compiled_terms(
-    model: &Model,
     compiler: &CompilationSession,
     objective: Objective,
 ) -> Result<(Vec<(CompiledVariableId, f64)>, f64), OverlayError> {
-    compiler
-        .compiled_objective_id(objective)
+    let (mut coefficients, constant) = compiler
+        .compiled_objective_terms(objective)
         .ok_or(OverlayError::ObjectiveNotFound(objective))?;
-    let expr = model
-        .objective_expression(objective)
-        .map_err(|_| OverlayError::ObjectiveNotFound(objective))?;
-    let mut coefficients: Vec<(CompiledVariableId, f64)> = Vec::new();
-    for term in expr.terms() {
-        let value = term
-            .coeff
-            .as_constant()
-            .ok_or(OverlayError::ObjectiveNotFound(objective))?;
-        let compiled = compiler
-            .compiled_variable_id(term.var)
-            .ok_or(OverlayError::ObjectiveNotFound(objective))?;
-        coefficients.push((compiled, value));
-    }
     coefficients.sort_by_key(|(id, _)| *id);
-    Ok((coefficients, expr.get_constant()))
+    Ok((coefficients, constant))
 }
