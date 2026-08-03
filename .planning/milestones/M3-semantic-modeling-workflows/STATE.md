@@ -41,7 +41,7 @@ Before P25 code:
 | P29 IIS/conflicts | Blocked | P28 accepted | none | pinned/system HiGHS IIS capability |
 | P30 Soft constraints | Blocked | P28 accepted | none | none |
 | P31 Lexicographic objectives | Blocked | P28 accepted | none | native HiGHS semantics audit |
-| P32 Common constructs | Ready to execute | P26 accepted (PR #28, `192cd00`) | `.planning/phases/32-common-constructs/32-PLAN.md` + `32-PLAN-02.md` | none |
+| P32 Common constructs | Executed; verified; merge pending | P26 accepted (PR #28, `192cd00`) | `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md` (verified, `32-VERIFICATION.md`) | none |
 | P33 PWL/bounds | Blocked | P32 accepted | none | none |
 | P34 Qualification | Blocked | P29–P33 accepted | none | no publication in M3 |
 
