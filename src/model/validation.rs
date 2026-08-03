@@ -4,6 +4,21 @@
 //! Invalid inputs are rejected with a typed error; the model is
 //! never left in a partially-mutated state by a failed operation.
 
+use crate::model::variable::{Bounds, VariableFixing};
+
+/// Invariant (SM-05.5): a live fixing's value lies inside the declared bounds.
+///
+/// Enforced by [`Model::fix`](crate::Model::fix) (rejects out-of-domain fix
+/// values), by [`Model::set_variable_bounds`](crate::Model::set_variable_bounds)
+/// (atomicity guard, SM-05.6), and asserted by
+/// [`Model::validate_invariants`](crate::Model::validate_invariants).
+pub(crate) fn fixing_within_declared(fixing: Option<&VariableFixing>, declared: Bounds) -> bool {
+    match fixing {
+        None => true,
+        Some(fixing) => declared.lower <= fixing.value && fixing.value <= declared.upper,
+    }
+}
+
 /// A finite scalar value (not NaN, not infinite).
 ///
 /// This is the default coefficient/parameter value type.

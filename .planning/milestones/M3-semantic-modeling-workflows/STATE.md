@@ -36,7 +36,7 @@ Before P25 code:
 |---|---|---|---|---|
 | P25 Semantic IR/identity | Accepted | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (merged PR #27, `9c2a9df`) | none |
 | P26 Compiler/backend IR | Executed; verified 6/6 must-haves; merge pending | P25 accepted (PR #27, `9c2a9df`) | `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md` (verified, `26-VERIFICATION.md`) | backend contract amendment review (passed, Task 0 acceptance record) |
-| P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
+| P27 Fixing/locks/overlays | Executed; verified 4/4 must-haves; merge pending | P26 accepted (PR #28, `192cd00`) | `docs/release/evidence/M3_P27_FIXING_LOCKS_OVERLAYS.md` (verified, `27-VERIFICATION.md`) | none |
 | P28 Starts/hints/SolvePlan | Blocked | P27 accepted | none | pinned HiGHS start API audit |
 | P29 IIS/conflicts | Blocked | P28 accepted | none | pinned/system HiGHS IIS capability |
 | P30 Soft constraints | Blocked | P28 accepted | none | none |

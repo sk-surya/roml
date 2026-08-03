@@ -33,8 +33,8 @@ static OVERLAY_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl OverlayId {
     /// Allocate a fresh opaque overlay id. The first issued id is 1; zero is
     /// reserved. Returns [`IdentityOverflow`] on counter exhaustion instead of
-    /// wrapping. Unused in P26 (overlay lifecycle lands in P27).
-    #[allow(dead_code)]
+    /// wrapping. Used by [`SolveOverlay::new`](crate::solver::overlay::SolveOverlay::new)
+    /// (P27) and referenced by every overlay-generated entity and receipt.
     pub(crate) fn allocate() -> Result<Self, IdentityOverflow> {
         match OVERLAY_ID_COUNTER.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pre| {
             if pre == u64::MAX {
@@ -57,7 +57,9 @@ impl OverlayId {
 /// it empty (no construct/overlay generated entities yet). P32 Task 15 added
 /// the generic [`Bridge`](Self::Bridge) role; P32 Task 16 adds the
 /// per-construct role variants for the logical constructs (indicator rows,
-/// reification rows, Boolean rows, cardinality rows).
+/// reification rows, Boolean rows, cardinality rows). P27 adds the
+/// solve-overlay row roles; the enum stays `#[non_exhaustive]` so both
+/// families can extend it without breaking match arms.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GeneratedRole {
@@ -121,6 +123,12 @@ pub enum GeneratedRole {
     /// The binary-times-linear product's bound row (`w >= L·b` / `w <= U·b`,
     /// P32 Task 17c).
     BinaryProductBoundRow,
+    /// A temporary row added for an [`ObjectiveLock`](crate::solver::overlay::ObjectiveLock)
+    /// (P27 Task 9).
+    ObjectiveLockRow,
+    /// A temporary row added for an [`ObjectiveCutoff`](crate::solver::overlay::ObjectiveCutoff)
+    /// (P27 Task 9).
+    CutoffRow,
 }
 
 /// The origin of a generated compiled entity (design §4.4, §5; D5).

@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod advanced;
+pub mod assignment;
 pub mod compiler;
 // A30 (P32): the real per-construct variants land in P32 Task 16, so the
 // construct module and `ConstructKind`/`ConstructEntry` become PUBLIC exports.
@@ -38,6 +39,9 @@ pub(crate) mod transaction;
 pub mod value_expr;
 
 // Re-export commonly used types for public API
+pub use assignment::{
+    AssignmentError, ContinuousLock, LockSelector, PrimalAssignment, SolutionLock,
+};
 pub use construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
@@ -54,8 +58,9 @@ pub use identity::{ConstructId, IdentityOverflow, ModelInstanceId, ModelLineageI
 pub use metadata::{EntityMetadata, EntityRef, ModelSource};
 pub use model::changelog::Change;
 pub use model::{
-    binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, Model,
-    ModelError, Objective, Parameter, ParameterDef, Sense, VarType, Variable, VariableDef,
+    binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, FixingProvenance,
+    Model, ModelError, Objective, Parameter, ParameterDef, SemiDomain, Sense, VarType, Variable,
+    VariableDef, VariableDomain, VariableFixing,
 };
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
@@ -65,6 +70,9 @@ pub use solution::{
 };
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
+};
+pub use solver::overlay::{
+    CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };
 pub use solver::request::{
     ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult, SolveSolution,

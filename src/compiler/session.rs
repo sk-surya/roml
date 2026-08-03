@@ -63,6 +63,12 @@ struct CurrentCompilation {
     revision: ModelRevision,
     /// User variable -> compiled variable id.
     variable_ids: HashMap<VarId, CompiledVariableId>,
+    /// User variable -> activity (WR-02). `SetVariableActive` is not
+    /// incrementally compilable (it forces `RebuildRequired`), so activity is
+    /// FIXED between snapshot rebuilds — tracking it lets `compile_delta` fold
+    /// activity identically for bounds/fixing ops instead of silently diverging
+    /// from `compile_snapshot`'s `[0,0]` fold for an inactive variable.
+    variable_activity: HashMap<VarId, bool>,
     /// User constraint -> compiled row id.
     row_ids: HashMap<ConId, CompiledConstraintId>,
     /// User objective -> compiled objective id.
@@ -73,6 +79,13 @@ struct CurrentCompilation {
     compiled_to_row: HashMap<CompiledConstraintId, ConId>,
     /// Compiled objective id -> user objective.
     compiled_to_objective: HashMap<CompiledObjectiveId, ObjId>,
+    /// Compiled objective id -> evaluated coefficient vector (WR-03). The
+    /// authoritative coefficients the backend holds; the overlay compiler
+    /// resolves temporary rows from these instead of re-deriving from the
+    /// canonical symbolic expression.
+    compiled_objective_coefficients: HashMap<CompiledObjectiveId, Vec<(CompiledVariableId, f64)>>,
+    /// Compiled objective id -> evaluated constant (WR-03).
+    compiled_objective_constants: HashMap<CompiledObjectiveId, f64>,
     /// Next dense compiled variable index.
     next_variable_index: u32,
     /// Next dense compiled row index.
@@ -175,6 +188,56 @@ impl CompilationSession {
         self.current.as_ref().map(|c| c.compilation_id)
     }
 
+    /// The model instance the compiled base belongs to, if any (P27 Task 9
+    /// overlay compiler: a stale/cross-model base is rejected before any
+    /// overlay op).
+    pub(crate) fn source_instance(&self) -> Option<ModelInstanceId> {
+        self.source_instance
+    }
+
+    /// Resolve a user variable to its compiled variable id in the current
+    /// compiled base (P27 Task 9 overlay compiler; additive, no behavior
+    /// change).
+    pub(crate) fn compiled_variable_id(&self, v: VarId) -> Option<CompiledVariableId> {
+        self.current
+            .as_ref()
+            .and_then(|c| c.variable_ids.get(&v).copied())
+    }
+
+    /// Resolve a user objective to its compiled objective id in the current
+    /// compiled base (P27 Task 9 overlay compiler; additive, no behavior
+    /// change).
+    pub(crate) fn compiled_objective_id(&self, o: ObjId) -> Option<CompiledObjectiveId> {
+        self.current
+            .as_ref()
+            .and_then(|c| c.objective_ids.get(&o).copied())
+    }
+
+    /// The compiled objective's evaluated coefficient vector and constant from
+    /// the compiled base (WR-03; P27 Task 9 overlay compiler). `None` only when
+    /// the objective is genuinely absent from the compiled base — the overlay
+    /// compiler resolves temporary rows from these authoritative evaluated
+    /// values, never by re-deriving from the canonical symbolic expression
+    /// (`as_constant()` returns `None` for parameterized/composite
+    /// coefficients).
+    pub(crate) fn compiled_objective_terms(
+        &self,
+        o: ObjId,
+    ) -> Option<(Vec<(CompiledVariableId, f64)>, f64)> {
+        let current = self.current.as_ref()?;
+        let cid = *current.objective_ids.get(&o)?;
+        let coefficients = current.compiled_objective_coefficients.get(&cid)?.clone();
+        let constant = *current.compiled_objective_constants.get(&cid)?;
+        Some((coefficients, constant))
+    }
+
+    /// The next dense compiled row index in the current compiled base (the
+    /// starting point for overlay temporary-row ids; additive, no behavior
+    /// change).
+    pub(crate) fn next_row_index(&self) -> Option<u32> {
+        self.current.as_ref().map(|c| c.next_row_index)
+    }
+
     /// The user variable for a compiled variable id, if known.
     pub fn user_variable(&self, compiled: CompiledVariableId) -> Option<VarId> {
         self.current
@@ -274,12 +337,22 @@ impl CompilationSession {
         let mut origin_map = OriginMap::new();
         let mut variables = Vec::with_capacity(snapshot.variables.len());
         let mut variable_ids = HashMap::new();
+        let mut variable_activity = HashMap::new();
         let mut compiled_to_variable = HashMap::new();
         for (index, v) in snapshot.variables.iter().enumerate() {
             let id = CompiledVariableId(index as u32);
-            // Activity is folded into bounds: inactive -> fixed [0, 0].
+            // SM-05.3: the compiled representation of a fixing is equal
+            // lower/upper bounds — a fixed variable compiles with effective
+            // bounds `[value, value]` (D6: fixing compiles as bound
+            // tightening). `VariableEntry.bounds` is the DECLARED view;
+            // `fixing` folds on top. Activity is then folded into bounds:
+            // inactive -> fixed [0, 0].
+            let effective = match &v.fixing {
+                Some(fixing) => Bounds::new(fixing.value, fixing.value),
+                None => v.bounds,
+            };
             let bounds = if v.active {
-                v.bounds
+                effective
             } else {
                 Bounds::new(0.0, 0.0)
             };
@@ -290,6 +363,7 @@ impl CompilationSession {
                 name: None,
             });
             variable_ids.insert(v.id, id);
+            variable_activity.insert(v.id, v.active);
             compiled_to_variable.insert(id, v.id);
             origin_map.insert_variable(id, EntityOrigin::UserVariable(v.id));
         }
@@ -331,6 +405,8 @@ impl CompilationSession {
         let mut objectives = Vec::with_capacity(snapshot.objectives.len());
         let mut objective_ids = HashMap::new();
         let mut compiled_to_objective = HashMap::new();
+        let mut compiled_objective_coefficients = HashMap::new();
+        let mut compiled_objective_constants = HashMap::new();
         for (index, o) in snapshot.objectives.iter().enumerate() {
             let id = CompiledObjectiveId(index as u32);
             let coefficients: Vec<(CompiledVariableId, f64)> = snapshot
@@ -343,6 +419,12 @@ impl CompilationSession {
                     _ => None,
                 })
                 .collect();
+            // WR-03: record the evaluated coefficients/constant of the compiled
+            // objective (the authoritative values the backend holds) so the
+            // overlay compiler can resolve temporary rows without re-deriving
+            // from the canonical symbolic expression.
+            compiled_objective_coefficients.insert(id, coefficients.clone());
+            compiled_objective_constants.insert(id, o.constant);
             objectives.push(CompiledObjective {
                 id,
                 sense: o.sense,
@@ -535,11 +617,14 @@ impl CompilationSession {
             compilation_id: compiled.compilation_id,
             revision: compiled.source_revision,
             variable_ids,
+            variable_activity,
             row_ids,
             objective_ids,
             compiled_to_variable,
             compiled_to_row,
             compiled_to_objective,
+            compiled_objective_coefficients,
+            compiled_objective_constants,
             next_variable_index: compiled.variables.len() as u32,
             next_row_index: compiled.linear_rows.len() as u32,
             next_objective_index: compiled.objectives.len() as u32,
@@ -637,6 +722,9 @@ impl CompilationSession {
                         name: None,
                     }));
                     w.variable_ids.insert(*var, id);
+                    // WR-02: a newly added variable is active (the canonical
+                    // `add_variable` has no inactive state).
+                    w.variable_activity.insert(*var, true);
                     w.compiled_to_variable.insert(id, *var);
                     origin_additions.insert_variable(id, EntityOrigin::UserVariable(*var));
                 }
@@ -688,9 +776,60 @@ impl CompilationSession {
                             "SetVariableBounds for unknown compiled variable ({var:?})"
                         ))
                     })?;
+                    // WR-02: a bounds change on an INACTIVE variable must not
+                    // silently diverge from `compile_snapshot` (which folds the
+                    // inactive variable to `[0,0]`). The delta carries the raw
+                    // declared bounds; force a rebuild so the snapshot fold
+                    // wins deterministically.
+                    if w.variable_activity.get(var) == Some(&false) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableBounds on inactive variable ({var:?}) must fold to [0, 0]; \
+                             rebuild required"
+                        )));
+                    }
                     operations.push(BackendOp::SetVariableBounds {
                         variable: id,
                         bounds: *bounds,
+                    });
+                }
+
+                // P27 Task 8 (SM-05.7): a persistent fixing change IS an
+                // effective-bound delta. The op is self-contained — it carries
+                // the effective bounds to apply (equal `[value, value]` for a
+                // fix; the current declared bounds for an unfix). Under
+                // `IncrementalBounds` it lowers to `BackendOp::SetVariableBounds`
+                // (D6: fixing compiles as bound tightening). A backend without
+                // `IncrementalBounds` selects a deterministic rebuild (D22).
+                ModelOp::SetVariableFixing {
+                    var,
+                    fixing: _,
+                    effective_bounds,
+                } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalBounds,
+                        "incremental variable fixing (effective bounds)",
+                    )?;
+                    let id = *w.variable_ids.get(var).ok_or_else(|| {
+                        CompileError::RebuildRequired(format!(
+                            "SetVariableFixing for unknown compiled variable ({var:?})"
+                        ))
+                    })?;
+                    // WR-02: a fixing change on an INACTIVE variable must fold
+                    // identically to `compile_snapshot`'s `[0,0]`. The delta
+                    // carries the raw effective bounds (e.g. the declared
+                    // `[0,10]` after an unfix), which would diverge from the
+                    // rebuild; force a deterministic snapshot rebuild instead.
+                    if w.variable_activity.get(var) == Some(&false) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableFixing on inactive variable ({var:?}) must fold to [0, 0]; \
+                             rebuild required"
+                        )));
+                    }
+                    operations.push(BackendOp::SetVariableBounds {
+                        variable: id,
+                        bounds: *effective_bounds,
                     });
                 }
 
@@ -867,6 +1006,10 @@ impl CompilationSession {
                     }));
                     w.objective_ids.insert(*obj, id);
                     w.compiled_to_objective.insert(id, *obj);
+                    // WR-03: keep the compiled objective coefficient/constant
+                    // tracking in sync across delta batches.
+                    w.compiled_objective_coefficients.insert(id, Vec::new());
+                    w.compiled_objective_constants.insert(id, 0.0);
                     origin_additions.insert_objective(id, EntityOrigin::UserObjective(*obj));
                 }
 
@@ -890,6 +1033,9 @@ impl CompilationSession {
                     }
                     w.objective_ids.remove(obj);
                     w.compiled_to_objective.remove(&id);
+                    // WR-03: drop the removed objective's coefficient tracking.
+                    w.compiled_objective_coefficients.remove(&id);
+                    w.compiled_objective_constants.remove(&id);
                 }
 
                 // A32: `SetActiveObjective { obj: None }` compiles to
@@ -956,6 +1102,15 @@ impl CompilationSession {
                         objective: oid,
                         value: *constant,
                     });
+                    // WR-03: keep the compiled objective coefficient/constant
+                    // tracking in sync (replace the coefficient cell, preserve
+                    // deterministic compiled order).
+                    if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid) {
+                        cells.retain(|(cid, _)| *cid != vid);
+                        cells.push((vid, *evaluated_value));
+                        cells.sort_by_key(|(cid, _)| *cid);
+                    }
+                    w.compiled_objective_constants.insert(oid, *constant);
                 }
 
                 ModelOp::SetObjectiveSense { obj, sense } => {
@@ -980,6 +1135,9 @@ impl CompilationSession {
                         objective: id,
                         value: *constant,
                     });
+                    // WR-03: keep the compiled objective constant tracking in
+                    // sync.
+                    w.compiled_objective_constants.insert(id, *constant);
                 }
 
                 // `SetParameter` is a provable NO-OP on backend IR: no compiled
@@ -1039,11 +1197,14 @@ impl CompilationSession {
             compilation_id: to_compilation,
             revision: delta.to,
             variable_ids: w.variable_ids,
+            variable_activity: w.variable_activity,
             row_ids: w.row_ids,
             objective_ids: w.objective_ids,
             compiled_to_variable: w.compiled_to_variable,
             compiled_to_row: w.compiled_to_row,
             compiled_to_objective: w.compiled_to_objective,
+            compiled_objective_coefficients: w.compiled_objective_coefficients,
+            compiled_objective_constants: w.compiled_objective_constants,
             next_variable_index: w.next_variable_index,
             next_row_index: w.next_row_index,
             next_objective_index: w.next_objective_index,
