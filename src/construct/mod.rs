@@ -70,6 +70,14 @@ pub struct ConstructEntry {
     pub kind: ConstructKind,
     /// Whether the construct is active in the model.
     pub active: bool,
+    /// Per-construct formulation preference (F4).
+    ///
+    /// Threaded through `Change::ConstructAdded`/`ModelOp::AddConstruct` and
+    /// the snapshot/delta reconstruction paths so P26 can honor
+    /// Auto/Portable/NativeRequired from canonical snapshots/deltas. The
+    /// [`ConstructData`] arena reads preference exclusively from this entry
+    /// (single authority).
+    pub preference: FormulationPreference,
 }
 
 /// Per-construct formulation preference (design §7, §8.1).
@@ -89,15 +97,9 @@ pub enum FormulationPreference {
 /// Internal construct data held by the arena.
 #[derive(Clone, Debug)]
 pub struct ConstructData {
-    /// The canonical construct entry.
+    /// The canonical construct entry (single authority for kind, activity, and
+    /// formulation preference — F4).
     pub entry: ConstructEntry,
-    /// Per-construct formulation preference.
-    ///
-    /// P25 (F3/F4): crate-private scaffolding. The field is written by the
-    /// arena and read by no crate code yet — F4 threads `preference` through
-    /// [`ConstructEntry`] and removes this field (single authority).
-    #[allow(dead_code)]
-    pub preference: FormulationPreference,
     /// Derived parameter dependencies of the payload.
     pub parameter_dependencies: Vec<ParamId>,
     /// Entity metadata (also reachable through
@@ -147,8 +149,8 @@ impl ConstructStore {
                     id,
                     kind,
                     active: true,
+                    preference,
                 },
-                preference,
                 parameter_dependencies,
                 metadata: EntityMetadata::default(),
             },

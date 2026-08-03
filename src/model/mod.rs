@@ -413,6 +413,7 @@ impl Model {
         self.changelog.push(Change::ConstructAdded {
             construct,
             kind,
+            preference,
             active: true,
         });
         Ok(construct)
@@ -2184,10 +2185,12 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::ConstructAdded {
             construct,
             kind,
+            preference,
             active,
         } => Ok(ModelOp::AddConstruct {
             construct,
             kind,
+            preference,
             active,
         }),
         Change::ConstructRemoved { construct } => Ok(ModelOp::RemoveConstruct { construct }),
@@ -2946,6 +2949,79 @@ mod construct_tests {
             "EntityRef::Construct is usable now (design §4.4)"
         );
         assert!(model.validate_invariants().is_ok());
+    }
+
+    /// F4: `FormulationPreference` must round-trip through the construct entry,
+    /// the snapshot, and the delta so P26 can honor Auto/Portable/NativeRequired
+    /// from canonical snapshots/deltas.
+    #[test]
+    fn construct_preference_round_trips_through_snapshot_and_delta() {
+        let mut model = Model::new();
+        let k = model
+            .add_construct_fixture(fixture("pref", 1.0), FormulationPreference::NativeRequired)
+            .unwrap();
+        let r1 = model.commit().unwrap();
+
+        // The canonical entry carries the preference.
+        let entry = model.construct(k).unwrap();
+        assert_eq!(
+            entry.preference, FormulationPreference::NativeRequired,
+            "entry must carry the preference"
+        );
+
+        // Snapshot carries it.
+        let snap = model.take_snapshot().unwrap();
+        let snap_entry = snap
+            .constructs
+            .iter()
+            .find(|e| e.id == k)
+            .expect("snapshot carries the construct entry");
+        assert_eq!(
+            snap_entry.preference, FormulationPreference::NativeRequired,
+            "snapshot entry must carry the preference"
+        );
+
+        // Delta carries it.
+        let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
+        let batch = batches
+            .iter()
+            .find(|b| b.to == r1)
+            .expect("construct-add batch present");
+        let delta_entry = batch
+            .constructs
+            .iter()
+            .find(|e| e.id == k)
+            .expect("delta carries the construct entry");
+        assert_eq!(
+            delta_entry.preference, FormulationPreference::NativeRequired,
+            "delta entry must carry the preference"
+        );
+
+        // Rebuild from the snapshot preserves it.
+        let mut rebuilt = Model::new();
+        for entry in &snap.constructs {
+            let payload = if let ConstructKind::Fixture(p) = &entry.kind {
+                p.clone()
+            } else {
+                panic!("expected fixture payload");
+            };
+            let id = rebuilt
+                .add_construct_fixture(payload, entry.preference)
+                .unwrap();
+            if !entry.active {
+                rebuilt.set_construct_active(id, false).unwrap();
+            }
+        }
+        let rebuilt_snap = rebuilt.take_snapshot().unwrap();
+        let rebuilt_entry = rebuilt_snap
+            .constructs
+            .iter()
+            .find(|e| e.id != k)
+            .expect("rebuilt construct present in snapshot");
+        assert_eq!(
+            rebuilt_entry.preference, FormulationPreference::NativeRequired,
+            "rebuild from snapshot preserves the preference"
+        );
     }
 
     /// WR-06: removing a construct must cascade its metadata, so the valid
