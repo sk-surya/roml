@@ -5,8 +5,8 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 | Requirement | Primary phase | Secondary phase/evidence | Status |
 |---|---|---|---|
 | SM-01 Canonical semantic IR | P25 | P34 public API/NLP audit | Planned |
-| SM-02 Identity/metadata/provenance | P25 | P26 origin maps; P29 reports | Planned |
-| SM-03 Compiler/backend IR | P26 | P34 equivalence evidence | Planned |
+| SM-02 Identity/metadata/provenance | P25 | P26 compilation/origin IDs; P29 reports | Planned |
+| SM-03 Compiler/backend IR | P26 | P34 equivalence and stale-state evidence | Planned |
 | SM-04 Typed capabilities | P26 | P28/P29/P31/P33 backend features | Planned |
 | SM-05 Persistent fixing | P27 | P34 regression/performance | Planned |
 | SM-06 Assignments/solution reuse | P27 | P28 starts/hints | Planned |
@@ -29,14 +29,15 @@ Expected file: `docs/release/evidence/M3_P25_SEMANTIC_IR.md`
 Must include:
 
 - M2 source-compatibility compile matrix;
-- lineage allocation/clone/cross-model tests;
+- independent-lineage tests;
+- clone-preserves-lineage/new-instance tests;
 - metadata access and formatting tests;
 - function-in-set snapshot/delta round-trip;
 - construct-store lifecycle/property tests;
 - public API diff;
 - invariant-checker results.
 
-Closes: SM-01.1–SM-01.6, SM-02.1–SM-02.3, foundations of SM-02.5 and SM-15.1.
+Closes: SM-01.1–SM-01.6, SM-02.1–SM-02.3, SM-02.7, foundations of SM-02.5 and SM-15.1.
 
 ### P26 evidence
 
@@ -45,9 +46,12 @@ Expected file: `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md`
 Must include:
 
 - canonical-to-backend compile determinism;
+- unique exact `CompilationId` allocation and propagation;
+- divergent-clone/equal-revision stale-state rejection;
+- proof that recipe fingerprints are not accepted as exact authority;
 - origin-map completeness;
 - backend feature/limitation matrix;
-- primitive identity-compiler equivalence;
+- primitive identity-compiler equivalence including objective policy;
 - compiled delta versus rebuild randomized tests;
 - ReferenceBackend and HiGHS migration;
 - backend contract/public API review.
@@ -64,6 +68,7 @@ Must include:
 - continuous/integer/binary fixing matrix;
 - fix/unfix bound-update traces;
 - assignment lineage/stale-handle tests;
+- overlay exact-compilation-ID validation;
 - overlay apply/rollback failure matrix;
 - subsequent-solve leak checks;
 - HiGHS incremental bound evidence.
@@ -80,7 +85,7 @@ Must include:
 - start/hint capability matrix by HiGHS version;
 - partial/full start fixtures;
 - unsupported/conversion policy tests;
-- effective-plan metadata snapshots;
+- effective-plan metadata snapshots with exact compilation identity;
 - proof that hints/starts do not alter model feasibility;
 - fresh public examples.
 
@@ -95,7 +100,7 @@ Must include:
 - pinned official-header/API audit;
 - version-gated support table;
 - row/bound/fixing/lock/construct conflict fixtures;
-- origin projection validation;
+- exact conflict/origin `CompilationId` match and stale-ID rejection;
 - text/Markdown structured report golden tests;
 - exact scope/minimality/completion claims;
 - unsupported behavior tests.
@@ -125,6 +130,7 @@ Expected file: `docs/release/evidence/M3_P31_LEXICOGRAPHIC.md`
 Must include:
 
 - objective-policy validation;
+- weighted mixed-sense normalization tests;
 - portable stage/lock traces;
 - minimize/maximize degradation formulas;
 - stage-limit/continuation behavior;
@@ -185,6 +191,7 @@ Must include:
 - fresh packed-consumer results;
 - native/portable formulation corpus summary;
 - failure-injection matrix;
+- exact-identity/stale-state matrix;
 - benchmark comparison to untouched baseline;
 - independent engineering and OR reviews;
 - NLP-readiness pass/fail findings;
