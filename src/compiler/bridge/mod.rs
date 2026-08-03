@@ -363,7 +363,10 @@ pub(crate) fn eval_bound(
 ) -> Result<f64, CompileError> {
     bound
         .eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
-        .map_err(|parameter| CompileError::MissingConstructParameter { construct, parameter })
+        .map_err(|parameter| CompileError::MissingConstructParameter {
+            construct,
+            parameter,
+        })
 }
 
 /// Combine the function's compiled coefficients with a single-var term

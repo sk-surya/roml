@@ -642,6 +642,16 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveVariable { var } => {
+                    // F1: a construct whose bridge artifact references the
+                    // removed variable would hold a dangling compiled
+                    // reference — force a deterministic rebuild instead of an
+                    // incremental removal.
+                    if Self::construct_depends_on_variable(&current.construct_dependencies, *var) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "RemoveVariable for {var:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
                     let id = *w.variable_ids.get(var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "RemoveVariable for unknown compiled variable ({var:?})"
@@ -653,6 +663,18 @@ impl CompilationSession {
                 }
 
                 ModelOp::SetVariableBounds { var, bounds } => {
+                    // F1: a construct's Big-M / selector M values are derived
+                    // from the referenced variables' declared bounds — a bound
+                    // change on a construct dependency would leave the
+                    // generated bridge artifact stale. Force a deterministic
+                    // rebuild (the compiler cannot prove the incrementally
+                    // emitted row bounds equal a fresh derivation).
+                    if Self::construct_depends_on_variable(&current.construct_dependencies, *var) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableBounds for {var:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
                     // SM-04.4 (WR-3): an unqualified feature is rejected, never
                     // silently compiled.
                     require_feature(
@@ -969,7 +991,29 @@ impl CompilationSession {
                 // behavior through the compiled path (the F-B1 conservative
                 // rebuild list is narrowed here by this provable equivalence).
                 //
-                ModelOp::SetParameter { .. } => {}
+                // `SetParameter` is a provable NO-OP on backend IR: no compiled
+                // entity carries a parameter, and the coefficient index is the
+                // single coefficient authority (SM-01.1) — a parameter change
+                // re-emits `SetCell` ops for every dependent cell with the new
+                // evaluated value, which the compiled delta carries. Skipping
+                // the parameter op preserves the M2 incremental parameter
+                // behavior through the compiled path (the F-B1 conservative
+                // rebuild list is narrowed here by this provable equivalence).
+                //
+                // EXCEPTION (F1): a construct's bridge artifact EVALUATES
+                // parameters directly (function coefficients, set thresholds,
+                // Big-M values). A parameter change on a construct dependency
+                // would leave the generated rows stale — force a deterministic
+                // rebuild, never silently drop the update.
+                ModelOp::SetParameter { param, .. } => {
+                    if Self::construct_depends_on_parameter(&current.construct_dependencies, *param)
+                    {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetParameter for {param:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
+                }
                 ModelOp::SetSemiContinuousBound { .. } => {
                     return Err(CompileError::RebuildRequired(
                         "SetSemiContinuousBound is not incrementally compilable".into(),
@@ -1019,6 +1063,20 @@ impl CompilationSession {
         });
 
         Ok(batch)
+    }
+
+    /// Whether any active construct's bridge artifact depends on `var` (F1).
+    fn construct_depends_on_variable(dependencies: &[BridgeDependency], var: VarId) -> bool {
+        dependencies
+            .iter()
+            .any(|d| matches!(d, BridgeDependency::Variable(v) if *v == var))
+    }
+
+    /// Whether any active construct's bridge artifact depends on `param` (F1).
+    fn construct_depends_on_parameter(dependencies: &[BridgeDependency], param: ParamId) -> bool {
+        dependencies
+            .iter()
+            .any(|d| matches!(d, BridgeDependency::Parameter(p) if *p == param))
     }
 }
 

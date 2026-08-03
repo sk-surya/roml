@@ -54,7 +54,10 @@ fn one_sided_implications(
 ) -> Result<Vec<OneSided>, CompileError> {
     let eval = |e: &ValueExpr| -> Result<f64, CompileError> {
         e.eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
-            .map_err(|parameter| CompileError::MissingConstructParameter { construct, parameter })
+            .map_err(|parameter| CompileError::MissingConstructParameter {
+                construct,
+                parameter,
+            })
     };
     Ok(match set {
         ScalarSet::LessEqual(upper) => vec![OneSided {
