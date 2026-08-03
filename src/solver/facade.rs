@@ -636,14 +636,19 @@ where
             Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
                 // IN-04: surface the reason the rollback could not be proven
                 // clean — the diagnostic value otherwise never reaches the
-                // caller or the logs. The backend has already marked itself
-                // RequiresRebuild; the overlay solve result is still valid, but
-                // the next solve will force a snapshot rebuild before reuse
-                // (D7 invariant).
+                // caller or the logs. The overlay solve result is still valid.
                 warn!(
                     "overlay rollback could not be proven clean (session marked RequiresRebuild): \
                      {reason}"
                 );
+                // F3: NEVER trust the backend to have self-marked — DEFENSIVELY
+                // force the next solve to rebuild. Resetting the compiler makes
+                // `current_compilation()` return `None`, so the next
+                // `synchronize_base` takes the snapshot-rebuild branch even when
+                // the backend reports `Ready` at the committed revision — the
+                // no-sync fast path can never reuse the uncertain overlay state
+                // (D7, D22).
+                self.force_rebuild_on_next_sync();
                 Ok(())
             }
             Err(e) => Err(SolveError::Rollback(e)),

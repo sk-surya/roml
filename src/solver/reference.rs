@@ -21,6 +21,7 @@ use crate::compiler::backend_ir::{
     CompiledEntityRef, CompiledEntityRegistry, CompiledObjectiveId, CompiledObjectivePolicy,
     CompiledVariableId,
 };
+use crate::compiler::origin::OverlayId;
 use crate::compiler::CompileError;
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::id::{ConId, ObjId, ParamId, VarId};
@@ -108,6 +109,8 @@ pub struct ReferenceBackend {
 /// transactional rollback and the post-rollback clean verification (SM-07.4).
 #[derive(Clone, Debug)]
 struct OverlayApplyState {
+    /// The originating overlay (F3: part of the full receipt tuple validation).
+    overlay_id: OverlayId,
     /// The exact base compiled state the overlay was applied on top of.
     base_compilation: CompilationId,
     /// The overlay-compounded compiled state.
@@ -846,6 +849,7 @@ impl OverlaySession for ReferenceBackend {
         }
 
         let mut state = OverlayApplyState {
+            overlay_id: overlay.overlay_id,
             base_compilation: overlay.base_compilation,
             applied_compilation: overlay.compilation_id,
             prior_bounds: HashMap::new(),
@@ -954,11 +958,24 @@ impl OverlaySession for ReferenceBackend {
                 HealthEffect::RequiresRebuild,
             )
         })?;
-        if state.applied_compilation != receipt.applied_compilation {
+        // F3: validate the FULL receipt tuple (overlay_id, base_compilation,
+        // applied_compilation) against the recorded overlay state. A forged
+        // receipt — ANY field mismatch — is rollback UNCERTAINTY, never a
+        // `Clean` rollback.
+        if state.overlay_id != receipt.overlay_id
+            || state.base_compilation != receipt.base_compilation
+            || state.applied_compilation != receipt.applied_compilation
+        {
             return Ok(OverlayRollbackOutcome::RequiresRebuild {
                 reason: format!(
-                    "receipt applied compilation {:?} does not match the backend's applied overlay {:?}",
-                    receipt.applied_compilation, state.applied_compilation
+                    "receipt (overlay {:?}, base {:?}, applied {:?}) does not match the \
+                     backend's applied overlay (overlay {:?}, base {:?}, applied {:?})",
+                    receipt.overlay_id,
+                    receipt.base_compilation,
+                    receipt.applied_compilation,
+                    state.overlay_id,
+                    state.base_compilation,
+                    state.applied_compilation,
                 ),
             });
         }
