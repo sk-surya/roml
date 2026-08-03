@@ -695,12 +695,16 @@ pub unsafe fn roml::compiler::capability::CompilationPolicy::clone_to_uninit(&se
 impl<T> core::convert::From<T> for roml::compiler::capability::CompilationPolicy
 pub fn roml::compiler::capability::CompilationPolicy::from(T) -> T
 pub enum roml::advanced::CompileError
+pub roml::advanced::CompileError::DuplicateEntity
+pub roml::advanced::CompileError::DuplicateEntity::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::advanced::CompileError::IdentityOverflow
 pub roml::advanced::CompileError::InvalidObjectivePolicy(roml::compiler::backend_ir::CompiledObjectiveId)
 pub roml::advanced::CompileError::InvalidReference
 pub roml::advanced::CompileError::InvalidReference::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::advanced::CompileError::MissingOrigin
 pub roml::advanced::CompileError::MissingOrigin::entity: roml::compiler::backend_ir::CompiledEntityRef
+pub roml::advanced::CompileError::NonDenseCompilation
+pub roml::advanced::CompileError::NonDenseCompilation::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::advanced::CompileError::RebuildRequired(alloc::string::String)
 pub roml::advanced::CompileError::StaleCompilation
 pub roml::advanced::CompileError::StaleCompilation::actual: roml::compiler::backend_ir::CompilationId
@@ -3757,7 +3761,7 @@ impl<T> core::convert::From<T> for roml::solution::SolutionStore
 pub fn roml::solution::SolutionStore::from(T) -> T
 pub struct roml::advanced::SolveMetadata
 pub roml::advanced::SolveMetadata::backend_name: alloc::string::String
-pub roml::advanced::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::advanced::SolveMetadata::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::advanced::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::advanced::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::advanced::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -3856,7 +3860,7 @@ pub unsafe fn roml::solver::request::SolveRequest::clone_to_uninit(&self, *mut u
 impl<T> core::convert::From<T> for roml::solver::request::SolveRequest
 pub fn roml::solver::request::SolveRequest::from(T) -> T
 pub struct roml::advanced::SolveResult
-pub roml::advanced::SolveResult::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::advanced::SolveResult::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::advanced::SolveResult::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::advanced::SolveResult::solution: core::option::Option<roml::solver::request::SolveSolution>
 pub roml::advanced::SolveResult::termination: roml::solver::backend::TerminationStatus
@@ -5652,12 +5656,16 @@ pub fn roml::compiler::session::CompilationSession::borrow_mut(&mut self) -> &mu
 impl<T> core::convert::From<T> for roml::compiler::session::CompilationSession
 pub fn roml::compiler::session::CompilationSession::from(T) -> T
 pub enum roml::compiler::CompileError
+pub roml::compiler::CompileError::DuplicateEntity
+pub roml::compiler::CompileError::DuplicateEntity::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::compiler::CompileError::IdentityOverflow
 pub roml::compiler::CompileError::InvalidObjectivePolicy(roml::compiler::backend_ir::CompiledObjectiveId)
 pub roml::compiler::CompileError::InvalidReference
 pub roml::compiler::CompileError::InvalidReference::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::compiler::CompileError::MissingOrigin
 pub roml::compiler::CompileError::MissingOrigin::entity: roml::compiler::backend_ir::CompiledEntityRef
+pub roml::compiler::CompileError::NonDenseCompilation
+pub roml::compiler::CompileError::NonDenseCompilation::entity: roml::compiler::backend_ir::CompiledEntityRef
 pub roml::compiler::CompileError::RebuildRequired(alloc::string::String)
 pub roml::compiler::CompileError::StaleCompilation
 pub roml::compiler::CompileError::StaleCompilation::actual: roml::compiler::backend_ir::CompilationId
@@ -8705,7 +8713,7 @@ pub fn roml::model::objective::Sense::from(T) -> T
 pub enum roml::prelude::SolveError
 pub roml::prelude::SolveError::Commit(roml::model::ModelError)
 pub roml::prelude::SolveError::CompilationMismatch
-pub roml::prelude::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::prelude::SolveError::CompilationMismatch::actual: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::prelude::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::prelude::SolveError::InvalidOptions(alloc::string::String)
 pub roml::prelude::SolveError::License(roml::solver::backend::BackendError)
@@ -9845,7 +9853,7 @@ impl<T> core::convert::From<T> for roml::solution::metadata::SynchronizationMode
 pub fn roml::solution::metadata::SynchronizationMode::from(T) -> T
 pub struct roml::solution::metadata::SolveMetadata
 pub roml::solution::metadata::SolveMetadata::backend_name: alloc::string::String
-pub roml::solution::metadata::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::solution::metadata::SolveMetadata::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solution::metadata::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::solution::metadata::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::solution::metadata::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -10083,7 +10091,7 @@ impl<T> core::convert::From<T> for roml::solution::SolutionStore
 pub fn roml::solution::SolutionStore::from(T) -> T
 pub struct roml::solution::SolveMetadata
 pub roml::solution::SolveMetadata::backend_name: alloc::string::String
-pub roml::solution::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::solution::SolveMetadata::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solution::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::solution::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::solution::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -10542,7 +10550,7 @@ pub mod roml::solver::error
 pub enum roml::solver::error::SolveError
 pub roml::solver::error::SolveError::Commit(roml::model::ModelError)
 pub roml::solver::error::SolveError::CompilationMismatch
-pub roml::solver::error::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::solver::error::SolveError::CompilationMismatch::actual: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::error::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::error::SolveError::InvalidOptions(alloc::string::String)
 pub roml::solver::error::SolveError::License(roml::solver::backend::BackendError)
@@ -10629,7 +10637,7 @@ impl<T> core::borrow::BorrowMut<T> for roml::solver::facade::SolverSession<B> wh
 pub fn roml::solver::facade::SolverSession<B>::borrow_mut(&mut self) -> &mut T
 impl<T> core::convert::From<T> for roml::solver::facade::SolverSession<B>
 pub fn roml::solver::facade::SolverSession<B>::from(T) -> T
-pub fn roml::solver::facade::normalize_result(&roml::solver::request::SolveResult, roml::revision::ModelRevision, core::option::Option<roml::id::ObjId>, &str, roml::solution::metadata::SynchronizationMode, roml::identity::ModelLineageId, roml::identity::ModelInstanceId, roml::compiler::backend_ir::CompilationId) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+pub fn roml::solver::facade::normalize_result(&roml::solver::request::SolveResult, roml::revision::ModelRevision, core::option::Option<roml::id::ObjId>, &str, roml::solution::metadata::SynchronizationMode, roml::identity::ModelLineageId, roml::identity::ModelInstanceId, core::option::Option<roml::compiler::backend_ir::CompilationId>) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
 pub mod roml::solver::options
 pub struct roml::solver::options::SolveOptions
 impl roml::solver::options::SolveOptions
@@ -11010,7 +11018,7 @@ pub unsafe fn roml::solver::request::SolveRequest::clone_to_uninit(&self, *mut u
 impl<T> core::convert::From<T> for roml::solver::request::SolveRequest
 pub fn roml::solver::request::SolveRequest::from(T) -> T
 pub struct roml::solver::request::SolveResult
-pub roml::solver::request::SolveResult::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::solver::request::SolveResult::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::request::SolveResult::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::solver::request::SolveResult::solution: core::option::Option<roml::solver::request::SolveSolution>
 pub roml::solver::request::SolveResult::termination: roml::solver::backend::TerminationStatus
@@ -11219,7 +11227,7 @@ pub fn roml::solver::LpAlgorithm::from(T) -> T
 pub enum roml::solver::SolveError
 pub roml::solver::SolveError::Commit(roml::model::ModelError)
 pub roml::solver::SolveError::CompilationMismatch
-pub roml::solver::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::solver::SolveError::CompilationMismatch::actual: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::solver::SolveError::InvalidOptions(alloc::string::String)
 pub roml::solver::SolveError::License(roml::solver::backend::BackendError)
@@ -12518,7 +12526,7 @@ pub fn roml::model::objective::Sense::from(T) -> T
 pub enum roml::SolveError
 pub roml::SolveError::Commit(roml::model::ModelError)
 pub roml::SolveError::CompilationMismatch
-pub roml::SolveError::CompilationMismatch::actual: roml::compiler::backend_ir::CompilationId
+pub roml::SolveError::CompilationMismatch::actual: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::SolveError::CompilationMismatch::expected: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::SolveError::InvalidOptions(alloc::string::String)
 pub roml::SolveError::License(roml::solver::backend::BackendError)
@@ -14592,7 +14600,7 @@ impl<T> core::convert::From<T> for roml::solution::SolutionStore
 pub fn roml::solution::SolutionStore::from(T) -> T
 pub struct roml::SolveMetadata
 pub roml::SolveMetadata::backend_name: alloc::string::String
-pub roml::SolveMetadata::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::SolveMetadata::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::SolveMetadata::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::SolveMetadata::model_instance: roml::identity::ModelInstanceId
 pub roml::SolveMetadata::model_lineage: roml::identity::ModelLineageId
@@ -14736,7 +14744,7 @@ pub unsafe fn roml::solver::request::SolveRequest::clone_to_uninit(&self, *mut u
 impl<T> core::convert::From<T> for roml::solver::request::SolveRequest
 pub fn roml::solver::request::SolveRequest::from(T) -> T
 pub struct roml::SolveResult
-pub roml::SolveResult::compilation_id: roml::compiler::backend_ir::CompilationId
+pub roml::SolveResult::compilation_id: core::option::Option<roml::compiler::backend_ir::CompilationId>
 pub roml::SolveResult::effective_configuration: roml::solver::request::EffectiveConfig
 pub roml::SolveResult::solution: core::option::Option<roml::solver::request::SolveSolution>
 pub roml::SolveResult::termination: roml::solver::backend::TerminationStatus
