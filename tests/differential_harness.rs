@@ -105,9 +105,18 @@ fn make_snapshot(
     params: Vec<(ParamId, f64)>,
     cells: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)>,
 ) -> ModelSnapshot {
-    let vars: HashMap<VarId, (Bounds, VarType, bool, Option<f64>)> = variables
+    let vars: HashMap<
+        VarId,
+        (
+            Bounds,
+            VarType,
+            bool,
+            Option<f64>,
+            Option<roml::VariableFixing>,
+        ),
+    > = variables
         .into_iter()
-        .map(|(id, b, vt, a, s)| (id, (b, vt, a, s)))
+        .map(|(id, b, vt, a, s)| (id, (b, vt, a, s, None)))
         .collect();
     let cons: HashMap<ConId, (ConstraintBounds, bool)> = constraints
         .into_iter()
@@ -1174,7 +1183,7 @@ fn dx_set_parameter_round_trip() {
 fn build_snapshot_from_view(rev: ModelRevision, view: &NormalizedView) -> ModelSnapshot {
     let mut variables = HashMap::new();
     for (id, bounds, var_type, active, semi) in &view.variables {
-        variables.insert(*id, (*bounds, *var_type, *active, *semi));
+        variables.insert(*id, (*bounds, *var_type, *active, *semi, None));
     }
 
     let mut constraints = HashMap::new();
@@ -1743,7 +1752,10 @@ fn dx_multi_adapter_cursor_independence() {
 
     // Verify B's state at r1 is correct by comparing with snapshot rebuild at r1
     let mut vars_r1 = HashMap::new();
-    vars_r1.insert(v1, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+    vars_r1.insert(
+        v1,
+        (Bounds::NON_NEGATIVE, VarType::Continuous, true, None, None),
+    );
     let mut cons_r1 = HashMap::new();
     cons_r1.insert(c, (ConstraintBounds::le(100.0), true));
     let mut params_r1 = HashMap::new();
@@ -1809,9 +1821,10 @@ fn dx_rebuild_determinism() {
             VarType::Continuous,
             true,
             Some(5.0),
+            None,
         ),
     );
-    variables.insert(v2, (Bounds::BINARY, VarType::Binary, false, None));
+    variables.insert(v2, (Bounds::BINARY, VarType::Binary, false, None, None));
 
     let mut constraints = HashMap::new();
     constraints.insert(c, (ConstraintBounds::le(50.0), true));
@@ -1952,6 +1965,7 @@ fn dx_semicontinuous_partial_apply() {
             VarType::Continuous,
             true,
             Some(5.0), // semi-continuous lower bound
+            None,
         ),
     );
     let cons_r2: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();
@@ -2041,6 +2055,7 @@ fn dx_semicontinuous_partial_apply() {
             VarType::Continuous,
             true,
             Some(5.0),
+            None,
         ),
     );
     let cons_r2b: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();

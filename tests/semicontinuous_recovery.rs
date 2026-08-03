@@ -59,7 +59,7 @@ fn build_snapshot_with_bound(
     let mut variables = HashMap::new();
     variables.insert(
         var,
-        (Bounds::new(lower, upper), var_type, true, None::<f64>),
+        (Bounds::new(lower, upper), var_type, true, None::<f64>, None),
     );
     let mut constraints = HashMap::new();
     constraints.insert(con, (ConstraintBounds::le(10.0), true));

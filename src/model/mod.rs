@@ -29,7 +29,10 @@ pub(crate) use parameter::ParameterStore;
 pub use parameter::{parameter, ParameterDef};
 pub(crate) use transaction::Transaction;
 pub(crate) use variable::VariableStore;
-pub use variable::{binary, continuous, integer, Bounds, VarType, VariableDef};
+pub use variable::{
+    binary, continuous, integer, Bounds, FixingProvenance, SemiDomain, VarType, VariableDef,
+    VariableDomain, VariableFixing,
+};
 
 /// Semantic alias for a variable handle (D8). A plain type alias of [`VarId`].
 pub type Variable = crate::id::VarId;
@@ -83,6 +86,37 @@ pub enum ModelError {
     NonFiniteValue(&'static str),
     /// A value was NaN.
     NaNValue(&'static str),
+    /// A fix value lies outside the variable's declared bounds (SM-05.5).
+    ValueOutOfBounds {
+        /// The variable being fixed.
+        variable: VarId,
+        /// The rejected fix value.
+        value: f64,
+        /// The declared bounds the value must lie inside.
+        bounds: Bounds,
+    },
+    /// A fix value on an integer/binary variable is not integral beyond the
+    /// named integrality tolerance (SM-05.5).
+    NonIntegralValue {
+        /// The variable being fixed.
+        variable: VarId,
+        /// The rejected non-integral fix value.
+        value: f64,
+        /// The integrality tolerance used for the check.
+        tolerance: f64,
+    },
+    /// Declared-bound changes that exclude an active fixing fail atomically
+    /// (SM-05.6): the fixing value is outside the requested bounds.
+    BoundsExcludeFixing {
+        /// The variable with the active fixing.
+        variable: VarId,
+        /// The active fixing value.
+        value: f64,
+        /// The requested bounds that exclude the fixing value.
+        bounds: Bounds,
+    },
+    /// The integrality tolerance must be finite and non-negative.
+    InvalidIntegralityTolerance(f64),
     /// Revision counter overflow.
     RevisionOverflow,
     /// An opaque identity counter was exhausted (ids never wrap).
@@ -109,6 +143,33 @@ impl std::fmt::Display for ModelError {
             }
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
+            Self::ValueOutOfBounds {
+                variable,
+                value,
+                bounds,
+            } => write!(
+                f,
+                "fix value {value} for variable {variable:?} lies outside declared bounds {bounds:?}"
+            ),
+            Self::NonIntegralValue {
+                variable,
+                value,
+                tolerance,
+            } => write!(
+                f,
+                "fix value {value} for integer variable {variable:?} is not integral within tolerance {tolerance}"
+            ),
+            Self::BoundsExcludeFixing {
+                variable,
+                value,
+                bounds,
+            } => write!(
+                f,
+                "declared bounds {bounds:?} for variable {variable:?} exclude the active fixing value {value}"
+            ),
+            Self::InvalidIntegralityTolerance(tolerance) => {
+                write!(f, "integrality tolerance must be >= 0 and finite, got {tolerance}")
+            }
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -232,11 +293,15 @@ impl Clone for Model {
 }
 
 /// Model-level constants used by algebraic introspection (slack and violation
-/// checks).
+/// checks) and fixing validation (SM-05.5).
 #[derive(Clone, Debug)]
 pub struct ModelConstants {
     /// Tolerance for considering a constraint violated (negative slack).
     pub feasibility_tolerance: f64,
+    /// Named integrality tolerance used by fix validation on integer/binary
+    /// variables (SM-05.5). Default is consistent with the feasibility
+    /// tolerance convention (1e-9).
+    pub integrality_tolerance: f64,
 }
 
 impl Default for ModelConstants {
@@ -244,6 +309,7 @@ impl Default for ModelConstants {
         // default tolerance is a small epsilon used in slack/violation checks.
         Self {
             feasibility_tolerance: 1e-9,
+            integrality_tolerance: 1e-9,
         }
     }
 }
@@ -258,6 +324,7 @@ impl ModelConstants {
     pub fn set_feas_tol(feasibility_tolerance: f64) -> Self {
         Self {
             feasibility_tolerance,
+            integrality_tolerance: 1e-9,
         }
     }
 }
@@ -601,8 +668,158 @@ impl Model {
     }
 
     /// Get variable bounds.
+    ///
+    /// This is the **declared** bound view (SM-05.1). Use
+    /// [`Self::effective_bounds`] for the bounds the solver actually applies
+    /// (declared ∩ active fixing).
     pub fn variable_bounds(&self, var: VarId) -> Option<Bounds> {
-        self.variables.get(var).map(|d| d.bounds)
+        self.variables.get(var).map(|d| d.domain.bounds)
+    }
+
+    /// The declared domain of a variable (design §10, SM-05.1).
+    ///
+    /// Returns `None` for a stale/removed variable. The declared domain
+    /// separates declared bounds/type/semi from the optional persistent
+    /// fixing; see [`Self::effective_bounds`] for the solver-facing bounds.
+    pub fn variable_domain(&self, var: VarId) -> Option<VariableDomain> {
+        self.variables.get(var).map(|d| d.domain)
+    }
+
+    /// The declared bounds of a variable (SM-05.1).
+    ///
+    /// The declared bounds are independent of any persistent fixing — they are
+    /// what `unfix` restores. Returns `None` for a stale/removed variable.
+    pub fn declared_bounds(&self, var: VarId) -> Option<Bounds> {
+        self.variables.get(var).map(|d| d.domain.bounds)
+    }
+
+    /// The effective bounds of a variable (SM-05.1).
+    ///
+    /// The effective bounds are `declared ∩ fixing`: for a fixed variable the
+    /// effective bounds equal `[value, value]` (D6: fixing compiles as bound
+    /// tightening, SM-05.3). For an unfixed variable the effective bounds
+    /// equal the declared bounds. Returns `None` for a stale/removed variable.
+    pub fn effective_bounds(&self, var: VarId) -> Option<Bounds> {
+        let data = self.variables.get(var)?;
+        // WR-02: the solver-facing bounds fold the fixing FIRST (SM-05.3),
+        // THEN the activity — an inactive variable's solver-facing bounds are
+        // `[0,0]` regardless of its fixing, matching `compile_snapshot`'s
+        // fold (the model API, `compile_snapshot`, and `compile_delta` must
+        // agree).
+        if !data.active {
+            return Some(Bounds::new(0.0, 0.0));
+        }
+        match &data.fixing {
+            Some(fixing) => Some(Bounds {
+                lower: data.domain.bounds.lower.max(fixing.value),
+                upper: data.domain.bounds.upper.min(fixing.value),
+            }),
+            None => Some(data.domain.bounds),
+        }
+    }
+
+    /// The named integrality tolerance used by fix validation on integer and
+    /// binary variables (SM-05.5).
+    pub fn integrality_tolerance(&self) -> f64 {
+        self.constants.integrality_tolerance
+    }
+
+    /// Set the named integrality tolerance used by fix validation (SM-05.5).
+    ///
+    /// Fallible (D10): a negative, NaN, or infinite tolerance is rejected
+    /// before any state change.
+    pub fn set_integrality_tolerance(&mut self, tolerance: f64) -> Result<(), ModelError> {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(ModelError::InvalidIntegralityTolerance(tolerance));
+        }
+        self.constants.integrality_tolerance = tolerance;
+        Ok(())
+    }
+
+    /// Fix a variable to a value (SM-05.2, design §10).
+    ///
+    /// A typed atomic canonical mutation: validates finiteness, in-domain,
+    /// and (for integer/binary variables) integrality within the named
+    /// integrality tolerance (SM-05.5), then records a
+    /// [`VariableFixing`] with [`FixingProvenance::User`]. Fixing is
+    /// represented as bound tightening — a fixed variable's effective bounds
+    /// become `[value, value]` (D6, SM-05.3) — and emits
+    /// [`Change::VariableFixingChanged`] (compiled to
+    /// `ModelOp::SetVariableFixing`). `commit` advances the canonical
+    /// revision exactly once.
+    ///
+    /// A failed validation leaves the model fully unchanged (no pending
+    /// change, no revision advance).
+    pub fn fix(&mut self, var: VarId, value: f64) -> Result<(), ModelError> {
+        let data = self
+            .variables
+            .get(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("variable fixing value"));
+        }
+        let bounds = data.domain.bounds;
+        if value < bounds.lower || value > bounds.upper {
+            return Err(ModelError::ValueOutOfBounds {
+                variable: var,
+                value,
+                bounds,
+            });
+        }
+        let tolerance = self.constants.integrality_tolerance;
+        if matches!(data.domain.var_type, VarType::Integer | VarType::Binary) {
+            let nearest = value.round();
+            if (value - nearest).abs() > tolerance {
+                return Err(ModelError::NonIntegralValue {
+                    variable: var,
+                    value,
+                    tolerance,
+                });
+            }
+        }
+
+        let fixing = VariableFixing {
+            value,
+            provenance: FixingProvenance::User,
+        };
+        self.variables
+            .get_mut(var)
+            .expect("variable liveness verified above")
+            .fixing = Some(fixing.clone());
+        self.changelog.push(Change::VariableFixingChanged {
+            var,
+            fixing: Some(fixing),
+            effective_bounds: Bounds::new(value, value),
+        });
+        Ok(())
+    }
+
+    /// Unfix a variable, restoring the **current** declared bounds (SM-05.4,
+    /// design §10).
+    ///
+    /// A typed atomic canonical mutation. The effective bounds after `unfix`
+    /// equal the declared bounds at the time of the call, not the bounds at
+    /// the time the variable was fixed. Unfixing an already-unfixed variable
+    /// records no change.
+    pub fn unfix(&mut self, var: VarId) -> Result<(), ModelError> {
+        let data = self
+            .variables
+            .get(var)
+            .ok_or(ModelError::VariableNotFound(var))?;
+        if data.fixing.is_none() {
+            return Ok(());
+        }
+        let declared = data.domain.bounds;
+        self.variables
+            .get_mut(var)
+            .expect("variable liveness verified above")
+            .fixing = None;
+        self.changelog.push(Change::VariableFixingChanged {
+            var,
+            fixing: None,
+            effective_bounds: declared,
+        });
+        Ok(())
     }
 
     /// Get a variable's name (D6/API-05.5).
@@ -622,10 +839,15 @@ impl Model {
     /// Fallible (D10/API-06.1/06.2/06.4): inverted or NaN bounds are rejected
     /// before any mutation, ±inf misuse (a `+inf` lower or `-inf` upper) is
     /// rejected, and a binary variable must stay inside `[0, 1]`.
+    ///
+    /// Atomicity guard (SM-05.6): the requested bounds are validated against
+    /// any **active fixing** — bounds that exclude the fixing value return a
+    /// typed [`ModelError::BoundsExcludeFixing`] with no state change (the
+    /// fixing value must always lie inside the declared bounds).
     pub fn set_variable_bounds(&mut self, var: VarId, bounds: Bounds) -> Result<(), ModelError> {
         let data = self
             .variables
-            .get_mut(var)
+            .get(var)
             .ok_or(ModelError::VariableNotFound(var))?;
         if !bounds.is_valid() {
             return Err(ModelError::InvalidBounds);
@@ -636,12 +858,27 @@ impl Model {
         if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
             return Err(ModelError::NonFiniteValue("variable upper bound"));
         }
-        if data.var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
+        if data.domain.var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
             return Err(ModelError::InvalidBinaryBounds);
         }
-        let old = data.bounds;
+        // SM-05.6: a declared-bound change that excludes the active fixing
+        // value fails atomically — validate before any mutation.
+        if let Some(fixing) = &data.fixing {
+            if fixing.value < bounds.lower || fixing.value > bounds.upper {
+                return Err(ModelError::BoundsExcludeFixing {
+                    variable: var,
+                    value: fixing.value,
+                    bounds,
+                });
+            }
+        }
+        let data = self
+            .variables
+            .get_mut(var)
+            .expect("variable liveness verified above");
+        let old = data.domain.bounds;
         if old != bounds {
-            data.bounds = bounds;
+            data.domain.bounds = bounds;
             self.changelog.push(Change::VariableBoundsChanged {
                 var,
                 old,
@@ -674,9 +911,9 @@ impl Model {
             .variables
             .get_mut(var)
             .ok_or(ModelError::VariableNotFound(var))?;
-        let old = data.var_type;
+        let old = data.domain.var_type;
         if old != var_type {
-            data.var_type = var_type;
+            data.domain.var_type = var_type;
             self.changelog.push(Change::VariableTypeChanged {
                 var,
                 old,
@@ -713,6 +950,20 @@ impl Model {
         }
         if lower > bounds.lower {
             self.set_variable_bounds(var, Bounds::new(lower, bounds.upper))?;
+        }
+        // Record the declared semi-continuous domain (design §10) alongside
+        // the legacy `semicontinuous_lower` map (drives the snapshot and the
+        // compile-boundary rejection, P26 behavior unchanged).
+        if let Some(data) = self.variables.get_mut(var) {
+            let semi = match data.domain.var_type {
+                VarType::Integer => SemiDomain::Integer {
+                    nonzero_lower: lower,
+                },
+                VarType::Continuous | VarType::Binary => SemiDomain::Continuous {
+                    nonzero_lower: lower,
+                },
+            };
+            data.domain.semi = Some(semi);
         }
         self.semicontinuous_lower.insert(var, lower);
         self.changelog
@@ -993,6 +1244,13 @@ impl Model {
     /// Get the active objective.
     pub fn active_objective(&self) -> Option<ObjId> {
         self.objectives.active()
+    }
+
+    /// Get an objective's optimization sense (P27 Task 9 overlay compiler:
+    /// objective-lock degradation rows follow the objective's sense, design
+    /// §15.2). Returns `None` for a stale/removed objective.
+    pub fn objective_sense(&self, obj: ObjId) -> Option<Sense> {
+        self.objectives.get(obj).map(|data| data.sense)
     }
 
     /// Get the constant offset for an objective.
@@ -1599,7 +1857,16 @@ impl Model {
         let mut variables = HashMap::new();
         for (id, data) in self.variables.iter() {
             let sc_lower = self.semicontinuous_lower.get(&id).copied();
-            variables.insert(id, (data.bounds, data.var_type, data.active, sc_lower));
+            variables.insert(
+                id,
+                (
+                    data.domain.bounds,
+                    data.domain.var_type,
+                    data.active,
+                    sc_lower,
+                    data.fixing.clone(),
+                ),
+            );
         }
 
         let mut constraints = HashMap::new();
@@ -1832,6 +2099,23 @@ impl Model {
             }
         }
 
+        // 10. Fixing invariant (SM-05.5, P27 Task 8): every live variable with
+        // an active fixing satisfies `declared.lower <= fixing.value <=
+        // declared.upper`. `fix` and `set_variable_bounds` enforce this at
+        // mutation time; this re-checks the stored state.
+        for (var, data) in self.variables.iter() {
+            if !data.active {
+                continue;
+            }
+            let bounds = data.domain.bounds;
+            if !self::validation::fixing_within_declared(data.fixing.as_ref(), bounds) {
+                let value = data.fixing.as_ref().map(|f| f.value).unwrap_or(f64::NAN);
+                violations.push(format!(
+                    "variable {var:?} fixing value {value} lies outside declared bounds {bounds:?}"
+                ));
+            }
+        }
+
         if violations.is_empty() {
             Ok(())
         } else {
@@ -1949,16 +2233,24 @@ impl Model {
         let mut vars: Vec<_> = self.variables.iter().collect();
         vars.sort_by_key(|(id, _)| id.index());
         for (id, data) in &vars {
-            let lb = format_bound(data.bounds.lower);
-            let ub = format_bound(data.bounds.upper);
-            let type_s = match data.var_type {
+            let lb = format_bound(data.domain.bounds.lower);
+            let ub = format_bound(data.domain.bounds.upper);
+            let type_s = match data.domain.var_type {
                 VarType::Continuous => "Continuous",
                 VarType::Integer => "Integer",
                 VarType::Binary => "Binary",
             };
             let inactive = if !data.active { " [inactive]" } else { "" };
+            let fixing_s = match &data.fixing {
+                Some(fixing) => format!(" fixed={}", fixing.value),
+                None => String::new(),
+            };
             let label = entity_label("x", id.index(), &data.name);
-            writeln!(out, "    {label}: [{lb}, {ub}] {type_s}{inactive}").unwrap();
+            writeln!(
+                out,
+                "    {label}: [{lb}, {ub}] {type_s}{fixing_s}{inactive}"
+            )
+            .unwrap();
         }
 
         // Parameters
@@ -2057,8 +2349,15 @@ impl Model {
     ) -> impl Iterator<Item = (VarId, f64)> + 'a {
         self.variables.iter_active().filter_map(move |(var, data)| {
             let val = solution.value_or_zero(var);
-            let lower_viol = data.bounds.lower - val; // positive if val < lb
-            let upper_viol = val - data.bounds.upper; // positive if val > ub
+            // The effective (solver-facing) bounds govern feasibility: for a
+            // fixed variable this is the equal bound [value, value].
+            let bounds = data
+                .fixing
+                .as_ref()
+                .map(|f| Bounds::new(f.value, f.value))
+                .unwrap_or(data.domain.bounds);
+            let lower_viol = bounds.lower - val; // positive if val < lb
+            let upper_viol = val - bounds.upper; // positive if val > ub
             let violation = lower_viol.max(upper_viol);
             if violation > self.constants.feasibility_tolerance {
                 Some((var, violation))
@@ -2122,6 +2421,15 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::VariableBoundsChanged {
             var, new: bounds, ..
         } => Ok(ModelOp::SetVariableBounds { var, bounds }),
+        Change::VariableFixingChanged {
+            var,
+            fixing,
+            effective_bounds,
+        } => Ok(ModelOp::SetVariableFixing {
+            var,
+            fixing,
+            effective_bounds,
+        }),
         Change::VariableTypeChanged {
             var, new: var_type, ..
         } => Ok(ModelOp::SetVariableType { var, var_type }),

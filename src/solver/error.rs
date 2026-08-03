@@ -24,6 +24,7 @@
 use crate::compiler::backend_ir::CompilationId;
 use crate::model::ModelError;
 use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect, TerminationStatus};
+use crate::solver::overlay::OverlayError;
 
 /// Error returned by the user-facing solve façade.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +55,15 @@ pub enum SolveError {
         /// backend fabricated no compiled state at all — still a mismatch).
         actual: Option<CompilationId>,
     },
+    /// The solve overlay failed to compile (P27 Task 10). The overlay is
+    /// rejected BEFORE any backend mutation (SM-06.6) — stale compilation,
+    /// assignment/band/value validation, or an unknown objective reference.
+    Overlay(OverlayError),
+    /// A backend error during the transactional overlay lifecycle (P27
+    /// Task 10): apply, rollback, or post-rollback verification failed. The
+    /// backend is marked `RequiresRebuild` so a partially overlaid state is
+    /// never silently reused (SM-07.4, D7).
+    Rollback(BackendError),
 }
 
 impl SolveError {
@@ -79,6 +89,7 @@ impl SolveError {
             SolveError::Synchronization(e) | SolveError::Solve(e) | SolveError::License(e) => {
                 Some(e)
             }
+            SolveError::Rollback(e) => Some(e),
             _ => None,
         }
     }
@@ -89,7 +100,7 @@ impl SolveError {
     pub fn is_terminal(&self) -> bool {
         match self {
             SolveError::License(_) => true,
-            SolveError::Synchronization(e) | SolveError::Solve(e) => {
+            SolveError::Synchronization(e) | SolveError::Solve(e) | SolveError::Rollback(e) => {
                 e.health_effect == HealthEffect::Terminal
             }
             _ => false,
@@ -102,10 +113,12 @@ impl SolveError {
             SolveError::Synchronization(e) | SolveError::Solve(e) | SolveError::License(e) => {
                 Some(e.category)
             }
+            SolveError::Rollback(e) => Some(e.category),
             SolveError::Commit(_)
             | SolveError::InvalidOptions(_)
             | SolveError::NoActiveObjective
-            | SolveError::CompilationMismatch { .. } => Some(ErrorCategory::InvalidInput),
+            | SolveError::CompilationMismatch { .. }
+            | SolveError::Overlay(_) => Some(ErrorCategory::InvalidInput),
             SolveError::Status(_) => Some(ErrorCategory::Unknown),
         }
     }
@@ -116,6 +129,7 @@ impl SolveError {
             SolveError::Synchronization(e) | SolveError::Solve(e) | SolveError::License(e) => {
                 Some(e.health_effect)
             }
+            SolveError::Rollback(e) => Some(e.health_effect),
             _ => None,
         }
     }
@@ -134,6 +148,8 @@ impl SolveError {
                 "solve result tagged with compilation {actual:?}, but the façade synchronized to \
                  compilation {expected:?}"
             ),
+            SolveError::Overlay(e) => format!("solve overlay failed: {e:?}"),
+            SolveError::Rollback(e) => format!("overlay rollback failed: {e}"),
         }
     }
 }

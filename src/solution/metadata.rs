@@ -5,6 +5,7 @@
 //! configuration, and how the model was synchronized into the backend.
 
 use crate::compiler::backend_ir::CompilationId;
+use crate::compiler::origin::OverlayId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::revision::ModelRevision;
 use crate::solver::request::EffectiveConfig;
@@ -51,6 +52,11 @@ pub struct SolveMetadata {
     /// [`SolutionBuilder`](crate::SolutionBuilder)) must never fabricate a
     /// compilation identity. A real solve always reports `Some`.
     pub compilation_id: Option<CompilationId>,
+    /// The solve overlay this solution was produced under (P27 Task 10,
+    /// D28/SM-03.9 overlay artifacts). `None` for a plain solve. The overlay
+    /// solve's result agrees with the overlay's exact `CompilationId` and
+    /// `OverlayId`.
+    pub overlay_id: Option<OverlayId>,
 }
 
 impl Default for SolveMetadata {
@@ -66,6 +72,8 @@ impl Default for SolveMetadata {
             // F5: a default never fabricates a compilation identity — there is
             // no compiled state behind a synthetic solution.
             compilation_id: None,
+            // A default is a plain solve / synthetic solution: no overlay.
+            overlay_id: None,
         }
     }
 }
