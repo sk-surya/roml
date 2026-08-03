@@ -689,6 +689,92 @@ fn objective_lock_validates_tolerances_at_compile_time() {
         .expect("finite non-negative tolerances compile");
 }
 
+/// F4: an `ObjectiveCutoff` with a non-finite limit (NaN or ±inf) is rejected
+/// at COMPILE time with a typed [`OverlayError::InvalidCutoff`] — the
+/// `rhs = limit - constant` value must never reach a backend row.
+#[test]
+fn overlay_rejects_non_finite_cutoff_limits() {
+    let (model, compiler, _x, _y, obj) = overlay_fixture();
+
+    for limit in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let overlay = SolveOverlay::new(
+            BTreeMap::new(),
+            vec![],
+            vec![],
+            vec![ObjectiveCutoff {
+                objective: obj,
+                limit,
+                direction: CutoffDirection::Upper,
+            }],
+        )
+        .unwrap();
+        let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OverlayError::InvalidCutoff { objective, limit: l }
+                    if objective == obj
+                        && if limit.is_nan() { l.is_nan() } else { l == limit }
+            ),
+            "a non-finite cutoff limit {limit} must be a typed invalid-cutoff error, got {err:?}"
+        );
+    }
+
+    // Finite limits still compile.
+    let overlay = SolveOverlay::new(
+        BTreeMap::new(),
+        vec![],
+        vec![],
+        vec![ObjectiveCutoff {
+            objective: obj,
+            limit: 5.0,
+            direction: CutoffDirection::Upper,
+        }],
+    )
+    .unwrap();
+    compile_overlay(&model, &compiler, &overlay, None).expect("a finite cutoff limit compiles");
+}
+
+/// F4: a non-finite cutoff is rejected at COMPILE time through the façade —
+/// `SolveError::Overlay`, the canonical model is unchanged, and a subsequent
+/// plain solve still works (no overlay state leaked).
+#[test]
+fn non_finite_cutoff_rejects_before_mutation_through_facade() {
+    let (mut model, _compiler, x, _y, obj) = overlay_fixture();
+    let (backend, _state) = OverlayTestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let _ = session.solve(&mut model).unwrap();
+    let rev = model.current_revision();
+
+    let overlay = SolveOverlay::new(
+        BTreeMap::from([(x, 2.0)]),
+        vec![],
+        vec![],
+        vec![ObjectiveCutoff {
+            objective: obj,
+            limit: f64::NAN,
+            direction: CutoffDirection::Upper,
+        }],
+    )
+    .unwrap();
+    let err = session
+        .solve_with_overlay(&mut model, SolveOptions::default(), &overlay, Some(obj))
+        .expect_err("a non-finite cutoff must be rejected at compile time");
+    assert!(
+        matches!(err, SolveError::Overlay(OverlayError::InvalidCutoff { .. })),
+        "expected an InvalidCutoff compile rejection through the façade, got {err:?}"
+    );
+    assert_eq!(
+        model.current_revision(),
+        rev,
+        "revision unchanged (SM-07.3)"
+    );
+    assert!(!model.has_pending_changes());
+    session
+        .solve(&mut model)
+        .expect("clean solve after a rejected non-finite cutoff");
+}
+
 #[test]
 fn within_band_clips_to_the_declared_domain() {
     let mut model = Model::new();

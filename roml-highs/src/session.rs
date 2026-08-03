@@ -2561,4 +2561,57 @@ mod tests {
             },
         );
     }
+
+    /// F4: a cutoff with a non-finite limit (NaN here) is rejected at COMPILE
+    /// time with a typed `InvalidCutoff` — before any op is produced, so the
+    /// native model and the exact compiled identity are never touched.
+    #[test]
+    fn highs_rejects_non_finite_cutoff_before_native_mutation() {
+        use std::collections::BTreeMap;
+
+        let caps = full_caps();
+        let policy = CompilationPolicy::Auto;
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let obj = model.maximize(x).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &policy, &caps)
+            .expect("snapshot must compile");
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base.clone()))
+            .expect("base rebuild must succeed");
+        let held = highs.current_compilation.expect("base compiled");
+        let rows_before = unsafe { Highs_getNumRow(highs.raw) };
+
+        for limit in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let overlay = roml::SolveOverlay::new(
+                BTreeMap::new(),
+                vec![],
+                vec![],
+                vec![roml::ObjectiveCutoff {
+                    objective: obj,
+                    limit,
+                    direction: roml::CutoffDirection::Upper,
+                }],
+            )
+            .expect("overlay id allocates");
+            let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+            assert!(
+                matches!(err, roml::OverlayError::InvalidCutoff { .. }),
+                "a non-finite cutoff limit {limit} must be rejected at compile time, got {err:?}"
+            );
+        }
+
+        assert_eq!(
+            unsafe { Highs_getNumRow(highs.raw) },
+            rows_before,
+            "a compile-rejected cutoff must not mutate the native model"
+        );
+        assert_eq!(highs.current_compilation, Some(held));
+    }
 }
