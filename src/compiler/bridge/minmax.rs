@@ -62,16 +62,24 @@ pub(crate) fn compile(
         BackendFeature::MinMax,
         "minmax construct",
     )?;
-    match path {
-        ConstructPath::Native => {
-            // No P32 backend declares a qualified native min/max; the enum is
-            // `#[non_exhaustive]` and a future native path lands here. The exact
-            // portable bridge is the P32 representation.
-        }
-        ConstructPath::Bridge => {}
-    }
-
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
+    // IN-01: record the selected representation path so a native selection is
+    // observable in the formulation decisions (the indicator bridge precedent).
+    let (path_selection, path_reason) = match path {
+        ConstructPath::Native => (
+            "native min/max",
+            "qualified native BackendFeature::MinMax selected (Auto)",
+        ),
+        ConstructPath::Bridge => (
+            "exact bridge",
+            "no qualified native min/max; exact ROML bridge (design §8.1)",
+        ),
+    };
+    finalizer.add_decision(FormulationDecision {
+        decision: "minmax.path".to_string(),
+        selection: path_selection.to_string(),
+        reason: path_reason.to_string(),
+    });
     let y = resolve_variable(ctx.variable_ids, payload.output, ctx.construct)?;
 
     // Resolve every operand: compiled coefficients, constant, interval, and
