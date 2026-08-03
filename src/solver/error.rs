@@ -50,8 +50,9 @@ pub enum SolveError {
         /// The compilation the façade synchronized to (the compiler's current
         /// compiled state id).
         expected: Option<CompilationId>,
-        /// The compilation the result actually claimed.
-        actual: CompilationId,
+        /// The compilation the result actually claimed (F5: `None` means the
+        /// backend fabricated no compiled state at all — still a mismatch).
+        actual: Option<CompilationId>,
     },
 }
 
