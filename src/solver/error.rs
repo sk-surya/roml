@@ -21,6 +21,7 @@
 //! Backend errors are wrapped whole so their identity (message), operation,
 //! [`ErrorCategory`], and [`HealthEffect`] remain inspectable (API-02.4).
 
+use crate::compiler::backend_ir::CompilationId;
 use crate::model::ModelError;
 use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect, TerminationStatus};
 
@@ -41,6 +42,18 @@ pub enum SolveError {
     License(BackendError),
     /// Backend terminated in an uninterpretable status.
     Status(TerminationStatus),
+    /// The backend returned a result tagged with a `CompilationId` that does
+    /// not match the compiled state the façade synchronized to (F2, SM-03.9).
+    /// A result produced from a different compiled state is never accepted
+    /// silently.
+    CompilationMismatch {
+        /// The compilation the façade synchronized to (the compiler's current
+        /// compiled state id).
+        expected: Option<CompilationId>,
+        /// The compilation the result actually claimed (F5: `None` means the
+        /// backend fabricated no compiled state at all — still a mismatch).
+        actual: Option<CompilationId>,
+    },
 }
 
 impl SolveError {
@@ -91,7 +104,8 @@ impl SolveError {
             }
             SolveError::Commit(_)
             | SolveError::InvalidOptions(_)
-            | SolveError::NoActiveObjective => Some(ErrorCategory::InvalidInput),
+            | SolveError::NoActiveObjective
+            | SolveError::CompilationMismatch { .. } => Some(ErrorCategory::InvalidInput),
             SolveError::Status(_) => Some(ErrorCategory::Unknown),
         }
     }
@@ -116,6 +130,10 @@ impl SolveError {
                 format!("backend error: {e}")
             }
             SolveError::Status(t) => format!("solve terminated in uninterpretable status: {t:?}"),
+            SolveError::CompilationMismatch { expected, actual } => format!(
+                "solve result tagged with compilation {actual:?}, but the façade synchronized to \
+                 compilation {expected:?}"
+            ),
         }
     }
 }

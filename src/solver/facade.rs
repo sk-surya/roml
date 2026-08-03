@@ -6,18 +6,24 @@
 //!   constructs golden-path solutions directly;
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
+use crate::compiler::backend_ir::CompilationId;
+use crate::compiler::capability::CompilationPolicy;
+use crate::compiler::session::CompilationSession;
 use crate::id::ObjId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::model::Model;
 use crate::revision::ModelRevision;
+use crate::snapshot::ModelSnapshot;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
 use crate::solution::{Solution, SolutionBuilder};
 use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 use crate::solver::options::SolveOptions;
-use crate::solver::request::SolveResult;
+use crate::solver::request::{validate_request, SolveResult};
 use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
 use crate::solver::{SolveError, SolveStatus};
 use crate::sync::{AdapterCursor, AdapterHealth};
+
+use crate::compiler::capability::BackendCapabilitySet;
 
 /// Normalize a backend [`SolveResult`] into a user-facing [`Solution`].
 ///
@@ -31,6 +37,7 @@ use crate::sync::{AdapterCursor, AdapterHealth};
 /// Mathematical terminations map to `Ok(Solution)` (with no primal values when
 /// the backend returned none, e.g. infeasible); uninterpretable terminations
 /// (`Error`, `Unknown`) map to `Err(SolveError::Status)` (API-03.3).
+#[allow(clippy::too_many_arguments)]
 pub fn normalize_result(
     result: &SolveResult,
     model_revision: ModelRevision,
@@ -39,6 +46,7 @@ pub fn normalize_result(
     synchronization: SynchronizationMode,
     model_lineage: ModelLineageId,
     model_instance: ModelInstanceId,
+    compilation_id: Option<CompilationId>,
 ) -> Result<Solution, SolveError> {
     let status = SolveStatus::from_termination(result.termination)?;
 
@@ -56,6 +64,10 @@ pub fn normalize_result(
             // every real solve report ids unequal to the solved model.
             model_lineage,
             model_instance,
+            // F2 (SM-03.9): the exact `CompilationId` of the compiled state
+            // the backend solved. F5: the real solve path sets `Some(actual)`;
+            // `None` is only ever a synthetic solution (no compiled state).
+            compilation_id,
         });
 
     if let Some(value) = result.solution.as_ref().and_then(|s| s.objective_value) {
@@ -113,6 +125,13 @@ pub fn normalize_result(
 /// (plan Task 3). The wrapped backend is deliberately not exposed.
 pub struct SolverSession<B> {
     backend: B,
+    compiler: CompilationSession,
+    /// The model instance whose compiled state the backend currently holds
+    /// (F1). `None` before the first successful synchronization. Used to
+    /// detect cross-model `SolverSession` reuse so a different model at an
+    /// overlapping revision never silently solves the previous model's
+    /// backend state.
+    bound_instance: Option<ModelInstanceId>,
 }
 
 impl<B> SolverSession<B>
@@ -121,7 +140,11 @@ where
 {
     /// Create a session wrapping a backend session.
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            compiler: CompilationSession::new(),
+            bound_instance: None,
+        }
     }
 
     /// Solve the current model with default options.
@@ -152,6 +175,22 @@ where
         // 0. Validate options before any state change (extended in Task 4).
         options.validate()?;
 
+        // 0b. F3 (SM-04.4): validate the request against the backend's
+        // AUTHORITATIVE typed capability set BEFORE any state change. A
+        // requested option whose feature the backend does not support natively
+        // is rejected — never silently passed to the backend.
+        let request = options.into_request();
+        let capabilities = self.compilation_capabilities();
+        let rejections = validate_request(&request, &capabilities);
+        if !rejections.is_empty() {
+            let reason = rejections
+                .iter()
+                .map(|r| format!("{}: {}", r.key, r.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(SolveError::InvalidOptions(reason));
+        }
+
         // 1. Commit; fail before backend mutation on error (D5).
         let committed = model.commit().map_err(SolveError::Commit)?;
 
@@ -170,7 +209,27 @@ where
 
         let mut sync_mode = SynchronizationMode::NoChange;
 
-        if health == AdapterHealth::RequiresRebuild {
+        // F1 (cross-model session reuse): a `SolverSession` is bound to the
+        // ONE model instance whose state is currently compiled in the backend.
+        // When the incoming model is a DIFFERENT instance, the backend's
+        // compiled base belongs to another model — the revision-based decision
+        // below must NOT reuse it (two unrelated models at the same revision
+        // would otherwise solve the previous model's state). Force the full
+        // snapshot synchronization path: reset the per-model compiler so the
+        // new model compiles fresh (the compiler's source-instance guard would
+        // otherwise reject the cross-model recompile with `RebuildRequired`,
+        // D28), then re-establish the compiled base for THIS instance.
+        //
+        // `None` (first solve) needs no separate branch: a fresh backend is at
+        // revision ZERO, so the ordinary revision-based decision always
+        // synchronizes fully (compiled empty base + deltas) and never reaches
+        // the no-sync fast path.
+        let cross_model = self.bound_instance.is_some_and(|b| b != model.instance());
+        if cross_model {
+            self.compiler = CompilationSession::new();
+            self.rebuild_from_snapshot(model)?;
+            sync_mode = SynchronizationMode::Rebuild;
+        } else if health == AdapterHealth::RequiresRebuild {
             // 4. Requires rebuild -> snapshot rebuild.
             self.rebuild_from_snapshot(model)?;
             sync_mode = SynchronizationMode::Rebuild;
@@ -193,8 +252,19 @@ where
             // re-synchronize via a snapshot rebuild.
             self.rebuild_from_snapshot(model)?;
             sync_mode = SynchronizationMode::Rebuild;
+        } else if self.compiler.current_compilation().is_none() {
+            // 6a. (F4): backend_rev == committed BUT the compiler holds no
+            // compiled base — a fresh backend at revision ZERO and a
+            // revision-ZERO model (e.g. an untouched `Model::new()`). The
+            // no-sync path would send the model straight to solve against a
+            // backend with no compiled state ("no compiled synchronization").
+            // Force the snapshot-rebuild path so the compiled base is
+            // established before solve.
+            self.rebuild_from_snapshot(model)?;
+            sync_mode = SynchronizationMode::Rebuild;
         }
-        // 6. backend_rev == committed -> no synchronization.
+        // 6. backend_rev == committed && the compiler holds a compiled base ->
+        //    no synchronization.
 
         // Post-synchronization invariant: the backend must be Ready and
         // exactly at the committed revision before any solve.
@@ -211,17 +281,39 @@ where
             )));
         }
 
-        // 8. Solve exactly once.
-        let request = options.into_request();
+        // F1: bind the session to the model instance whose compiled state the
+        // backend now holds. Bound only after a successful synchronization, so
+        // a failed sync never leaves a stale binding.
+        self.bound_instance = Some(model.instance());
+
+        // 8. Solve exactly once (the request was built and validated against
+        // the backend's typed capabilities in step 0b).
         let result = self
             .backend
             .solve(&request)
             .map_err(|e| SolveError::from_backend(false, e))?;
 
+        // F2 (SM-03.9): the exact `CompilationId` is the only stale-state
+        // authority. The backend must report the compiled state the façade
+        // synchronized to (the compiler's current compiled state). A result
+        // tagged with a DIFFERENT id means the solve ran against some other
+        // compiled state — reject it as a typed error, never accept it
+        // silently. F5: `result.compilation_id` is `Option<CompilationId>`;
+        // a `None` from a real backend result is still a mismatch (backends
+        // must populate `Some`).
+        let expected = self.compiler.current_compilation();
+        if expected != result.compilation_id {
+            return Err(SolveError::CompilationMismatch {
+                expected,
+                actual: result.compilation_id,
+            });
+        }
+
         // 9. Normalize and attach metadata. The solved model's lineage and
         // instance ids are bound here (CR-02, SM-02.7) — there is no separate
         // model-binds-solution step; normalize_result must never fall back to
-        // fresh default ids.
+        // fresh default ids. F2 threads the result's exact `CompilationId`
+        // into the metadata.
         let active_objective = model.active_objective();
         let solution = normalize_result(
             &result,
@@ -231,15 +323,42 @@ where
             sync_mode,
             model.lineage(),
             model.instance(),
+            result.compilation_id,
         )?;
 
         Ok(solution)
     }
 
+    /// Compile a canonical snapshot into a [`BackendSnapshot`] for this
+    /// backend (compile-before-mutation: no backend state is touched until
+    /// the full canonical state has compiled successfully).
+    fn compile_snapshot_for(
+        &mut self,
+        model: &Model,
+        snapshot: &ModelSnapshot,
+    ) -> Result<crate::compiler::backend_ir::BackendSnapshot, SolveError> {
+        let capabilities = self.compilation_capabilities();
+        self.compiler
+            .compile_snapshot(
+                model.instance(),
+                snapshot,
+                &CompilationPolicy::Auto,
+                &capabilities,
+            )
+            .map_err(|e| {
+                SolveError::Synchronization(BackendError::new(
+                    format!("snapshot compilation failed: {e}"),
+                    ErrorCategory::Internal,
+                    HealthEffect::RequiresRebuild,
+                ))
+            })
+    }
+
     fn rebuild_from_snapshot(&mut self, model: &Model) -> Result<(), SolveError> {
         let snapshot = model.take_snapshot().map_err(SolveError::Commit)?;
+        let compiled = self.compile_snapshot_for(model, &snapshot)?;
         self.backend
-            .synchronize(Synchronization::Rebuild(snapshot))
+            .synchronize(Synchronization::CompiledRebuild(compiled))
             .map_err(|e| SolveError::from_backend(true, e))?;
         Ok(())
     }
@@ -249,6 +368,34 @@ where
         model: &Model,
         backend_rev: ModelRevision,
     ) -> Result<(), SolveError> {
+        // Establish the compiled base when the compiler has not yet compiled
+        // anything. A fresh backend (revision ZERO) is exactly the empty
+        // native state, so the compiler compiles the empty snapshot as its
+        // base. The base is then SENT to the backend (as a `CompiledRebuild`)
+        // before the first delta, so the backend records the exact
+        // `CompilationId` it must validate deltas against (D28, WR-1). The
+        // uniform contract: a backend always holds a compiled base before it
+        // receives a `CompiledDeltaBatch` — there is no "un-sent empty base"
+        // special case (a reference-contract backend rejects a delta whose base
+        // it never received). The base-establishment rebuild is NOT a rebuild
+        // retry: API-02.3's one-retry bound counts only the error-recovery
+        // rebuild, and this happens on the ordinary delta path. If the backend
+        // is already ahead and no base exists, a rebuild is required.
+        let establish_base = self.compiler.current_compilation().is_none();
+        let base_snapshot = if establish_base {
+            if backend_rev == ModelRevision::ZERO {
+                Some(self.compile_snapshot_for(model, &ModelSnapshot::empty(backend_rev))?)
+            } else {
+                return Err(SolveError::Synchronization(BackendError::new(
+                    "no compiled base for the backend revision; rebuild required",
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                )));
+            }
+        } else {
+            None
+        };
+
         let cursor = AdapterCursor {
             applied_revision: backend_rev,
             health: AdapterHealth::Ready,
@@ -260,12 +407,64 @@ where
                 HealthEffect::RequiresRebuild,
             ))
         })?;
+
+        // Compile-before-mutation: every delta is lowered to backend IR before
+        // any backend mutation. A delta that cannot be compiled incrementally
+        // (rebuild-on-uncertainty, design §18 / D22) surfaces as a
+        // synchronization error that the caller recovers with one deterministic
+        // rebuild.
+        let capabilities = self.compilation_capabilities();
+        let mut compiled_batches = Vec::with_capacity(batches.len());
         for batch in batches {
+            let from_compilation = self.compiler.current_compilation().ok_or_else(|| {
+                SolveError::Synchronization(BackendError::new(
+                    "no compiled base for delta; rebuild required",
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ))
+            })?;
+            let compiled = self
+                .compiler
+                .compile_delta(
+                    batch,
+                    from_compilation,
+                    model.instance(),
+                    &CompilationPolicy::Auto,
+                    &capabilities,
+                )
+                .map_err(|e| {
+                    SolveError::Synchronization(BackendError::new(
+                        format!("delta compilation failed; rebuild required: {e}"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::RequiresRebuild,
+                    ))
+                })?;
+            compiled_batches.push(compiled);
+        }
+
+        // Now mutate the backend — compile-before-mutation is complete. Send
+        // the newly established compiled base (if any) before the deltas that
+        // chain from it, so the backend can validate each delta's exact
+        // `from_compilation` (D28, WR-1).
+        if let Some(base) = base_snapshot {
             self.backend
-                .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+                .synchronize(Synchronization::CompiledRebuild(base))
+                .map_err(|e| SolveError::from_backend(true, e))?;
+        }
+        for compiled in compiled_batches {
+            self.backend
+                .synchronize(Synchronization::CompiledDeltaBatch(compiled))
                 .map_err(|e| SolveError::from_backend(true, e))?;
         }
         Ok(())
+    }
+
+    /// The typed capability set the compiler and request validation gate on.
+    /// F3 (SM-04.1): the backend's `typed_capabilities()` is AUTHORITATIVE —
+    /// the flat `capabilities()` compat view is never used for gating (a flat
+    /// view can lie; the typed view cannot).
+    fn compilation_capabilities(&self) -> BackendCapabilitySet {
+        self.backend.typed_capabilities().clone()
     }
 }
 
@@ -300,6 +499,7 @@ mod tests {
                 dual_values: Some(vec![(make_con(0), 0.5)]),
                 reduced_costs: Some(vec![(make_var(0), 0.0)]),
             }),
+            compilation_id: Some(CompilationId::allocate().unwrap()),
         }
     }
 
@@ -318,6 +518,7 @@ mod tests {
             SynchronizationMode::Rebuild,
             lineage,
             instance,
+            Some(CompilationId::allocate().unwrap()),
         )
         .expect("optimal must normalize");
 
@@ -355,6 +556,7 @@ mod tests {
                 dual_values: None,
                 reduced_costs: None,
             }),
+            compilation_id: Some(CompilationId::allocate().unwrap()),
         };
         let solution = normalize_result(
             &result,
@@ -364,6 +566,7 @@ mod tests {
             SynchronizationMode::NoChange,
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
+            Some(CompilationId::allocate().unwrap()),
         )
         .expect("feasible must normalize");
         assert_eq!(solution.status(), SolveStatus::Feasible);
@@ -382,6 +585,7 @@ mod tests {
             effective_configuration: EffectiveConfig::default(),
             termination: TerminationStatus::Infeasible,
             solution: None,
+            compilation_id: Some(CompilationId::allocate().unwrap()),
         };
         let solution = normalize_result(
             &result,
@@ -391,6 +595,7 @@ mod tests {
             SynchronizationMode::NoChange,
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
+            Some(CompilationId::allocate().unwrap()),
         )
         .expect("infeasible must normalize to Ok(Solution)");
         assert_eq!(solution.status(), SolveStatus::Infeasible);
@@ -406,6 +611,7 @@ mod tests {
                 effective_configuration: EffectiveConfig::default(),
                 termination,
                 solution: None,
+                compilation_id: Some(CompilationId::allocate().unwrap()),
             };
             let err = normalize_result(
                 &result,
@@ -415,6 +621,7 @@ mod tests {
                 SynchronizationMode::NoChange,
                 ModelLineageId::allocate().unwrap(),
                 ModelInstanceId::allocate().unwrap(),
+                Some(CompilationId::allocate().unwrap()),
             )
             .expect_err("uninterpretable termination must error");
             assert!(
@@ -450,6 +657,7 @@ mod tests {
                     dual_values: None,
                     reduced_costs: None,
                 }),
+                compilation_id: Some(CompilationId::allocate().unwrap()),
             };
             let solution = normalize_result(
                 &result,
@@ -459,6 +667,7 @@ mod tests {
                 SynchronizationMode::NoChange,
                 model.lineage(),
                 model.instance(),
+                Some(CompilationId::allocate().unwrap()),
             )
             .expect("optimal must normalize");
 

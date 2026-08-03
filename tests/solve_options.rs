@@ -8,6 +8,10 @@
 
 use std::time::Duration;
 
+use roml::advanced::CompilationId;
+use roml::compiler::capability::{
+    BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
+};
 use roml::prelude::*;
 use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
@@ -31,7 +35,33 @@ struct RecordingState {
 struct RecordingBackend {
     revision: ModelRevision,
     health: AdapterHealth,
+    /// The exact `CompilationId` of the compiled state held after the most
+    /// recent compiled synchronization (F2 / SM-03.9).
+    current_compilation: Option<CompilationId>,
+    /// The authoritative typed capability set (F3, SM-04.1).
+    typed_caps: BackendCapabilitySet,
     state: std::rc::Rc<std::cell::RefCell<RecordingState>>,
+}
+
+/// The full M2-native typed capability surface (F3 default for test backends).
+fn full_typed_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
 }
 
 impl RecordingBackend {
@@ -44,6 +74,8 @@ impl RecordingBackend {
             Self {
                 revision: ModelRevision::ZERO,
                 health: AdapterHealth::Ready,
+                current_compilation: None,
+                typed_caps: full_typed_capabilities(),
                 state: state.clone(),
             },
             state,
@@ -57,6 +89,9 @@ impl BackendMetadata for RecordingBackend {
     }
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
+    }
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_caps
     }
 }
 
@@ -77,6 +112,14 @@ impl BackendSession for RecordingBackend {
             }
             Synchronization::DeltaBatch(batch) => {
                 self.revision = batch.to;
+            }
+            Synchronization::CompiledRebuild(snapshot) => {
+                self.revision = snapshot.source_revision;
+                self.current_compilation = Some(snapshot.compilation_id);
+            }
+            Synchronization::CompiledDeltaBatch(batch) => {
+                self.revision = batch.to_revision;
+                self.current_compilation = Some(batch.to_compilation);
             }
         }
         self.health = AdapterHealth::Ready;
@@ -112,6 +155,11 @@ impl BackendSession for RecordingBackend {
                 dual_values: None,
                 reduced_costs: None,
             }),
+            // F5: a real solve always populates `Some`.
+            compilation_id: Some(
+                self.current_compilation
+                    .expect("a solve must follow a compiled synchronization"),
+            ),
         })
     }
 

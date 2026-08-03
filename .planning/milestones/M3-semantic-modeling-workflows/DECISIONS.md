@@ -228,3 +228,11 @@
 **Reason:** a self-contained full semantic delta for updates requires incremental equivalence evidence that M3 v1 deliberately defers; the narrowed contract must be explicit so P26 does not assume coverage it will not get.
 
 **Consequence:** P26 consumes the ops for updates and the semantic entries for added entities; any consumer must not treat `functions` as exhaustive for pre-existing constraints.
+
+## A32 — CompiledObjectivePolicy represents the no-active-objective case
+
+**Amendment (accepted during the P26 Task 0 backend-contract review, blocking review point B1).** `CompiledObjectivePolicy` gains a `None` variant representing "no active objective", so the identity compiler can compile objective-less canonical state without regressing M2 behavior. M2 supports objective-less models: the reference backend rebuilds objective-less snapshots (`objectiveless_rebuild` in `src/solver/reference.rs`), `ReferenceBackend` tracks `active_objective: Option<ObjId>`, and `ModelOp::SetActiveObjective { obj: None }` is part of the primitive operation set. The P26 facade must preserve that path when routing solve/recovery through compiled IR.
+
+**Reason:** design §8.4 requires every `BackendSnapshot` to define which optimization problem is active; the `Single`/`Weighted`/`Lexicographic` variants cannot express "none", and a snapshot with an empty (or all-inactive) objective set still needs a valid `objective_policy`. `Single(CompiledObjectiveId)` cannot be reused because the id must reference a compiled objective that does not exist.
+
+**Consequence:** `CompiledObjectivePolicy::None` is the compiled representation of no-active-objective. The identity compiler maps a snapshot with no active objective to `None`; `SetActiveObjective { obj: None }` compiles to `BackendOp::SetObjectivePolicy(CompiledObjectivePolicy::None)`. `Weighted`/`Lexicographic` remain reachable only from the P31 canonical `ObjectivePolicy` (design §15). Task 7's `Synchronization` migration and `ReferenceBackend`/HiGHS compiled paths must accept a snapshot whose `objective_policy` is `None` and solve it exactly as the M2 objective-less path does.

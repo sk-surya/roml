@@ -17,6 +17,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, BackendSnapshot, CompilationPolicy, CompilationSession,
+    FeatureSupport, SupportLevel,
+};
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -31,12 +35,49 @@ use roml::solver::session::{
 };
 use roml::sync::AdapterHealth;
 use roml::value_expr::ValueExpr;
+use roml::Model;
 use roml_highs::HighsSession;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn create_session() -> HighsSession {
     HighsSession::try_new().expect("HiGHS should be available for bundled tests")
+}
+
+/// A full-support typed capability set for test compilation.
+fn test_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
+/// Compile a canonical snapshot into a backend snapshot for the compiled
+/// synchronization path (P26 Task 7).
+fn compile_snapshot(snapshot: &ModelSnapshot) -> BackendSnapshot {
+    let mut session = CompilationSession::new();
+    let instance = Model::new().instance();
+    session
+        .compile_snapshot(
+            instance,
+            snapshot,
+            &CompilationPolicy::Auto,
+            &test_capabilities(),
+        )
+        .expect("test snapshot must compile")
 }
 
 fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
@@ -225,7 +266,7 @@ fn mip_callback_handler_is_invoked_with_candidate_data() {
     let mut session = create_session();
     let snap = binary_mip_snapshot();
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -265,7 +306,7 @@ fn cleared_callback_handler_is_not_invoked() {
     let mut session = create_session();
     let snap = binary_mip_snapshot();
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -316,7 +357,7 @@ fn panicking_callback_handler_does_not_abort_solve() {
     let mut session = create_session();
     let snap = binary_mip_snapshot();
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
 
     session
@@ -343,7 +384,7 @@ fn solution_view_accessors_match_solve_result() {
     let mut session = create_session();
     let snap = unique_lp_snapshot();
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
 
     let result = session
@@ -420,7 +461,7 @@ fn health_transitions_on_failed_delta_and_rebuild() {
     let mut session = create_session();
     let snap = unique_lp_snapshot();
     session
-        .synchronize(Synchronization::Rebuild(snap.clone()))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
     assert_eq!(session.health(), AdapterHealth::Ready);
 
@@ -451,7 +492,7 @@ fn health_transitions_on_failed_delta_and_rebuild() {
 
     // A rebuild restores Ready and the correct revision.
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild after failure should succeed");
     assert_eq!(session.health(), AdapterHealth::Ready);
     assert_eq!(session.revision(), ModelRevision::ZERO);
@@ -465,7 +506,7 @@ fn close_consumes_session_cleanly() {
     let mut session = create_session();
     let snap = unique_lp_snapshot();
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
 
     // close() moves the session; the handle is freed by Drop.

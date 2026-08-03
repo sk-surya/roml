@@ -3,6 +3,18 @@
 //! Every solver backend reports its identity, version, supported
 //! operations, and classifies failures into categories that the
 //! synchronization coordinator can act on.
+//!
+//! # Capability model (P26 Task 6 migration)
+//!
+//! [`BackendCapabilities`] is the legacy flat capability record, retained for
+//! M2 source compatibility (D27). The typed
+//! [`BackendCapabilitySet`](crate::compiler::capability::BackendCapabilitySet)
+//! is now the authoritative model for request validation and backend
+//! capability declarations (D10, SM-04): `validate_request` gates on typed
+//! [`BackendFeature`](crate::compiler::capability::BackendFeature)s, and
+//! `roml-highs` builds a version-aware typed set. Backends that implement
+//! [`BackendMetadata`](crate::solver::session::BackendMetadata) return the flat
+//! [`BackendCapabilities`] compat view derived from their typed set.
 
 /// Information about a solver backend.
 #[derive(Clone, Debug, PartialEq)]
@@ -254,5 +266,44 @@ mod tests {
         let caps = BackendCapabilities::default();
         assert!(!caps.lp);
         assert!(!caps.solution);
+    }
+
+    /// Characterize the legacy flat capability mapping onto the typed
+    /// `BackendFeature` surface (P26 Task 6, D10). The flat fields with a typed
+    /// equivalent map onto `Lp`, `Mip`, `IncrementalBounds`, `IncrementalRows`,
+    /// and `IncrementalCoefficients`; the remaining flat fields have no typed
+    /// equivalent and stay flat-only.
+    #[test]
+    fn characterize_legacy_flat_mapping_onto_typed_features() {
+        use crate::compiler::capability::BackendFeature;
+
+        let caps = BackendCapabilities::all();
+
+        // Flat LP/MIP capability maps onto the typed LP/MIP features.
+        assert!(caps.lp);
+        assert!(caps.mip);
+        // Incremental variable/constraint/coefficient/bound capability maps
+        // onto the typed incremental features.
+        assert!(caps.add_variable);
+        assert!(caps.add_constraint);
+        assert!(caps.set_coefficient);
+        assert!(caps.set_bounds);
+        assert!(caps.set_objective);
+
+        // The typed feature surface names the same concepts.
+        let _ = BackendFeature::Lp;
+        let _ = BackendFeature::Mip;
+        let _ = BackendFeature::IncrementalBounds;
+        let _ = BackendFeature::IncrementalRows;
+        let _ = BackendFeature::IncrementalCoefficients;
+
+        // Flat-only fields (solution, duals, reduced_costs, callbacks,
+        // delete, parameter_update, semicontinuous, semiinteger) have no typed
+        // `BackendFeature` equivalent and are preserved flat-only.
+        assert!(caps.solution);
+        assert!(caps.duals);
+        assert!(caps.reduced_costs);
+        assert!(caps.callbacks);
+        assert!(caps.delete);
     }
 }
