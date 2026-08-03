@@ -372,6 +372,11 @@ impl CompilationSession {
                 }
 
                 ModelOp::SetVariableBounds { var, bounds } => {
+                    // SM-04.4 (WR-3): an unqualified feature is rejected, never
+                    // silently compiled.
+                    if !capabilities.supports(BackendFeature::IncrementalBounds) {
+                        return Err(CompileError::UnsupportedFeature("IncrementalBounds".into()));
+                    }
                     let id = *w.variable_ids.get(var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "SetVariableBounds for unknown compiled variable ({var:?})"
@@ -425,6 +430,11 @@ impl CompilationSession {
                 }
 
                 ModelOp::SetConstraintBounds { con, bounds } => {
+                    // SM-04.4 (WR-3): an unqualified feature is rejected, never
+                    // silently compiled.
+                    if !capabilities.supports(BackendFeature::IncrementalBounds) {
+                        return Err(CompileError::UnsupportedFeature("IncrementalBounds".into()));
+                    }
                     let id = *w.row_ids.get(con).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "SetConstraintBounds for unknown compiled row ({con:?})"
@@ -450,6 +460,13 @@ impl CompilationSession {
                     evaluated_value,
                     ..
                 } => {
+                    // SM-04.4 (WR-3): coefficient changes gate on
+                    // `IncrementalCoefficients`, never silently compiled.
+                    if !capabilities.supports(BackendFeature::IncrementalCoefficients) {
+                        return Err(CompileError::UnsupportedFeature(
+                            "IncrementalCoefficients".into(),
+                        ));
+                    }
                     let (target, var) = *cell_key;
                     let vid = *w.variable_ids.get(&var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
@@ -485,6 +502,13 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveCell { cell_key } => {
+                    // SM-04.4 (WR-3): coefficient changes gate on
+                    // `IncrementalCoefficients`, never silently compiled.
+                    if !capabilities.supports(BackendFeature::IncrementalCoefficients) {
+                        return Err(CompileError::UnsupportedFeature(
+                            "IncrementalCoefficients".into(),
+                        ));
+                    }
                     let (target, var) = *cell_key;
                     let vid = *w.variable_ids.get(&var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
@@ -581,6 +605,13 @@ impl CompilationSession {
                     constant,
                     ..
                 } => {
+                    // SM-04.4 (WR-3): objective coefficient changes gate on
+                    // `IncrementalCoefficients`, never silently compiled.
+                    if !capabilities.supports(BackendFeature::IncrementalCoefficients) {
+                        return Err(CompileError::UnsupportedFeature(
+                            "IncrementalCoefficients".into(),
+                        ));
+                    }
                     let (target, var) = *cell_key;
                     let obj = match target {
                         CoefficientTarget::Objective(o) => o,

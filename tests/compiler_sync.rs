@@ -61,6 +61,20 @@ fn lp_only_capabilities() -> BackendCapabilitySet {
     set
 }
 
+/// The full incremental capability set with one feature declared unsupported
+/// (SM-04.4: an unqualified feature must be rejected, never silently ignored).
+fn caps_without(feature: BackendFeature) -> BackendCapabilitySet {
+    let mut set = full_capabilities();
+    set.set(
+        feature,
+        FeatureSupport {
+            level: SupportLevel::Unsupported,
+            limitations: Default::default(),
+        },
+    );
+    set
+}
+
 // ---------------------------------------------------------------------------
 // 1. Identity compile — primitive linear snapshot compiles one-to-one
 // ---------------------------------------------------------------------------
@@ -348,6 +362,183 @@ fn compiled_delta_rejects_stale_from_compilation() {
         )
         .unwrap_err();
     assert!(matches!(err, CompileError::StaleCompilation { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Capability gating in compile_delta (WR-3, SM-04.4)
+// ---------------------------------------------------------------------------
+
+/// WR-3: bound-changing ops (`SetVariableBounds`/`SetConstraintBounds`) gate on
+/// `BackendFeature::IncrementalBounds`; an unqualified backend gets a typed
+/// `UnsupportedFeature` rejection, never a silently-compiled delta.
+#[test]
+fn compile_delta_gates_bounds_ops_on_incremental_bounds() {
+    let model = linear_model();
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .unwrap();
+
+    let rev = model.current_revision();
+    let next = rev.next().unwrap();
+    let var = snapshot.variables[0].id;
+    let con = snapshot.constraints[0].id;
+
+    // A bound op against a backend without `IncrementalBounds` is rejected.
+    let bounds_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::SetVariableBounds {
+            var,
+            bounds: Bounds::new(0.0, 1.0),
+        }],
+    )
+    .unwrap();
+    let err = session
+        .compile_delta(
+            &bounds_batch,
+            base.compilation_id,
+            &CompilationPolicy::Auto,
+            &caps_without(BackendFeature::IncrementalBounds),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f == "IncrementalBounds"),
+        "expected UnsupportedFeature(IncrementalBounds), got {err:?}"
+    );
+    // The session must not advance on a rejected delta.
+    assert_eq!(
+        session.current_compilation(),
+        Some(base.compilation_id),
+        "a rejected delta must not advance the compiler"
+    );
+
+    // A constraint-bounds op is gated the same way.
+    let row_bounds_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::SetConstraintBounds {
+            con,
+            bounds: ConstraintBounds::le(5.0),
+        }],
+    )
+    .unwrap();
+    let err = session
+        .compile_delta(
+            &row_bounds_batch,
+            base.compilation_id,
+            &CompilationPolicy::Auto,
+            &caps_without(BackendFeature::IncrementalBounds),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f == "IncrementalBounds"),
+        "expected UnsupportedFeature(IncrementalBounds), got {err:?}"
+    );
+}
+
+/// WR-3: coefficient-changing ops (`SetCell`/`RemoveCell`/`SetObjectiveCell`)
+/// gate on `BackendFeature::IncrementalCoefficients`; an unqualified backend
+/// gets a typed `UnsupportedFeature` rejection.
+#[test]
+fn compile_delta_gates_cell_ops_on_incremental_coefficients() {
+    let model = linear_model();
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &full_capabilities(),
+        )
+        .unwrap();
+
+    let rev = model.current_revision();
+    let next = rev.next().unwrap();
+    let var = snapshot.variables[0].id;
+    let con = snapshot.constraints[0].id;
+
+    let set_cell_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::SetCell {
+            cell_key: (CoefficientTarget::Constraint(con), var),
+            value_expr: ValueExpr::constant(5.0),
+            evaluated_value: 5.0,
+        }],
+    )
+    .unwrap();
+    let err = session
+        .compile_delta(
+            &set_cell_batch,
+            base.compilation_id,
+            &CompilationPolicy::Auto,
+            &caps_without(BackendFeature::IncrementalCoefficients),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f == "IncrementalCoefficients"),
+        "expected UnsupportedFeature(IncrementalCoefficients), got {err:?}"
+    );
+    assert_eq!(
+        session.current_compilation(),
+        Some(base.compilation_id),
+        "a rejected delta must not advance the compiler"
+    );
+
+    // RemoveCell and objective-coefficient ops are gated the same way.
+    let remove_cell_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::RemoveCell {
+            cell_key: (CoefficientTarget::Constraint(con), var),
+        }],
+    )
+    .unwrap();
+    let err = session
+        .compile_delta(
+            &remove_cell_batch,
+            base.compilation_id,
+            &CompilationPolicy::Auto,
+            &caps_without(BackendFeature::IncrementalCoefficients),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f == "IncrementalCoefficients"),
+        "expected UnsupportedFeature(IncrementalCoefficients), got {err:?}"
+    );
+
+    let obj = snapshot.objectives[0].id;
+    let obj_cell_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::SetObjectiveCell {
+            cell_key: (CoefficientTarget::Objective(obj), var),
+            value_expr: ValueExpr::constant(7.0),
+            evaluated_value: 7.0,
+            constant: 0.0,
+        }],
+    )
+    .unwrap();
+    let err = session
+        .compile_delta(
+            &obj_cell_batch,
+            base.compilation_id,
+            &CompilationPolicy::Auto,
+            &caps_without(BackendFeature::IncrementalCoefficients),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(ref f) if f == "IncrementalCoefficients"),
+        "expected UnsupportedFeature(IncrementalCoefficients), got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
