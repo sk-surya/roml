@@ -8,6 +8,10 @@
 
 #![allow(clippy::approx_constant)]
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, BackendSnapshot, CompilationPolicy, CompilationSession,
+    FeatureSupport, SupportLevel,
+};
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::{Bounds, ConstraintBounds, Sense, VarType};
@@ -18,6 +22,7 @@ use roml::solver::request::SolveRequest;
 use roml::solver::session::{BackendSession, SolutionView, Synchronization};
 use roml::value_expr::ValueExpr;
 use roml::LpAlgorithm;
+use roml::Model;
 use roml_highs::HighsSession;
 
 // ── Test Helpers ───────────────────────────────────────────────────────────────
@@ -25,6 +30,41 @@ use roml_highs::HighsSession;
 /// Create a new HiGHS session for testing.
 fn create_session() -> HighsSession {
     HighsSession::try_new().expect("HiGHS should be available for bundled tests")
+}
+
+/// A full-support typed capability set for test compilation.
+fn test_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
+/// Compile a canonical snapshot into a backend snapshot (P26 compiled path).
+fn compile_snapshot(snapshot: &ModelSnapshot) -> BackendSnapshot {
+    let mut session = CompilationSession::new();
+    let instance = Model::new().instance();
+    session
+        .compile_snapshot(
+            instance,
+            snapshot,
+            &CompilationPolicy::Auto,
+            &test_capabilities(),
+        )
+        .expect("test snapshot must compile")
 }
 
 /// Approximate floating-point equality within epsilon.
@@ -87,7 +127,7 @@ fn q5_objective_offset() {
     };
 
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
     let result = session
         .solve(&SolveRequest::new())
@@ -178,7 +218,7 @@ fn q5_dual_values() {
     };
 
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
     let result = session
         .solve(&SolveRequest::new())
@@ -285,7 +325,7 @@ fn q5_reduced_costs() {
     };
 
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
     let result = session
         .solve(&SolveRequest::new())
@@ -324,7 +364,9 @@ fn q5_option_negotiation_applied() {
     let r0 = ModelRevision::ZERO;
 
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -366,7 +408,9 @@ fn q5_option_negotiation_extra() {
     let r0 = ModelRevision::ZERO;
 
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -436,7 +480,7 @@ fn q5_status_infeasible_or_unbounded() {
     };
 
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
         .expect("Rebuild should succeed");
     let result = session
         .solve(&SolveRequest::new())
@@ -467,7 +511,9 @@ fn q5_lp_algorithm_variants_map_to_effective_config() {
         let mut session = create_session();
         let r0 = ModelRevision::ZERO;
         session
-            .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+            .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+                &ModelSnapshot::empty(r0),
+            )))
             .expect("Empty rebuild should succeed");
 
         let result = session
@@ -493,7 +539,9 @@ fn q5_mip_rel_gap_applied() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -514,7 +562,9 @@ fn q5_mip_abs_gap_recorded_as_adjustment() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -538,7 +588,9 @@ fn q5_enable_output_flag_applied() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     for enabled in [true, false] {
@@ -563,7 +615,9 @@ fn q5_random_seed_recorded_as_adjustment() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -588,7 +642,9 @@ fn q5_extra_option_null_byte_in_key_rejected() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -613,7 +669,9 @@ fn q5_extra_option_null_byte_in_value_rejected() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -638,7 +696,9 @@ fn q5_extra_option_unknown_rejected_via_both_apis() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .expect("Empty rebuild should succeed");
 
     let result = session
@@ -722,7 +782,9 @@ fn time_limit_mip_snapshot() -> ModelSnapshot {
 fn q5_status_time_limit_with_extracted_solution() {
     let mut session = create_session();
     session
-        .synchronize(Synchronization::Rebuild(time_limit_mip_snapshot()))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &time_limit_mip_snapshot(),
+        )))
         .expect("Rebuild should succeed");
 
     let result = session
@@ -807,7 +869,9 @@ fn iteration_limit_lp_snapshot() -> ModelSnapshot {
 fn q5_status_iteration_limit_with_extracted_solution() {
     let mut session = create_session();
     session
-        .synchronize(Synchronization::Rebuild(iteration_limit_lp_snapshot()))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &iteration_limit_lp_snapshot(),
+        )))
         .expect("Rebuild should succeed");
 
     let result = session

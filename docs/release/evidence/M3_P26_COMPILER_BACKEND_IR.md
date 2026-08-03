@@ -280,4 +280,114 @@ Baseline comparison: `roml` grew from 600 to 613 passing tests (+13: 5 capabilit
 
 - `feat(backend): add typed feature capabilities` — Task 6 implementation + tests + this evidence section.
 
+---
+
+# Task 7 — Identity compiler and synchronization migration
+
+**Plan:** `26-PLAN.md` — Task 7 (add identity compiler and migrate synchronization)
+**Requirements:** SM-02.4, SM-02.5, SM-02.6 (foundation), SM-03.1, SM-03.2, SM-03.4, SM-03.5, SM-03.6, SM-03.7, SM-03.8, SM-03.9, SM-13 (compiler foundations)
+**Status:** complete — committed as `feat(sync): compile canonical state into backend IR`.
+**Branch (executor worktree):** `worktree-agent-a2a01429dde406075` (base `phase-roml-P26-compiler-backend-ir@e7cda4e`, which includes Task 0 + Task 5 + Task 6)
+
+## Scope
+
+Task 7 adds the identity compiler (`CompilationSession`) and migrates the synchronization contract to backend IR: `Synchronization` gains `CompiledRebuild(BackendSnapshot)` / `CompiledDeltaBatch(BackendDeltaBatch)` (design §22, acceptance point B6); the `SolverSession` façade compiles canonical state before any backend mutation (the P26 gate); `ReferenceBackend` migrates first; HiGHS migrates via `roml-highs/src/compiler.rs` and no longer receives a canonical `ModelSnapshot`; and `tests/differential_harness.rs` proves fixed-seed compiled-delta equals compiled-rebuild (SM-03.7, must-have truth 2).
+
+## TDD record
+
+1. **RED failures (recorded before implementation):**
+   - `tests/compiler_sync.rs` (new): `error[E0432] unresolved imports roml::advanced::{BackendCapabilitySet, BackendFeature, CompilationSession, FeatureSupport, SupportLevel}` — the compiler session and capability re-exports did not exist.
+   - `tests/compiler_sync.rs`: `error[E0599] no variant, associated function, or constant named 'RebuildRequired' found for enum 'CompileError'` — the rebuild-on-uncertainty error variant was added in Task 7.
+   - `cargo test -p roml --test compiler_sync` failed to compile (missing `CompilationSession`).
+2. **GREEN:** all Task 7 tests pass after implementation (see verification matrix).
+
+## Implementation
+
+### `src/compiler/session.rs` (create) — `CompilationSession`
+- `compile_snapshot(source_instance, &ModelSnapshot, &CompilationPolicy, &BackendCapabilitySet) -> Result<BackendSnapshot, CompileError>`: one-to-one identity mapping (dense compiled ids), active-objective → `CompiledObjectivePolicy::Single`, no-active-objective → `CompiledObjectivePolicy::None` (A32/B1), inactive variables/rows fold activity into bounds ([0,0] / unbounded), capability gating (`Mip` for integer/binary; semi-continuous rejected — the compiled IR has no semi-continuous representation, M1R-H7 preserved at the compile boundary).
+- `compile_delta(&DeltaBatch, from_compilation, &CompilationPolicy, &BackendCapabilitySet) -> Result<BackendDeltaBatch, CompileError>`: exact from/to compilation ids + revisions (B2/D28); A31-aware op consumption (updates ride `SetCell`/`SetConstraintBounds`/`RemoveCell`, never `DeltaBatch.functions`); rebuild-on-uncertainty (D22/F-B1) returns `CompileError::RebuildRequired` for activity/type/construct/semi-continuous ops; `SetParameter` is a provable no-op (the coefficient index is the single authority; the batch's `SetCell` ops carry evaluated values) so parameter updates stay incremental through the compiled path.
+- `BackendDeltaBatch.origin_additions` carries the origins of entities added by a delta (SM-02.5), enabling the backend to map compiled solution values back to user ids.
+
+### `src/compiler/mod.rs`
+- Added `pub mod session;` and `CompileError::RebuildRequired(String)` (design §18 / D22).
+
+### `src/compiler/backend_ir.rs`
+- Added `BackendDeltaBatch.origin_additions: OriginMap` and `RecipeFingerprint::for_operations(&[BackendOp])` (deterministic delta fingerprint, evidence-only per D28).
+
+### `src/solver/session.rs`
+- `Synchronization` gains `CompiledRebuild(BackendSnapshot)` and `CompiledDeltaBatch(BackendDeltaBatch)` (B6).
+
+### `src/solver/facade.rs` — `SolverSession`
+- Owns a `CompilationSession`; `rebuild_from_snapshot`/`apply_deltas` compile canonical state to backend IR before any backend mutation (compile-before-mutation). A fresh backend establishes the compiled base from `ModelSnapshot::empty(r0)` in the compiler WITHOUT a spurious backend rebuild (the backend is already empty), preserving Delta sync mode on first solve. Any delta-compilation failure (rebuild-on-uncertainty) triggers the one deterministic rebuild retry. Typed capabilities for compilation are derived from the backend's flat `BackendMetadata::capabilities()`.
+
+### `src/solver/reference.rs` — `ReferenceBackend`
+- Added the compiled-IR projection: `rebuild_compiled(&BackendSnapshot)`, `apply_compiled_delta(&BackendDeltaBatch)` (stale from-compilation rejected with `CompileError::StaleCompilation`), `apply_compiled_op(&BackendOp)`, and `compiled_normalized_view()`. The canonical M2 path remains for characterization.
+- **Bug fixes (Rule 1) exposed by the compiled differential test:** `SetObjectiveCell` now also updates the per-objective `objective_constants` authority, `RemoveObjective` removes the objective's constant, and `NormalizedView` reconciles objective-cell cached constants with the authoritative `objective_constants` (a `RemoveVariable` could previously leave surviving cells' cached constants stale, breaking the canonical commuting square for objective constants).
+
+### `tests/compiler_sync.rs` (new) — 9 tests
+Identity compile (one-to-one, A32 `None`, activity folding, MIP capability rejection), compiled delta (exact from/to ids + op mapping, stale-compilation rejection), rebuild-on-uncertainty, A31-aware op consumption, fresh `CompilationId` per target state.
+
+### `tests/differential_harness.rs`
+- Added Section 7: `dx_fixed_seed_compiled_delta_equals_compiled_rebuild` — random primitive-linear op sequences (fixed seed 4242) applied as compiled deltas equal one compiled rebuild (state fields, not `CompilationId`; D28 requires distinct ids per compilation).
+
+### `roml-highs/src/compiler.rs` (create) — backend IR → HiGHS native
+- `rebuild_from_backend_snapshot` (adds compiled variables, rows with their coefficients, objectives, projects the active objective policy) and `apply_backend_delta` (all pinned `BackendOp` variants). Translates compiled ids to native indices via `col_map`/`row_map` and back to user ids via the origin-derived `compiled_to_user_*` maps (SM-02.5).
+- Removed the legacy `roml-highs/src/projection.rs` (dead code after the migration).
+
+### `roml-highs/src/lifecycle.rs`, `session.rs`, `solution.rs`, `callback.rs`
+- Session maps re-keyed to compiled ids; `compiled_to_user_*` maps added; `synchronize` handles only the compiled variants (canonical variants rejected with `HealthEffect::RequiresRebuild` — D27 compat rejection); `extract_solution`/callback translate compiled ids back to user ids.
+
+### `src/solver/conformance.rs`
+- Migrated to the compiled contract: each scenario compiles snapshots/deltas via a `CompilationSession` before `synchronize`.
+
+### `tests/solver_facade.rs`, `tests/solve_options.rs`, `tests/lineage_metadata.rs`, `tests/advanced_surface.rs`
+- Test backends handle the compiled variants; `TestBackend` consumes `BackendSnapshot`/`BackendDeltaBatch` via origin maps (SM-02.5).
+
+### `roml-highs/tests/*`
+- `contract_tests.rs`, `behavior_tests.rs`, `repeated_session_baseline.rs`, `facade_tests.rs`, `solve_observables_tests.rs` migrated to the compiled path. Tests that exercised non-incremental ops (variable/constraint activity, variable type, semi-continuous) incrementally were adapted to the P26 compiled semantics: activity/type/semi-continuous changes now select a deterministic rebuild (design §18, F-B1), verified at the compiler boundary (`CompileError::RebuildRequired` / `UnsupportedFeature`).
+
+### `docs/migration/M3_BACKEND_IR.md` (create)
+- SM-03.8 backend-author migration guide.
+
+## Deviations
+
+1. **`BackendDeltaBatch` gains `origin_additions: OriginMap`** — the Task 5 pinned shape did not include origins. Required by must-have truth 5 (every generated entity has an origin; a delta adds generated entities) and by the backend solution-mapping requirement (compiled solution values for delta-added entities must translate back to user ids). Documented in the struct doc.
+2. **`compile_snapshot` takes `source_instance: ModelInstanceId` as its first parameter** — the plan's recommended signature omitted it, but `BackendSnapshot.source_instance` is required (D28) and `ModelSnapshot` does not carry an instance. The façade passes `model.instance()`.
+3. **`SetParameter` is a provable no-op, not a rebuild trigger** — the F-B1 conservative rebuild list listed `SetParameter`, but since no compiled entity carries a parameter and a parameter change re-emits `SetCell` ops with evaluated values (the coefficient index is the single authority), skipping it preserves the M2 incremental parameter behavior through the compiled path.
+4. **Semi-continuous snapshots are rejected at compile time** — the compiled IR has no semi-continuous representation, so `CompilationSession` rejects a snapshot with `semicontinuous_lower` (M1R-H7 preserved at the compile boundary) instead of silently dropping the flag.
+5. **Contract/observable tests adapted to rebuild-on-uncertainty** — M2 contract tests that applied variable/constraint activity, variable type, or semi-continuous changes incrementally were updated to the P26 semantics (those ops now select a deterministic rebuild). `c3_incremental_delta` now exercises the compiled incremental path for primitive linear ops and verifies rebuild-on-uncertainty for non-incremental ops.
+6. **`cargo test -p roml-highs --all-targets` count is 100 (baseline 104)** — removing the dead `projection.rs` (4 unit tests) and adding `compiler.rs` (1 unit test) nets −3; the suite is green.
+
+## Verification matrix (Task 7)
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `cargo test -p roml --test compiler_identity` | 0 | **14 passed** |
+| `cargo test -p roml --test compiler_sync` | 0 | **9 passed** (new) |
+| `cargo test -p roml-highs --test conformance` | 0 | **4 passed** |
+| `cargo test -p roml --all-targets` | 0 | **641 passed; 0 failed; 2 ignored** |
+| `cargo test -p roml-highs --all-targets` | 0 | **100 passed; 0 failed** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+| `tests/differential_harness.rs` (incl. compiled equality) | 0 | **24 passed** |
+
+Baseline comparison: `roml` grew from 613 (after Task 6) to 641 passing tests (+28: 9 compiler-sync + 1 differential + 18 across migrated/conformance/characterization suites). `roml-highs` is 100 passing (migrated projection tests).
+
+## Acceptance criteria
+
+- `src/compiler/session.rs` defines `CompilationSession` with snapshot and delta compilation; primitive linear snapshots compile one-to-one including the active `CompiledObjectivePolicy` — **met** (SM-03.1, SM-03.5).
+- Every `BackendDeltaBatch` emitted has exact from/to compilation ids; uncertainty selects rebuild — **met** (SM-03.6, SM-03.7; `CompileError::RebuildRequired`).
+- `roml-highs/src/compiler.rs` translates backend IR into HiGHS native state; the HiGHS session synchronizes through the compiled path — source assertion: **no `ModelSnapshot` reaches the HiGHS session after migration** (verified by grep: the only `ModelSnapshot` references in `roml-highs/src` are doc comments; the legacy `projection.rs` was removed) — **met** (SM-03.2).
+- `src/solver/reference.rs` consumes compiled IR and its recovery/differential tests pass — **met** (SM-03.8).
+- `tests/differential_harness.rs` proves fixed-seed compiled-delta equals compiled-rebuild — **met** (SM-03.7).
+- M2 solve/recovery passes through backend IR with `Highs::solve`/`SolverSession` source-compatible — **met** (D27; `cargo test -p roml --all-targets` and `cargo test -p roml-highs --all-targets` green).
+- `docs/migration/M3_BACKEND_IR.md` documents the backend-contract migration — **met** (SM-03.8).
+
+## Commit trail
+
+- `feat(sync): compile canonical state into backend IR` — Task 7 implementation + tests + evidence + migration guide + SUMMARY (single coherent unit).
+
 <!-- Phase-level gate result (P26 boundary) filled after Task 7 review passes. -->

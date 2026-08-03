@@ -214,6 +214,8 @@ impl BackendSession for LineageTestBackend {
         let revision = match sync {
             Synchronization::DeltaBatch(batch) => batch.to,
             Synchronization::Rebuild(snapshot) => snapshot.revision,
+            Synchronization::CompiledDeltaBatch(batch) => batch.to_revision,
+            Synchronization::CompiledRebuild(snapshot) => snapshot.source_revision,
         };
         self.revision = revision;
         Ok(SyncReceipt {

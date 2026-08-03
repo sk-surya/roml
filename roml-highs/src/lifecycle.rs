@@ -19,6 +19,7 @@ use log::info;
 use crate::bindings;
 use crate::callback::CallbackState;
 use crate::index_map::IndexMap;
+use roml::advanced::{CompiledConstraintId, CompiledObjectiveId, CompiledVariableId};
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::objective::Sense;
 use roml::solver::backend::{BackendError, TerminationStatus};
@@ -38,32 +39,42 @@ pub struct HighsSession {
     /// Revision tracking cursor for the sync coordinator.
     pub(crate) cursor: AdapterCursor,
 
-    /// `VarId` → HiGHS column index.
-    pub(crate) col_map: IndexMap<VarId>,
+    /// `CompiledVariableId` → HiGHS column index (P26 compiled path).
+    pub(crate) col_map: IndexMap<CompiledVariableId>,
 
-    /// `ConId` → HiGHS row index.
-    pub(crate) row_map: IndexMap<ConId>,
+    /// `CompiledConstraintId` → HiGHS row index (P26 compiled path).
+    pub(crate) row_map: IndexMap<CompiledConstraintId>,
 
     /// Cached infinity value from `Highs_getInfinity`.
     pub(crate) inf: f64,
 
-    /// Cached variable bounds (lb, ub).
-    pub(crate) var_bounds: HashMap<VarId, (f64, f64)>,
+    /// Cached variable bounds: compiled id → (lb, ub).
+    pub(crate) var_bounds: HashMap<CompiledVariableId, (f64, f64)>,
 
-    /// Cached constraint bounds (lb, ub).
-    pub(crate) con_bounds: HashMap<ConId, (f64, f64)>,
+    /// Cached constraint bounds: compiled id → (lb, ub).
+    pub(crate) con_bounds: HashMap<CompiledConstraintId, (f64, f64)>,
 
-    /// Per-objective stored costs: `ObjId` → `VarId` → cost.
-    pub(crate) obj_costs: HashMap<ObjId, HashMap<VarId, f64>>,
+    /// Per-objective stored costs: `CompiledObjectiveId` →
+    /// `CompiledVariableId` → cost.
+    pub(crate) obj_costs: HashMap<CompiledObjectiveId, HashMap<CompiledVariableId, f64>>,
 
-    /// Sense for each known objective.
-    pub(crate) obj_senses: HashMap<ObjId, Sense>,
+    /// Sense for each known compiled objective.
+    pub(crate) obj_senses: HashMap<CompiledObjectiveId, Sense>,
 
-    /// Currently active objective, if any.
+    /// Currently active objective (user id), if any.
     pub(crate) active_obj: Option<ObjId>,
 
-    /// Per-objective stored constant offset.
-    pub(crate) obj_offsets: HashMap<ObjId, f64>,
+    /// Per-objective stored constant offset: compiled id → constant.
+    pub(crate) obj_offsets: HashMap<CompiledObjectiveId, f64>,
+
+    /// Compiled variable id → user variable (solution mapping, SM-02.5).
+    pub(crate) compiled_to_user_variable: HashMap<CompiledVariableId, VarId>,
+
+    /// Compiled row id → user constraint (solution mapping, SM-02.5).
+    pub(crate) compiled_to_user_constraint: HashMap<CompiledConstraintId, ConId>,
+
+    /// Compiled objective id → user objective (solution mapping, SM-02.5).
+    pub(crate) compiled_to_user_objective: HashMap<CompiledObjectiveId, ObjId>,
 
     /// Solution from the most recent solve, if available.
     pub(crate) current_solution: Option<SolveSolution>,
@@ -179,6 +190,9 @@ impl HighsSession {
             obj_senses: HashMap::new(),
             obj_offsets: HashMap::new(),
             active_obj: None,
+            compiled_to_user_variable: HashMap::new(),
+            compiled_to_user_constraint: HashMap::new(),
+            compiled_to_user_objective: HashMap::new(),
             current_solution: None,
             last_status: None,
             callback_state: None,

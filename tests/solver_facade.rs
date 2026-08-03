@@ -21,6 +21,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use roml::advanced::{
+    BackendOp, BackendSnapshot, CompiledObjectiveId, CompiledObjectivePolicy, CompiledVariableId,
+    EntityOrigin, OriginMap,
+};
 use roml::delta::ModelOp;
 use roml::id::{ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -114,6 +118,10 @@ struct TestBackend {
     active_objective: Option<ObjId>,
     objective_cells: HashMap<ObjId, HashMap<VarId, f64>>,
     state: Rc<RefCell<FaultState>>,
+    /// Compiled id -> user variable, maintained by the compiled sync path.
+    compiled_to_user_variable: HashMap<CompiledVariableId, VarId>,
+    /// Compiled id -> user objective, maintained by the compiled sync path.
+    compiled_to_user_objective: HashMap<CompiledObjectiveId, ObjId>,
 }
 
 impl TestBackend {
@@ -139,6 +147,8 @@ impl TestBackend {
                 active_objective: None,
                 objective_cells: HashMap::new(),
                 state: state.clone(),
+                compiled_to_user_variable: HashMap::new(),
+                compiled_to_user_objective: HashMap::new(),
             },
             state,
         )
@@ -171,6 +181,144 @@ impl TestBackend {
                     .or_default()
                     .insert(cell.cell_key.1, cell.evaluated_value);
             }
+        }
+    }
+
+    /// Project a compiled backend snapshot into user-keyed state using the
+    /// snapshot's mandatory origin map (SM-02.5).
+    fn project_compiled_snapshot(&mut self, snapshot: &BackendSnapshot) {
+        self.var_values.clear();
+        self.objectives.clear();
+        self.objective_cells.clear();
+        self.compiled_to_user_variable.clear();
+        self.compiled_to_user_objective.clear();
+
+        for v in &snapshot.variables {
+            if let Some(EntityOrigin::UserVariable(var)) = snapshot.origin_map.variable_origin(v.id)
+            {
+                self.compiled_to_user_variable.insert(v.id, *var);
+                self.var_values.insert(*var, 1.0);
+            }
+        }
+        for o in &snapshot.objectives {
+            if let Some(EntityOrigin::UserObjective(obj)) =
+                snapshot.origin_map.objective_origin(o.id)
+            {
+                self.compiled_to_user_objective.insert(o.id, *obj);
+                self.objectives.insert(*obj, (o.sense, o.constant));
+                let cells: HashMap<VarId, f64> = o
+                    .coefficients
+                    .iter()
+                    .filter_map(|(cid, val)| {
+                        self.compiled_to_user_variable.get(cid).map(|v| (*v, *val))
+                    })
+                    .collect();
+                self.objective_cells.insert(*obj, cells);
+            }
+        }
+        match &snapshot.objective_policy {
+            CompiledObjectivePolicy::Single(cid) => {
+                self.active_objective = self.compiled_to_user_objective.get(cid).copied();
+            }
+            _ => self.active_objective = None,
+        }
+    }
+
+    /// Apply one compiled backend op, translating compiled ids to user ids via
+    /// the maintained compiled->user maps and the batch's origin additions.
+    fn apply_compiled_op(&mut self, op: &BackendOp, origins: &OriginMap) {
+        match op {
+            BackendOp::AddVariable(v) => {
+                if let Some(EntityOrigin::UserVariable(var)) = origins.variable_origin(v.id) {
+                    self.compiled_to_user_variable.insert(v.id, *var);
+                    self.var_values.insert(*var, 1.0);
+                }
+            }
+            BackendOp::RemoveVariable(cid) => {
+                if let Some(var) = self.compiled_to_user_variable.remove(cid) {
+                    self.var_values.remove(&var);
+                    for cells in self.objective_cells.values_mut() {
+                        cells.remove(&var);
+                    }
+                }
+            }
+            BackendOp::AddObjective(o) => {
+                if let Some(EntityOrigin::UserObjective(obj)) = origins.objective_origin(o.id) {
+                    self.compiled_to_user_objective.insert(o.id, *obj);
+                    self.objectives.insert(*obj, (o.sense, o.constant));
+                    self.objective_cells.entry(*obj).or_default();
+                }
+            }
+            BackendOp::RemoveObjective(cid) => {
+                if let Some(obj) = self.compiled_to_user_objective.remove(cid) {
+                    self.objectives.remove(&obj);
+                    self.objective_cells.remove(&obj);
+                    if self.active_objective == Some(obj) {
+                        self.active_objective = None;
+                    }
+                }
+            }
+            BackendOp::SetObjectiveCoefficient {
+                objective,
+                variable,
+                value,
+            } => {
+                if let (Some(obj), Some(var)) = (
+                    self.compiled_to_user_objective.get(objective).copied(),
+                    self.compiled_to_user_variable.get(variable).copied(),
+                ) {
+                    self.objective_cells
+                        .entry(obj)
+                        .or_default()
+                        .insert(var, *value);
+                }
+            }
+            BackendOp::RemoveObjectiveCoefficient {
+                objective,
+                variable,
+            } => {
+                if let (Some(obj), Some(var)) = (
+                    self.compiled_to_user_objective.get(objective).copied(),
+                    self.compiled_to_user_variable.get(variable).copied(),
+                ) {
+                    if let Some(cells) = self.objective_cells.get_mut(&obj) {
+                        cells.remove(&var);
+                    }
+                }
+            }
+            BackendOp::SetObjectiveConstant { objective, value } => {
+                if let Some(obj) = self.compiled_to_user_objective.get(objective).copied() {
+                    if let Some(entry) = self.objectives.get_mut(&obj) {
+                        entry.1 = *value;
+                    }
+                }
+            }
+            BackendOp::SetObjectiveSense { objective, sense } => {
+                if let Some(obj) = self.compiled_to_user_objective.get(objective).copied() {
+                    if let Some(entry) = self.objectives.get_mut(&obj) {
+                        entry.0 = *sense;
+                    }
+                }
+            }
+            BackendOp::SetObjectivePolicy(policy) => {
+                self.active_objective = match policy {
+                    CompiledObjectivePolicy::Single(cid) => {
+                        self.compiled_to_user_objective.get(cid).copied()
+                    }
+                    _ => None,
+                };
+            }
+            // Constraint/row and variable-bound ops do not affect the
+            // objective-value model this test backend tracks.
+            BackendOp::SetVariableBounds { .. }
+            | BackendOp::AddLinearRow(_)
+            | BackendOp::RemoveLinearRow(_)
+            | BackendOp::SetLinearRowBounds { .. }
+            | BackendOp::SetLinearCoefficient { .. }
+            | BackendOp::RemoveLinearCoefficient { .. } => {}
+            // `BackendOp` is #[non_exhaustive]: future ops are ignored by this
+            // objective-value test backend.
+            _ => {}
         }
     }
 
@@ -324,6 +472,79 @@ impl BackendSession for TestBackend {
                 let mut s = self.state.borrow_mut();
                 s.deltas += 1;
                 s.revision = batch.to;
+                s.health = AdapterHealth::Ready;
+                Ok(SyncReceipt {
+                    cursor: roml::sync::AdapterCursor {
+                        applied_revision: s.revision,
+                        health: s.health,
+                    },
+                    health: s.health,
+                })
+            }
+            Synchronization::CompiledRebuild(snapshot) => {
+                {
+                    let mut s = self.state.borrow_mut();
+                    s.rebuilds += 1;
+                    if s.fail_rebuild {
+                        return Err(BackendError::new(
+                            "injected rebuild failure",
+                            ErrorCategory::Internal,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
+                }
+                self.project_compiled_snapshot(&snapshot);
+                let mut s = self.state.borrow_mut();
+                s.revision = snapshot.source_revision;
+                s.health = AdapterHealth::Ready;
+                Ok(SyncReceipt {
+                    cursor: roml::sync::AdapterCursor {
+                        applied_revision: s.revision,
+                        health: s.health,
+                    },
+                    health: s.health,
+                })
+            }
+            Synchronization::CompiledDeltaBatch(batch) => {
+                {
+                    let mut s = self.state.borrow_mut();
+                    if s.reject_next_delta {
+                        s.reject_next_delta = false;
+                        s.health = AdapterHealth::RequiresRebuild;
+                        return Err(BackendError::new(
+                            "injected recoverable delta rejection",
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
+                    if s.fail_delta_terminal {
+                        s.fail_delta_terminal = false;
+                        s.health = AdapterHealth::Terminal;
+                        return Err(BackendError::new(
+                            "injected terminal delta failure",
+                            ErrorCategory::Internal,
+                            HealthEffect::Terminal,
+                        ));
+                    }
+                    if batch.from_revision != s.revision {
+                        s.health = AdapterHealth::RequiresRebuild;
+                        return Err(BackendError::new(
+                            format!(
+                                "compiled delta from {} != backend at {}",
+                                batch.from_revision, s.revision
+                            ),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
+                }
+                let origins = batch.origin_additions.clone();
+                for op in &batch.operations {
+                    self.apply_compiled_op(op, &origins);
+                }
+                let mut s = self.state.borrow_mut();
+                s.deltas += 1;
+                s.revision = batch.to_revision;
                 s.health = AdapterHealth::Ready;
                 Ok(SyncReceipt {
                     cursor: roml::sync::AdapterCursor {

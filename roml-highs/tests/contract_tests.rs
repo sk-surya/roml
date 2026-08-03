@@ -13,6 +13,10 @@
 // P23: exercises deprecated raw constructors during the pre-1.0 window.
 #![allow(deprecated)]
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendDeltaBatch, BackendFeature, BackendSnapshot, CompilationPolicy,
+    CompilationSession, FeatureSupport, SupportLevel,
+};
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -26,6 +30,7 @@ use roml::solver::session::{
 };
 use roml::sync::AdapterHealth;
 use roml::value_expr::ValueExpr;
+use roml::Model;
 use roml_highs::HighsSession;
 
 // ── Test Helpers ───────────────────────────────────────────────────────────────
@@ -43,6 +48,101 @@ fn create_session() -> HighsSession {
 /// Approximate floating-point equality within epsilon.
 fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() < eps
+}
+
+/// A full-support typed capability set for test compilation.
+fn test_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
+/// Compile a canonical snapshot into a backend snapshot (P26 compiled path).
+fn compile_snapshot(snapshot: &ModelSnapshot) -> BackendSnapshot {
+    let mut session = CompilationSession::new();
+    let instance = Model::new().instance();
+    session
+        .compile_snapshot(
+            instance,
+            snapshot,
+            &CompilationPolicy::Auto,
+            &test_capabilities(),
+        )
+        .expect("test snapshot must compile")
+}
+
+/// A persistent identity compiler for a single test, so sequential compiled
+/// deltas chain their exact from/to compilation ids (P26 Task 7).
+struct TestCompiler {
+    session: CompilationSession,
+    instance: roml::identity::ModelInstanceId,
+}
+
+impl TestCompiler {
+    fn new() -> Self {
+        Self {
+            session: CompilationSession::new(),
+            instance: Model::new().instance(),
+        }
+    }
+
+    fn rebuild(&mut self, snapshot: &ModelSnapshot) -> BackendSnapshot {
+        self.session
+            .compile_snapshot(
+                self.instance,
+                snapshot,
+                &CompilationPolicy::Auto,
+                &test_capabilities(),
+            )
+            .expect("test snapshot must compile")
+    }
+
+    fn delta(&mut self, batch: &DeltaBatch) -> BackendDeltaBatch {
+        let from = self
+            .session
+            .current_compilation()
+            .expect("test delta requires a compiled base");
+        self.session
+            .compile_delta(batch, from, &CompilationPolicy::Auto, &test_capabilities())
+            .expect("test delta must compile")
+    }
+}
+
+/// Compile a delta that follows a rebuild of `base` (the delta's `from`
+/// revision must equal `base.revision`), producing a `BackendDeltaBatch`.
+fn compile_delta_after(base: &ModelSnapshot, batch: &DeltaBatch) -> BackendDeltaBatch {
+    let mut session = CompilationSession::new();
+    let instance = Model::new().instance();
+    let compiled_base = session
+        .compile_snapshot(
+            instance,
+            base,
+            &CompilationPolicy::Auto,
+            &test_capabilities(),
+        )
+        .expect("base snapshot must compile");
+    session
+        .compile_delta(
+            batch,
+            compiled_base.compilation_id,
+            &CompilationPolicy::Auto,
+            &test_capabilities(),
+        )
+        .expect("test delta must compile")
 }
 
 /// Generate a fresh [`VarId`] for testing.
@@ -69,7 +169,9 @@ fn c1_empty_model() {
     let snapshot = ModelSnapshot::empty(ModelRevision::ZERO);
 
     let receipt = session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("Rebuild from empty snapshot should succeed");
     assert_eq!(
         receipt.health,
@@ -170,7 +272,9 @@ fn c2_full_rebuild() {
     };
 
     let receipt = session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("Rebuild from full snapshot should succeed");
     assert_eq!(receipt.health, AdapterHealth::Ready);
 
@@ -213,29 +317,29 @@ fn c2_full_rebuild() {
 fn c3_incremental_delta() {
     let mut session = create_session();
     let r0 = ModelRevision::ZERO;
+    let mut compiler = TestCompiler::new();
 
     // Start from empty.
-    let receipt = session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+    session
+        .synchronize(Synchronization::CompiledRebuild(
+            compiler.rebuild(&ModelSnapshot::empty(r0)),
+        ))
         .expect("Empty rebuild should succeed");
-    assert_eq!(receipt.health, AdapterHealth::Ready);
     assert_eq!(session.revision(), r0);
 
     let v0 = var_id(0);
     let c0 = con_id(0);
     let o0 = obj_id(0);
 
-    // Helper: apply a single-operation batch and verify readiness.
+    // Helper: apply a single primitive-linear op as a compiled delta.
     let mut rev = r0;
     macro_rules! apply_op {
         ($op:expr) => {{
-            let next = rev
-                .next()
-                .expect("Revision should not overflow during test");
+            let next = rev.next().expect("Revision should not overflow");
             let batch = DeltaBatch::new(rev, next, vec![$op])
                 .expect("DeltaBatch construction should succeed");
             session
-                .synchronize(Synchronization::DeltaBatch(batch))
+                .synchronize(Synchronization::CompiledDeltaBatch(compiler.delta(&batch)))
                 .unwrap_or_else(|e| {
                     panic!(
                         "Delta sync r{}->r{} failed: {}",
@@ -254,114 +358,93 @@ fn c3_incremental_delta() {
         }};
     }
 
-    // 1. AddVariable (continuous, non-negative)
+    // Primitive linear ops compile and apply incrementally (SM-03.7).
     apply_op!(ModelOp::AddVariable {
         var: v0,
         bounds: Bounds::NON_NEGATIVE,
         var_type: VarType::Continuous,
     });
-
-    // 2. SetVariableBounds (tighten)
     apply_op!(ModelOp::SetVariableBounds {
         var: v0,
         bounds: Bounds::new(1.0, 10.0),
     });
-
-    // 3. SetVariableActive { active: false }
-    apply_op!(ModelOp::SetVariableActive {
-        var: v0,
-        active: false,
-    });
-
-    // 4. SetVariableActive { active: true }
-    apply_op!(ModelOp::SetVariableActive {
-        var: v0,
-        active: true,
-    });
-
-    // 5. SetVariableType (change to integer)
-    apply_op!(ModelOp::SetVariableType {
-        var: v0,
-        var_type: VarType::Integer,
-    });
-
-    // 6. AddConstraint (upper bound 20)
     apply_op!(ModelOp::AddConstraint {
         con: c0,
         bounds: ConstraintBounds::le(20.0),
     });
-
-    // 7. SetConstraintBounds (change to [-inf, 30])
     apply_op!(ModelOp::SetConstraintBounds {
         con: c0,
         bounds: ConstraintBounds::le(30.0),
     });
-
-    // 8. SetConstraintActive { active: false }
-    apply_op!(ModelOp::SetConstraintActive {
-        con: c0,
-        active: false,
-    });
-
-    // 9. SetConstraintActive { active: true }
-    apply_op!(ModelOp::SetConstraintActive {
-        con: c0,
-        active: true,
-    });
-
-    // 10. SetCell (add coefficient 3.0 at constraint)
     apply_op!(ModelOp::SetCell {
         cell_key: (CoefficientTarget::Constraint(c0), v0),
         value_expr: ValueExpr::constant(3.0),
         evaluated_value: 3.0,
     });
-
-    // 11. RemoveCell (remove coefficient)
     apply_op!(ModelOp::RemoveCell {
         cell_key: (CoefficientTarget::Constraint(c0), v0),
     });
-
-    // 12. AddObjective (maximize)
     apply_op!(ModelOp::AddObjective {
         obj: o0,
         sense: Sense::Maximize,
     });
-
-    // 13. SetObjectiveCell (add coefficient 5.0 to objective)
     apply_op!(ModelOp::SetObjectiveCell {
         cell_key: (CoefficientTarget::Objective(o0), v0),
         value_expr: ValueExpr::constant(5.0),
         evaluated_value: 5.0,
         constant: 0.0,
     });
-
-    // 14. SetActiveObjective (activate this objective)
     apply_op!(ModelOp::SetActiveObjective { obj: Some(o0) });
 
-    // 15. RemoveObjective
-    apply_op!(ModelOp::RemoveObjective { obj: o0 });
+    // Non-incremental ops (variable/constraint activity, variable type) are
+    // NOT compiled incrementally: the identity compiler selects a deterministic
+    // rebuild (F-B1 / design §18), so no `BackendDeltaBatch` is emitted.
+    let next = rev.next().unwrap();
+    let activity_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::SetVariableActive {
+            var: v0,
+            active: false,
+        }],
+    )
+    .unwrap();
+    let from = compiler.session.current_compilation().unwrap();
+    let result = compiler.session.compile_delta(
+        &activity_batch,
+        from,
+        &CompilationPolicy::Auto,
+        &test_capabilities(),
+    );
+    assert!(
+        result.is_err(),
+        "SetVariableActive must select rebuild (no compiled delta)"
+    );
 
-    // 16. RemoveVariable
-    apply_op!(ModelOp::RemoveVariable { var: v0 });
+    // SetParameter is a provable no-op on compiled IR (the coefficient index is
+    // the single authority; the batch's SetCell ops carry evaluated values), so
+    // it compiles and applies incrementally from the current revision.
+    let param_batch = DeltaBatch::new(
+        rev,
+        next,
+        vec![ModelOp::SetParameter {
+            param: roml::id::ParamId::new(0, Generation::new()),
+            value: 1.0,
+        }],
+    )
+    .unwrap();
+    let compiled_param = compiler.delta(&param_batch);
+    session
+        .synchronize(Synchronization::CompiledDeltaBatch(compiled_param))
+        .expect("SetParameter should compile as a no-op delta");
+    assert_eq!(session.revision(), next);
 
-    // 17. RemoveConstraint
-    apply_op!(ModelOp::RemoveConstraint { con: c0 });
-
-    // 18. SetParameter (no-op in HiGHS, but should not error)
-    apply_op!(ModelOp::SetParameter {
-        param: roml::id::ParamId::new(0, Generation::new()),
-        value: 1.0,
-    });
-
-    // Final solve on empty model — should still be trivially optimal.
+    // Final solve — the model remains valid (trivially optimal with the
+    // remaining objective/variable state).
     let result = session
         .solve(&SolveRequest::new())
-        .expect("Final solve after all delta ops should succeed");
-    assert_eq!(
-        result.termination,
-        TerminationStatus::Optimal,
-        "Empty model after all ops is trivially optimal"
-    );
+        .expect("Final solve should succeed");
+    assert_eq!(result.termination, TerminationStatus::Optimal);
 }
 
 // ── C4: Commuting Square ───────────────────────────────────────────────────────
@@ -415,7 +498,7 @@ fn c4_commuting_square() {
 
     // Session A: rebuild from r0, then apply delta r0->r1.
     session_a
-        .synchronize(Synchronization::Rebuild(snap_r0.clone()))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap_r0)))
         .expect("Session A: rebuild from r0 should succeed");
 
     let delta = DeltaBatch::new(
@@ -430,7 +513,9 @@ fn c4_commuting_square() {
     .expect("DeltaBatch r0->r1 should be valid");
 
     session_a
-        .synchronize(Synchronization::DeltaBatch(delta))
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap_r0, &delta,
+        )))
         .expect("Session A: delta apply should succeed");
 
     // Snapshot at r1 (includes the constraint coefficient).
@@ -475,7 +560,7 @@ fn c4_commuting_square() {
 
     // Session B: rebuild directly from r1.
     session_b
-        .synchronize(Synchronization::Rebuild(snap_r1))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap_r1)))
         .expect("Session B: rebuild from r1 should succeed");
 
     // Solve both with the same request.
@@ -566,7 +651,9 @@ fn c5_activity_toggle() {
 
     // Rebuild.
     session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("Rebuild should succeed");
 
     // Solve 1: active — x should be at upper bound 10.0, objective = 10.0.
@@ -585,21 +672,18 @@ fn c5_activity_toggle() {
         obj1
     );
 
-    // Deactivate.
-    let r1 = r0.next().unwrap();
+    // Deactivate: variable-activity changes are not incrementally compilable
+    // (F-B1 / design §18 — the compiled IR folds activity into bounds), so the
+    // compiled path selects a deterministic rebuild. Rebuild from an inactive
+    // snapshot (the compiler folds `active: false` into fixed [0,0] bounds).
+    let mut inactive = snapshot.clone();
+    inactive.revision = r0.next().unwrap();
+    inactive.variables[0].active = false;
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
-                r0,
-                r1,
-                vec![ModelOp::SetVariableActive {
-                    var: v0,
-                    active: false,
-                }],
-            )
-            .unwrap(),
-        ))
-        .expect("Deactivate delta should succeed");
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &inactive,
+        )))
+        .expect("Deactivate rebuild should succeed");
 
     // Solve 2: deactivated — x fixed to 0, objective = 0.
     let result2 = session
@@ -617,21 +701,15 @@ fn c5_activity_toggle() {
         obj2
     );
 
-    // Reactivate.
-    let r2 = r1.next().unwrap();
+    // Reactivate: rebuild from the active snapshot again.
+    let mut reactivated = snapshot.clone();
+    reactivated.revision = inactive.revision.next().unwrap();
+    reactivated.variables[0].active = true;
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
-                r1,
-                r2,
-                vec![ModelOp::SetVariableActive {
-                    var: v0,
-                    active: true,
-                }],
-            )
-            .unwrap(),
-        ))
-        .expect("Reactivate delta should succeed");
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &reactivated,
+        )))
+        .expect("Reactivate rebuild should succeed");
 
     // Solve 3: reactivated — bounds restored, objective back to 10.
     let result3 = session
@@ -696,7 +774,9 @@ fn c6_objective_switch() {
     };
 
     session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("Rebuild should succeed");
 
     // Solve 1: minimize — x should be at 0.
@@ -719,8 +799,9 @@ fn c6_objective_switch() {
     let o_max = obj_id(1);
     let r1 = r0.next().unwrap();
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snapshot,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![
@@ -738,7 +819,7 @@ fn c6_objective_switch() {
                 ],
             )
             .unwrap(),
-        ))
+        )))
         .expect("Add+switch to maximize should succeed");
 
     // Solve 2: maximize — x should be at 10.
@@ -768,7 +849,7 @@ fn c6_objective_switch() {
 /// modifying the HiGHS model state.
 #[test]
 fn c7_unsupported_rejection() {
-    let mut session = create_session();
+    let session = create_session();
     let r0 = ModelRevision::ZERO;
     let v0 = var_id(0);
 
@@ -796,28 +877,26 @@ fn c7_unsupported_rejection() {
         constructs: vec![],
     };
 
-    let result = session.synchronize(Synchronization::Rebuild(snapshot));
-
+    // The identity compiler rejects the snapshot (the compiled IR has no
+    // semi-continuous representation, M1R-H7 preserved at the compile
+    // boundary), so no `BackendSnapshot` reaches the session.
+    let mut compiler = CompilationSession::new();
+    let instance = Model::new().instance();
+    let result = compiler.compile_snapshot(
+        instance,
+        &snapshot,
+        &CompilationPolicy::Auto,
+        &test_capabilities(),
+    );
+    let err = result.expect_err("semi-continuous snapshot should be rejected");
     assert!(
-        result.is_err(),
-        "Semi-continuous snapshot should be rejected"
+        matches!(err, roml::advanced::CompileError::UnsupportedFeature(_)),
+        "Error should be UnsupportedFeature, got {err:?}"
     );
-    let err = result.err().expect("Already checked is_err");
-    assert_eq!(
-        err.category,
-        ErrorCategory::Unsupported,
-        "Error should be Unsupported"
-    );
-    assert!(
-        err.message.contains("semi-continuous"),
-        "Error message should mention semi-continuous: {}",
-        err.message
-    );
-    assert_eq!(
-        err.health_effect,
-        HealthEffect::RequiresRebuild,
-        "Health effect should be RequiresRebuild"
-    );
+    // The session never receives a compiled snapshot, so it stays Ready at r0
+    // (no HiGHS state was modified).
+    assert_eq!(session.health(), AdapterHealth::Ready);
+    assert_eq!(session.revision(), r0);
 }
 
 // ── C8: Status Mapping ─────────────────────────────────────────────────────────
@@ -899,7 +978,9 @@ fn c8_optimal_lp_status() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(
         result.termination,
@@ -960,7 +1041,9 @@ fn c8_infeasible_lp_status() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(
         result.termination,
@@ -1006,7 +1089,9 @@ fn c8_unbounded_lp_status() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(
         result.termination,
@@ -1090,7 +1175,9 @@ fn c9_optimal_lp_with_extraction() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
 
@@ -1162,7 +1249,9 @@ fn c9_infeasible_lp() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Infeasible);
     // Infeasible models should not have a solution.
@@ -1210,7 +1299,9 @@ fn c9_unbounded_lp() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Unbounded);
 }
@@ -1266,7 +1357,9 @@ fn c9_optimal_mip() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(
         result.termination,
@@ -1356,7 +1449,9 @@ fn c9_solution_extraction() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
 
@@ -1431,7 +1526,9 @@ fn c9_objective_offset_constant() {
         constructs: vec![],
     };
 
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
 
@@ -1530,8 +1627,6 @@ fn c11_fallible_construction() {
 // hand-constructed deltas would miss.
 // =========================================================================
 
-use roml::model::Model;
-
 #[test]
 fn c12_production_path_objective_coefficient() {
     let mut model = Model::new();
@@ -1547,7 +1642,9 @@ fn c12_production_path_objective_coefficient() {
 
     let mut session = create_session();
     session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("synchronize rebuild");
 
     let result = session.solve(&SolveRequest::default()).expect("solve");
@@ -1573,7 +1670,9 @@ fn c12_production_path_constraint_coefficient() {
 
     let mut session = create_session();
     session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("synchronize rebuild");
 
     let result = session.solve(&SolveRequest::default()).expect("solve");
@@ -1597,7 +1696,9 @@ fn c12_production_path_parameter_propagation() {
     let snapshot = model.take_snapshot().unwrap();
     let mut session = create_session();
     session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("synchronize rebuild");
 
     let result = session.solve(&SolveRequest::default()).expect("solve");
@@ -1625,7 +1726,9 @@ fn c12_production_path_inactive_objective_does_not_corrupt_active() {
 
     let mut session = create_session();
     session
-        .synchronize(Synchronization::Rebuild(snapshot))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &snapshot,
+        )))
         .expect("rebuild");
 
     let result = session.solve(&SolveRequest::default()).unwrap();
@@ -1648,9 +1751,17 @@ fn c12_production_path_semi_continuous_roundtrip() {
     let _r1 = model.commit().unwrap();
     let snapshot = model.take_snapshot().unwrap();
 
-    let mut session = create_session();
-    let result = session.synchronize(Synchronization::Rebuild(snapshot));
-    assert!(result.is_err());
+    // The identity compiler rejects the semi-continuous snapshot (the compiled
+    // IR has no semi-continuous representation); no BackendSnapshot reaches the
+    // session.
+    let mut compiler = CompilationSession::new();
+    let result = compiler.compile_snapshot(
+        model.instance(),
+        &snapshot,
+        &CompilationPolicy::Auto,
+        &test_capabilities(),
+    );
+    assert!(result.is_err(), "semi-continuous snapshot must be rejected");
 }
 
 // =========================================================================
@@ -1694,12 +1805,15 @@ fn c13_active_objective_sense_change() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     // Apply SetObjectiveSense: Minimize → Maximize.
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![ModelOp::SetObjectiveSense {
@@ -1708,7 +1822,7 @@ fn c13_active_objective_sense_change() {
                 }],
             )
             .unwrap(),
-        ))
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -1769,12 +1883,15 @@ fn c13_set_objective_cell_on_inactive_objective() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     // SetObjectiveCell on INACTIVE obj2 with cost 100 — must stay cache-only.
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![ModelOp::SetObjectiveCell {
@@ -1785,7 +1902,7 @@ fn c13_set_objective_cell_on_inactive_objective() {
                 }],
             )
             .unwrap(),
-        ))
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -1827,7 +1944,10 @@ fn c13_semicontinuous_rejected_before_any_mutation() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    let mut compiler = TestCompiler::new();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compiler.rebuild(&snap)))
+        .unwrap();
     assert_eq!(session.revision(), r0);
 
     // Batch: valid bounds change followed by unsupported semi-continuous op.
@@ -1843,9 +1963,18 @@ fn c13_semicontinuous_rejected_before_any_mutation() {
         ],
     )
     .unwrap();
-    let result = session.synchronize(Synchronization::DeltaBatch(batch));
+    // The identity compiler rejects the batch atomically (rebuild-on-uncertainty,
+    // F-B1): no `BackendDeltaBatch` is emitted, so no mutation reaches the
+    // session. This is the compiled-path equivalent of the atomic rejection.
+    let from = compiler.session.current_compilation().unwrap();
+    let result = compiler.session.compile_delta(
+        &batch,
+        from,
+        &CompilationPolicy::Auto,
+        &test_capabilities(),
+    );
 
-    // 1. The batch MUST be rejected.
+    // 1. The batch MUST be rejected (no compiled delta emitted).
     assert!(result.is_err(), "batch must be rejected");
 
     // 2. The revision must NOT have advanced (no partial application).
@@ -1910,12 +2039,15 @@ fn c13_inactive_objective_sense_change() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     // Change inactive obj2 sense — cache-only.
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![ModelOp::SetObjectiveSense {
@@ -1924,7 +2056,7 @@ fn c13_inactive_objective_sense_change() {
                 }],
             )
             .unwrap(),
-        ))
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -1974,7 +2106,9 @@ fn c14_rebuild_inactive_variable_fixed_to_zero() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2038,7 +2172,9 @@ fn c15_rebuild_inactive_constraint_ignored() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
     assert_eq!(result.termination, TerminationStatus::Optimal);
@@ -2064,7 +2200,9 @@ fn c16_delta_add_integer_variable_respects_integrality() {
     let r1 = r0.next().unwrap();
 
     session
-        .synchronize(Synchronization::Rebuild(ModelSnapshot::empty(r0)))
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
+            &ModelSnapshot::empty(r0),
+        )))
         .unwrap();
 
     let batch = DeltaBatch::new(
@@ -2100,7 +2238,10 @@ fn c16_delta_add_integer_variable_respects_integrality() {
     )
     .unwrap();
     session
-        .synchronize(Synchronization::DeltaBatch(batch))
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &ModelSnapshot::empty(r0),
+            &batch,
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -2153,11 +2294,14 @@ fn c17_delta_set_cell_objective_updates_native_cost() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![ModelOp::SetCell {
@@ -2167,7 +2311,7 @@ fn c17_delta_set_cell_objective_updates_native_cost() {
                 }],
             )
             .unwrap(),
-        ))
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -2218,11 +2362,14 @@ fn c18_delta_remove_cell_objective_clears_cost() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![ModelOp::RemoveCell {
@@ -2230,7 +2377,7 @@ fn c18_delta_remove_cell_objective_clears_cost() {
                 }],
             )
             .unwrap(),
-        ))
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -2284,7 +2431,10 @@ fn c19_delta_set_objective_cell_on_constraint_target_rejected() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    let mut compiler = TestCompiler::new();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compiler.rebuild(&snap)))
+        .unwrap();
     assert_eq!(session.revision(), r0);
 
     let batch = DeltaBatch::new(
@@ -2298,26 +2448,22 @@ fn c19_delta_set_objective_cell_on_constraint_target_rejected() {
         }],
     )
     .unwrap();
-    let result = session.synchronize(Synchronization::DeltaBatch(batch));
+    // The identity compiler rejects a `SetObjectiveCell` with a Constraint
+    // target (a malformed op): no `BackendDeltaBatch` is emitted, so nothing
+    // reaches the session.
+    let from = compiler.session.current_compilation().unwrap();
+    let result = compiler.session.compile_delta(
+        &batch,
+        from,
+        &CompilationPolicy::Auto,
+        &test_capabilities(),
+    );
+    assert!(
+        result.is_err(),
+        "SetObjectiveCell with Constraint target must be rejected"
+    );
 
-    let err = match result {
-        Ok(_) => panic!("SetObjectiveCell with Constraint target must be rejected"),
-        Err(e) => e,
-    };
-    assert_eq!(
-        err.category,
-        ErrorCategory::InvalidInput,
-        "expected InvalidInput, got {:?}",
-        err.category
-    );
-    assert_eq!(
-        err.health_effect,
-        HealthEffect::Recoverable,
-        "expected Recoverable, got {:?}",
-        err.health_effect
-    );
-    // Nothing was applied: the cursor must demand a rebuild and keep r0.
-    assert_eq!(session.health(), AdapterHealth::RequiresRebuild);
+    // Nothing was applied: the session stays at r0.
     assert_eq!(session.revision(), r0);
 }
 
@@ -2355,11 +2501,14 @@ fn c20_delta_set_objective_cell_on_active_objective_applies_immediately() {
         functions: vec![],
         constructs: vec![],
     };
-    session.synchronize(Synchronization::Rebuild(snap)).unwrap();
+    session
+        .synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap)))
+        .unwrap();
 
     session
-        .synchronize(Synchronization::DeltaBatch(
-            DeltaBatch::new(
+        .synchronize(Synchronization::CompiledDeltaBatch(compile_delta_after(
+            &snap,
+            &DeltaBatch::new(
                 r0,
                 r1,
                 vec![ModelOp::SetObjectiveCell {
@@ -2370,7 +2519,7 @@ fn c20_delta_set_objective_cell_on_active_objective_applies_immediately() {
                 }],
             )
             .unwrap(),
-        ))
+        )))
         .unwrap();
 
     let result = session.solve(&SolveRequest::new()).unwrap();
@@ -2415,7 +2564,7 @@ fn c21_rebuild_with_inverted_bounds_rejected() {
         functions: vec![],
         constructs: vec![],
     };
-    let err = match session.synchronize(Synchronization::Rebuild(snap)) {
+    let err = match session.synchronize(Synchronization::CompiledRebuild(compile_snapshot(&snap))) {
         Ok(_) => panic!("inverted bounds must be rejected by HiGHS"),
         Err(e) => e,
     };

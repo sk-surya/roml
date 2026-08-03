@@ -6,18 +6,25 @@
 //!   constructs golden-path solutions directly;
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
+use crate::compiler::capability::CompilationPolicy;
+use crate::compiler::session::CompilationSession;
 use crate::id::ObjId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::model::Model;
 use crate::revision::ModelRevision;
+use crate::snapshot::ModelSnapshot;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
 use crate::solution::{Solution, SolutionBuilder};
-use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
+use crate::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
 use crate::solver::options::SolveOptions;
 use crate::solver::request::SolveResult;
 use crate::solver::session::{BackendMetadata, BackendSession, SessionHealth, Synchronization};
 use crate::solver::{SolveError, SolveStatus};
 use crate::sync::{AdapterCursor, AdapterHealth};
+
+use crate::compiler::capability::{
+    BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
+};
 
 /// Normalize a backend [`SolveResult`] into a user-facing [`Solution`].
 ///
@@ -113,6 +120,7 @@ pub fn normalize_result(
 /// (plan Task 3). The wrapped backend is deliberately not exposed.
 pub struct SolverSession<B> {
     backend: B,
+    compiler: CompilationSession,
 }
 
 impl<B> SolverSession<B>
@@ -121,7 +129,10 @@ where
 {
     /// Create a session wrapping a backend session.
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            compiler: CompilationSession::new(),
+        }
     }
 
     /// Solve the current model with default options.
@@ -236,10 +247,36 @@ where
         Ok(solution)
     }
 
+    /// Compile a canonical snapshot into a [`BackendSnapshot`] for this
+    /// backend (compile-before-mutation: no backend state is touched until
+    /// the full canonical state has compiled successfully).
+    fn compile_snapshot_for(
+        &mut self,
+        model: &Model,
+        snapshot: &ModelSnapshot,
+    ) -> Result<crate::compiler::backend_ir::BackendSnapshot, SolveError> {
+        let capabilities = self.compilation_capabilities();
+        self.compiler
+            .compile_snapshot(
+                model.instance(),
+                snapshot,
+                &CompilationPolicy::Auto,
+                &capabilities,
+            )
+            .map_err(|e| {
+                SolveError::Synchronization(BackendError::new(
+                    format!("snapshot compilation failed: {e}"),
+                    ErrorCategory::Internal,
+                    HealthEffect::RequiresRebuild,
+                ))
+            })
+    }
+
     fn rebuild_from_snapshot(&mut self, model: &Model) -> Result<(), SolveError> {
         let snapshot = model.take_snapshot().map_err(SolveError::Commit)?;
+        let compiled = self.compile_snapshot_for(model, &snapshot)?;
         self.backend
-            .synchronize(Synchronization::Rebuild(snapshot))
+            .synchronize(Synchronization::CompiledRebuild(compiled))
             .map_err(|e| SolveError::from_backend(true, e))?;
         Ok(())
     }
@@ -249,6 +286,26 @@ where
         model: &Model,
         backend_rev: ModelRevision,
     ) -> Result<(), SolveError> {
+        // Establish the compiled base when the compiler has not yet compiled
+        // anything. A fresh backend (revision ZERO) is exactly the empty
+        // compiled state, so the compiler compiles the empty snapshot as its
+        // base WITHOUT sending a rebuild to the backend — the backend is
+        // already at that empty state, and sending a rebuild would count as a
+        // spurious rebuild-retry. This lets the first solve flow through
+        // compiled deltas (Delta sync mode). If the backend is already ahead
+        // and no base exists, a rebuild is required.
+        if self.compiler.current_compilation().is_none() {
+            if backend_rev == ModelRevision::ZERO {
+                self.compile_snapshot_for(model, &ModelSnapshot::empty(backend_rev))?;
+            } else {
+                return Err(SolveError::Synchronization(BackendError::new(
+                    "no compiled base for the backend revision; rebuild required",
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                )));
+            }
+        }
+
         let cursor = AdapterCursor {
             applied_revision: backend_rev,
             health: AdapterHealth::Ready,
@@ -260,13 +317,88 @@ where
                 HealthEffect::RequiresRebuild,
             ))
         })?;
+
+        // Compile-before-mutation: every delta is lowered to backend IR before
+        // any backend mutation. A delta that cannot be compiled incrementally
+        // (rebuild-on-uncertainty, design §18 / D22) surfaces as a
+        // synchronization error that the caller recovers with one deterministic
+        // rebuild.
+        let capabilities = self.compilation_capabilities();
+        let mut compiled_batches = Vec::with_capacity(batches.len());
         for batch in batches {
+            let from_compilation = self.compiler.current_compilation().ok_or_else(|| {
+                SolveError::Synchronization(BackendError::new(
+                    "no compiled base for delta; rebuild required",
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ))
+            })?;
+            let compiled = self
+                .compiler
+                .compile_delta(
+                    batch,
+                    from_compilation,
+                    &CompilationPolicy::Auto,
+                    &capabilities,
+                )
+                .map_err(|e| {
+                    SolveError::Synchronization(BackendError::new(
+                        format!("delta compilation failed; rebuild required: {e}"),
+                        ErrorCategory::InvalidInput,
+                        HealthEffect::RequiresRebuild,
+                    ))
+                })?;
+            compiled_batches.push(compiled);
+        }
+
+        for compiled in compiled_batches {
             self.backend
-                .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+                .synchronize(Synchronization::CompiledDeltaBatch(compiled))
                 .map_err(|e| SolveError::from_backend(true, e))?;
         }
         Ok(())
     }
+
+    /// Build the typed capability set the compiler gates on, derived from the
+    /// backend's flat M2 capability contract (D27 compat view). The M2-native
+    /// surface maps onto the typed incremental features; flat-only fields have
+    /// no typed equivalent and do not gate primitive linear compilation.
+    fn compilation_capabilities(&self) -> BackendCapabilitySet {
+        let flat = self.backend.capabilities();
+        flat_to_typed_for_compilation(&flat)
+    }
+}
+
+/// Map the flat M2 capability contract onto the typed feature surface for
+/// compilation gating (SM-04.4). This is a private compile-gating view derived
+/// from the backend's own `BackendMetadata::capabilities()` output — the
+/// transitional flat→typed conversion helper removed by Task 6 was a public
+/// helper; this one stays private to the façade.
+fn flat_to_typed_for_compilation(flat: &BackendCapabilities) -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    let mut declare = |feature: BackendFeature, supported: bool| {
+        if supported {
+            set.set(
+                feature,
+                FeatureSupport {
+                    level: SupportLevel::Native,
+                    limitations: Default::default(),
+                },
+            );
+        }
+    };
+    declare(BackendFeature::Lp, flat.lp);
+    declare(BackendFeature::Mip, flat.mip);
+    declare(BackendFeature::IncrementalBounds, flat.set_bounds);
+    declare(
+        BackendFeature::IncrementalRows,
+        flat.add_variable && flat.add_constraint,
+    );
+    declare(
+        BackendFeature::IncrementalCoefficients,
+        flat.set_coefficient,
+    );
+    set
 }
 
 #[cfg(test)]

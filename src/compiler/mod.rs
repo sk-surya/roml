@@ -4,9 +4,10 @@
 //!
 //! P26 establishes the compiler foundation: the backend IR types
 //! ([`backend_ir`]), the mandatory origin mapping ([`origin`]), the typed
-//! capability registry ([`capability`]), and the compilation report
-//! ([`report`]). The identity compiler (`session`) lands in Task 7; this
-//! module declares the shared error surface ([`CompileError`]) now.
+//! capability registry ([`capability`]), the compilation report
+//! ([`report`]), and the identity compiler ([`session`]) that lowers
+//! canonical snapshots/deltas into backend IR (Task 7). This module also
+//! declares the shared error surface ([`CompileError`]).
 //!
 //! Compiler internals are deliberately NOT part of the ordinary prelude
 //! (SM-03.x / API-07.2): framework and backend authors reach them through
@@ -16,6 +17,7 @@ pub mod backend_ir;
 pub mod capability;
 pub mod origin;
 pub mod report;
+pub mod session;
 
 use backend_ir::{CompilationId, CompiledEntityRef, CompiledObjectiveId};
 
@@ -65,6 +67,17 @@ pub enum CompileError {
     /// snapshot.
     InvalidObjectivePolicy(CompiledObjectiveId),
 
+    /// The delta could not be proven incrementally equivalent — a
+    /// deterministic rebuild is required (design §18, D22).
+    ///
+    /// P26 (Task 7) returns this for any delta containing an op the identity
+    /// compiler cannot lower exactly (variable/constraint activity changes,
+    /// variable-type changes, parameter updates, semi-continuous bounds, and
+    /// semantic construct ops), per the Task 0 acceptance record F-B1. No
+    /// `BackendDeltaBatch` is emitted; the caller falls back to one compiled
+    /// snapshot rebuild.
+    RebuildRequired(String),
+
     /// An opaque identity counter was exhausted (ids never wrap).
     ///
     /// Mirrors [`crate::IdentityOverflow`]: checked atomic allocation
@@ -89,6 +102,12 @@ impl std::fmt::Display for CompileError {
                 f,
                 "objective policy references a non-compiled objective: {id:?}"
             ),
+            Self::RebuildRequired(reason) => {
+                write!(
+                    f,
+                    "rebuild required (delta not incrementally equivalent): {reason}"
+                )
+            }
             Self::IdentityOverflow => write!(f, "identity counter exhausted (ids never wrap)"),
         }
     }

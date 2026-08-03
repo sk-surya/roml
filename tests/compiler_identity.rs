@@ -289,6 +289,7 @@ fn backend_delta_batch_carries_exact_from_to_compilation_ids() {
         from_revision: ModelRevision::from_u64(0),
         to_revision: ModelRevision::from_u64(1),
         operations: vec![BackendOp::SetObjectivePolicy(CompiledObjectivePolicy::None)],
+        origin_additions: OriginMap::new(),
         recipe_fingerprint: b.recipe_fingerprint,
     };
     // B2: every batch carries exact from/to compilation ids and revisions.
@@ -364,6 +365,7 @@ fn backend_op_enum_includes_removal_and_policy_ops() {
         from_revision: ModelRevision::from_u64(0),
         to_revision: ModelRevision::from_u64(1),
         operations: ops.clone(),
+        origin_additions: OriginMap::new(),
         recipe_fingerprint: b.recipe_fingerprint,
     };
     assert_eq!(batch.operations, ops);
