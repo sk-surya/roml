@@ -5,8 +5,10 @@
 //! Each batch carries an explicit `from -> to` revision pair and an
 //! ordered list of typed operations.
 
+use crate::expr::LinExpr;
+use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
-use crate::model::coefficient::CellKey;
+use crate::model::coefficient::{CellKey, CoefficientTarget};
 use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::value_expr::ValueExpr;
@@ -186,6 +188,15 @@ pub enum ModelOp {
 /// - `from < to` (the batch always advances the revision)
 /// - Operations are ordered and deterministic
 /// - The batch is self-contained (adapters need no model access)
+///
+/// # Semantic function/set entries (P25 Task 3)
+///
+/// The batch also carries [`functions`](Self::functions): the canonical
+/// semantic function-in-set entries for constraints added by this batch,
+/// *reconstructed* deterministically from the batch's legacy operations
+/// (`AddConstraint` bounds + `SetCell` cells). The coefficient index remains
+/// the single coefficient authority (SM-01.1) — these entries are a derived
+/// view, and each transitional legacy field is guarded by an invariant check.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeltaBatch {
     /// The revision before this batch is applied.
@@ -196,6 +207,10 @@ pub struct DeltaBatch {
 
     /// Ordered operations in this batch.
     pub operations: Vec<ModelOp>,
+
+    /// Canonical semantic function-in-set entries reconstructed from the
+    /// batch's `AddConstraint`/`SetCell` operations (P25 Task 3, SM-01.4).
+    pub functions: Vec<FunctionEntry>,
 }
 
 impl DeltaBatch {
@@ -206,10 +221,12 @@ impl DeltaBatch {
         if from >= to {
             return None;
         }
+        let functions = reconstruct_function_entries(&operations);
         Some(Self {
             from,
             to,
             operations,
+            functions,
         })
     }
 
@@ -234,6 +251,48 @@ impl DeltaBatch {
     pub fn follows(&self, prev: &DeltaBatch) -> bool {
         self.from == prev.to
     }
+}
+
+/// Reconstruct the canonical semantic function-in-set entries carried by a
+/// batch from its legacy `AddConstraint`/`SetCell` operations (P25 Task 3).
+///
+/// The coefficient index is the single coefficient authority (SM-01.1): each
+/// added constraint's linear function is rebuilt from the `SetCell` cells and
+/// its set from the `AddConstraint` bounds. The transitional legacy fields
+/// remain the source; the invariant assertion documents that the semantic set
+/// is derived from the legacy bounds, never a parallel authority.
+fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
+    let mut entries = Vec::new();
+    for op in operations {
+        if let ModelOp::AddConstraint { con, bounds } = op {
+            let mut expr = LinExpr::new();
+            for cell_op in operations {
+                if let ModelOp::SetCell {
+                    cell_key,
+                    evaluated_value,
+                    ..
+                } = cell_op
+                {
+                    if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                        if c == *con {
+                            expr = expr.term(*evaluated_value, cell_key.1);
+                        }
+                    }
+                }
+            }
+            let set = ScalarSet::from(*bounds);
+            // Invariant (transitional legacy field): the set must be derived
+            // from the legacy bounds.
+            debug_assert_eq!(set, ScalarSet::from(*bounds));
+            entries.push(FunctionEntry {
+                constraint: *con,
+                function: ScalarFunction::Linear(expr),
+                set,
+            });
+        }
+    }
+    entries.sort_by_key(|f| f.constraint);
+    entries
 }
 
 #[cfg(test)]

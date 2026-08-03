@@ -9,7 +9,7 @@ use crate::value_expr::ValueExpr;
 /// Coefficient type in a linear expression term.
 ///
 /// Can be a constant, a parameter, or a more complex expression.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TermCoeff {
     /// A constant coefficient.
     Constant(f64),
@@ -54,7 +54,7 @@ impl From<ParamId> for TermCoeff {
 }
 
 /// A term in a linear expression: coefficient * variable.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Term {
     /// The coefficient (constant or parameter-based).
     pub coeff: TermCoeff,
@@ -84,7 +84,7 @@ impl Term {
 /// if they want to.
 ///
 /// Terms with the same variable are automatically combined when compiled.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LinExpr {
     /// Terms in the expression.
     pub terms: Vec<Term>,
