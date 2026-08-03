@@ -370,6 +370,7 @@ fn interval_of_snapshot_uses_declared_bounds_and_parameters() {
             var_type: roml::model::VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
+            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![],
