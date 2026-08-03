@@ -579,14 +579,27 @@ where
             if trace.result.upper.is_infinite() {
                 None
             } else {
-                Some((trace.result.upper - rhs).max(0.0))
+                let m = (trace.result.upper - rhs).max(0.0);
+                if m.is_infinite() {
+                    // `upper - rhs` overflowed despite finite endpoints: the
+                    // true minimum is astronomically large, so no finite f64 M
+                    // is derivable — fail closed with the construct-aware
+                    // `UnboundedBigM` exactly like the implied path (WR-04),
+                    // never accept an arbitrary finite M.
+                    return Err(unbounded_error(construct, expression));
+                }
+                Some(m)
             }
         }
         BigMImplication::Lower => {
             if trace.result.lower.is_infinite() {
                 None
             } else {
-                Some((rhs - trace.result.lower).max(0.0))
+                let m = (rhs - trace.result.lower).max(0.0);
+                if m.is_infinite() {
+                    return Err(unbounded_error(construct, expression));
+                }
+                Some(m)
             }
         }
     };
@@ -853,6 +866,65 @@ mod tests {
         )
         .expect("an explicit M at or above the derived minimum is accepted");
         assert_eq!(m, 20.0);
+    }
+
+    /// WR-04: `upper - rhs` overflowing to +inf (finite endpoints) is an
+    /// effectively-unbounded derivation — the explicit path must fail closed
+    /// with the construct-aware `UnboundedBigM` (exactly like the implied
+    /// `bound_big_m_implied` path), never accept an arbitrary finite M or
+    /// mislabel the rejection as `InvalidBigM`.
+    #[test]
+    fn validated_explicit_big_m_fails_closed_on_derived_min_overflow() {
+        let analyzer = BoundAnalyzer::new();
+        let x = var(0);
+        let f = expr_linear(LinExpr::new().term(1.0, x));
+        let c = construct();
+        // upper = f64::MAX, rhs = -f64::MAX → (upper - rhs) overflows to +inf.
+        let bounds = |v: VarId| {
+            if v == x {
+                Bounds::new(0.0, f64::MAX)
+            } else {
+                Bounds::UNBOUNDED
+            }
+        };
+        let err = validated_explicit_big_m(
+            &analyzer,
+            request(
+                c,
+                "x <= -MAX",
+                &f,
+                bounds,
+                BigMImplication::Upper,
+                -f64::MAX,
+            ),
+            1_000.0,
+        )
+        .expect_err("derived-min overflow must fail closed, never accept a finite M");
+        assert!(
+            matches!(&err, CompileError::UnboundedBigM { construct, expression }
+                if *construct == c && expression.as_str() == "x <= -MAX"),
+            "overflow must surface the construct-aware UnboundedBigM, got {err:?}"
+        );
+
+        // Mirror for the Lower side: `rhs - lower` overflow.
+        let bounds = |v: VarId| {
+            if v == x {
+                Bounds::new(f64::MIN, 0.0)
+            } else {
+                Bounds::UNBOUNDED
+            }
+        };
+        let err = validated_explicit_big_m(
+            &analyzer,
+            request(c, "x >= MAX", &f, bounds, BigMImplication::Lower, f64::MAX),
+            1_000.0,
+        )
+        .expect_err("Lower-side derived-min overflow must fail closed");
+        assert!(
+            matches!(&err, CompileError::UnboundedBigM { construct, expression }
+                if *construct == c && expression.as_str() == "x >= MAX"),
+            "Lower overflow must surface the construct-aware UnboundedBigM, got {err:?}"
+        );
     }
 
     /// When the derived bound is infinite (free variable), an explicit finite
