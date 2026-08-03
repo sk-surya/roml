@@ -237,9 +237,18 @@ impl CompilationSession {
         let mut compiled_to_variable = HashMap::new();
         for (index, v) in snapshot.variables.iter().enumerate() {
             let id = CompiledVariableId(index as u32);
-            // Activity is folded into bounds: inactive -> fixed [0, 0].
+            // SM-05.3: the compiled representation of a fixing is equal
+            // lower/upper bounds — a fixed variable compiles with effective
+            // bounds `[value, value]` (D6: fixing compiles as bound
+            // tightening). `VariableEntry.bounds` is the DECLARED view;
+            // `fixing` folds on top. Activity is then folded into bounds:
+            // inactive -> fixed [0, 0].
+            let effective = match &v.fixing {
+                Some(fixing) => Bounds::new(fixing.value, fixing.value),
+                None => v.bounds,
+            };
             let bounds = if v.active {
-                v.bounds
+                effective
             } else {
                 Bounds::new(0.0, 0.0)
             };
@@ -476,6 +485,35 @@ impl CompilationSession {
                     operations.push(BackendOp::SetVariableBounds {
                         variable: id,
                         bounds: *bounds,
+                    });
+                }
+
+                // P27 Task 8 (SM-05.7): a persistent fixing change IS an
+                // effective-bound delta. The op is self-contained — it carries
+                // the effective bounds to apply (equal `[value, value]` for a
+                // fix; the current declared bounds for an unfix). Under
+                // `IncrementalBounds` it lowers to `BackendOp::SetVariableBounds`
+                // (D6: fixing compiles as bound tightening). A backend without
+                // `IncrementalBounds` selects a deterministic rebuild (D22).
+                ModelOp::SetVariableFixing {
+                    var,
+                    fixing: _,
+                    effective_bounds,
+                } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalBounds,
+                        "incremental variable fixing (effective bounds)",
+                    )?;
+                    let id = *w.variable_ids.get(var).ok_or_else(|| {
+                        CompileError::RebuildRequired(format!(
+                            "SetVariableFixing for unknown compiled variable ({var:?})"
+                        ))
+                    })?;
+                    operations.push(BackendOp::SetVariableBounds {
+                        variable: id,
+                        bounds: *effective_bounds,
                     });
                 }
 
