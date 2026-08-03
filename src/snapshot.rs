@@ -59,9 +59,13 @@ pub struct ModelSnapshot {
     /// the construct arena; the low-level [`take_snapshot`] projection starts
     /// empty because it receives no construct data.
     ///
-    /// Crate-private (F3): `ConstructEntry` is not part of the public surface
-    /// until P32.
-    pub(crate) constructs: Vec<ConstructEntry>,
+    /// P25 (F3): `ConstructEntry` is crate-private until P32, so this field is
+    /// `#[doc(hidden)]` and its elements are unusable by external consumers
+    /// (they cannot name `ConstructEntry`). It is kept public only so external
+    /// crates can build `ModelSnapshot` struct literals (a `pub(crate)` field
+    /// would forbid struct-update construction entirely).
+    #[doc(hidden)]
+    pub constructs: Vec<ConstructEntry>,
 }
 
 /// A variable in a snapshot.
