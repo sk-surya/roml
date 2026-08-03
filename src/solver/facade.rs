@@ -564,11 +564,16 @@ where
 
         // Apply: backend C_base -> C_overlay. An apply failure leaves the
         // backend marked RequiresRebuild (never a half-overlaid state silently
-        // reused).
-        let receipt = self
-            .backend
-            .apply_overlay(&compiled)
-            .map_err(SolveError::Rollback)?;
+        // reused). CR-02: NEVER trust the backend to have self-marked after a
+        // partial apply — defensively force the next solve to rebuild so the
+        // no-sync fast path can never reuse the half-overlaid native state.
+        let receipt = match self.backend.apply_overlay(&compiled) {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                self.force_rebuild_on_next_sync();
+                return Err(SolveError::Rollback(e));
+            }
+        };
 
         // Solve against C_overlay.
         let result = match self.backend.solve(&request) {
@@ -634,6 +639,18 @@ where
             }
             Err(e) => Err(SolveError::Rollback(e)),
         }
+    }
+
+    /// CR-02: defensively force the next solve to rebuild from a fresh
+    /// snapshot. Called on overlay APPLY failure, where the backend's native
+    /// state may be half-overlaid but the backend may not have self-marked.
+    ///
+    /// Resetting the compiler's compiled base makes `current_compilation()`
+    /// return `None`, so the next `synchronize_base` takes the snapshot-rebuild
+    /// branch even when the backend reports `Ready` at the committed revision —
+    /// the no-sync fast path can never silently reuse the half-overlaid state.
+    fn force_rebuild_on_next_sync(&mut self) {
+        self.compiler = CompilationSession::new();
     }
 }
 
