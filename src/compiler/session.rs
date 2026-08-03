@@ -442,6 +442,23 @@ impl CompilationSession {
             construct_decisions.extend(output.decisions);
         }
 
+        // WR-02: construct-generated binaries (exact minmax/abs/clamp selector
+        // variables) also gate on `BackendFeature::Mip`. A backend declaring
+        // only `Lp` would otherwise compile a snapshot carrying binary columns
+        // and solve a wrong continuous relaxation silently (SM-04.4 — an
+        // unqualified feature is rejected, never silently ignored).
+        let generated_has_integer = construct_variables
+            .iter()
+            .any(|v| !matches!(v.var_type, VarType::Continuous));
+        if generated_has_integer {
+            require_feature(
+                capabilities,
+                policy,
+                BackendFeature::Mip,
+                "construct-generated binary variables",
+            )?;
+        }
+
         // The session's origin map must include the construct-generated
         // entities so builder finalization validates their origins (D5,
         // SM-02.5).
