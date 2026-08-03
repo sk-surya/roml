@@ -61,7 +61,7 @@ All commands below ran on the platform above with the toolchain above at the bas
 | 1 | `8ebbf8a` | `test(m3): capture semantic modeling baseline` |
 | 2 | `217aa0c` | `feat(model): add lineage instance and metadata` |
 | 3 | `c19c608` | `feat(model): add linear function-in-set semantics` |
-| 4 | `(pending — filled at commit)` | `feat(model): add canonical construct lifecycle` |
+| 4 | `79c3d9a` | `feat(model): add canonical construct lifecycle` |
 
 ## Public interfaces
 
