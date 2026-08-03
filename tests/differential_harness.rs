@@ -2067,10 +2067,15 @@ fn dx_semicontinuous_partial_apply() {
 // compiler's incremental surface) are generated with a fixed seed, split into
 // batches, compiled to `BackendDeltaBatch`es via a `CompilationSession`, and
 // applied to a `ReferenceBackend` compiled state. The result is compared
-// against one compiled rebuild of the final canonical state. Deletions are
-// excluded because dense compiled ids are stable across the delta path while a
-// rebuild renumbers survivors; the removal surface is exercised by the
-// compiler's op-mapping tests.
+// against one compiled rebuild of the final canonical state. Entity removals
+// remain excluded from THIS random generator: dense compiled ids are stable
+// across the delta path while a rebuild renumbers survivors, so a removal
+// inside a random sequence would make the rebuild and delta paths disagree on
+// compiled ids by construction (an inherent renumbering property, not a
+// compiler defect). The compiled removal surface — including a
+// `RemoveVariable` coefficient purge and an active-objective `RemoveObjective`
+// policy transition — is exercised end-to-end in Section 8 (CR-01/CR-02), where
+// the removed entity is the last allocated so the commuting square holds.
 
 /// Generate a random primitive-linear op that the identity compiler can lower
 /// incrementally (no entity removals, no activity/type/parameter/construct
