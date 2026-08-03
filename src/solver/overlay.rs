@@ -380,6 +380,16 @@ pub enum OverlayError {
         /// The accumulated intersection at the point it became empty.
         bounds: Bounds,
     },
+    /// An [`ObjectiveCutoff`] has a non-finite limit (NaN or ±inf) — it would
+    /// corrupt the temporary row RHS (`rhs = limit - constant`) and reach a
+    /// backend constraint row. F4: rejected at compile time before any op is
+    /// produced.
+    InvalidCutoff {
+        /// The objective whose cutoff row is invalid.
+        objective: Objective,
+        /// The invalid cutoff limit.
+        limit: f64,
+    },
 }
 
 /// Compile a [`SolveOverlay`] against the compiler's exact current compiled
@@ -527,6 +537,15 @@ pub fn compile_overlay(
 
     // ── 4. cutoffs → AddTemporaryRow ─────────────────────────────────────
     for cutoff in &overlay.cutoffs {
+        // F4: a non-finite cutoff limit must never reach a backend row RHS —
+        // `rhs = limit - constant` with NaN/±inf would corrupt the native
+        // constraint. Rejected at compile time, before any op is produced.
+        if !cutoff.limit.is_finite() {
+            return Err(OverlayError::InvalidCutoff {
+                objective: cutoff.objective,
+                limit: cutoff.limit,
+            });
+        }
         let (coefficients, constant) = objective_compiled_terms(compiler, cutoff.objective)?;
         let rhs = cutoff.limit - constant;
         let bounds = match cutoff.direction {
