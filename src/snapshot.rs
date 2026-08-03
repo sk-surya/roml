@@ -8,8 +8,11 @@
 
 use std::collections::HashMap;
 
+use crate::construct::ConstructEntry;
+use crate::expr::{LinExpr, TermCoeff};
+use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
-use crate::model::coefficient::CellKey;
+use crate::model::coefficient::{CellKey, CoefficientTarget};
 use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::value_expr::ValueExpr;
@@ -19,6 +22,13 @@ use crate::value_expr::ValueExpr;
 /// Contains all active entities and their solver-relevant attributes.
 /// Snapshots are deterministic — two snapshots from the same model at
 /// the same revision produce identical projections.
+///
+/// P25 (SM-01.4): the snapshot also carries the canonical semantic
+/// function-in-set entries ([`functions`](Self::functions)). These are always
+/// *reconstructed* from the authoritative coefficient cells and constraint
+/// bounds (the single coefficient authority) — never stored independently.
+/// The transitional legacy `constraint`/`cell` fields remain and every one is
+/// guarded by an invariant check against the reconstructed function/set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelSnapshot {
     /// The revision this snapshot was taken at.
@@ -38,6 +48,24 @@ pub struct ModelSnapshot {
 
     /// All coefficient cells with their evaluated values.
     pub cells: Vec<CellEntry>,
+
+    /// Canonical semantic function-in-set entries, reconstructed from the
+    /// coefficient cells and constraint bounds (P25 Task 3, SM-01.4).
+    pub functions: Vec<FunctionEntry>,
+
+    /// Canonical semantic construct entries (design §7, P25 Task 4, SM-01.4).
+    ///
+    /// Populated by [`Model::take_snapshot`](crate::Model::take_snapshot) from
+    /// the construct arena; the low-level [`take_snapshot`] projection starts
+    /// empty because it receives no construct data.
+    ///
+    /// P25 (F3): `ConstructEntry` is crate-private until P32, so this field is
+    /// `#[doc(hidden)]` and its elements are unusable by external consumers
+    /// (they cannot name `ConstructEntry`). It is kept public only so external
+    /// crates can build `ModelSnapshot` struct literals (a `pub(crate)` field
+    /// would forbid struct-update construction entirely).
+    #[doc(hidden)]
+    pub constructs: Vec<ConstructEntry>,
 }
 
 /// A variable in a snapshot.
@@ -114,6 +142,8 @@ impl ModelSnapshot {
             objectives: Vec::new(),
             parameters: Vec::new(),
             cells: Vec::new(),
+            functions: Vec::new(),
+            constructs: Vec::new(),
         }
     }
 
@@ -124,6 +154,8 @@ impl ModelSnapshot {
             && self.objectives.is_empty()
             && self.parameters.is_empty()
             && self.cells.is_empty()
+            && self.functions.is_empty()
+            && self.constructs.is_empty()
     }
 
     /// Count of all entities in the snapshot.
@@ -133,6 +165,55 @@ impl ModelSnapshot {
             + self.objectives.len()
             + self.parameters.len()
             + self.cells.len()
+            + self.functions.len()
+            + self.constructs.len()
+    }
+}
+
+/// Reconstruct one semantic function-in-set entry from the authoritative
+/// legacy fields (constraint bounds + coefficient cells) (P25 Task 3).
+///
+/// The coefficient index is the single coefficient authority (SM-01.1): the
+/// linear function is rebuilt from the constraint's cells and the set from the
+/// constraint's bounds. The transitional legacy fields remain the source; the
+/// invariant assertion below documents that the semantic set is derived from
+/// the legacy bounds, never a parallel authority.
+fn reconstruct_function_entry(
+    con: ConId,
+    bounds: ConstraintBounds,
+    cells: &[(CellKey, ValueExpr, f64, Vec<ParamId>)],
+) -> FunctionEntry {
+    // F1: reconstruct the linear function SYMBOLICALLY — each term carries
+    // `TermCoeff::Expr(ValueExpr)` sourced from the cell's `value_expr`, so a
+    // parameterized coefficient keeps its symbolic form inside the function
+    // (design §6). Dependencies are DERIVED from the function, never stored.
+    // Terms are sorted by var (WR-01) so the reconstructed expression agrees
+    // in term order with the canonical `Model::constraint_function` (both are
+    // deterministic, var-ordered reconstructions of the same coefficient
+    // index). The `set` is derived directly from the constraint bounds — the
+    // transitional legacy field is the single authority, and the real
+    // cross-check lives in `Model::take_snapshot`.
+    let mut symbolic: Vec<(VarId, ValueExpr)> = cells
+        .iter()
+        .filter_map(|(cell_key, value_expr, _, _)| {
+            if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                if c == con {
+                    return Some((cell_key.1, value_expr.clone()));
+                }
+            }
+            None
+        })
+        .collect();
+    symbolic.sort_by_key(|(var, _)| *var);
+    let mut expr = LinExpr::new();
+    for (var, value_expr) in symbolic {
+        expr = expr.term(TermCoeff::Expr(value_expr), var);
+    }
+    let set = ScalarSet::from(bounds);
+    FunctionEntry {
+        constraint: con,
+        function: ScalarFunction::Linear(expr),
+        set,
     }
 }
 
@@ -199,6 +280,16 @@ pub fn take_snapshot(
         .collect();
     c.sort_by_key(|ce| ce.cell_key);
 
+    // Reconstruct the canonical semantic function-in-set entries from the
+    // authoritative legacy fields (constraint bounds + coefficient cells).
+    // Deterministic: sorted by constraint id, and the linear function term
+    // order follows the (already collected) cell order.
+    let mut functions: Vec<FunctionEntry> = constraints
+        .iter()
+        .map(|(&id, &(bounds, _))| reconstruct_function_entry(id, bounds, cells))
+        .collect();
+    functions.sort_by_key(|f| f.constraint);
+
     ModelSnapshot {
         revision,
         variables: vars,
@@ -206,6 +297,10 @@ pub fn take_snapshot(
         objectives: objs,
         parameters: params,
         cells: c,
+        functions,
+        // The low-level projection receives no construct data; the canonical
+        // Model::take_snapshot populates this from the construct arena.
+        constructs: Vec::new(),
     }
 }
 

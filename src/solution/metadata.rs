@@ -4,6 +4,7 @@
 //! which backend produced it, at which model revision, with which effective
 //! configuration, and how the model was synchronized into the backend.
 
+use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::revision::ModelRevision;
 use crate::solver::request::EffectiveConfig;
 
@@ -19,6 +20,11 @@ pub enum SynchronizationMode {
 }
 
 /// Metadata describing how a [`Solution`](crate::Solution) was produced.
+///
+/// P25 (SM-02.7, design §4): the metadata records every canonical state id
+/// available at solve time — [`model_lineage`](Self::model_lineage),
+/// [`model_instance`](Self::model_instance), and
+/// [`model_revision`](Self::model_revision).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SolveMetadata {
     /// Human-readable backend identity (e.g. "HiGHS 1.15.0").
@@ -30,6 +36,10 @@ pub struct SolveMetadata {
     pub effective_configuration: EffectiveConfig,
     /// How the model was synchronized into the backend for this solve.
     pub synchronization: SynchronizationMode,
+    /// The lineage of the model this solution was produced from.
+    pub model_lineage: ModelLineageId,
+    /// The instance of the model this solution was produced from.
+    pub model_instance: ModelInstanceId,
 }
 
 impl Default for SolveMetadata {
@@ -39,6 +49,9 @@ impl Default for SolveMetadata {
             model_revision: ModelRevision::ZERO,
             effective_configuration: EffectiveConfig::default(),
             synchronization: SynchronizationMode::NoChange,
+            // Each default allocates fresh opaque ids (no zero sentinel).
+            model_lineage: ModelLineageId::allocate().expect("solve lineage counter exhausted"),
+            model_instance: ModelInstanceId::allocate().expect("solve instance counter exhausted"),
         }
     }
 }
@@ -67,6 +80,7 @@ mod tests {
                 ..EffectiveConfig::default()
             },
             synchronization: SynchronizationMode::Rebuild,
+            ..SolveMetadata::default()
         };
         assert_eq!(m.clone(), m);
         assert_ne!(m, SolveMetadata::default());

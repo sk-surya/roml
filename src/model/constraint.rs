@@ -1,6 +1,15 @@
 //! Constraint storage and operations.
+//!
+//! Also hosts the canonical function-in-set conversion path (P25 Task 3): the
+//! ordinary `.le`/`.ge`/`.eq`/`.between` builders produce a
+//! [`ConstraintSpec`], which converts to a [`FunctionConstraint`] through
+//! [`ScalarSet`] here. The coefficient index remains the single coefficient
+//! authority; the function-in-set view is derived (design §6, SM-01.1).
 
+use crate::expr::ConstraintSpec;
+use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{ConId, IdArena};
+use crate::value_expr::ValueExpr;
 
 /// Constraint bounds
 ///
@@ -70,6 +79,51 @@ impl ConstraintBounds {
 impl Default for ConstraintBounds {
     fn default() -> Self {
         Self::eq(0.0)
+    }
+}
+
+/// Convert ordinary constraint bounds into the canonical scalar set (design
+/// §6, P25 Task 3).
+///
+/// - `le(upper)` -> [`ScalarSet::LessEqual`]
+/// - `ge(lower)` -> [`ScalarSet::GreaterEqual`]
+/// - `eq(rhs)` -> [`ScalarSet::EqualTo`]
+/// - `range(lower, upper)` -> [`ScalarSet::Interval`]
+impl From<ConstraintBounds> for ScalarSet {
+    fn from(bounds: ConstraintBounds) -> Self {
+        if bounds.is_equality() {
+            ScalarSet::EqualTo(ValueExpr::from(bounds.lower))
+        } else if !bounds.has_lower() {
+            ScalarSet::LessEqual(ValueExpr::from(bounds.upper))
+        } else if !bounds.has_upper() {
+            ScalarSet::GreaterEqual(ValueExpr::from(bounds.lower))
+        } else {
+            ScalarSet::Interval {
+                lower: ValueExpr::from(bounds.lower),
+                upper: ValueExpr::from(bounds.upper),
+            }
+        }
+    }
+}
+
+impl From<ConstraintSpec> for FunctionConstraint {
+    fn from(spec: ConstraintSpec) -> Self {
+        FunctionConstraint {
+            function: ScalarFunction::Linear(spec.expr),
+            set: ScalarSet::from(spec.bounds),
+        }
+    }
+}
+
+impl ConstraintSpec {
+    /// Convert this spec into its canonical function-in-set form (design §6).
+    ///
+    /// The linear function carries the declared expression (constant
+    /// included); the set carries the declared bounds. The model's canonical
+    /// reconstruction from the coefficient index folds the expression
+    /// constant into the bounds, matching the ordinary M2 builder.
+    pub fn into_function_constraint(self) -> FunctionConstraint {
+        FunctionConstraint::from(self)
     }
 }
 

@@ -137,6 +137,7 @@ pub struct ConstructEntry {
     pub id: Construct,
     pub kind: ConstructKind,
     pub active: bool,
+    pub preference: FormulationPreference,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -575,7 +576,7 @@ cargo test -p roml --all-targets
 ## Task 4 — Add canonical construct lifecycle
 
 **Phase:** P25  
-**Files:** create `src/construct/mod.rs`; modify model/snapshot/delta/metadata/lib and semantic tests. (P25 ships `mod.rs` plus the construct arena; the per-construct modules `indicator`, `minmax`, `absolute`, `boolean`, `product`, `piecewise_linear`, and `soft` land in Tasks 13/16/17/18.)
+**Files:** create `src/construct/mod.rs`; modify model/snapshot/delta/metadata/lib and semantic tests. (P25 ships `mod.rs` plus the construct arena; the per-construct modules `indicator`, `minmax`, `absolute`, `boolean`, `product`, `piecewise_linear`, and `soft` land in Tasks 13/16/17/18. The fixture payload and `ConstructKind`/`ConstructEntry` are crate-private in P25 — see amendment A30; the fixture lifecycle tests live in-crate under `#[cfg(test)]`.)
 
 - [ ] Write add/clone/snapshot/activity/remove/stale-generation tests using a private fixture payload.
 - [ ] Implement one generation-safe construct arena.

@@ -125,6 +125,8 @@ fn binary_mip_snapshot() -> ModelSnapshot {
                 dependencies: vec![],
             },
         ],
+        functions: vec![],
+        constructs: vec![],
     }
 }
 
@@ -192,6 +194,8 @@ fn unique_lp_snapshot() -> ModelSnapshot {
                 dependencies: vec![],
             },
         ],
+        functions: vec![],
+        constructs: vec![],
     }
 }
 
