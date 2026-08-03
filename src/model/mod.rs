@@ -2965,7 +2965,8 @@ mod construct_tests {
         // The canonical entry carries the preference.
         let entry = model.construct(k).unwrap();
         assert_eq!(
-            entry.preference, FormulationPreference::NativeRequired,
+            entry.preference,
+            FormulationPreference::NativeRequired,
             "entry must carry the preference"
         );
 
@@ -2977,7 +2978,8 @@ mod construct_tests {
             .find(|e| e.id == k)
             .expect("snapshot carries the construct entry");
         assert_eq!(
-            snap_entry.preference, FormulationPreference::NativeRequired,
+            snap_entry.preference,
+            FormulationPreference::NativeRequired,
             "snapshot entry must carry the preference"
         );
 
@@ -2993,7 +2995,8 @@ mod construct_tests {
             .find(|e| e.id == k)
             .expect("delta carries the construct entry");
         assert_eq!(
-            delta_entry.preference, FormulationPreference::NativeRequired,
+            delta_entry.preference,
+            FormulationPreference::NativeRequired,
             "delta entry must carry the preference"
         );
 
@@ -3019,7 +3022,8 @@ mod construct_tests {
             .find(|e| e.id != k)
             .expect("rebuilt construct present in snapshot");
         assert_eq!(
-            rebuilt_entry.preference, FormulationPreference::NativeRequired,
+            rebuilt_entry.preference,
+            FormulationPreference::NativeRequired,
             "rebuild from snapshot preserves the preference"
         );
     }

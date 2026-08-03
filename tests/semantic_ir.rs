@@ -201,7 +201,11 @@ fn semantic_ir_preserves_symbolic_parameter_terms() {
     assert_eq!(snap_entry.terms.len(), 1);
     assert_eq!(snap_entry.terms[0].0, x);
     assert!(snap_entry.terms[0].1.has_dependencies());
-    assert_eq!(snap_entry.dependencies, vec![p], "snapshot dependencies == [p]");
+    assert_eq!(
+        snap_entry.dependencies,
+        vec![p],
+        "snapshot dependencies == [p]"
+    );
 
     // 3. Delta FunctionEntry carries the symbolic terms.
     let batches = model.deltas_since(ModelRevision::ZERO).unwrap();
@@ -220,13 +224,21 @@ fn semantic_ir_preserves_symbolic_parameter_terms() {
         delta_entry.terms[0].1.has_dependencies(),
         "delta symbolic ValueExpr must reference the parameter"
     );
-    assert_eq!(delta_entry.dependencies, vec![p], "delta dependencies == [p]");
+    assert_eq!(
+        delta_entry.dependencies,
+        vec![p],
+        "delta dependencies == [p]"
+    );
 
     // 4. After updating `p`, the semantic entries STILL carry the symbolic form.
     model.set_parameter(p, 5.0).unwrap();
     model.commit().unwrap();
     let fc2 = model.constraint_function(con).unwrap();
-    assert_eq!(fc2.dependencies, vec![p], "dependency survives parameter update");
+    assert_eq!(
+        fc2.dependencies,
+        vec![p],
+        "dependency survives parameter update"
+    );
     assert!(fc2.terms[0].1.has_dependencies());
     let snap2 = model.take_snapshot().unwrap();
     let snap_entry2 = snap2
@@ -276,7 +288,9 @@ fn delta_functions_contract_updates_ride_ops_not_functions_view() {
     let r1 = model.commit().unwrap();
 
     // A pre-existing constraint's bounds are updated in the next commit.
-    model.set_constraint_bounds(con, ConstraintBounds::le(5.0)).unwrap();
+    model
+        .set_constraint_bounds(con, ConstraintBounds::le(5.0))
+        .unwrap();
     let r2 = model.commit().unwrap();
     assert_ne!(r1, r2);
 
