@@ -4,7 +4,7 @@
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
 **Status:** P25 accepted (merged via PR #27 at main@9c2a9df); P26 ready to plan  
-**Current phase:** P25 — semantic IR, lineage, metadata (complete; merge pending)  
+**Current phase:** P26 — compiler boundary, backend IR, capabilities, origins, compilation identity  
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
 **Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
 **Authoritative baseline:** `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`  
