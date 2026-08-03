@@ -1025,6 +1025,62 @@ fn zero_binary_construct_compiles_without_mip() {
     );
 }
 
+#[test]
+fn minmax_absolute_product_record_representation_path() {
+    // IN-01: the `select_path` result must be observable in the formulation
+    // decisions (as the indicator bridge does), never matched with empty arms.
+    // No P32 backend declares a qualified native minmax/abs/product, so under
+    // Auto + bridge caps the recorded path is the exact bridge.
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let y = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Epigraph,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Auto, &bridge_caps());
+    let dec = compiled
+        .report
+        .formulation_decisions
+        .iter()
+        .find(|d| d.decision == "minmax.path")
+        .expect("minmax path decision recorded");
+    assert_eq!(dec.selection, "exact bridge");
+
+    let mut model = Model::new();
+    let z = model.add_variable(continuous().bounds(-2.0, 2.0)).unwrap();
+    model
+        .add_absolute_value(z.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Auto, &bridge_caps());
+    let dec = compiled
+        .report
+        .formulation_decisions
+        .iter()
+        .find(|d| d.decision == "absolute.path")
+        .expect("absolute path decision recorded");
+    assert_eq!(dec.selection, "exact bridge");
+
+    let mut model = Model::new();
+    let a = model.add_variable(binary()).unwrap();
+    let b = model.add_variable(binary()).unwrap();
+    model
+        .add_binary_product(ProductOperand::Binary(a), ProductOperand::Binary(b), None)
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Auto, &bridge_caps());
+    let dec = compiled
+        .report
+        .formulation_decisions
+        .iter()
+        .find(|d| d.decision == "product.path")
+        .expect("product path decision recorded");
+    assert_eq!(dec.selection, "exact bridge");
+}
+
 // ===========================================================================
 // Reification semantics — two implications, unit gap only from integrality
 // ===========================================================================

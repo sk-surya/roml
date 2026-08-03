@@ -42,15 +42,24 @@ pub(crate) fn compile(
         BackendFeature::BinaryProduct,
         "binary product construct",
     )?;
-    match path {
-        ConstructPath::Native => {
-            // No P32 backend declares a qualified native product; the exact
-            // portable bridge is the P32 representation.
-        }
-        ConstructPath::Bridge => {}
-    }
-
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
+    // IN-01: record the selected representation path so a native selection is
+    // observable in the formulation decisions (the indicator bridge precedent).
+    let (path_selection, path_reason) = match path {
+        ConstructPath::Native => (
+            "native binary product",
+            "qualified native BackendFeature::BinaryProduct selected (Auto)",
+        ),
+        ConstructPath::Bridge => (
+            "exact bridge",
+            "no qualified native binary product; exact ROML bridge (design §8.1)",
+        ),
+    };
+    finalizer.add_decision(FormulationDecision {
+        decision: "product.path".to_string(),
+        selection: path_selection.to_string(),
+        reason: path_reason.to_string(),
+    });
     let w = resolve_variable(ctx.variable_ids, payload.output, ctx.construct)?;
 
     match (&payload.left, &payload.right) {
