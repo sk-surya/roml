@@ -6,6 +6,8 @@
 //!   constructs golden-path solutions directly;
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
+use log::warn;
+
 use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::CompilationPolicy;
 use crate::compiler::origin::OverlayId;
@@ -631,10 +633,17 @@ where
                     .verify_overlay_clean()
                     .map_err(SolveError::Rollback)
             }
-            Ok(OverlayRollbackOutcome::RequiresRebuild { .. }) => {
-                // The backend has already marked itself RequiresRebuild; the
-                // overlay solve result is still valid, but the next solve will
-                // force a snapshot rebuild before reuse (D7 invariant).
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                // IN-04: surface the reason the rollback could not be proven
+                // clean — the diagnostic value otherwise never reaches the
+                // caller or the logs. The backend has already marked itself
+                // RequiresRebuild; the overlay solve result is still valid, but
+                // the next solve will force a snapshot rebuild before reuse
+                // (D7 invariant).
+                warn!(
+                    "overlay rollback could not be proven clean (session marked RequiresRebuild): \
+                     {reason}"
+                );
                 Ok(())
             }
             Err(e) => Err(SolveError::Rollback(e)),
