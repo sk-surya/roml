@@ -240,6 +240,26 @@ impl LinExpr {
 
         result
     }
+
+    /// Derive the parameter dependencies of this expression (F1).
+    ///
+    /// Dependencies are DERIVED from each coefficient's `ValueExpr`, never
+    /// stored: the result is sorted and deduplicated so it is deterministic.
+    /// A `TermCoeff::Constant` contributes nothing; a `TermCoeff::Expr`
+    /// contributes its `ValueExpr::dependencies()`.
+    pub fn parameter_dependencies(&self) -> Vec<ParamId> {
+        let mut deps: Vec<ParamId> = self
+            .terms
+            .iter()
+            .flat_map(|term| match &term.coeff {
+                TermCoeff::Constant(_) => Vec::new(),
+                TermCoeff::Expr(e) => e.dependencies().into_iter().collect(),
+            })
+            .collect();
+        deps.sort();
+        deps.dedup();
+        deps
+    }
 }
 
 /// A fully-specified constraint ready to be added to a model.
@@ -784,15 +804,23 @@ impl Model {
         Ok(expr)
     }
 
-    /// Reconstruct the SYMBOLIC terms of a constraint from the coefficient
-    /// index (F1): each `(VarId, ValueExpr)` preserves the parameter-dependent
-    /// coefficient expression rather than only its evaluated number.
+    /// Reconstruct the SYMBOLIC linear function of a constraint from the
+    /// coefficient index (F1): each term carries `TermCoeff::Expr(ValueExpr)`
+    /// sourced from the coefficient's `value_expr`, so a parameterized
+    /// coefficient `p*x` keeps its symbolic form rather than only its evaluated
+    /// number. The symbolic expression lives INSIDE the returned `LinExpr` — it
+    /// is the single authority for the row's coefficients.
     ///
     /// Deterministic: terms are sorted by `var` (the same ordering as
     /// [`Self::constraint_expression`] and the snapshot/delta reconstructions).
-    /// Used by [`Model::constraint_function`](crate::Model::constraint_function)
-    /// to populate the symbolic view of the semantic IR.
-    pub(crate) fn constraint_symbolic_terms(&self, con: ConId) -> Vec<(VarId, ValueExpr)> {
+    /// Used by [`Model::constraint_function`](crate::Model::constraint_function).
+    ///
+    /// `constraint_expression` remains the EVALUATED convenience API (it uses
+    /// `cached_value`); this is the symbolic canonical form.
+    pub(crate) fn constraint_symbolic_expression(&self, con: ConId) -> Result<LinExpr, ModelError> {
+        if !self.constraints.contains(con) {
+            return Err(ModelError::ConstraintNotFound(con));
+        }
         let mut terms: Vec<(VarId, ValueExpr)> = self
             .coefficients
             .for_constraint(con)
@@ -803,7 +831,12 @@ impl Model {
             })
             .collect();
         terms.sort_by_key(|(var, _)| *var);
-        terms
+
+        let mut expr = LinExpr::new();
+        for (var, value_expr) in terms {
+            expr = expr.term(TermCoeff::Expr(value_expr), var);
+        }
+        Ok(expr)
     }
 
     /// Reconstruct a linear expression from an objective's coefficients.

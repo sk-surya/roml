@@ -111,12 +111,6 @@ impl From<ConstraintSpec> for FunctionConstraint {
         FunctionConstraint {
             function: ScalarFunction::Linear(spec.expr),
             set: ScalarSet::from(spec.bounds),
-            // A raw spec is pre-coefficient-index: it has no canonical
-            // symbolic view (F1). The canonical `Model::constraint_function`
-            // reconstruction populates `terms`/`dependencies` from the
-            // coefficient index.
-            terms: Vec::new(),
-            dependencies: Vec::new(),
         }
     }
 }

@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use crate::construct::ConstructEntry;
-use crate::expr::LinExpr;
+use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::{CellKey, CoefficientTarget};
@@ -183,31 +183,16 @@ fn reconstruct_function_entry(
     bounds: ConstraintBounds,
     cells: &[(CellKey, ValueExpr, f64, Vec<ParamId>)],
 ) -> FunctionEntry {
-    // Evaluated terms sorted by var (WR-01) so the reconstructed expression
-    // agrees in term order with the canonical `Model::constraint_function`
-    // (both are deterministic, var-ordered reconstructions of the same
-    // coefficient index). The `set` is derived directly from the constraint
-    // bounds — the transitional legacy field is the single authority, and the
-    // real cross-check lives in `Model::take_snapshot`.
-    let mut terms: Vec<(VarId, f64)> = cells
-        .iter()
-        .filter_map(|(cell_key, _value_expr, evaluated_value, _deps)| {
-            if let CoefficientTarget::Constraint(c) = cell_key.0 {
-                if c == con {
-                    return Some((cell_key.1, *evaluated_value));
-                }
-            }
-            None
-        })
-        .collect();
-    terms.sort_by_key(|(var, _)| *var);
-    let mut expr = LinExpr::new();
-    for (var, value) in terms {
-        expr = expr.term(value, var);
-    }
-    // F1: the symbolic view preserves each term's `ValueExpr` plus the
-    // sorted/deduplicated parameter dependencies, so P26's compiler does not
-    // have to re-join legacy cells to recover the parameterized row.
+    // F1: reconstruct the linear function SYMBOLICALLY — each term carries
+    // `TermCoeff::Expr(ValueExpr)` sourced from the cell's `value_expr`, so a
+    // parameterized coefficient keeps its symbolic form inside the function
+    // (design §6). Dependencies are DERIVED from the function, never stored.
+    // Terms are sorted by var (WR-01) so the reconstructed expression agrees
+    // in term order with the canonical `Model::constraint_function` (both are
+    // deterministic, var-ordered reconstructions of the same coefficient
+    // index). The `set` is derived directly from the constraint bounds — the
+    // transitional legacy field is the single authority, and the real
+    // cross-check lives in `Model::take_snapshot`.
     let mut symbolic: Vec<(VarId, ValueExpr)> = cells
         .iter()
         .filter_map(|(cell_key, value_expr, _, _)| {
@@ -220,19 +205,15 @@ fn reconstruct_function_entry(
         })
         .collect();
     symbolic.sort_by_key(|(var, _)| *var);
-    let mut dependencies: Vec<ParamId> = symbolic
-        .iter()
-        .flat_map(|(_, value_expr)| value_expr.dependencies())
-        .collect();
-    dependencies.sort();
-    dependencies.dedup();
+    let mut expr = LinExpr::new();
+    for (var, value_expr) in symbolic {
+        expr = expr.term(TermCoeff::Expr(value_expr), var);
+    }
     let set = ScalarSet::from(bounds);
     FunctionEntry {
         constraint: con,
         function: ScalarFunction::Linear(expr),
         set,
-        terms: symbolic,
-        dependencies,
     }
 }
 
