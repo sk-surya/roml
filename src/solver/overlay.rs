@@ -228,6 +228,18 @@ pub enum OverlayError {
         /// The invalid absolute half-width.
         absolute: f64,
     },
+    /// An [`ObjectiveLock`] has an invalid degradation tolerance (non-finite or
+    /// negative). IN-02: validated at compile time — a negative
+    /// `absolute_tolerance` would silently produce a loosened/absurd
+    /// degradation row, and a non-finite tolerance corrupts the row RHS.
+    InvalidObjectiveLock {
+        /// The objective whose degradation row is invalid.
+        objective: Objective,
+        /// The invalid absolute degradation tolerance.
+        absolute_tolerance: f64,
+        /// The invalid relative degradation tolerance.
+        relative_tolerance: f64,
+    },
 }
 
 /// Compile a [`SolveOverlay`] against the compiler's exact current compiled
@@ -312,6 +324,21 @@ pub fn compile_overlay(
 
     // ── 3. objective_locks → AddTemporaryRow (degradation row) ───────────
     for lock in &overlay.objective_locks {
+        // IN-02: validate both tolerances (finite, non-negative) at compile
+        // time — a negative absolute tolerance would silently produce a
+        // loosened/absurd degradation row, and a non-finite one corrupts the
+        // row RHS.
+        if !lock.absolute_tolerance.is_finite()
+            || lock.absolute_tolerance < 0.0
+            || !lock.relative_tolerance.is_finite()
+            || lock.relative_tolerance < 0.0
+        {
+            return Err(OverlayError::InvalidObjectiveLock {
+                objective: lock.objective,
+                absolute_tolerance: lock.absolute_tolerance,
+                relative_tolerance: lock.relative_tolerance,
+            });
+        }
         let (coefficients, constant) = objective_compiled_terms(compiler, lock.objective)?;
         // P27 compiles the degradation row with a zero reference optimum `z`
         // (the row RHS is the absolute tolerance; P31 supplies the real stage
