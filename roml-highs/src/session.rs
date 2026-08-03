@@ -1391,6 +1391,108 @@ mod tests {
         );
     }
 
+    // ── Envelope validation (fifth review) ───────────────────────────────────
+
+    /// Fifth review: a compiled delta batch whose `from_compilation ==
+    /// to_compilation` is rejected with a typed `InvalidInput` error BEFORE any
+    /// native mutation, and the session's compiled state (exact id) and cursor
+    /// revision do not advance.
+    #[test]
+    fn compiled_delta_rejects_identical_from_to_compilation_without_advancing() {
+        let (_model, mut highs, delta, base_id) = weighted_lexicographic_fixture();
+        let base_rev = delta.from_revision;
+        let mut delta = delta;
+        // Malform the envelope: the batch claims to produce the SAME exact
+        // compiled state it starts from (retaining the old exact identity, D28)
+        // while still carrying mutations. `from_compilation` stays equal to the
+        // base so the stale check passes and the envelope check fires.
+        delta.to_compilation = base_id;
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => panic!("an identical from/to compilation envelope must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "a malformed envelope is invalid input"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(base_id),
+            "a rejected envelope must not advance the session's compiled state"
+        );
+        assert_eq!(
+            highs.cursor.applied_revision, base_rev,
+            "a rejected envelope must not advance the cursor revision"
+        );
+    }
+
+    /// Fifth review: a compiled delta batch whose `from_revision >=
+    /// to_revision` is rejected with a typed `InvalidInput` error BEFORE any
+    /// native mutation, and the session's compiled state and cursor revision do
+    /// not advance.
+    #[test]
+    fn compiled_delta_rejects_non_advancing_revision_without_advancing() {
+        let (_model, mut highs, delta, base_id) = weighted_lexicographic_fixture();
+        let base_rev = delta.from_revision;
+        let mut delta = delta;
+        // Malform the envelope: the batch does not advance the canonical model
+        // revision (from >= to). from_compilation still matches the base so the
+        // stale check passes and the envelope check fires.
+        delta.to_revision = delta.from_revision;
+
+        let err = match highs.synchronize(Synchronization::CompiledDeltaBatch(delta)) {
+            Ok(_) => panic!("a non-advancing revision envelope must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.category,
+            ErrorCategory::InvalidInput,
+            "a malformed envelope is invalid input"
+        );
+        assert_eq!(
+            highs.current_compilation,
+            Some(base_id),
+            "a rejected envelope must not advance the session's compiled state"
+        );
+        assert_eq!(
+            highs.cursor.applied_revision, base_rev,
+            "a rejected envelope must not advance the cursor revision"
+        );
+    }
+
+    /// Fifth review: a VALID envelope (advancing compilation id + revision)
+    /// still applies and advances both the session's compiled state's exact id
+    /// and its cursor revision.
+    #[test]
+    fn compiled_delta_valid_envelope_still_applies_and_advances() {
+        let (_model, mut highs, delta, _base_id) = weighted_lexicographic_fixture();
+        let to_compilation = delta.to_compilation;
+        let to_revision = delta.to_revision;
+
+        let result = highs.synchronize(Synchronization::CompiledDeltaBatch(delta));
+        let receipt = result.expect("a valid envelope must apply");
+        assert_eq!(
+            highs.current_compilation,
+            Some(to_compilation),
+            "a valid envelope advances the session's compiled state"
+        );
+        assert_eq!(
+            receipt.cursor.applied_revision, to_revision,
+            "a valid envelope advances the cursor revision"
+        );
+        assert_eq!(
+            highs.cursor.applied_revision, to_revision,
+            "a valid envelope advances the session's held cursor revision"
+        );
+        assert_eq!(
+            highs.cursor.health,
+            AdapterHealth::Ready,
+            "a valid envelope leaves the session ready"
+        );
+    }
+
     /// F5: a snapshot whose row coefficient references a compiled variable
     /// absent from the snapshot is rejected by the preflight validator when
     /// rebuilding — no silent omission of the coefficient.
