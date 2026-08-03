@@ -635,6 +635,59 @@ fn parameterized_objective_compiles_overlay_rows() {
     }
 }
 
+/// IN-02: an `ObjectiveLock` with a non-finite or negative tolerance is
+/// rejected at COMPILE time with a typed error — a negative `absolute_tolerance`
+/// would silently produce a loosened/absurd degradation row, and a non-finite
+/// one corrupts the row RHS.
+#[test]
+fn objective_lock_validates_tolerances_at_compile_time() {
+    let (model, compiler, _x, _y, obj) = overlay_fixture();
+
+    for (abs, rel) in [
+        (-1.0, 1e-6),          // negative absolute
+        (f64::NAN, 1e-6),      // NaN absolute
+        (f64::INFINITY, 1e-6), // +inf absolute
+        (1e-6, f64::NAN),      // NaN relative
+        (1e-6, f64::INFINITY), // +inf relative
+        (1e-6, -0.5),          // negative relative
+    ] {
+        let overlay = SolveOverlay::new(
+            BTreeMap::new(),
+            vec![],
+            vec![ObjectiveLock {
+                objective: obj,
+                absolute_tolerance: abs,
+                relative_tolerance: rel,
+            }],
+            vec![],
+        )
+        .unwrap();
+        let err = compile_overlay(&model, &compiler, &overlay, None).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OverlayError::InvalidObjectiveLock { objective, .. } if objective == obj
+            ),
+            "tolerances ({abs}, {rel}) must be rejected as invalid, got {err:?}"
+        );
+    }
+
+    // Valid (including zero) tolerances compile.
+    let overlay = SolveOverlay::new(
+        BTreeMap::new(),
+        vec![],
+        vec![ObjectiveLock {
+            objective: obj,
+            absolute_tolerance: 0.0,
+            relative_tolerance: 0.0,
+        }],
+        vec![],
+    )
+    .unwrap();
+    compile_overlay(&model, &compiler, &overlay, None)
+        .expect("finite non-negative tolerances compile");
+}
+
 #[test]
 fn within_band_clips_to_the_declared_domain() {
     let mut model = Model::new();
