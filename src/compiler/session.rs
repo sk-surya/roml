@@ -89,6 +89,41 @@ pub struct CompilationSession {
     current: Option<CurrentCompilation>,
 }
 
+/// SM-04.4 / F3(d): require `feature` be available for compilation under
+/// `policy`.
+///
+/// `Auto` accepts exact native support (the only path in P26 — no portable
+/// bridges exist); `NativeRequired` rejects a non-native feature; `Portable`
+/// requires a portable bridge formulation, which does not exist in P26
+/// (bridge declarations land with P32), so it rejects a non-native feature
+/// too. An unqualified feature is a typed `CompileError::UnsupportedFeature`,
+/// never silently ignored. For `Auto` the payload is the exact feature name
+/// (e.g. `"IncrementalBounds"`); the policy variants carry a descriptive
+/// message.
+fn require_feature(
+    capabilities: &BackendCapabilitySet,
+    policy: &CompilationPolicy,
+    feature: BackendFeature,
+    context: &str,
+) -> Result<(), CompileError> {
+    if capabilities.supports(feature) {
+        return Ok(());
+    }
+    let feature_name = format!("{feature:?}");
+    let message = match policy {
+        CompilationPolicy::Auto => feature_name,
+        CompilationPolicy::NativeRequired => format!(
+            "{feature_name} requires exact native support which this backend lacks \
+             ({context}; NativeRequired policy)"
+        ),
+        CompilationPolicy::Portable => format!(
+            "{feature_name} has no portable bridge in P26 ({context}; Portable policy) \
+             — bridges land with P32"
+        ),
+    };
+    Err(CompileError::UnsupportedFeature(message))
+}
+
 impl CompilationSession {
     /// Create a fresh identity compiler with no compiled state.
     pub fn new() -> Self {
@@ -141,7 +176,7 @@ impl CompilationSession {
         &mut self,
         source_instance: ModelInstanceId,
         snapshot: &ModelSnapshot,
-        _policy: &CompilationPolicy,
+        policy: &CompilationPolicy,
         capabilities: &BackendCapabilitySet,
     ) -> Result<BackendSnapshot, CompileError> {
         // WR-4 (D28): the session's compiled base belongs to ONE model instance.
@@ -156,13 +191,28 @@ impl CompilationSession {
             }
         }
 
-        // SM-04.4: an unqualified feature is rejected, never silently ignored.
+        // SM-04.4 / F3: an unqualified feature is rejected, never silently
+        // ignored. `Lp` is always required (a backend without LP cannot solve
+        // any snapshot); `Mip` is required when integers are present. The
+        // `CompilationPolicy` is enforced by `require_feature` (no longer
+        // ignored — F3(d)).
+        require_feature(
+            capabilities,
+            policy,
+            BackendFeature::Lp,
+            "linear snapshot compilation",
+        )?;
         let has_integer = snapshot
             .variables
             .iter()
             .any(|v| !matches!(v.var_type, VarType::Continuous));
-        if has_integer && !capabilities.supports(BackendFeature::Mip) {
-            return Err(CompileError::UnsupportedFeature("Mip".into()));
+        if has_integer {
+            require_feature(
+                capabilities,
+                policy,
+                BackendFeature::Mip,
+                "integer/binary variables",
+            )?;
         }
 
         // The compiled IR has no semi-continuous representation (the compiled
@@ -333,7 +383,7 @@ impl CompilationSession {
         delta: &DeltaBatch,
         from_compilation: CompilationId,
         source_instance: ModelInstanceId,
-        _policy: &CompilationPolicy,
+        policy: &CompilationPolicy,
         capabilities: &BackendCapabilitySet,
     ) -> Result<BackendDeltaBatch, CompileError> {
         // WR-4 (D28): the session's compiled base belongs to ONE model instance.
@@ -379,9 +429,12 @@ impl CompilationSession {
                     bounds,
                     var_type,
                 } => {
-                    if !capabilities.supports(BackendFeature::IncrementalRows) {
-                        return Err(CompileError::UnsupportedFeature("IncrementalRows".into()));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental variable addition",
+                    )?;
                     let id = CompiledVariableId(w.next_variable_index);
                     w.next_variable_index += 1;
                     operations.push(BackendOp::AddVariable(CompiledVariable {
@@ -409,9 +462,12 @@ impl CompilationSession {
                 ModelOp::SetVariableBounds { var, bounds } => {
                     // SM-04.4 (WR-3): an unqualified feature is rejected, never
                     // silently compiled.
-                    if !capabilities.supports(BackendFeature::IncrementalBounds) {
-                        return Err(CompileError::UnsupportedFeature("IncrementalBounds".into()));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalBounds,
+                        "incremental variable bounds",
+                    )?;
                     let id = *w.variable_ids.get(var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "SetVariableBounds for unknown compiled variable ({var:?})"
@@ -437,9 +493,12 @@ impl CompilationSession {
                 }
 
                 ModelOp::AddConstraint { con, bounds } => {
-                    if !capabilities.supports(BackendFeature::IncrementalRows) {
-                        return Err(CompileError::UnsupportedFeature("IncrementalRows".into()));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental constraint addition",
+                    )?;
                     let id = CompiledConstraintId(w.next_row_index);
                     w.next_row_index += 1;
                     operations.push(BackendOp::AddLinearRow(CompiledLinearRow {
@@ -467,9 +526,12 @@ impl CompilationSession {
                 ModelOp::SetConstraintBounds { con, bounds } => {
                     // SM-04.4 (WR-3): an unqualified feature is rejected, never
                     // silently compiled.
-                    if !capabilities.supports(BackendFeature::IncrementalBounds) {
-                        return Err(CompileError::UnsupportedFeature("IncrementalBounds".into()));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalBounds,
+                        "incremental constraint bounds",
+                    )?;
                     let id = *w.row_ids.get(con).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "SetConstraintBounds for unknown compiled row ({con:?})"
@@ -497,11 +559,12 @@ impl CompilationSession {
                 } => {
                     // SM-04.4 (WR-3): coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
-                    if !capabilities.supports(BackendFeature::IncrementalCoefficients) {
-                        return Err(CompileError::UnsupportedFeature(
-                            "IncrementalCoefficients".into(),
-                        ));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "coefficient cell changes",
+                    )?;
                     let (target, var) = *cell_key;
                     let vid = *w.variable_ids.get(&var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
@@ -539,11 +602,12 @@ impl CompilationSession {
                 ModelOp::RemoveCell { cell_key } => {
                     // SM-04.4 (WR-3): coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
-                    if !capabilities.supports(BackendFeature::IncrementalCoefficients) {
-                        return Err(CompileError::UnsupportedFeature(
-                            "IncrementalCoefficients".into(),
-                        ));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "coefficient cell removal",
+                    )?;
                     let (target, var) = *cell_key;
                     let vid = *w.variable_ids.get(&var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
@@ -642,11 +706,12 @@ impl CompilationSession {
                 } => {
                     // SM-04.4 (WR-3): objective coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
-                    if !capabilities.supports(BackendFeature::IncrementalCoefficients) {
-                        return Err(CompileError::UnsupportedFeature(
-                            "IncrementalCoefficients".into(),
-                        ));
-                    }
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "objective coefficient changes",
+                    )?;
                     let (target, var) = *cell_key;
                     let obj = match target {
                         CoefficientTarget::Objective(o) => o,

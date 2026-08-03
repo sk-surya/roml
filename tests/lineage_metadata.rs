@@ -9,6 +9,9 @@
 use std::collections::HashSet;
 
 use roml::advanced::CompilationId;
+use roml::compiler::capability::{
+    BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
+};
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
 use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult, SolveSolution};
 use roml::solver::session::{
@@ -197,12 +200,35 @@ fn solve_metadata_records_every_state_id() {
 // sync → solve → normalize) is exercised. It deliberately carries no model
 // identity: the metadata binding is the facade's job, not the backend's.
 
+/// The full M2-native typed capability surface (F3 default for test backends).
+fn full_typed_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
 /// A backend satisfying the session traits with no model identity of its own.
 struct LineageTestBackend {
     revision: ModelRevision,
     /// The exact `CompilationId` of the compiled state held after the most
     /// recent compiled synchronization (F2 / SM-03.9).
     current_compilation: Option<CompilationId>,
+    /// The authoritative typed capability set (F3, SM-04.1).
+    typed_caps: BackendCapabilitySet,
 }
 
 impl LineageTestBackend {
@@ -210,6 +236,7 @@ impl LineageTestBackend {
         Self {
             revision: ModelRevision::ZERO,
             current_compilation: None,
+            typed_caps: full_typed_capabilities(),
         }
     }
 }
@@ -275,7 +302,11 @@ impl BackendMetadata for LineageTestBackend {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::default()
+        BackendCapabilities::all()
+    }
+
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_caps
     }
 }
 

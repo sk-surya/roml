@@ -62,6 +62,14 @@ pub enum BackendFeature {
 ///
 /// Absent features are `Unsupported` by default; the ROML bridge surface is
 /// reported separately from this native declaration (D10, SM-04.2).
+///
+/// # Bridge vs Native (SM-04.2, F3)
+///
+/// Native backend support and ROML bridge support are reported separately:
+/// a feature can be `Native` (exact native support), `Bridge` (exact ROML
+/// portable formulation), or `Unsupported`. P26 declares no bridge-supported
+/// features (bridge declarations arrive with P32); the representation exists
+/// so `BackendCapabilitySet` can distinguish the two paths where expressible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SupportLevel {
     /// The backend lacks exact native support for the feature.
@@ -69,6 +77,9 @@ pub enum SupportLevel {
     Unsupported,
     /// The backend provides exact native support for the feature.
     Native,
+    /// The feature is provided through an exact ROML bridge formulation (not
+    /// native). P26 has no bridge-supported features (bridges land with P32).
+    Bridge,
 }
 
 /// Version/model-class limitations attached to a feature's support (SM-04.3).
@@ -117,6 +128,11 @@ impl FeatureSupport {
     /// Whether this declaration reports native support.
     pub fn is_native(&self) -> bool {
         self.level == SupportLevel::Native
+    }
+
+    /// Whether this declaration reports exact ROML bridge support (SM-04.2).
+    pub fn is_bridge(&self) -> bool {
+        self.level == SupportLevel::Bridge
     }
 }
 
