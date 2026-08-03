@@ -11,7 +11,7 @@
 //! generation-safe construct arena survives add/clone/snapshot/activity/
 //! remove/rebuild (design §7, SM-01.3, SM-01.6).
 
-use roml::construct::{ConstructKind, FixturePayload, FormulationPreference};
+use roml::construct::{Construct, ConstructEntry, ConstructKind, FixturePayload, FormulationPreference};
 use roml::{
     continuous, ConstraintExprExt, FunctionConstraint, IntoScalarFunction, Model, ModelError,
     ModelRevision, ScalarFunction, ScalarSet, ValueExpr,
@@ -421,6 +421,9 @@ fn construct_store_survives_rebuild() {
     // Rebuild: a fresh empty model restored from the snapshot carries the
     // same construct content (kind + activity), with fresh ids.
     let mut rebuilt = Model::new();
+    // Track each rebuilt entry's fresh id so the reconstruction can be looked
+    // up by id instead of relying on order coincidence (IN-03).
+    let mut rebuilt_ids: Vec<(ConstructEntry, Construct)> = Vec::new();
     for entry in &snap.constructs {
         let payload = if let ConstructKind::Fixture(p) = &entry.kind {
             p.clone()
@@ -433,12 +436,30 @@ fn construct_store_survives_rebuild() {
         if !entry.active {
             rebuilt.set_construct_active(id, false).unwrap();
         }
+        rebuilt_ids.push((entry.clone(), id));
     }
     assert_eq!(rebuilt.num_constructs(), 2);
-    // Rebuilding from the same snapshot reproduces equal construct content.
+
+    // Rebuilding from the same snapshot reproduces equal construct content:
+    // look each rebuilt entry up by its fresh id and assert the full
+    // `ConstructEntry` (kind + activity) matches the original (IN-03).
     let rebuilt_snap = rebuilt.take_snapshot().unwrap();
     assert_eq!(rebuilt_snap.constructs.len(), snap.constructs.len());
-    assert!(!rebuilt_snap.constructs[0].active == !snap.constructs[0].active);
+    for (original, new_id) in &rebuilt_ids {
+        let rebuilt_entry = rebuilt_snap
+            .constructs
+            .iter()
+            .find(|e| e.id == *new_id)
+            .expect("rebuilt construct present in snapshot");
+        assert_eq!(
+            rebuilt_entry.kind, original.kind,
+            "rebuilt construct kind must match the original"
+        );
+        assert_eq!(
+            rebuilt_entry.active, original.active,
+            "rebuilt construct activity must match the original"
+        );
+    }
 }
 
 #[test]
