@@ -70,6 +70,11 @@ struct CurrentCompilation {
     next_row_index: u32,
     /// Next dense compiled objective index.
     next_objective_index: u32,
+    /// The active compiled objective policy of the current compiled state
+    /// (A32). Tracked so a `RemoveObjective` of the currently-active objective
+    /// can emit the `SetObjectivePolicy(None)` transition at the compile
+    /// boundary — the batch must be self-contained (A31, CR-02).
+    objective_policy: CompiledObjectivePolicy,
 }
 
 /// The identity compiler for one solver/backend (design §8).
@@ -259,7 +264,7 @@ impl CompilationSession {
 
         let mut builder = BackendSnapshotBuilder::new(source_instance, snapshot.revision)
             .origin_map(origin_map)
-            .objective_policy(objective_policy);
+            .objective_policy(objective_policy.clone());
         for v in variables {
             builder = builder.add_variable(v);
         }
@@ -284,6 +289,7 @@ impl CompilationSession {
             next_variable_index: compiled.variables.len() as u32,
             next_row_index: compiled.linear_rows.len() as u32,
             next_objective_index: compiled.objectives.len() as u32,
+            objective_policy,
         });
 
         Ok(compiled)
@@ -532,7 +538,18 @@ impl CompilationSession {
                             "RemoveObjective for unknown compiled objective ({obj:?})"
                         ))
                     })?;
+                    // CR-02: removing the ACTIVE objective must ALSO emit the
+                    // `SetObjectivePolicy(None)` transition, so the batch is
+                    // self-contained (A31) and the target compiled state never
+                    // carries a dangling `Single(removed_id)` policy (the
+                    // policy the snapshot builder would reject).
+                    let was_active = w.objective_policy == CompiledObjectivePolicy::Single(id);
                     operations.push(BackendOp::RemoveObjective(id));
+                    if was_active {
+                        operations
+                            .push(BackendOp::SetObjectivePolicy(CompiledObjectivePolicy::None));
+                        w.objective_policy = CompiledObjectivePolicy::None;
+                    }
                     w.objective_ids.remove(obj);
                     w.compiled_to_objective.remove(&id);
                 }
@@ -551,6 +568,10 @@ impl CompilationSession {
                         }
                         None => CompiledObjectivePolicy::None,
                     };
+                    // Track the working policy so a later `RemoveObjective` of
+                    // the now-active objective emits the None transition
+                    // (CR-02).
+                    w.objective_policy = policy.clone();
                     operations.push(BackendOp::SetObjectivePolicy(policy));
                 }
 
@@ -666,6 +687,7 @@ impl CompilationSession {
             next_variable_index: w.next_variable_index,
             next_row_index: w.next_row_index,
             next_objective_index: w.next_objective_index,
+            objective_policy: w.objective_policy,
         });
 
         Ok(batch)

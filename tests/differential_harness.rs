@@ -39,8 +39,8 @@
 //!    the full state after rebuild includes both changes, and no delta is lost.
 
 use roml::advanced::{
-    BackendCapabilitySet, BackendFeature, CompilationSession, CompiledVariableId, FeatureSupport,
-    SupportLevel,
+    BackendCapabilitySet, BackendFeature, CompilationSession, CompiledObjectivePolicy,
+    CompiledVariableId, FeatureSupport, SupportLevel,
 };
 use roml::compiler::capability::CompilationPolicy;
 use roml::delta::{DeltaBatch, ModelOp};
@@ -2541,6 +2541,141 @@ fn dx_compiled_remove_variable_purges_coefficients_and_holds_square() {
     );
 
     // The compiled commuting square must hold for the removal path.
+    assert!(
+        view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
+        "both paths must produce a compiled id"
+    );
+    assert_ne!(
+        view_a.compilation_id, view_b.compilation_id,
+        "D28: distinct compiled states get distinct ids (rebuild vs delta)"
+    );
+    assert_eq!(
+        view_a.revision, view_b.revision,
+        "compiled revision must match"
+    );
+    assert_eq!(
+        view_a.variables, view_b.variables,
+        "compiled variables must match"
+    );
+    assert_eq!(view_a.rows, view_b.rows, "compiled rows must match");
+    assert_eq!(
+        view_a.objectives, view_b.objectives,
+        "compiled objectives must match"
+    );
+    assert_eq!(
+        view_a.objective_policy, view_b.objective_policy,
+        "compiled objective policy must match"
+    );
+}
+
+/// (b) CR-02: a compiled `RemoveObjective` of the ACTIVE objective must leave
+/// the compiled objective policy `None` — never a dangling
+/// `Single(removed_id)` — and the compiled commuting square must hold.
+#[test]
+fn dx_compiled_remove_active_objective_clears_policy_and_holds_square() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let v0 = var_id(0);
+    let c0 = con_id(0);
+    let o0 = obj_id(0);
+
+    // r0 → r1: one variable, one constraint, one ACTIVE objective.
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v0,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c0,
+                bounds: ConstraintBounds::le(10.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v0),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+            },
+            ModelOp::AddObjective {
+                obj: o0,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o0) },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o0), v0),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                constant: 0.0,
+            },
+        ],
+    )
+    .unwrap();
+
+    // r1 → r2: remove the active objective.
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveObjective { obj: o0 }]).unwrap();
+
+    // Track canonical state to build the authoritative final snapshot at r2.
+    let mut tracker = fresh();
+    let mut cursor = AdapterCursor::new();
+    rebuild_ok(&mut tracker, &mut cursor, &ModelSnapshot::empty(r0));
+    apply_ok(&mut tracker, &mut cursor, &batch1);
+    apply_ok(&mut tracker, &mut cursor, &batch2);
+    let final_view = tracker.normalized_view();
+    let final_snapshot = build_snapshot_from_view(r2, &final_view);
+    let empty_snapshot = ModelSnapshot::empty(r0);
+
+    // Path A: one compiled rebuild of the final state.
+    let mut session_a = CompilationSession::new();
+    let compiled_final = session_a
+        .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
+        .expect("final snapshot must compile");
+    let mut backend_a = fresh();
+    backend_a.rebuild_compiled(&compiled_final);
+    let view_a = backend_a.compiled_normalized_view();
+
+    // Path B: compiled rebuild of r0 + compiled deltas r0→r1→r2.
+    let mut session_b = CompilationSession::new();
+    let compiled_empty = session_b
+        .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
+        .expect("empty snapshot must compile");
+    let mut backend_b = fresh();
+    backend_b.rebuild_compiled(&compiled_empty);
+
+    let delta1 = session_b
+        .compile_delta(&batch1, compiled_empty.compilation_id, &policy, &caps)
+        .expect("batch1 must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta1)
+        .expect("batch1 must apply");
+    let delta2 = session_b
+        .compile_delta(&batch2, delta1.to_compilation, &policy, &caps)
+        .expect("batch2 (RemoveObjective) must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta2)
+        .expect("batch2 (RemoveObjective) must apply");
+    let view_b = backend_b.compiled_normalized_view();
+
+    // CR-02: removing the active objective must leave the policy None — never
+    // a dangling `Single` pointing at the removed compiled objective.
+    assert_eq!(
+        view_b.objective_policy,
+        CompiledObjectivePolicy::None,
+        "compiled objective policy must be None after removing the active objective"
+    );
+    assert!(
+        view_b.objectives.is_empty(),
+        "the removed objective must be gone from the compiled state"
+    );
+
+    // The compiled commuting square must hold for the active-objective removal.
     assert!(
         view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
         "both paths must produce a compiled id"

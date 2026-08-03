@@ -583,6 +583,15 @@ impl ReferenceBackend {
             }
             BackendOp::RemoveObjective(id) => {
                 self.compiled_objectives.remove(id);
+                // CR-02: defensively clear the compiled objective policy when it
+                // references the removed id — matching the canonical
+                // `apply_op(ModelOp::RemoveObjective)` path which sets
+                // `active_objective = None`. The compiler also emits an explicit
+                // `SetObjectivePolicy(None)` for an active-objective removal, so
+                // this covers a bare `RemoveObjective` op.
+                if self.compiled_objective_policy == CompiledObjectivePolicy::Single(*id) {
+                    self.compiled_objective_policy = CompiledObjectivePolicy::None;
+                }
             }
             BackendOp::SetObjectiveCoefficient {
                 objective,
