@@ -2552,3 +2552,206 @@ fn f5_malformed_snapshot_missing_variable_is_typed_error() {
     );
     assert_eq!(session.current_compilation(), None);
 }
+
+// ===========================================================================
+// F2 — construct output-variable bounds are NOT frozen at build time
+// ===========================================================================
+
+/// F2: minmax output-variable bounds are a static conservative domain (not the
+/// build-time operand interval), so widening an operand and rebuilding reaches
+/// the widened semantics.
+#[test]
+fn f2_minmax_rebuild_reaches_widened_output() {
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let (k, y) = model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+
+    // The declared output bound must NOT be the frozen build-time interval
+    // [0,1] — it is a conservative static domain (F2).
+    let base = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let yid0 = compiled_user_var(&base, y);
+    let yvar0 = base.variables.iter().find(|v| v.id == yid0).unwrap();
+    assert!(
+        yvar0.bounds.upper >= 1.0 + 1e-9,
+        "output upper must not be frozen at the build-time operand span (got {:?})",
+        yvar0.bounds
+    );
+
+    // Widen x1 and rebuild: y = max(5, 0.5) = 5 must become reachable.
+    model
+        .set_variable_bounds(x1, Bounds::new(0.0, 10.0))
+        .unwrap();
+    model.commit().unwrap();
+    let rebuilt = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let sel = generated_binaries(&rebuilt, k, GeneratedRole::MinMaxSelectorBinary);
+    let x1id = compiled_user_var(&rebuilt, x1);
+    let x2id = compiled_user_var(&rebuilt, x2);
+    let yid = compiled_user_var(&rebuilt, y);
+    let mut fixed = HashMap::new();
+    fixed.insert(x1id, 5.0);
+    fixed.insert(x2id, 0.5);
+    fixed.insert(yid, 5.0);
+    assert!(
+        assignment_feasible(&rebuilt, &fixed, &sel),
+        "y = max(5, 0.5) = 5 must be reachable after the widening rebuild (F2)"
+    );
+    fixed.insert(yid, 5.5);
+    assert!(
+        !assignment_feasible(&rebuilt, &fixed, &sel),
+        "y = max(5, 0.5) + 0.5 must be infeasible (the selector rows still hold)"
+    );
+}
+
+/// F2: absolute-value output bounds are the static sign domain `z >= 0` (not
+/// the build-time interval), so a parameter change + rebuild reaches the
+/// widened semantics.
+#[test]
+fn f2_absolute_value_parameter_change_rebuild_reaches_widened_semantics() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let p = model.add_parameter(1.0).unwrap();
+    let (k, z) = model
+        .add_absolute_value(p * x, AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+
+    let base = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let zid0 = compiled_user_var(&base, z);
+    let zvar0 = base.variables.iter().find(|v| v.id == zid0).unwrap();
+    assert!(
+        zvar0.bounds.lower >= 0.0 && zvar0.bounds.upper.is_infinite(),
+        "absolute output must carry the static sign domain [0, +inf), got {:?}",
+        zvar0.bounds
+    );
+
+    // p: 1 -> 10; rebuild. The compiled z bound must NOT be capped at the
+    // build-time interval [0,1] — the static sign domain [0, +inf) allows z=10.
+    model.set_parameter(p, 10.0).unwrap();
+    model.commit().unwrap();
+    let rebuilt = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let zid = compiled_user_var(&rebuilt, z);
+    let zvar = rebuilt.variables.iter().find(|v| v.id == zid).unwrap();
+    assert!(
+        zvar.bounds.upper.is_infinite(),
+        "rebuilt z must carry the static sign domain [0, +inf), got {:?}",
+        zvar.bounds
+    );
+    // The positive-part aux variable's upper bound is the bridge's derived
+    // M_p = max(U, 0) = 10 for the CURRENT parameter — z = |10·1| = 10 is
+    // reachable through the decomposition (p=10, n=0).
+    let pids = generated_var_for(&rebuilt, k, GeneratedRole::AbsoluteValuePositivePartRow);
+    let pvar = rebuilt.variables.iter().find(|v| v.id == pids).unwrap();
+    assert_eq!(
+        pvar.bounds.upper, 10.0,
+        "M_p must reflect the new parameter after the rebuild (F2)"
+    );
+}
+
+/// F2: positive-part output bounds are the static sign domain `z >= 0`, so a
+/// parameter change + rebuild reaches the widened semantics.
+#[test]
+fn f2_positive_part_parameter_change_rebuild_reaches_widened_semantics() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let p = model.add_parameter(1.0).unwrap();
+    let (_k, z) = model
+        .add_absolute_value(p * x, AbsoluteValueVariant::PositivePart, None)
+        .unwrap();
+
+    let base = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let zid0 = compiled_user_var(&base, z);
+    let zvar0 = base.variables.iter().find(|v| v.id == zid0).unwrap();
+    assert!(
+        zvar0.bounds.lower >= 0.0 && zvar0.bounds.upper.is_infinite(),
+        "positive-part output must carry the static sign domain [0, +inf), got {:?}",
+        zvar0.bounds
+    );
+
+    // p: 1 -> 10; rebuild. The compiled z bound must NOT be capped at the
+    // build-time interval [0,1] — the static sign domain [0, +inf) allows
+    // z = max(10·1, 0) = 10.
+    model.set_parameter(p, 10.0).unwrap();
+    model.commit().unwrap();
+    let rebuilt = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let zid = compiled_user_var(&rebuilt, z);
+    let zvar = rebuilt.variables.iter().find(|v| v.id == zid).unwrap();
+    assert!(
+        zvar.bounds.upper.is_infinite(),
+        "rebuilt positive-part z must carry the static sign domain [0, +inf), got {:?}",
+        zvar.bounds
+    );
+}
+
+/// F2: binary-times-linear product output bounds are a conservative static
+/// domain (not the build-time `f` interval), so widening `f` and rebuilding
+/// reaches the widened semantics.
+#[test]
+fn f2_binary_product_rebuild_reaches_widened_semantics() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let (_k, w) = model.add_binary_times_linear(b, f.into(), None).unwrap();
+
+    let base = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let wid0 = compiled_user_var(&base, w);
+    let wvar0 = base.variables.iter().find(|v| v.id == wid0).unwrap();
+    assert!(
+        wvar0.bounds.upper >= 1.0 + 1e-9,
+        "product output must not be frozen at the build-time f interval (got {:?})",
+        wvar0.bounds
+    );
+
+    // Widen f to [0,5] and rebuild: w = 1·5 = 5 must become reachable.
+    model.set_variable_bounds(f, Bounds::new(0.0, 5.0)).unwrap();
+    model.commit().unwrap();
+    let rebuilt = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let bid = compiled_user_var(&rebuilt, b);
+    let fid = compiled_user_var(&rebuilt, f);
+    let wid = compiled_user_var(&rebuilt, w);
+    let mut fixed = HashMap::new();
+    fixed.insert(bid, 1.0);
+    fixed.insert(fid, 5.0);
+    fixed.insert(wid, 5.0);
+    assert!(
+        assignment_feasible(&rebuilt, &fixed, &[]),
+        "w = 1·5 = 5 must be reachable after the widening rebuild (F2)"
+    );
+    fixed.insert(wid, 5.5);
+    assert!(
+        !assignment_feasible(&rebuilt, &fixed, &[]),
+        "w = 1·5 + 0.5 must be infeasible (the product rows still hold)"
+    );
+}
+
+/// F2: clamp output bounds are the fixed clamp constants — a parameter-
+/// independent static fact that IS retained as the declared bound.
+#[test]
+fn f2_absolute_value_clamp_keeps_fixed_bounds() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let (_k, z) = model
+        .add_absolute_value(
+            x.into(),
+            AbsoluteValueVariant::Clamp {
+                lower: -2.0,
+                upper: 3.0,
+            },
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    let zid = compiled_user_var(&compiled, z);
+    let zvar = compiled.variables.iter().find(|v| v.id == zid).unwrap();
+    assert_eq!(
+        zvar.bounds,
+        Bounds::new(-2.0, 3.0),
+        "clamp output bounds are the fixed clamp constants (F2)"
+    );
+}
