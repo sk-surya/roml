@@ -112,3 +112,15 @@ pub use crate::compiler::{
     session::CompilationSession,
     CompileError,
 };
+
+/// Deterministic interval bound analysis and one-sided Big-M helpers (P32
+/// Task 15; design §9, SM-13). The construct-aware `UnboundedBigM` marker is
+/// crate-private — bridges surface it as `CompileError::UnboundedBigM`.
+pub use crate::compiler::bounds::{
+    BigMImplication, BigMRequest, BoundAnalyzer, BoundError, BoundSource, BoundTrace, Interval,
+};
+
+/// Bridge contract and finalizer (P32 Task 15; design §8.5, SM-13.5).
+pub use crate::compiler::bridge::{
+    BridgeDependency, BridgeFinalizer, BridgeOutput, BridgeRepresentation,
+};

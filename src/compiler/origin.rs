@@ -53,12 +53,21 @@ impl OverlayId {
 /// (design §5).
 ///
 /// An implementation-detail marker refined with the bridge tasks (P32/P33)
-/// and the overlay tasks (P27). The enum is `#[non_exhaustive]` and empty in
-/// P26: no construct/overlay generates entities yet, so no role value can be
-/// constructed.
+/// and the overlay tasks (P27). The enum is `#[non_exhaustive]`; P26 declared
+/// it empty (no construct/overlay generated entities yet). P32 Task 15 adds
+/// the generic [`Bridge`](Self::Bridge) role so the bridge framework can
+/// record `EntityOrigin::Construct` for every generated bridge entity; the
+/// per-construct bridge tasks (P32 Task 16, P33) refine it with specific
+/// role variants (indicator rows, reification rows, Boolean auxiliaries,
+/// cardinality rows, ...).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GeneratedRole {}
+pub enum GeneratedRole {
+    /// A generated bridge entity whose precise role is refined by the
+    /// per-construct bridge modules. Task 15's `BridgeFinalizer` uses this
+    /// generic role for every entity it generates.
+    Bridge,
+}
 
 /// The origin of a generated compiled entity (design §4.4, §5; D5).
 ///
