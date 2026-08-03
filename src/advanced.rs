@@ -90,3 +90,25 @@ pub use crate::value_expr::ValueExpr;
 /// Reference projection backend and conformance suite (executable spec).
 pub use crate::solver::conformance;
 pub use crate::solver::reference;
+
+/// Compiler backend IR, exact compilation identity, origins, capabilities,
+/// reports, and the identity compiler (P26). Compiler internals are
+/// deliberately absent from the ordinary prelude (SM-03.x / API-07.2);
+/// framework and backend authors reach them here.
+pub use crate::compiler::{
+    backend_ir::{
+        BackendConstraint, BackendDeltaBatch, BackendOp, BackendSnapshot, BackendSnapshotBuilder,
+        CompilationId, CompiledConstraintId, CompiledEntityRef, CompiledEntityRegistry,
+        CompiledLinearRow, CompiledObjective, CompiledObjectiveId, CompiledObjectiveLevel,
+        CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, CompiledWeightedObjective,
+        RecipeFingerprint,
+    },
+    capability::{
+        BackendCapabilitySet, BackendFeature, CompilationPolicy, FeatureLimitations,
+        FeatureSupport, SupportLevel,
+    },
+    origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId},
+    report::{BackendIdentity, CompilationReport, FormulationDecision},
+    session::CompilationSession,
+    CompileError,
+};

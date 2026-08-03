@@ -20,6 +20,10 @@
 
 use std::time::Duration;
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, BackendSnapshot, CompilationPolicy, CompilationSession,
+    FeatureSupport, SupportLevel,
+};
 use roml::model::{Bounds, Model};
 use roml::prelude::*;
 use roml::solver::session::{BackendSession, SessionHealth, Synchronization};
@@ -337,7 +341,34 @@ fn rejected_unsupported_delta_marks_session_rebuild_not_terminal(
     let r1 = model.commit()?;
 
     let mut session = HighsSession::try_new()?;
-    session.synchronize(Synchronization::Rebuild(model.take_snapshot()?))?;
+    // Compile the canonical snapshot into backend IR for the compiled session
+    // (P26 Task 7); the session no longer accepts a canonical `ModelSnapshot`.
+    let mut capabilities = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        capabilities.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    let mut compiler = CompilationSession::new();
+    let compiled: BackendSnapshot = compiler
+        .compile_snapshot(
+            model.instance(),
+            &model.take_snapshot()?,
+            &CompilationPolicy::Auto,
+            &capabilities,
+        )
+        .expect("snapshot must compile");
+    session.synchronize(Synchronization::CompiledRebuild(compiled))?;
     assert_eq!(session.health(), AdapterHealth::Ready);
 
     // Advance the model with an unsupported operation (semi-continuous
@@ -354,6 +385,51 @@ fn rejected_unsupported_delta_marks_session_rebuild_not_terminal(
         session.health(),
         AdapterHealth::RequiresRebuild,
         "unsupported/recoverable failure demands a rebuild, not terminal"
+    );
+    Ok(())
+}
+
+/// F4: the no-sync branch must require a compiled base. A fresh revision-zero
+/// model (an untouched `Model::new()`) reaching its FIRST solve must NOT take
+/// the no-sync path against a backend with no compiled state — that would hit
+/// HiGHS's "solve called before any compiled synchronization" error. The
+/// façade must force the snapshot rebuild so the compiled base is established
+/// before solve.
+#[test]
+fn first_solve_of_revision_zero_model_establishes_compiled_base(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = Model::new();
+    assert_eq!(
+        model.current_revision(),
+        roml::revision::ModelRevision::ZERO,
+        "an untouched model is at revision zero"
+    );
+    let mut highs = Highs::new()?;
+    let solution = highs.solve(&mut model)?;
+    assert_eq!(
+        solution.metadata().synchronization,
+        SynchronizationMode::Rebuild,
+        "a fresh revision-zero model must compile via a snapshot rebuild on first solve"
+    );
+    Ok(())
+}
+
+/// F4: once the compiled base is established, a second no-change solve of the
+/// same revision-zero model takes the no-sync path.
+#[test]
+fn second_solve_of_revision_zero_model_is_no_sync() -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = Model::new();
+    let mut highs = Highs::new()?;
+    let first = highs.solve(&mut model)?;
+    assert_eq!(
+        first.metadata().synchronization,
+        SynchronizationMode::Rebuild
+    );
+    let second = highs.solve(&mut model)?;
+    assert_eq!(
+        second.metadata().synchronization,
+        SynchronizationMode::NoChange,
+        "a second no-change solve takes the no-sync path once a compiled base exists"
     );
     Ok(())
 }

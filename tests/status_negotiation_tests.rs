@@ -18,6 +18,7 @@
 //! 6. BackendCapabilities::default() — every field false
 //! 7. Full option-negotiation round-trip
 
+use roml::compiler::capability::{BackendCapabilitySet, BackendFeature, FeatureSupport};
 use roml::solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
@@ -78,17 +79,37 @@ fn classify_health(category: ErrorCategory) -> HealthEffect {
     }
 }
 
-/// Create a backend with only LP capability (no MIP).
-fn lp_only_backend() -> BackendCapabilities {
-    let mut caps = BackendCapabilities::all();
-    caps.mip = false;
+/// Create a backend with only LP capability (no MIP), as a typed set.
+fn lp_only_backend() -> BackendCapabilitySet {
+    let mut caps = BackendCapabilitySet::new();
+    caps.set(
+        BackendFeature::Lp,
+        FeatureSupport::native(Default::default()),
+    );
     caps
 }
 
-/// Create a backend with only MIP capability (no LP).
-fn mip_only_backend() -> BackendCapabilities {
-    let mut caps = BackendCapabilities::all();
-    caps.lp = false;
+/// Create a backend with only MIP capability (no LP), as a typed set.
+fn mip_only_backend() -> BackendCapabilitySet {
+    let mut caps = BackendCapabilitySet::new();
+    caps.set(
+        BackendFeature::Mip,
+        FeatureSupport::native(Default::default()),
+    );
+    caps
+}
+
+/// Create a full typed backend (LP + MIP native).
+fn full_backend() -> BackendCapabilitySet {
+    let mut caps = BackendCapabilitySet::new();
+    caps.set(
+        BackendFeature::Lp,
+        FeatureSupport::native(Default::default()),
+    );
+    caps.set(
+        BackendFeature::Mip,
+        FeatureSupport::native(Default::default()),
+    );
     caps
 }
 
@@ -428,7 +449,7 @@ fn mip_abs_gap_rejected_when_backend_lacks_mip() {
 
 #[test]
 fn lp_algorithm_accepted_when_backend_supports_lp() {
-    let caps = BackendCapabilities::all();
+    let caps = full_backend();
     let req = SolveRequest::new().with_lp_algorithm(LpAlgorithm::DualSimplex);
     let rejections = validate_request(&req, &caps);
     assert!(rejections.is_empty());
@@ -436,7 +457,7 @@ fn lp_algorithm_accepted_when_backend_supports_lp() {
 
 #[test]
 fn all_options_accepted_on_full_capability_backend() {
-    let caps = BackendCapabilities::all();
+    let caps = full_backend();
     let req = SolveRequest::new()
         .with_lp_algorithm(LpAlgorithm::Barrier)
         .with_mip_rel_gap(0.01)
@@ -503,7 +524,7 @@ fn validate_request_does_not_mutate_request() {
 
 #[test]
 fn empty_backend_rejects_all_mip_options() {
-    let caps = BackendCapabilities::default();
+    let caps = BackendCapabilitySet::new();
     let req = SolveRequest {
         mip_rel_gap: Some(0.01),
         mip_abs_gap: Some(1e-6),
@@ -732,7 +753,7 @@ fn negotiation_round_trip_mip_only_backend() {
 #[test]
 fn negotiation_round_trip_full_backend() {
     // Scenario: Full-capability backend accepts everything.
-    let caps = BackendCapabilities::all();
+    let caps = full_backend();
 
     let request = SolveRequest::new()
         .with_lp_algorithm(LpAlgorithm::Barrier)

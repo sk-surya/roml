@@ -38,6 +38,13 @@
 //!    not possible. Verifies the delta batch is preserved in the journal,
 //!    the full state after rebuild includes both changes, and no delta is lost.
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, BackendOp, BackendSnapshotBuilder, CompilationSession,
+    CompileError, CompiledConstraintId, CompiledLinearRow, CompiledObjectiveId,
+    CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, EntityOrigin, FeatureSupport,
+    OriginMap, SupportLevel,
+};
+use roml::compiler::capability::CompilationPolicy;
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::id::{ConId, Generation, ObjId, ParamId, VarId};
 use roml::model::coefficient::CoefficientTarget;
@@ -47,6 +54,7 @@ use roml::snapshot::{take_snapshot, ModelSnapshot};
 use roml::solver::reference::{NormalizedView, ReferenceBackend};
 use roml::sync::{AdapterCursor, ApplyOutcome, SyncCoordinator};
 use roml::value_expr::ValueExpr;
+use roml::Model;
 use std::collections::HashMap;
 
 // ── ID helpers ───────────────────────────────────────────────────────────────
@@ -1174,8 +1182,13 @@ fn build_snapshot_from_view(rev: ModelRevision, view: &NormalizedView) -> ModelS
         constraints.insert(*id, (*bounds, *active));
     }
 
-    // Extract objective constants from the view's objective_cells
+    // Extract objective constants from the view's authoritative
+    // per-objective constant map (falling back to the first cell's constant
+    // for backends/views that predate the `objective_constants` field).
     let mut obj_constants: HashMap<ObjId, f64> = HashMap::new();
+    for (oid, constant) in &view.objective_constants {
+        obj_constants.insert(*oid, *constant);
+    }
     for (ckey, _val, constant) in &view.objective_cells {
         if let CoefficientTarget::Objective(oid) = ckey.0 {
             obj_constants.entry(oid).or_insert(*constant);
@@ -2041,5 +2054,1057 @@ fn dx_semicontinuous_partial_apply() {
         backend.normalized_view(),
         direct_backend.normalized_view(),
         "rebuild path must be deterministic regardless of prior state"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 7: Fixed-seed compiled-delta vs compiled-rebuild equality (P26 Task 7)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The compiled commuting square on backend IR (SM-03.7, must-have truth 2):
+//     compiled_rebuild(project(snapshot rN))
+//         == apply(compiled_rebuild(project(snapshot r0)), compiled_deltas r0→rN)
+//
+// Random PRIMITIVE LINEAR op sequences (additive/update only — the identity
+// compiler's incremental surface) are generated with a fixed seed, split into
+// batches, compiled to `BackendDeltaBatch`es via a `CompilationSession`, and
+// applied to a `ReferenceBackend` compiled state. The result is compared
+// against one compiled rebuild of the final canonical state. Entity removals
+// remain excluded from THIS random generator: dense compiled ids are stable
+// across the delta path while a rebuild renumbers survivors, so a removal
+// inside a random sequence would make the rebuild and delta paths disagree on
+// compiled ids by construction (an inherent renumbering property, not a
+// compiler defect). The compiled removal surface — including a
+// `RemoveVariable` coefficient purge and an active-objective `RemoveObjective`
+// policy transition — is exercised end-to-end in Section 8 (CR-01/CR-02), where
+// the removed entity is the last allocated so the commuting square holds.
+
+/// Generate a random primitive-linear op that the identity compiler can lower
+/// incrementally (no entity removals, no activity/type/parameter/construct
+/// ops). Entity additions use incrementing indices so the dense compiled ids
+/// allocated in delta order align with the sorted snapshot order.
+#[allow(clippy::too_many_arguments)]
+fn gen_compilable_op(
+    rng: &mut impl rand::Rng,
+    next_var: &mut u32,
+    next_con: &mut u32,
+    next_obj: &mut u32,
+    live_vars: &mut Vec<VarId>,
+    live_cons: &mut Vec<ConId>,
+    live_objs: &mut Vec<ObjId>,
+) -> ModelOp {
+    let has_vars = !live_vars.is_empty();
+    let has_cons = !live_cons.is_empty();
+    let has_objs = !live_objs.is_empty();
+
+    // Weight toward adding when the pool is small.
+    let n_total = live_vars.len() + live_cons.len() + live_objs.len();
+    let add_weight = if n_total < 6 { 55u32 } else { 25u32 };
+    let roll: u32 = rng.random_range(0..100);
+
+    if roll < add_weight {
+        let kind: u32 = rng.random_range(0..3);
+        match kind {
+            0 => {
+                let v = var_id(*next_var);
+                *next_var += 1;
+                live_vars.push(v);
+                let lb = rng.random_range(0.0..10.0);
+                let ub = rng.random_range(lb..=lb + 50.0);
+                ModelOp::AddVariable {
+                    var: v,
+                    bounds: Bounds::new(lb, ub),
+                    var_type: VarType::Continuous,
+                }
+            }
+            1 => {
+                let c = con_id(*next_con);
+                *next_con += 1;
+                live_cons.push(c);
+                ModelOp::AddConstraint {
+                    con: c,
+                    bounds: ConstraintBounds::le(rng.random_range(10.0..200.0)),
+                }
+            }
+            _ => {
+                let o = obj_id(*next_obj);
+                *next_obj += 1;
+                live_objs.push(o);
+                ModelOp::AddObjective {
+                    obj: o,
+                    sense: if rng.random_bool(0.5) {
+                        Sense::Minimize
+                    } else {
+                        Sense::Maximize
+                    },
+                }
+            }
+        }
+    } else {
+        // Mutate an existing entity.
+        let mut choices: Vec<u32> = Vec::new();
+        if has_vars {
+            choices.push(0); // SetVariableBounds
+        }
+        if has_cons {
+            choices.push(1); // SetConstraintBounds
+        }
+        if has_vars && has_cons {
+            choices.push(2); // SetCell
+            choices.push(3); // RemoveCell
+        }
+        if has_objs {
+            choices.push(4); // SetActiveObjective
+            if has_vars {
+                choices.push(5); // SetObjectiveCell
+            }
+            choices.push(6); // SetObjectiveSense
+            choices.push(7); // SetObjectiveConstant
+        }
+        if choices.is_empty() {
+            // Fallback: add a variable.
+            let v = var_id(*next_var);
+            *next_var += 1;
+            live_vars.push(v);
+            return ModelOp::AddVariable {
+                var: v,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            };
+        }
+        let pick = choices[rng.random_range(0..choices.len())];
+        match pick {
+            0 => {
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                let lb = rng.random_range(0.0..10.0);
+                let ub = rng.random_range(lb..=lb + 50.0);
+                ModelOp::SetVariableBounds {
+                    var: v,
+                    bounds: Bounds::new(lb, ub),
+                }
+            }
+            1 => {
+                let c = live_cons[rng.random_range(0..live_cons.len())];
+                ModelOp::SetConstraintBounds {
+                    con: c,
+                    bounds: ConstraintBounds::le(rng.random_range(10.0..200.0)),
+                }
+            }
+            2 => {
+                let c = live_cons[rng.random_range(0..live_cons.len())];
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                let val = rng.random_range(-20.0..20.0);
+                ModelOp::SetCell {
+                    cell_key: (CoefficientTarget::Constraint(c), v),
+                    value_expr: ValueExpr::constant(val),
+                    evaluated_value: val,
+                }
+            }
+            3 => {
+                let c = live_cons[rng.random_range(0..live_cons.len())];
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                ModelOp::RemoveCell {
+                    cell_key: (CoefficientTarget::Constraint(c), v),
+                }
+            }
+            4 => {
+                let obj_pick: Option<ObjId> = if rng.random_bool(0.7) {
+                    Some(live_objs[rng.random_range(0..live_objs.len())])
+                } else {
+                    None
+                };
+                ModelOp::SetActiveObjective { obj: obj_pick }
+            }
+            5 => {
+                let o = live_objs[rng.random_range(0..live_objs.len())];
+                let v = live_vars[rng.random_range(0..live_vars.len())];
+                let val = rng.random_range(-20.0..20.0);
+                let constant = rng.random_range(-50.0..50.0);
+                ModelOp::SetObjectiveCell {
+                    cell_key: (CoefficientTarget::Objective(o), v),
+                    value_expr: ValueExpr::constant(val),
+                    evaluated_value: val,
+                    constant,
+                }
+            }
+            6 => {
+                let o = live_objs[rng.random_range(0..live_objs.len())];
+                ModelOp::SetObjectiveSense {
+                    obj: o,
+                    sense: if rng.random_bool(0.5) {
+                        Sense::Minimize
+                    } else {
+                        Sense::Maximize
+                    },
+                }
+            }
+            _ => {
+                let o = live_objs[rng.random_range(0..live_objs.len())];
+                ModelOp::SetObjectiveConstant {
+                    obj: o,
+                    constant: rng.random_range(-50.0..50.0),
+                }
+            }
+        }
+    }
+}
+
+/// A full-support capability set for the compiled path.
+fn compiled_test_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
+#[test]
+fn dx_fixed_seed_compiled_delta_equals_compiled_rebuild() {
+    use rand::SeedableRng;
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(4242);
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+
+    // ── Generate random primitive-linear batches with a fixed seed ────────
+    let r0 = ModelRevision::ZERO;
+    let num_batches = 4;
+    let ops_per_batch = 20;
+
+    let mut next_var: u32 = 0;
+    let mut next_con: u32 = 0;
+    let mut next_obj: u32 = 0;
+    let mut live_vars: Vec<VarId> = Vec::new();
+    let mut live_cons: Vec<ConId> = Vec::new();
+    let mut live_objs: Vec<ObjId> = Vec::new();
+
+    let mut batches: Vec<DeltaBatch> = Vec::new();
+    let mut current_rev = r0;
+
+    for _batch_idx in 0..num_batches {
+        let from = current_rev;
+        let to = current_rev.next().unwrap();
+        let mut ops = Vec::new();
+        for _ in 0..ops_per_batch {
+            ops.push(gen_compilable_op(
+                &mut rng,
+                &mut next_var,
+                &mut next_con,
+                &mut next_obj,
+                &mut live_vars,
+                &mut live_cons,
+                &mut live_objs,
+            ));
+        }
+        if let Some(batch) = DeltaBatch::new(from, to, ops) {
+            batches.push(batch);
+            current_rev = to;
+        }
+    }
+
+    // ── Track canonical state to build the authoritative final snapshot ────
+    let mut tracker = fresh();
+    let mut cursor = AdapterCursor::new();
+    rebuild_ok(&mut tracker, &mut cursor, &ModelSnapshot::empty(r0));
+    for batch in &batches {
+        apply_ok(&mut tracker, &mut cursor, batch);
+    }
+    let final_view = tracker.normalized_view();
+    let final_snapshot = build_snapshot_from_view(current_rev, &final_view);
+    let empty_snapshot = ModelSnapshot::empty(r0);
+
+    // ── Path A: one compiled rebuild of the final state ────────────────────
+    let mut session_a = CompilationSession::new();
+    let compiled_final = session_a
+        .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
+        .expect("final snapshot must compile");
+    let mut backend_a = fresh();
+    backend_a
+        .rebuild_compiled(&compiled_final)
+        .expect("compiled rebuild must validate");
+    let view_a = backend_a.compiled_normalized_view();
+
+    // ── Path B: compiled rebuild of r0 + compiled deltas r0→rN ─────────────
+    let mut session_b = CompilationSession::new();
+    let compiled_empty = session_b
+        .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
+        .expect("empty snapshot must compile");
+    let mut backend_b = fresh();
+    backend_b
+        .rebuild_compiled(&compiled_empty)
+        .expect("compiled rebuild must validate");
+
+    let mut from_compilation = compiled_empty.compilation_id;
+    for batch in &batches {
+        let compiled_delta = session_b
+            .compile_delta(batch, from_compilation, source_instance, &policy, &caps)
+            .expect("primitive linear delta must compile");
+        assert_eq!(
+            compiled_delta.from_compilation, from_compilation,
+            "compiled delta from id must chain"
+        );
+        backend_b
+            .apply_compiled_delta(&compiled_delta)
+            .expect("compiled delta must apply to the reference backend");
+        from_compilation = compiled_delta.to_compilation;
+    }
+    let view_b = backend_b.compiled_normalized_view();
+
+    // ── The compiled commuting square must hold ────────────────────────────
+    // Compare STATE, not identity: D28 requires every compiled state to carry
+    // a distinct opaque `CompilationId`, so the rebuild and delta paths must
+    // differ in id while agreeing on every state field.
+    assert!(
+        view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
+        "both paths must produce a compiled id"
+    );
+    assert_ne!(
+        view_a.compilation_id, view_b.compilation_id,
+        "D28: distinct compiled states get distinct ids (rebuild vs delta)"
+    );
+    assert_eq!(
+        view_a.revision, view_b.revision,
+        "compiled revision must match"
+    );
+    assert_eq!(
+        view_a.variables, view_b.variables,
+        "compiled variables must match"
+    );
+    assert_eq!(view_a.rows, view_b.rows, "compiled rows must match");
+    assert_eq!(
+        view_a.objectives, view_b.objectives,
+        "compiled objectives must match"
+    );
+    assert_eq!(
+        view_a.objective_policy, view_b.objective_policy,
+        "compiled objective policy must match"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 8: Compiled removal path (CR-01/CR-02)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The fixed-seed test above excludes removals (dense compiled ids are stable
+// across the delta path while a rebuild renumbers survivors). These tests
+// close the compiled removal surface end-to-end:
+//   (a) a compiled `RemoveVariable` delta purges the removed variable's
+//       coefficients from every compiled row/objective, and the compiled
+//       commuting square holds for a removal path (the removed variable is the
+//       LAST allocated, so surviving dense ids are stable across rebuild);
+//   (b) a compiled `RemoveObjective` of the ACTIVE objective leaves the
+//       compiled objective policy `None` — never a dangling
+//       `Single(removed_id)` — and the compiled commuting square holds.
+
+/// (a) CR-01: a compiled `RemoveVariable` delta purges the removed variable's
+/// coefficients from every compiled row and objective, and the compiled
+/// commuting square holds for the removal path.
+#[test]
+fn dx_compiled_remove_variable_purges_coefficients_and_holds_square() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let v0 = var_id(0);
+    let v1 = var_id(1);
+    let v2 = var_id(2);
+    let c0 = con_id(0);
+    let o0 = obj_id(0);
+
+    // r0 → r1: three variables, one constraint, one ACTIVE objective with
+    // coefficients on v0/v2. v2 is the last allocated, so removing it later
+    // leaves the surviving dense ids stable across the rebuild path.
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v0,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddVariable {
+                var: v1,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddVariable {
+                var: v2,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c0,
+                bounds: ConstraintBounds::le(10.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v0),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v1),
+                value_expr: ValueExpr::constant(3.0),
+                evaluated_value: 3.0,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v2),
+                value_expr: ValueExpr::constant(4.0),
+                evaluated_value: 4.0,
+            },
+            ModelOp::AddObjective {
+                obj: o0,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o0) },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o0), v0),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                constant: 0.0,
+            },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o0), v2),
+                value_expr: ValueExpr::constant(5.0),
+                evaluated_value: 5.0,
+                constant: 0.0,
+            },
+        ],
+    )
+    .unwrap();
+
+    // r1 → r2: remove v2.
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveVariable { var: v2 }]).unwrap();
+
+    // Track canonical state to build the authoritative final snapshot at r2.
+    let mut tracker = fresh();
+    let mut cursor = AdapterCursor::new();
+    rebuild_ok(&mut tracker, &mut cursor, &ModelSnapshot::empty(r0));
+    apply_ok(&mut tracker, &mut cursor, &batch1);
+    apply_ok(&mut tracker, &mut cursor, &batch2);
+    let final_view = tracker.normalized_view();
+    let final_snapshot = build_snapshot_from_view(r2, &final_view);
+    let empty_snapshot = ModelSnapshot::empty(r0);
+
+    // Path A: one compiled rebuild of the final state.
+    let mut session_a = CompilationSession::new();
+    let compiled_final = session_a
+        .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
+        .expect("final snapshot must compile");
+    let mut backend_a = fresh();
+    backend_a
+        .rebuild_compiled(&compiled_final)
+        .expect("compiled rebuild must validate");
+    let view_a = backend_a.compiled_normalized_view();
+
+    // Path B: compiled rebuild of r0 + compiled deltas r0→r1→r2.
+    let mut session_b = CompilationSession::new();
+    let compiled_empty = session_b
+        .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
+        .expect("empty snapshot must compile");
+    let mut backend_b = fresh();
+    backend_b
+        .rebuild_compiled(&compiled_empty)
+        .expect("compiled rebuild must validate");
+
+    let delta1 = session_b
+        .compile_delta(
+            &batch1,
+            compiled_empty.compilation_id,
+            source_instance,
+            &policy,
+            &caps,
+        )
+        .expect("batch1 must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta1)
+        .expect("batch1 must apply");
+    let delta2 = session_b
+        .compile_delta(
+            &batch2,
+            delta1.to_compilation,
+            source_instance,
+            &policy,
+            &caps,
+        )
+        .expect("batch2 (RemoveVariable) must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta2)
+        .expect("batch2 (RemoveVariable) must apply");
+    let view_b = backend_b.compiled_normalized_view();
+
+    // CR-01: no compiled row or objective may reference the removed variable's
+    // compiled id (CompiledVariableId(2)).
+    assert!(
+        view_b
+            .rows
+            .iter()
+            .all(|(_, _, coeffs)| !coeffs.iter().any(|(v, _)| *v == CompiledVariableId(2))),
+        "compiled rows must not reference the removed variable"
+    );
+    assert!(
+        view_b
+            .objectives
+            .iter()
+            .all(|(_, _, coeffs, _)| !coeffs.iter().any(|(v, _)| *v == CompiledVariableId(2))),
+        "compiled objectives must not reference the removed variable"
+    );
+
+    // The compiled commuting square must hold for the removal path.
+    assert!(
+        view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
+        "both paths must produce a compiled id"
+    );
+    assert_ne!(
+        view_a.compilation_id, view_b.compilation_id,
+        "D28: distinct compiled states get distinct ids (rebuild vs delta)"
+    );
+    assert_eq!(
+        view_a.revision, view_b.revision,
+        "compiled revision must match"
+    );
+    assert_eq!(
+        view_a.variables, view_b.variables,
+        "compiled variables must match"
+    );
+    assert_eq!(view_a.rows, view_b.rows, "compiled rows must match");
+    assert_eq!(
+        view_a.objectives, view_b.objectives,
+        "compiled objectives must match"
+    );
+    assert_eq!(
+        view_a.objective_policy, view_b.objective_policy,
+        "compiled objective policy must match"
+    );
+}
+
+/// (b) CR-02: a compiled `RemoveObjective` of the ACTIVE objective must leave
+/// the compiled objective policy `None` — never a dangling
+/// `Single(removed_id)` — and the compiled commuting square must hold.
+#[test]
+fn dx_compiled_remove_active_objective_clears_policy_and_holds_square() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+
+    let v0 = var_id(0);
+    let c0 = con_id(0);
+    let o0 = obj_id(0);
+
+    // r0 → r1: one variable, one constraint, one ACTIVE objective.
+    let batch1 = DeltaBatch::new(
+        r0,
+        r1,
+        vec![
+            ModelOp::AddVariable {
+                var: v0,
+                bounds: Bounds::NON_NEGATIVE,
+                var_type: VarType::Continuous,
+            },
+            ModelOp::AddConstraint {
+                con: c0,
+                bounds: ConstraintBounds::le(10.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v0),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+            },
+            ModelOp::AddObjective {
+                obj: o0,
+                sense: Sense::Maximize,
+            },
+            ModelOp::SetActiveObjective { obj: Some(o0) },
+            ModelOp::SetObjectiveCell {
+                cell_key: (CoefficientTarget::Objective(o0), v0),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+                constant: 0.0,
+            },
+        ],
+    )
+    .unwrap();
+
+    // r1 → r2: remove the active objective.
+    let batch2 = DeltaBatch::new(r1, r2, vec![ModelOp::RemoveObjective { obj: o0 }]).unwrap();
+
+    // Track canonical state to build the authoritative final snapshot at r2.
+    let mut tracker = fresh();
+    let mut cursor = AdapterCursor::new();
+    rebuild_ok(&mut tracker, &mut cursor, &ModelSnapshot::empty(r0));
+    apply_ok(&mut tracker, &mut cursor, &batch1);
+    apply_ok(&mut tracker, &mut cursor, &batch2);
+    let final_view = tracker.normalized_view();
+    let final_snapshot = build_snapshot_from_view(r2, &final_view);
+    let empty_snapshot = ModelSnapshot::empty(r0);
+
+    // Path A: one compiled rebuild of the final state.
+    let mut session_a = CompilationSession::new();
+    let compiled_final = session_a
+        .compile_snapshot(source_instance, &final_snapshot, &policy, &caps)
+        .expect("final snapshot must compile");
+    let mut backend_a = fresh();
+    backend_a
+        .rebuild_compiled(&compiled_final)
+        .expect("compiled rebuild must validate");
+    let view_a = backend_a.compiled_normalized_view();
+
+    // Path B: compiled rebuild of r0 + compiled deltas r0→r1→r2.
+    let mut session_b = CompilationSession::new();
+    let compiled_empty = session_b
+        .compile_snapshot(source_instance, &empty_snapshot, &policy, &caps)
+        .expect("empty snapshot must compile");
+    let mut backend_b = fresh();
+    backend_b
+        .rebuild_compiled(&compiled_empty)
+        .expect("compiled rebuild must validate");
+
+    let delta1 = session_b
+        .compile_delta(
+            &batch1,
+            compiled_empty.compilation_id,
+            source_instance,
+            &policy,
+            &caps,
+        )
+        .expect("batch1 must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta1)
+        .expect("batch1 must apply");
+    let delta2 = session_b
+        .compile_delta(
+            &batch2,
+            delta1.to_compilation,
+            source_instance,
+            &policy,
+            &caps,
+        )
+        .expect("batch2 (RemoveObjective) must compile incrementally");
+    backend_b
+        .apply_compiled_delta(&delta2)
+        .expect("batch2 (RemoveObjective) must apply");
+    let view_b = backend_b.compiled_normalized_view();
+
+    // CR-02: removing the active objective must leave the policy None — never
+    // a dangling `Single` pointing at the removed compiled objective.
+    assert_eq!(
+        view_b.objective_policy,
+        CompiledObjectivePolicy::None,
+        "compiled objective policy must be None after removing the active objective"
+    );
+    assert!(
+        view_b.objectives.is_empty(),
+        "the removed objective must be gone from the compiled state"
+    );
+
+    // The compiled commuting square must hold for the active-objective removal.
+    assert!(
+        view_a.compilation_id.is_some() && view_b.compilation_id.is_some(),
+        "both paths must produce a compiled id"
+    );
+    assert_ne!(
+        view_a.compilation_id, view_b.compilation_id,
+        "D28: distinct compiled states get distinct ids (rebuild vs delta)"
+    );
+    assert_eq!(
+        view_a.revision, view_b.revision,
+        "compiled revision must match"
+    );
+    assert_eq!(
+        view_a.variables, view_b.variables,
+        "compiled variables must match"
+    );
+    assert_eq!(view_a.rows, view_b.rows, "compiled rows must match");
+    assert_eq!(
+        view_a.objectives, view_b.objectives,
+        "compiled objectives must match"
+    );
+    assert_eq!(
+        view_a.objective_policy, view_b.objective_policy,
+        "compiled objective policy must match"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 9: Preflight reference validation (F5)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The reference backend rejects malformed backend IR with a typed
+// `CompileError::InvalidReference` instead of silently skipping: a delta op
+// referencing a nonexistent compiled entity, a snapshot row coefficient
+// referencing an unknown compiled variable, and an unknown-ID update are all
+// rejected BEFORE any state is mutated. Valid batches still apply.
+
+/// F5: a compiled delta op referencing a nonexistent compiled variable is
+/// rejected with a typed `CompileError::InvalidReference` before any op is
+/// applied — never a silent skip.
+#[test]
+fn dx_compiled_delta_rejects_op_referencing_unknown_variable() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the batch: reference a compiled variable that does not exist.
+    delta.operations = vec![BackendOp::SetVariableBounds {
+        variable: CompiledVariableId(999),
+        bounds: Bounds::new(0.0, 1.0),
+    }];
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("an op referencing an unknown compiled variable must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidReference { .. }),
+        "expected InvalidReference, got {err:?}"
+    );
+    // The compiled state must not advance on a rejected batch.
+    assert_eq!(
+        backend.current_compilation,
+        Some(base.compilation_id),
+        "a rejected batch must not advance the compiled state"
+    );
+}
+
+/// F5: a snapshot whose row coefficient references a compiled variable absent
+/// from the snapshot is rejected with a typed error when reconstructing the
+/// compiled state — no silent omission of the coefficient.
+#[test]
+fn dx_compiled_snapshot_rejects_row_coefficient_referencing_unknown_variable() {
+    let source_instance = Model::new().instance();
+    let row = CompiledLinearRow {
+        id: CompiledConstraintId(0),
+        bounds: ConstraintBounds::le(10.0),
+        coefficients: vec![(CompiledVariableId(5), 1.0)],
+        name: None,
+    };
+    let mut origin_map = OriginMap::new();
+    origin_map.insert_variable(
+        CompiledVariableId(0),
+        EntityOrigin::UserVariable(VarId::new(0, Generation::new())),
+    );
+    origin_map.insert_constraint(
+        CompiledConstraintId(0),
+        EntityOrigin::UserConstraint(ConId::new(0, Generation::new())),
+    );
+    let snapshot = BackendSnapshotBuilder::new(source_instance, ModelRevision::ZERO)
+        .origin_map(origin_map)
+        .objective_policy(CompiledObjectivePolicy::None)
+        .add_variable(CompiledVariable {
+            id: CompiledVariableId(0),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+            name: None,
+        })
+        .add_linear_row(row)
+        .finalize()
+        .expect("builder finalization checks origins, not coefficient references");
+
+    let mut backend = fresh();
+    let err = backend
+        .rebuild_compiled(&snapshot)
+        .expect_err("a row coefficient referencing an unknown compiled variable must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidReference { .. }),
+        "expected InvalidReference, got {err:?}"
+    );
+}
+
+/// F5: an unknown-ID update (an objective not present in the compiled state)
+/// is rejected with a typed error, not silently ignored.
+#[test]
+fn dx_compiled_unknown_id_update_is_rejected() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the batch: update an objective that does not exist.
+    delta.operations = vec![BackendOp::SetObjectiveConstant {
+        objective: CompiledObjectiveId(777),
+        value: 1.0,
+    }];
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("an unknown-ID objective update must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidReference { .. }),
+        "expected InvalidReference, got {err:?}"
+    );
+}
+
+/// F5: after the preflight validation is added, a VALID compiled batch still
+/// applies cleanly (the validator rejects only dangling references).
+#[test]
+fn dx_compiled_valid_batch_still_applies_after_preflight() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    backend
+        .apply_compiled_delta(&delta)
+        .expect("a valid compiled batch still applies after preflight validation");
+    assert_eq!(
+        backend.current_compilation,
+        Some(delta.to_compilation),
+        "a valid batch advances the compiled state"
+    );
+    assert_eq!(
+        backend.compiled_normalized_view().variables.len(),
+        1,
+        "the added variable is present"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 10: Envelope validation (fifth review)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// A `BackendDeltaBatch` envelope must advance BOTH the exact compiled identity
+// (from_compilation != to_compilation, D28) and the canonical model revision
+// (from_revision < to_revision). A malformed envelope is rejected with a typed
+// `CompileError::InvalidDeltaEnvelope` BEFORE any op is simulated or applied —
+// the reference backend's compiled state (compilation id and revision) never
+// advances on a rejected envelope.
+
+/// Fifth review: a compiled delta batch whose `from_compilation ==
+/// to_compilation` is rejected with a typed `InvalidDeltaEnvelope` error
+/// before any mutation — the compiled state (compilation id and revision) must
+/// not advance.
+#[test]
+fn dx_compiled_delta_rejects_identical_from_to_compilation() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the envelope: identical from/to compilation ids while keeping
+    // `from_compilation` equal to the backend's held base so the stale check
+    // passes and the envelope check is the one that fires.
+    delta.to_compilation = base.compilation_id;
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("an identical from/to compilation envelope must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidDeltaEnvelope { .. }),
+        "expected InvalidDeltaEnvelope, got {err:?}"
+    );
+    // The compiled state must not advance on a rejected envelope.
+    assert_eq!(
+        backend.current_compilation,
+        Some(base.compilation_id),
+        "a rejected envelope must not advance the compiled state"
+    );
+    assert_eq!(
+        backend.compiled_revision, base.source_revision,
+        "a rejected envelope must not advance the compiled revision"
+    );
+}
+
+/// Fifth review: a compiled delta batch whose `from_revision >= to_revision`
+/// is rejected with a typed `InvalidDeltaEnvelope` error before any mutation —
+/// the compiled state must not advance.
+#[test]
+fn dx_compiled_delta_rejects_non_advancing_revision() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let mut delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+    // Malform the envelope: the batch claims to reach the SAME canonical
+    // revision it starts from (from >= to) — a batch must advance the model
+    // revision. from_compilation still matches the base.
+    delta.to_revision = delta.from_revision;
+
+    let err = backend
+        .apply_compiled_delta(&delta)
+        .expect_err("a non-advancing revision envelope must be rejected");
+    assert!(
+        matches!(err, CompileError::InvalidDeltaEnvelope { .. }),
+        "expected InvalidDeltaEnvelope, got {err:?}"
+    );
+    assert_eq!(
+        backend.current_compilation,
+        Some(base.compilation_id),
+        "a rejected envelope must not advance the compiled state"
+    );
+    assert_eq!(
+        backend.compiled_revision, base.source_revision,
+        "a rejected envelope must not advance the compiled revision"
+    );
+}
+
+/// Fifth review: a VALID envelope (advancing compilation id + revision) still
+/// applies and advances BOTH the compiled state's exact id and its canonical
+/// revision.
+#[test]
+fn dx_compiled_delta_valid_envelope_advances_compilation_and_revision() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Auto;
+    let caps = compiled_test_capabilities();
+    let r0 = ModelRevision::ZERO;
+    let r1 = r0.next().unwrap();
+
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(source_instance, &ModelSnapshot::empty(r0), &policy, &caps)
+        .expect("empty base must compile");
+    let mut backend = fresh();
+    backend.rebuild_compiled(&base).expect("base must rebuild");
+
+    let batch = DeltaBatch::new(
+        r0,
+        r1,
+        vec![ModelOp::AddVariable {
+            var: VarId::new(0, Generation::new()),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }],
+    )
+    .unwrap();
+    let delta = session
+        .compile_delta(&batch, base.compilation_id, source_instance, &policy, &caps)
+        .expect("delta must compile");
+
+    backend
+        .apply_compiled_delta(&delta)
+        .expect("a valid envelope must apply");
+    assert_eq!(
+        backend.current_compilation,
+        Some(delta.to_compilation),
+        "a valid envelope advances the compiled state's exact id"
+    );
+    assert_eq!(
+        backend.compiled_revision, delta.to_revision,
+        "a valid envelope advances the compiled canonical revision"
     );
 }

@@ -17,12 +17,14 @@
 //! - T-11-16: Buffer sizes validated via [`Highs_getNumCol`] before allocation
 //! - T-11-17: Run status checked before model status (Pitfall 3)
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 use log::warn;
 
 use crate::bindings::*;
 use crate::index_map::IndexMap;
+use roml::advanced::{CompiledConstraintId, CompiledVariableId};
 use roml::id::{ConId, VarId};
 use roml::solver::backend::TerminationStatus;
 use roml::solver::request::SolveSolution;
@@ -190,8 +192,10 @@ fn has_feasible_solution(raw: *mut c_void) -> bool {
 pub(crate) fn extract_solution(
     raw: *mut c_void,
     status: &TerminationStatus,
-    col_map: &IndexMap<VarId>,
-    row_map: &IndexMap<ConId>,
+    col_map: &IndexMap<CompiledVariableId>,
+    row_map: &IndexMap<CompiledConstraintId>,
+    compiled_to_user_variable: &HashMap<CompiledVariableId, VarId>,
+    compiled_to_user_constraint: &HashMap<CompiledConstraintId, ConId>,
 ) -> Option<SolveSolution> {
     // Only extract for statuses that may have a solution.
     match status {
@@ -247,25 +251,27 @@ pub(crate) fn extract_solution(
     // Per AD-9, this value includes any constant offset in HiGHS 1.14+.
     let objective_value = unsafe { Highs_getObjectiveValue(raw) };
 
-    // Build reverse maps for O(1) HiGHS-index → ROML-ID lookup.
+    // Build reverse maps for O(1) HiGHS-index → compiled-id lookup, then map
+    // compiled ids → user ids via the origin-derived maps (SM-02.5).
     let rev_col = col_map.reverse_map();
     let rev_row = row_map.reverse_map();
 
-    // Map column primal values (col_value) → variable_values.
+    // Map column primal values (col_value) → variable_values (user-keyed).
     let variable_values: Vec<(VarId, f64)> = (0..n_col)
         .filter_map(|hi_idx| {
             let v = col_value[hi_idx];
             if v.is_nan() || v.is_infinite() {
                 return None;
             }
-            rev_col
-                .get(&(hi_idx as i32))
+            let compiled = rev_col.get(&(hi_idx as i32)).copied()?;
+            compiled_to_user_variable
+                .get(&compiled)
                 .copied()
                 .map(|var_id| (var_id, v))
         })
         .collect();
 
-    // Map column duals (col_dual) → reduced_costs.
+    // Map column duals (col_dual) → reduced_costs (user-keyed).
     let reduced_costs: Option<Vec<(VarId, f64)>> = {
         let costs: Vec<(VarId, f64)> = (0..n_col)
             .filter_map(|hi_idx| {
@@ -273,8 +279,9 @@ pub(crate) fn extract_solution(
                 if v.is_nan() || v.is_infinite() {
                     return None;
                 }
-                rev_col
-                    .get(&(hi_idx as i32))
+                let compiled = rev_col.get(&(hi_idx as i32)).copied()?;
+                compiled_to_user_variable
+                    .get(&compiled)
                     .copied()
                     .map(|var_id| (var_id, v))
             })
@@ -286,7 +293,7 @@ pub(crate) fn extract_solution(
         }
     };
 
-    // Map row duals (row_dual) → dual_values.
+    // Map row duals (row_dual) → dual_values (user-keyed).
     let dual_values: Option<Vec<(ConId, f64)>> = if n_row > 0 {
         let duals: Vec<(ConId, f64)> = (0..n_row)
             .filter_map(|hi_idx| {
@@ -294,8 +301,9 @@ pub(crate) fn extract_solution(
                 if v.is_nan() || v.is_infinite() {
                     return None;
                 }
-                rev_row
-                    .get(&(hi_idx as i32))
+                let compiled = rev_row.get(&(hi_idx as i32)).copied()?;
+                compiled_to_user_constraint
+                    .get(&compiled)
                     .copied()
                     .map(|con_id| (con_id, v))
             })

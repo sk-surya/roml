@@ -38,6 +38,10 @@
 // P23: exercises deprecated raw constructors during the pre-1.0 window.
 #![allow(deprecated)]
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendDeltaBatch, BackendFeature, BackendSnapshot, CompilationPolicy,
+    CompilationSession, FeatureSupport, SupportLevel,
+};
 use roml::delta::{DeltaBatch, ModelOp};
 use roml::expr::ConstraintExprExt;
 use roml::id::VarId;
@@ -55,6 +59,69 @@ fn approx(a: Option<f64>, expected: f64) {
         (got - expected).abs() < 1e-6,
         "objective {got} != expected {expected}"
     );
+}
+
+/// A full-support typed capability set for test compilation.
+fn test_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(
+            feature,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+    }
+    set
+}
+
+/// A persistent identity compiler for one test, chaining exact from/to ids.
+struct TestCompiler {
+    session: CompilationSession,
+    instance: roml::identity::ModelInstanceId,
+}
+
+impl TestCompiler {
+    fn new() -> Self {
+        Self {
+            session: CompilationSession::new(),
+            instance: Model::new().instance(),
+        }
+    }
+
+    fn rebuild(&mut self, snapshot: &roml::snapshot::ModelSnapshot) -> BackendSnapshot {
+        self.session
+            .compile_snapshot(
+                self.instance,
+                snapshot,
+                &CompilationPolicy::Auto,
+                &test_capabilities(),
+            )
+            .expect("test snapshot must compile")
+    }
+
+    fn delta(&mut self, batch: &DeltaBatch) -> BackendDeltaBatch {
+        let from = self
+            .session
+            .current_compilation()
+            .expect("test delta requires a compiled base");
+        self.session
+            .compile_delta(
+                batch,
+                from,
+                self.instance,
+                &CompilationPolicy::Auto,
+                &test_capabilities(),
+            )
+            .expect("test delta must compile")
+    }
 }
 
 /// Build `maximize price*x + y` s.t. `x + y <= 4` with a parameterized
@@ -82,11 +149,12 @@ fn repeated_solve_rebuild_then_parameter_delta() -> Result<(), Box<dyn std::erro
     let r1 = model.commit()?;
 
     let mut session = HighsSession::try_new().expect("HiGHS should be available");
+    let mut compiler = TestCompiler::new();
 
-    // Rebuild from the committed snapshot at r1.
+    // Rebuild from the committed snapshot at r1 (compiled path).
     let snap = model.take_snapshot()?;
     session
-        .synchronize(Synchronization::Rebuild(snap))
+        .synchronize(Synchronization::CompiledRebuild(compiler.rebuild(&snap)))
         .expect("rebuild should succeed");
     assert_eq!(session.revision(), r1, "revision after rebuild");
     assert_eq!(session.health(), AdapterHealth::Ready);
@@ -110,7 +178,7 @@ fn repeated_solve_rebuild_then_parameter_delta() -> Result<(), Box<dyn std::erro
     assert_eq!(batch.to, r2, "delta target revision");
 
     session
-        .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+        .synchronize(Synchronization::CompiledDeltaBatch(compiler.delta(batch)))
         .expect("parameter delta should apply incrementally");
     assert_eq!(session.revision(), r2, "revision after delta");
     assert_eq!(session.health(), AdapterHealth::Ready);
@@ -137,8 +205,11 @@ fn repeated_solve_bound_delta_updates_optimal() -> Result<(), Box<dyn std::error
     let r1 = model.commit()?;
 
     let mut session = HighsSession::try_new().expect("HiGHS should be available");
+    let mut compiler = TestCompiler::new();
     session
-        .synchronize(Synchronization::Rebuild(model.take_snapshot()?))
+        .synchronize(Synchronization::CompiledRebuild(
+            compiler.rebuild(&model.take_snapshot()?),
+        ))
         .expect("rebuild should succeed");
     let first = session.solve(&SolveRequest::new()).expect("first solve");
     assert_eq!(first.termination, TerminationStatus::Optimal);
@@ -152,7 +223,7 @@ fn repeated_solve_bound_delta_updates_optimal() -> Result<(), Box<dyn std::error
     assert_eq!(batch.to, r2);
 
     session
-        .synchronize(Synchronization::DeltaBatch((*batch).clone()))
+        .synchronize(Synchronization::CompiledDeltaBatch(compiler.delta(batch)))
         .expect("bound delta should apply incrementally");
     assert_eq!(session.revision(), r2);
     assert_eq!(session.health(), AdapterHealth::Ready);
@@ -177,9 +248,10 @@ fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dy
     let r1 = model.commit()?;
 
     let mut session = HighsSession::try_new().expect("HiGHS should be available");
+    let mut compiler = TestCompiler::new();
     let snap_r1 = model.take_snapshot()?;
     session
-        .synchronize(Synchronization::Rebuild(snap_r1))
+        .synchronize(Synchronization::CompiledRebuild(compiler.rebuild(&snap_r1)))
         .expect("rebuild should succeed");
     session
         .solve(&SolveRequest::new())
@@ -242,7 +314,7 @@ fn dirty_path_recovers_via_deterministic_snapshot_rebuild() -> Result<(), Box<dy
     // Ready, advances the cursor to r2, and solves the advanced model
     // (price 5.0 -> objective 20.0) — no stale values survive.
     session
-        .synchronize(Synchronization::Rebuild(snap_r2))
+        .synchronize(Synchronization::CompiledRebuild(compiler.rebuild(&snap_r2)))
         .expect("rebuild after failure should succeed");
     assert_eq!(session.health(), AdapterHealth::Ready);
     assert_eq!(session.revision(), r2, "cursor advanced to r2");

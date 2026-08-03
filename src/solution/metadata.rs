@@ -4,6 +4,7 @@
 //! which backend produced it, at which model revision, with which effective
 //! configuration, and how the model was synchronized into the backend.
 
+use crate::compiler::backend_ir::CompilationId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::revision::ModelRevision;
 use crate::solver::request::EffectiveConfig;
@@ -40,6 +41,16 @@ pub struct SolveMetadata {
     pub model_lineage: ModelLineageId,
     /// The instance of the model this solution was produced from.
     pub model_instance: ModelInstanceId,
+    /// The exact `CompilationId` of the compiled state this solution was
+    /// produced from (F2, SM-03.9): the compiled backend state the solver
+    /// solved, threaded through [`crate::solver::facade::normalize_result`].
+    ///
+    /// F5: `None` when no compiled state exists — a synthetic solution built
+    /// without a real solve (e.g. [`Solution::new`](crate::Solution::new) /
+    /// [`Solution::from_values`](crate::Solution::from_values) /
+    /// [`SolutionBuilder`](crate::SolutionBuilder)) must never fabricate a
+    /// compilation identity. A real solve always reports `Some`.
+    pub compilation_id: Option<CompilationId>,
 }
 
 impl Default for SolveMetadata {
@@ -52,6 +63,9 @@ impl Default for SolveMetadata {
             // Each default allocates fresh opaque ids (no zero sentinel).
             model_lineage: ModelLineageId::allocate().expect("solve lineage counter exhausted"),
             model_instance: ModelInstanceId::allocate().expect("solve instance counter exhausted"),
+            // F5: a default never fabricates a compilation identity — there is
+            // no compiled state behind a synthetic solution.
+            compilation_id: None,
         }
     }
 }
@@ -68,6 +82,13 @@ mod tests {
         assert!(m.backend_name.is_empty());
         assert!(m.effective_configuration.adjustments.is_empty());
         assert!(m.effective_configuration.rejections.is_empty());
+    }
+
+    /// F5: a default `SolveMetadata` does NOT fabricate a compilation identity —
+    /// a synthetic solution (built without a real solve) carries `None`.
+    #[test]
+    fn default_metadata_has_no_compilation_id() {
+        assert_eq!(SolveMetadata::default().compilation_id, None);
     }
 
     #[test]

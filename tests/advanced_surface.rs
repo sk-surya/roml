@@ -6,12 +6,30 @@
 //! prelude's protocol items (which are absent there — API-07.2).
 
 use roml::advanced::*;
+use roml::compiler::capability::{BackendCapabilitySet, BackendFeature, FeatureSupport};
 use roml::model::{Bounds, Sense, VarType};
+
+/// The full M2-native typed capability surface (F3 default for test backends).
+fn full_typed_capabilities() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(feature, FeatureSupport::native(Default::default()));
+    }
+    set
+}
 
 /// A minimal backend-author session implementing the frozen contract.
 struct MiniSession {
     revision: ModelRevision,
     health: AdapterHealth,
+    /// The authoritative typed capability set (F3, SM-04.1).
+    typed_caps: BackendCapabilitySet,
 }
 
 impl BackendSession for MiniSession {
@@ -23,6 +41,12 @@ impl BackendSession for MiniSession {
             }
             Synchronization::Rebuild(snapshot) => {
                 self.revision = snapshot.revision;
+            }
+            Synchronization::CompiledDeltaBatch(batch) => {
+                self.revision = batch.to_revision;
+            }
+            Synchronization::CompiledRebuild(snapshot) => {
+                self.revision = snapshot.source_revision;
             }
         }
         self.health = AdapterHealth::Ready;
@@ -65,6 +89,9 @@ impl BackendMetadata for MiniSession {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
     }
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        &self.typed_caps
+    }
 }
 
 /// A backend author can implement the frozen contract and synchronize a delta
@@ -74,6 +101,7 @@ fn backend_contract_implementable_from_advanced() {
     let mut session = MiniSession {
         revision: ModelRevision::ZERO,
         health: AdapterHealth::Ready,
+        typed_caps: full_typed_capabilities(),
     };
     let r1 = ModelRevision::from_u64(1);
     let batch = DeltaBatch::new(
@@ -126,6 +154,16 @@ fn advanced_exposes_protocol_and_id_vocabulary() {
         .with_lp_algorithm(LpAlgorithm::Barrier)
         .with_time_limit(30.0);
     let _capabilities: BackendCapabilities = BackendCapabilities::all();
-    let _rejections = validate_request(&request, &_capabilities);
+    // validate_request now validates against the typed capability set.
+    let mut typed_capabilities = BackendCapabilitySet::new();
+    typed_capabilities.set(
+        BackendFeature::Lp,
+        FeatureSupport::native(Default::default()),
+    );
+    typed_capabilities.set(
+        BackendFeature::Mip,
+        FeatureSupport::native(Default::default()),
+    );
+    let _rejections = validate_request(&request, &typed_capabilities);
     assert!(matches!(_status, TerminationStatus::Optimal));
 }
