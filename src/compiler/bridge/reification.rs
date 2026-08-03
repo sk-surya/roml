@@ -33,6 +33,41 @@ pub(crate) fn compile(
     // integral and no explicit tolerance was given (D14).
     let separation = payload.separation_tolerance.unwrap_or(1.0);
 
+    // F3: the inferred unit gap `f > rhs ⟺ f >= rhs + 1` is exact only when the
+    // threshold is integral. The builder validates once at build time, but a
+    // parameter-dependent threshold can change to fractional before a LATER
+    // compilation (F1 forces the check after parameter changes) — revalidate
+    // threshold integrality at EVERY compilation and return a typed error
+    // BEFORE any backend mutation.
+    if payload.separation_tolerance.is_none() && payload.proven_integrality {
+        let integral = |v: f64| v.is_finite() && (v - v.round()).abs() < 1e-9;
+        match &payload.set {
+            ScalarSet::LessEqual(upper) => {
+                let rhs = eval_bound(upper, ctx.construct, ctx.parameter_values)?;
+                if !integral(rhs) {
+                    return Err(CompileError::NonIntegralReificationThreshold {
+                        construct: ctx.construct,
+                        threshold: rhs,
+                    });
+                }
+            }
+            ScalarSet::GreaterEqual(lower) => {
+                let rhs = eval_bound(lower, ctx.construct, ctx.parameter_values)?;
+                if !integral(rhs) {
+                    return Err(CompileError::NonIntegralReificationThreshold {
+                        construct: ctx.construct,
+                        threshold: rhs,
+                    });
+                }
+            }
+            ScalarSet::EqualTo(_) | ScalarSet::Interval { .. } => {
+                return Err(CompileError::UnsupportedFeature(
+                    "reification of equality/interval relations (deferred beyond P32)".into(),
+                ));
+            }
+        }
+    }
+
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
     let analyzer = BoundAnalyzer::new();
     let b = resolve_variable(ctx.variable_ids, payload.activator, ctx.construct)?;

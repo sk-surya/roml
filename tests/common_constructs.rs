@@ -24,7 +24,7 @@ use roml::construct::{
     ReificationConstraint,
 };
 use roml::expr::LinExpr;
-use roml::function::{ScalarFunction, ScalarSet};
+use roml::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use roml::id::{Generation, ParamId, VarId};
 use roml::model::ModelError;
 use roml::prelude::*;
@@ -2753,5 +2753,96 @@ fn f2_absolute_value_clamp_keeps_fixed_bounds() {
         zvar.bounds,
         Bounds::new(-2.0, 3.0),
         "clamp output bounds are the fixed clamp constants (F2)"
+    );
+}
+
+// ===========================================================================
+// F3 — inferred-unit-gap reification revalidated at every compilation
+// ===========================================================================
+
+/// F3: a parameterized reification threshold that changes to fractional after
+/// the build-time validation must be a typed error at compile time (the unit
+/// gap `f > rhs ⟺ f >= rhs + 1` is exact only for integral thresholds), and an
+/// integral transition compiles again.
+#[test]
+fn f3_rebuild_revalidates_unit_gap_threshold_after_parameter_change() {
+    let mut model = Model::new();
+    let x = model.add_variable(binary()).unwrap();
+    let y = model.add_variable(binary()).unwrap();
+    let p = model.add_parameter(2.0).unwrap();
+    let relation = FunctionConstraint {
+        function: ScalarFunction::Linear(x + y),
+        set: ScalarSet::LessEqual(ValueExpr::param(p)),
+    };
+    model.add_reify(relation, None, None).unwrap();
+
+    // Integral threshold at build -> compiles to exactly two implications.
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    assert_eq!(compiled.linear_rows.len(), 2);
+
+    // Fractional threshold after a parameter change -> typed compile error
+    // naming the construct and the evaluated (fractional) threshold.
+    model.set_parameter(p, 2.5).unwrap();
+    model.commit().unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &bridge_caps());
+    assert!(
+        matches!(&err, CompileError::NonIntegralReificationThreshold { threshold, .. }
+            if (*threshold - 2.5).abs() < 1e-9),
+        "expected NonIntegralReificationThreshold(2.5), got {err:?}"
+    );
+
+    // Back to an integral threshold -> compiles again.
+    model.set_parameter(p, 3.0).unwrap();
+    model.commit().unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &bridge_caps());
+    assert_eq!(compiled.linear_rows.len(), 2);
+}
+
+/// F3: the threshold integrality revalidation runs at EVERY compilation on the
+/// same session (not just the first) — an integral -> fractional transition
+/// between two snapshot compilations on one session is rejected.
+#[test]
+fn f3_revalidation_happens_at_every_compilation() {
+    let mut model = Model::new();
+    let x = model.add_variable(binary()).unwrap();
+    let y = model.add_variable(binary()).unwrap();
+    let p = model.add_parameter(2.0).unwrap();
+    let relation = FunctionConstraint {
+        function: ScalarFunction::Linear(x + y),
+        set: ScalarSet::LessEqual(ValueExpr::param(p)),
+    };
+    let k = model.add_reify(relation, None, None).unwrap();
+    model.commit().unwrap();
+
+    let mut session = CompilationSession::new();
+    let instance = model.instance();
+    let caps = bridge_caps();
+    let policy = CompilationPolicy::Portable;
+
+    // First compilation (integral) succeeds.
+    let snap_ok = model.take_snapshot().unwrap();
+    session
+        .compile_snapshot(instance, &snap_ok, &policy, &caps)
+        .expect("integral-threshold compilation must succeed");
+    assert!(session.current_compilation().is_some());
+
+    // Second compilation on the SAME session (fractional) is rejected with the
+    // typed error and does not advance the compiled identity.
+    let before = session.current_compilation();
+    model.set_parameter(p, 2.5).unwrap();
+    model.commit().unwrap();
+    let snap_bad = model.take_snapshot().unwrap();
+    let err = session
+        .compile_snapshot(instance, &snap_bad, &policy, &caps)
+        .expect_err("a fractional unit-gap threshold must be rejected at compile time (F3)");
+    assert!(
+        matches!(&err, CompileError::NonIntegralReificationThreshold { construct, threshold }
+            if *construct == k && (*threshold - 2.5).abs() < 1e-9),
+        "expected NonIntegralReificationThreshold naming the construct, got {err:?}"
+    );
+    assert_eq!(
+        session.current_compilation(),
+        before,
+        "a rejected reification compilation must not advance the compiled identity"
     );
 }
