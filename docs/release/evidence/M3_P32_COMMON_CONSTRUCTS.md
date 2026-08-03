@@ -530,3 +530,13 @@ Unsupported/unbounded failure behavior: unbounded linear operand → `CompileErr
 - `feat(model): add algebraic semantic constructs` — Task 17c implementation + tests + evidence (the packet Task 17 final commit). **OR review is requested** per the packet and the plan's review-gate section.
 
 ---
+
+## Reviewer findings (phase boundary review, standard depth)
+
+1 critical + 5 warnings + 3 infos — all fixed with TDD:
+- CR-01 reification inferred unit gap with a non-integral threshold silently excluded valid integer assignments — fixed `f3002a9` (build-time `ModelError::NonIntegralReificationThreshold`; fractional thresholds require explicit separation; feasible-set regression test).
+- WR-01 Boolean/cardinality capability gates `2bb8dd5`; WR-02 Mip gate on generated selector binaries `ea742a6`; WR-03 set-threshold parameter deps `7d0d68e`; WR-04 `validated_explicit_big_m` fails closed `14b7d08`; WR-05 A30 fully met — `Fixture`/`FixturePayload`/`add_construct_fixture` `#[cfg(test)]`-gated, absent from `cargo public-api` (grep 0) `06b6465`.
+- IN-01 native-vs-bridge observability `1f58475`; IN-02 `expression_interval` error causes `a957660`; IN-03 construct-add atomicity `0498794`.
+- Post-review fix `2520c0b`: the cfg(test) gating left three intra-doc links to `FixturePayload` in non-test builds — reworded to code spans; `RUSTDOCFLAGS='-D warnings' cargo doc` both crates now exit 0 (the phase verifier caught this as a blocker; resolved and re-verified).
+
+Re-verification: `cargo test -p roml --all-targets` **773 pass**, `roml-highs` **121 pass**, clippy `-D warnings` clean, rustdoc `-D warnings` clean, fmt clean. Public API: 18,819 items, fixture-free. 11/12 must-haves verified with the 12th (doc lane) resolved by `2520c0b`.
