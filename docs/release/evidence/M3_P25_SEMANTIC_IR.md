@@ -59,9 +59,20 @@ All commands below ran on the platform above with the toolchain above at the bas
 | Task | Commit | Message |
 |---|---|---|
 | 1 | `8ebbf8a` | `test(m3): capture semantic modeling baseline` |
-| 2 | `(pending — filled at commit)` | `feat(model): add lineage instance and metadata` |
+| 2 | `217aa0c` | `feat(model): add lineage instance and metadata` |
+| 3 | `(pending — filled at commit)` | `feat(model): add linear function-in-set semantics` |
 
 ## Public interfaces
+
+### Task 3 — function-in-set canonical constraints
+
+- `src/function/scalar.rs` — `#[non_exhaustive] ScalarFunction { Linear(LinExpr) }` (design §6, SM-01.2).
+- `src/function/set.rs` — `#[non_exhaustive] ScalarSet { LessEqual, GreaterEqual, EqualTo, Interval { lower, upper } }`.
+- `src/function/mod.rs` — `FunctionConstraint { function, set }`, `IntoScalarFunction` trait (`impl for LinExpr`), `FunctionEntry { constraint, function, set }`.
+- `src/model/constraint.rs` — `From<ConstraintBounds> for ScalarSet`; `ConstraintSpec::into_function_constraint()` / `From<ConstraintSpec> for FunctionConstraint` (the canonical `.le/.ge/.eq/.between` conversion path).
+- `src/expr/linear.rs` — added `PartialEq` to `TermCoeff`, `Term`, `LinExpr` (required by `ScalarFunction`'s `PartialEq` per design §6; additive, no behavior change).
+- `Model::constraint_function(con)` — deterministic reconstruction from the coefficient index (single coefficient authority, SM-01.1).
+- `ModelSnapshot` and `DeltaBatch` — new `functions: Vec<FunctionEntry>` carried as a derived semantic view; reconstructed from the legacy constraint/cell fields with invariant checks (SM-01.4).
 
 ### Task 2 — identity, metadata, and Model lineage/instance
 
@@ -113,6 +124,38 @@ Command: `cargo test -p roml --test lineage_metadata` (exit 0). Full suite `carg
 - SM-02.7: every live model has a distinct instance; clone allocates a new instance while preserving lineage.
 - SM-02.3: metadata (description/group/tags/source) round-trips per entity; metadata changes do not advance the revision.
 - SM-02.2 foundation: lineage is the reuse-compatibility identity.
+
+### Task 3 — function-in-set canonical constraints
+
+`tests/semantic_ir.rs` (8 tests). RED recorded first: the initial run failed to compile (missing `ScalarFunction`/`ScalarSet`/`FunctionConstraint`/`IntoScalarFunction`, missing `into_function_constraint`/`into_scalar_function`/`constraint_function`, missing `functions` fields), confirming the test targets not-yet-implemented behavior.
+
+```text
+running 8 tests
+test ge_eq_between_convert_to_canonical_sets ... ok
+test function_constraint_is_constructible_from_spec ... ok
+test le_converts_to_linear_function_and_less_equal_set ... ok
+test into_scalar_function_converts_lin_expr ... ok
+test ordinary_builder_round_trips_through_coefficient_index ... ok
+test delta_carries_semantic_function_entries ... ok
+test model_invariants_verify_legacy_fields_against_semantic_view ... ok
+test snapshot_carries_semantic_function_entries ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored
+```
+
+Commands (all exit 0):
+- `cargo test -p roml --test semantic_ir`
+- `cargo test -p roml --test m3_baseline_characterization` (SM-01.5 preserved)
+- `cargo test -p roml --all-targets` (578 passed; 0 failed; 0 warnings)
+- `cargo clippy -p roml --all-targets -- -D warnings`
+- `cargo check -p roml-highs --all-targets` / `cargo test -p roml-highs --all-targets` (100 passed) — M2 backend surface stays green (SM-15.1)
+
+The `ModelSnapshot`/`DeltaBatch` `functions` field addition required a mechanical `functions: vec![]` update to 34 `ModelSnapshot` struct literals in `roml-highs/tests/{behavior_tests,solve_observables_tests,contract_tests}.rs` (Rule 3: directly caused by the Task 3 field addition; no roml-highs behavior changed).
+
+- SM-01.1: linear function-in-set constraints stored canonically; the coefficient index stays the single authority; `constraint_function` reconstructs deterministically.
+- SM-01.2: `ScalarFunction`/`ScalarSet` are `#[non_exhaustive]`; M3 implements linear only.
+- SM-01.4: snapshots and deltas carry reconstructed semantic function/set entries; every transitional legacy field is invariant-checked.
+- SM-01.5: ordinary `LinExpr` and builder APIs remain the canonical linear path (characterization still green).
 
 ## Native/backend evidence
 

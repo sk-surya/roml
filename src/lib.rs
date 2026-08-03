@@ -16,6 +16,7 @@
 pub mod advanced;
 pub mod delta;
 pub mod expr;
+pub mod function;
 pub mod id;
 pub mod identity;
 pub(crate) mod journal;
@@ -32,6 +33,9 @@ pub mod value_expr;
 // Re-export commonly used types for public API
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
+pub use function::{
+    FunctionConstraint, FunctionEntry, IntoScalarFunction, ScalarFunction, ScalarSet,
+};
 pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
 pub use identity::{ConstructId, IdentityOverflow, ModelInstanceId, ModelLineageId};
 pub use metadata::{EntityMetadata, EntityRef, ModelSource};

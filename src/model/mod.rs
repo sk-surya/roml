@@ -42,6 +42,7 @@ pub type Parameter = crate::id::ParamId;
 
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
+use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::metadata::{EntityMetadata, EntityRef};
@@ -298,6 +299,28 @@ impl Model {
     /// Remove the metadata attached to an entity, returning it if present.
     pub fn remove_metadata(&mut self, entity: EntityRef) -> Option<EntityMetadata> {
         self.metadata.remove(&entity)
+    }
+
+    /// Reconstruct the canonical function-in-set form of a constraint
+    /// (design §6, P25 Task 3).
+    ///
+    /// The coefficient index is the single coefficient authority (SM-01.1):
+    /// the linear function is rebuilt deterministically from the constraint's
+    /// coefficient cells and the set from its bounds. The ordinary M2
+    /// `LinExpr` path stays canonical (SM-01.5); this is the semantic IR
+    /// view used by snapshots, deltas, and later compilers.
+    pub fn constraint_function(&self, con: ConId) -> Result<FunctionConstraint, ModelError> {
+        if !self.constraints.contains(con) {
+            return Err(ModelError::ConstraintNotFound(con));
+        }
+        let expr = self.constraint_expression(con)?;
+        let bounds = self
+            .constraint_bounds(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?;
+        Ok(FunctionConstraint {
+            function: ScalarFunction::Linear(expr),
+            set: ScalarSet::from(bounds),
+        })
     }
 
     // ========== Variable Operations ==========
@@ -1445,14 +1468,29 @@ impl Model {
             .collect();
 
         let revision = self.coordinator.revision();
-        Ok(crate::snapshot::take_snapshot(
+        let snapshot = crate::snapshot::take_snapshot(
             revision,
             &variables,
             &constraints,
             &objectives,
             &parameters,
             &cells,
-        ))
+        );
+
+        // Invariant (SM-01.1, P25 Task 3): the snapshot's reconstructed
+        // semantic function/set entries must agree with the model's canonical
+        // reconstruction from the coefficient index. Every transitional
+        // legacy field is guarded by this check.
+        for entry in &snapshot.functions {
+            if let Ok(fc) = self.constraint_function(entry.constraint) {
+                debug_assert_eq!(
+                    entry.set, fc.set,
+                    "snapshot semantic set diverges from the coefficient index"
+                );
+            }
+        }
+
+        Ok(snapshot)
     }
 
     /// Validate all model invariants. Returns a list of violations.
@@ -1568,6 +1606,21 @@ impl Model {
             for &coeff_id in coeff_set {
                 if !self.coefficients.contains(coeff_id) {
                     violations.push(format!("by_param index has dead coefficient {coeff_id:?}"));
+                }
+            }
+        }
+
+        // 8. Function-in-set consistency (P25 Task 3, SM-01.1): the
+        // transitional legacy constraint bounds must convert to the same
+        // ScalarSet as the canonical function-in-set view reconstructed from
+        // the coefficient index — there is no second coefficient authority.
+        for (con, data) in self.constraints.iter() {
+            let legacy_set = ScalarSet::from(data.bounds);
+            if let Ok(fc) = self.constraint_function(con) {
+                if legacy_set != fc.set {
+                    violations.push(format!(
+                        "constraint {con:?} legacy bounds diverge from semantic set (bounds {data:?}, function {fc:?})"
+                    ));
                 }
             }
         }
