@@ -1567,6 +1567,37 @@ fn injected_compile_failure_never_leaks() {
         .expect("clean solve after compile failure");
 }
 
+/// IN-03: `OverlayTestBackend::solve` now HONORS the applied overlay's
+/// temporary bounds — the overlay solve's objective reflects the clamped
+/// values, so an overlay-bounds leak into a later solve changes the objective
+/// and the failure-injection matrix's "clean solve == fresh rebuild"
+/// assertions actually catch it (before, `solve` ignored the overlay bounds and
+/// the matrix held even with a leak).
+#[test]
+fn test_backend_solve_honors_overlay_bounds_so_leaks_are_detectable() {
+    let (mut model, _compiler, x, _y, _obj) = overlay_fixture();
+    let (backend, _state) = OverlayTestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let base = session.solve(&mut model).unwrap();
+    assert_eq!(base.objective_value(), Some(2.0)); // x=1, y=1, obj = x + y
+
+    // An overlay that fixes x to 2.0: the overlay solve's objective must
+    // reflect the clamped value (x=2, y=1 -> 3.0), NOT the unit values.
+    let overlay = SolveOverlay::new(BTreeMap::from([(x, 2.0)]), vec![], vec![], vec![]).unwrap();
+    let solution = session
+        .solve_with_overlay(&mut model, SolveOptions::default(), &overlay, None)
+        .unwrap();
+    assert_eq!(
+        solution.objective_value(),
+        Some(3.0),
+        "the overlay solve must honor the temporary bounds (x clamped to 2.0)"
+    );
+
+    // After rollback the base objective is restored — no leak.
+    let clean = session.solve(&mut model).unwrap();
+    assert_eq!(clean.objective_value(), Some(2.0));
+}
+
 /// Apply-stage failure: the backend rejects `apply_overlay` and marks itself
 /// RequiresRebuild; the overlay never leaks into a later solve.
 #[test]
