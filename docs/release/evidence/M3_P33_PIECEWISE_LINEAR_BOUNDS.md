@@ -340,7 +340,7 @@ additions (all additive, `#[non_exhaustive]` boundaries preserved):
 - `ModelError::{PwlTooFewPoints, PwlNonFiniteBreakpoint(f64), PwlNonFinitePointValue, PwlDuplicateBreakpoint { value }, PwlOutOfOrderBreakpoint { value, previous }}`.
 - `BackendFeature::PiecewiseLinear` (additive).
 - `GeneratedRole::{PwlEpigraphRow, PwlHypographRow, PwlExactGraphRow, PwlSegmentBinary, PwlWeightVariable}` (additive).
-- `PwlPoint::from<(f64, f64)>`, `PiecewiseLinearConstraint::{classify_curvature, segment_slopes, evaluate, parameter_dependencies}`.
+- `PwlPoint::from<(f64, f64)>`, `PiecewiseLinearConstraint::{classify_curvature, segment_slopes, evaluate, parameter_dependencies}` and the `_with` resolver variants; `PwlEvalError` (second review round: the constant-only operations return typed errors for parameter-dependent point values instead of panicking — see the review-fix record below).
 
 Raw capture: `docs/release/evidence/M3_P33_public_api_roml.txt`.
 
@@ -401,3 +401,7 @@ dispositions in `.planning/phases/33-piecewise-linear-bounds/REVIEW.md`.
 
 **Gate status:** P1-01 resolved; Pass 1 re-review pending on the fix commit; Pass 2 unaffected (no
 integration-surface change beyond the new typed error variant and report entries).
+
+## Second review round (owner disposition, PR #31)
+
+**P1 — constant-only semantic operations panicked on valid parameterized payloads — FIXED (TDD, 3 tests).** `point_value`'s `as_constant().expect(...)` path is removed; `evaluate`/`classify_curvature`/`segment_slopes` now return a typed `PwlEvalError` (`ParameterizedPointValue { index, parameter }` for parameter-dependent points; `MissingParameter { parameter }` for unresolved parameters, F5) and the `_with` resolver variants (`evaluate_with`, `classify_curvature_with`, `segment_slopes_with`) evaluate parameterized payloads. Parameterized tests cover slopes, curvature, interpolation, Constant/Linear extrapolation, and missing-parameter behavior. Post-fix verification: piecewise_linear 35/35, roml 35 suites, roml-highs 18 suites, clippy/rustdoc clean.

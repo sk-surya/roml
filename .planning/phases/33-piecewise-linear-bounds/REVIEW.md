@@ -304,3 +304,91 @@ additive-vs-unintended analysis is unaffected.
 recorded in the report.
 
 **Residual (accepted):** none blocking. P2-01 remains scheduled.
+
+## Re-review (Pass 1 fix round, 2026-08-04) — gsd-code-reviewer
+
+Re-reviewed the fix commit `ffb72ca` against the P1-01 specification and the
+P2/IN dispositions. **Verdict: PASS — P1-01 verified FIXED as specified; all
+P2/IN dispositions confirmed; no regressions introduced.** Re-ran on the fix
+commit: `cargo test -p roml --test piecewise_linear` **32/32 green**;
+`cargo test -p roml-highs --test formulation_equivalence pwl` **1/1 green**.
+
+### P1-01 — FIXED (verified)
+
+Gate logic re-derived for every relation × policy × range combination:
+
+| relation | policy | argument interval | disposition |
+|---|---|---|---|
+| Epigraph / Hypograph | Constant | in range | compile |
+| Epigraph / Hypograph | Constant | leaves range | `ExtrapolationConflict` |
+| Epigraph / Hypograph | Linear | in range | compile |
+| Epigraph / Hypograph | Linear | leaves range | compile (exact) |
+| ExactGraph | either | in range | compile |
+| ExactGraph | either | leaves range | `ExtrapolationConflict` |
+
+`leaves_range = !lo.is_finite() || !hi.is_finite() || lo < x_min || hi > x_max`
+is a correct conservative test. The Linear one-sided exactness claim is sound:
+a convex PL function is the pointwise max of its breakpoint supporting lines over
+all real arguments (verified numerically: at `x = -1` the rows imply
+`max(0+1·(−1), 1+3·(−2), 4+3·(−3)) = −1 = f_lin(−1)`; at `x = 3`,
+`max(3, 7, 7) = 7 = f_lin(3)`). The row-implication computation in
+`pwl_linear_extrapolation_one_sided_compiles_exactly_outside_range`
+(`implied = (lower − x_coeff·x) / y_coeff` with `y_coeff == 1.0`) is correct and
+non-vacuous — it asserts against the compiled rows, not a re-derivation from the
+payload. The exact-graph rejection under either policy closes the silent
+domain-narrowing gap; the non-finite (unbounded-argument) handling is correct
+(Linear one-sided rows are globally exact even for unbounded arguments; Constant
+one-sided and the exact graph reject).
+
+### P2-02 — FIXED (verified)
+
+`record_zero_binary_decisions` records `pwl.generated_auxiliary_variables = "0"`
+and both one-sided arms call `record_scaling_diagnostic`, so the one-sided and
+exact paths expose the same `pwl.*` schema keys.
+
+### P2-03 — FIXED in evidence (verified)
+
+The evidence's public-API section now carries the mid-P32-baseline caveat.
+
+### P2-01 — ACCEPTED, scheduled (confirmed)
+
+Non-blocking; the deferred `Result`-signature change is recorded in the evidence
+residual risks — consistent with the P2 merge policy.
+
+### IN-01 — FIXED (verified)
+
+The argument-interval assertion is tightened from the vacuous
+`contains("[0, 2]") || contains("0")` to the exact `contains("[0, 2]")`.
+
+### IN-02 — RESOLVED (verified)
+
+`ExtrapolationPolicy` is now read by the compile gate and recorded in the report.
+
+### Regression check
+
+- The 27 pre-fix tests are unaffected: every one bounds the argument to the
+  breakpoint range, so `leaves_range` is false and the gate never fires.
+- IN-01's tightening is strictly stronger, not weaker.
+- `CompileError` gains a new variant + `Display` arm; no exhaustive match on
+  `CompileError` is broken (the only `match err` in `src/model/mod.rs:494` is on
+  `BoundError`, not `CompileError`).
+- The HiGHS exact-graph equivalence section still passes because its argument is
+  bounded to `[x0, xn]` (in-range).
+
+**Re-review verdict: PASS — P1-01 fixed as specified; all P2/IN dispositions
+confirmed; no regressions found; merge gate cleared for the P33 Pass-1 findings.**
+
+## Second review round (owner disposition, PR #31)
+
+### P1 — public segment_slopes/classify_curvature/evaluate panic on valid parameterized payloads — **FIXED**
+
+Verified: `point_value` resolved via `as_constant().expect(...)`; `segment_slopes`, `classify_curvature`, and `evaluate` all route through it, so a VALID parameterized payload (parameter-dependent `PwlPoint::value`) panicked on these public semantic operations.
+
+Fix (TDD, 3 tests first → RED, then implementation → GREEN):
+
+- The `expect` path is removed. The constant-only operations now return a typed **`PwlEvalError`** — `ParameterizedPointValue { index, parameter }` for parameter-dependent points (the valid-payload case), `MissingParameter { parameter }` for an unresolved parameter (F5) — never a panic, never a silent default.
+- Parameter-resolver variants added: **`segment_slopes_with`**, **`classify_curvature_with`**, **`evaluate_with`** (shared `slopes_impl`/`evaluate_impl` cores; constant-only versions delegate with the `as_constant` accessor).
+- Tests: `pwl_parameterized_points_return_typed_errors_from_constant_only_ops` (evaluate/classify_curvature/segment_slopes → typed `ParameterizedPointValue`); `pwl_resolver_variants_evaluate_parameterized_points` (slopes, curvature, interpolation, Constant extrapolation clamps, Linear extrapolation continuation); `pwl_missing_parameter_is_typed_error` (`MissingParameter`).
+- Public API: `PwlEvalError` added to `roml::construct` re-exports; the three methods' signatures now return `Result`.
+
+Verification: `cargo test -p roml --test piecewise_linear` **35/35**; roml all-targets green (35 suites); roml-highs all-targets green (18 suites); clippy both crates `-D warnings`; rustdoc `-D warnings`; fmt clean.

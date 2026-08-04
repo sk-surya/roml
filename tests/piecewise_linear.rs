@@ -22,7 +22,7 @@ use roml::compiler::session::CompilationSession;
 use roml::compiler::CompileError;
 use roml::construct::{
     ConstructKind, ExtrapolationPolicy, FormulationPreference, PiecewiseLinearConstraint,
-    PwlCurvature, PwlPoint, PwlRelation,
+    PwlCurvature, PwlEvalError, PwlPoint, PwlRelation,
 };
 use roml::expr::LinExpr;
 use roml::id::{Generation, ParamId, VarId};
@@ -419,7 +419,7 @@ fn pwl_curvature_classifies_affine_from_equal_slopes() {
         PwlRelation::ExactGraph,
         ExtrapolationPolicy::Constant,
     );
-    assert_eq!(payload.classify_curvature(), PwlCurvature::Affine);
+    assert_eq!(payload.classify_curvature().unwrap(), PwlCurvature::Affine);
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn pwl_curvature_classifies_convex_from_non_decreasing_slopes() {
         PwlRelation::Epigraph,
         ExtrapolationPolicy::Constant,
     );
-    assert_eq!(payload.classify_curvature(), PwlCurvature::Convex);
+    assert_eq!(payload.classify_curvature().unwrap(), PwlCurvature::Convex);
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn pwl_curvature_classifies_concave_from_non_increasing_slopes() {
         PwlRelation::Hypograph,
         ExtrapolationPolicy::Constant,
     );
-    assert_eq!(payload.classify_curvature(), PwlCurvature::Concave);
+    assert_eq!(payload.classify_curvature().unwrap(), PwlCurvature::Concave);
 }
 
 #[test]
@@ -449,7 +449,10 @@ fn pwl_curvature_classifies_nonconvex_from_slope_sign_change() {
         PwlRelation::ExactGraph,
         ExtrapolationPolicy::Constant,
     );
-    assert_eq!(payload.classify_curvature(), PwlCurvature::NonConvex);
+    assert_eq!(
+        payload.classify_curvature().unwrap(),
+        PwlCurvature::NonConvex
+    );
 }
 
 // ===========================================================================
@@ -464,11 +467,11 @@ fn pwl_evaluate_interpolates_inside_breakpoint_range() {
         PwlRelation::ExactGraph,
         ExtrapolationPolicy::Constant,
     );
-    assert_eq!(payload.evaluate(0.0), 0.0);
-    assert_eq!(payload.evaluate(0.5), 1.0);
-    assert_eq!(payload.evaluate(1.0), 2.0);
-    assert_eq!(payload.evaluate(1.5), 3.0);
-    assert_eq!(payload.evaluate(2.0), 4.0);
+    assert_eq!(payload.evaluate(0.0).unwrap(), 0.0);
+    assert_eq!(payload.evaluate(0.5).unwrap(), 1.0);
+    assert_eq!(payload.evaluate(1.0).unwrap(), 2.0);
+    assert_eq!(payload.evaluate(1.5).unwrap(), 3.0);
+    assert_eq!(payload.evaluate(2.0).unwrap(), 4.0);
 }
 
 /// Constant extrapolation: values clamp to the end breakpoint values.
@@ -480,12 +483,12 @@ fn pwl_evaluate_extrapolates_constant_policy() {
         ExtrapolationPolicy::Constant,
     );
     assert_eq!(
-        payload.evaluate(-3.0),
+        payload.evaluate(-3.0).unwrap(),
         0.0,
         "left constant extrapolation clamps to v0"
     );
     assert_eq!(
-        payload.evaluate(7.0),
+        payload.evaluate(7.0).unwrap(),
         4.0,
         "right constant extrapolation clamps to vn"
     );
@@ -500,12 +503,12 @@ fn pwl_evaluate_extrapolates_linear_policy() {
         ExtrapolationPolicy::Linear,
     );
     assert_eq!(
-        payload.evaluate(-1.0),
+        payload.evaluate(-1.0).unwrap(),
         -2.0,
         "left linear extrapolation: v0 + s0*(x - x0)"
     );
     assert_eq!(
-        payload.evaluate(3.0),
+        payload.evaluate(3.0).unwrap(),
         6.0,
         "right linear extrapolation: vn + s_last*(x - xn)"
     );
@@ -931,7 +934,7 @@ fn pwl_exact_graph_feasible_set_equals_graph_for_all_curvatures() {
             samples.push(0.5 * (w[0].0 + w[1].0));
         }
         for xv in samples {
-            let yv = payload.evaluate(xv);
+            let yv = payload.evaluate(xv).unwrap();
             assert!(
                 ctx.feasible(xv, yv),
                 "{name}: on-graph y={yv} at x={xv} must be feasible (SM-14.4)"
@@ -1145,7 +1148,7 @@ fn pwl_exact_graph_randomized_fixed_input_agreement() {
 
         for _ in 0..64 {
             let xv = x0 + rng.next_f64() * (xn - x0);
-            let yv = payload.evaluate(xv);
+            let yv = payload.evaluate(xv).unwrap();
             assert!(
                 ctx.feasible(xv, yv),
                 "{name}: direct evaluate {yv} at x={xv} must be feasible in the compiled \
@@ -1377,5 +1380,108 @@ fn pwl_report_records_extrapolation_decision_and_full_schema() {
     assert!(
         find("pwl.scaling").selection.contains("x_span"),
         "a scaling diagnostic must be recorded on the one-sided path too"
+    );
+}
+
+// ===========================================================================
+// Review P1 — parameterized point values: typed errors, never panics
+// ===========================================================================
+
+/// A payload with a parameter-dependent point value is VALID (the compiler
+/// bridge resolves it at compile time) — the public constant-only operations
+/// must return typed errors for it, never panic (review P1).
+fn parameterized_pwl() -> PiecewiseLinearConstraint {
+    let p = ParamId::new(0, roml::id::Generation::new());
+    PiecewiseLinearConstraint {
+        points: vec![
+            PwlPoint {
+                x: 0.0,
+                value: ValueExpr::constant(0.0),
+            },
+            PwlPoint {
+                x: 1.0,
+                value: ValueExpr::param(p),
+            },
+            PwlPoint {
+                x: 2.0,
+                value: ValueExpr::constant(4.0),
+            },
+        ],
+        relation: PwlRelation::Epigraph,
+        extrapolation: ExtrapolationPolicy::Constant,
+        argument: LinExpr::from(VarId::new(0, roml::id::Generation::new())),
+        output: VarId::new(1, roml::id::Generation::new()),
+    }
+}
+
+/// The constant-only operations return a typed `ParameterizedPointValue`
+/// error for a valid parameterized payload — the `expect` panic path is
+/// removed (review P1).
+#[test]
+fn pwl_parameterized_points_return_typed_errors_from_constant_only_ops() {
+    let pwl = parameterized_pwl();
+    assert!(
+        matches!(
+            pwl.evaluate(0.5),
+            Err(PwlEvalError::ParameterizedPointValue { index: 1, .. })
+        ),
+        "evaluate must return a typed error naming the parameterized point"
+    );
+    assert!(
+        matches!(
+            pwl.classify_curvature(),
+            Err(PwlEvalError::ParameterizedPointValue { .. })
+        ),
+        "classify_curvature must return a typed error"
+    );
+    assert!(
+        matches!(
+            pwl.segment_slopes(),
+            Err(PwlEvalError::ParameterizedPointValue { .. })
+        ),
+        "segment_slopes must return a typed error"
+    );
+}
+
+/// The `_with` resolver variants evaluate parameterized point values for
+/// slopes, curvature, interpolation, and extrapolation (review P1).
+#[test]
+fn pwl_resolver_variants_evaluate_parameterized_points() {
+    let pwl = parameterized_pwl(); // points (0,0),(1,p),(2,4); p resolves to 1.0
+    let resolve = |_p: ParamId| Some(1.0);
+
+    // Slopes: (1-0)/1 = 1, (4-1)/1 = 3 → non-decreasing → convex.
+    assert_eq!(pwl.segment_slopes_with(&resolve).unwrap(), vec![1.0, 3.0]);
+    assert_eq!(
+        pwl.classify_curvature_with(&resolve).unwrap(),
+        PwlCurvature::Convex
+    );
+    // Interpolation at x = 0.5: f = 0 + 1 * 0.5 = 0.5.
+    assert_eq!(pwl.evaluate_with(0.5, &resolve).unwrap(), 0.5);
+    // Extrapolation under Constant: clamps to the end values.
+    assert_eq!(pwl.evaluate_with(-1.0, &resolve).unwrap(), 0.0);
+    assert_eq!(pwl.evaluate_with(3.0, &resolve).unwrap(), 4.0);
+    // Extrapolation under Linear: continues the end segment slope (3.0).
+    let pwl_lin = PiecewiseLinearConstraint {
+        extrapolation: ExtrapolationPolicy::Linear,
+        ..parameterized_pwl()
+    };
+    assert_eq!(
+        pwl_lin.evaluate_with(3.0, &resolve).unwrap(),
+        4.0 + 3.0 * 1.0
+    );
+}
+
+/// A resolver that cannot supply a parameter is a typed `MissingParameter`
+/// error (F5) — never a panic and never a silent default (review P1).
+#[test]
+fn pwl_missing_parameter_is_typed_error() {
+    let pwl = parameterized_pwl();
+    let err = pwl
+        .evaluate_with(0.5, &|_: ParamId| None)
+        .expect_err("a resolver that cannot supply the parameter must fail");
+    assert!(
+        matches!(err, PwlEvalError::MissingParameter { .. }),
+        "missing parameter must be a typed error, got {err:?}"
     );
 }
