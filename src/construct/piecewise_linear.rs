@@ -164,26 +164,7 @@ impl PiecewiseLinearConstraint {
     /// non-decreasing, concave when non-increasing, non-convex on a slope sign
     /// change.
     pub fn classify_curvature(&self) -> PwlCurvature {
-        let slopes = self.segment_slopes();
-        if slopes.len() < 2 {
-            return PwlCurvature::Affine;
-        }
-        let mut non_decreasing = true;
-        let mut non_increasing = true;
-        for pair in slopes.windows(2) {
-            if pair[1] < pair[0] {
-                non_decreasing = false;
-            }
-            if pair[1] > pair[0] {
-                non_increasing = false;
-            }
-        }
-        match (non_decreasing, non_increasing) {
-            (true, true) => PwlCurvature::Affine,
-            (true, false) => PwlCurvature::Convex,
-            (false, true) => PwlCurvature::Concave,
-            (false, false) => PwlCurvature::NonConvex,
-        }
+        classify_curvature_from_slopes(&self.segment_slopes())
     }
 
     /// Directly evaluate the PWL function at `x` (SM-14.2/14.7).
@@ -225,5 +206,32 @@ impl PiecewiseLinearConstraint {
             }
         }
         unreachable!("x lies within the breakpoint range");
+    }
+}
+
+/// Classify PWL curvature deterministically from segment slopes (SM-14.2).
+///
+/// Shared by [`PiecewiseLinearConstraint::classify_curvature`] (constant point
+/// values) and the compiler bridge (evaluated point values over the snapshot's
+/// parameter map), so the two paths never diverge.
+pub(crate) fn classify_curvature_from_slopes(slopes: &[f64]) -> PwlCurvature {
+    if slopes.len() < 2 {
+        return PwlCurvature::Affine;
+    }
+    let mut non_decreasing = true;
+    let mut non_increasing = true;
+    for pair in slopes.windows(2) {
+        if pair[1] < pair[0] {
+            non_decreasing = false;
+        }
+        if pair[1] > pair[0] {
+            non_increasing = false;
+        }
+    }
+    match (non_decreasing, non_increasing) {
+        (true, true) => PwlCurvature::Affine,
+        (true, false) => PwlCurvature::Convex,
+        (false, true) => PwlCurvature::Concave,
+        (false, false) => PwlCurvature::NonConvex,
     }
 }

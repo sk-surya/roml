@@ -538,14 +538,13 @@ impl CompilationSession {
                     next_variable_index,
                     next_row_index,
                 )?,
-                // P33 Task 1 lands the PWL payload/semantics only; the bridge
-                // (one-sided zero-binary and exact segment-binary) lands in
-                // Tasks 2/3. A PWL construct is rejected here until then — never
-                // silently relaxed.
-                ConstructKind::PiecewiseLinear(_payload) => {
-                    return Err(CompileError::UnsupportedFeature(
-                        "piecewise-linear bridge lands in P33 Tasks 2/3".into(),
-                    ));
+                ConstructKind::PiecewiseLinear(payload) => {
+                    crate::compiler::bridge::piecewise_linear::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
                 }
                 // Test-only crate-private P32 fixture scaffolding is never
                 // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
