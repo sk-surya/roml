@@ -45,7 +45,7 @@ or warm-start capability declarations exist in the baseline surface.
 
 - `40ef027` — `feat(solve): add solve plan starts and hints types` (Task 1)
 - `286c6c7` — `feat(solve): route solve façades through one plan executor` (Task 2)
-- (Task 3 commit pending — after the phase-level verification matrix)
+- `cd46ebb` — `feat(highs): qualify mip start support and reject absent hints` (Task 3)
 
 ## Public interfaces
 
@@ -178,7 +178,39 @@ needs no backend start support; hints were already unqualified).
 
 ## Full verification
 
-(Phase-level verification matrix recorded after Task 3.)
+Phase-level verification matrix (per-crate only; never workspace-wide). All
+commands exit 0:
+
+| # | Command | Result |
+|---|---------|--------|
+| 1 | `cargo fmt --all -- --check` | exit 0 |
+| 2 | `cargo test -p roml --test solve_plan` | 24 passed |
+| 3 | `cargo test -p roml --all-targets` | 911 passed |
+| 4 | `cargo test -p roml-highs --test solve_plan` | 8 passed |
+| 5 | `cargo test -p roml-highs --all-targets` | 139 passed |
+| 6 | `cargo clippy -p roml --all-targets -- -D warnings` | exit 0 |
+| 7 | `cargo clippy -p roml-highs --all-targets -- -D warnings` | exit 0 |
+| 8 | `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | exit 0 |
+| 9 | `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | exit 0 |
+| 10 | `cargo public-api -p roml` | exit 0 |
+| 11 | `cargo public-api -p roml-highs` | exit 0 |
+
+Package qualification (after the Task 3 commit; clean tree required by
+`cargo package`):
+
+| # | Command | Result |
+|---|---------|--------|
+| 12 | `cargo check -p roml --all-targets` | exit 0 |
+| 13 | `cargo check -p roml-highs --all-targets` | exit 0 |
+| 14 | `cargo package --list -p roml` | exit 0 (113 files; `src/solver/plan.rs` and `src/solver/effective_plan.rs` included) |
+| 15 | `cargo package --list -p roml-highs` | exit 0 (35 files; `src/start.rs` included) |
+
+P27–P28 mandatory checks (per `EXECUTION.md`) are covered by the passing
+suites: overlay failure injection (`tests/solve_overlay.rs`), model revision
+invariance under temporary operations (`tests/solve_overlay.rs`), subsequent-
+solve leak tests (`no_stale_start_leakage_into_subsequent_solve` in both
+`tests/solve_plan.rs` and `roml-highs/tests/solve_plan.rs`), and
+capability/effective-plan assertions (`tests/solve_plan.rs`). No skips.
 
 ## Native/backend evidence
 
@@ -223,11 +255,77 @@ Capability declarations (all audit-cited in `FeatureLimitations.notes`):
 
 ## Public API and packaging
 
-(Public API diff and package qualification after the phase.)
+### Public API diff — `roml` (baseline -> Tasks 1–3)
+
+Added (raw diff in `M3_P28_public_api_roml_baseline.txt` vs the final capture;
+the important new surface):
+
+- `SolvePlan { options, overlay, mip_starts, hints, objective_override, lex_stage_policy, unsupported }`, `SolvePlan::new`, `SolvePlan::validate`
+- `MipStart`/`RepairPolicy`/`VariableHints`/`VariableHint`/`HintPriority`
+- `UnsupportedFeaturePolicy`, `PlanError` (from `AssignmentError`)
+- `ObjectivePolicy` (`#[non_exhaustive]`, `Single`) and `LexStagePolicy`
+- `EffectiveSolvePlan`/`AppliedFeature`/`PlanAdjustment`/`PlanRejection`/`ObjectiveStageResult`
+- `SolverSession::solve_plan`
+- `OverlaySession::apply_mip_starts` / `apply_variable_hints` (default-reject)
+- `SolveMetadata::effective_plan`
+- `SolveOptions` gained `PartialEq`
+
+### Public API diff — `roml-highs` (baseline -> Task 3)
+
+Only two additions:
+
+- `HighsSession::apply_mip_starts`
+- `HighsSession::apply_variable_hints`
+
+No existing public symbol changed signature or was removed in either crate.
+
+### Package qualification
+
+`cargo package --list` exit 0 for both crates; the new modules
+(`src/solver/plan.rs`, `src/solver/effective_plan.rs`, `roml-highs/src/start.rs`)
+are included in the packed file lists. No crate was published (SM-15.8 / M3
+stopping condition).
 
 ## Deviations and decisions
 
-(Auto-fixed issues, forward-declarations, and design amendments.)
+### Forward declarations (A30/A32 extension-surface precedent)
+
+- `ObjectivePolicy` is `#[non_exhaustive]` with only `Single` in P28; P31 owns
+  `Weighted`/`Lexicographic` in `src/objective_policy.rs`. The `#[non_exhaustive]`
+  boundary makes the P31 extension a non-breaking change.
+- `LexStagePolicy` is declared with both variants in P28; P31 executes the
+  stages and populates `EffectiveSolvePlan::objective_stages` (declared empty in
+  P28 per SM-07.7).
+
+### Auto-fixed issues (Rule 1/2)
+
+1. **[Rule 2 - Recording gap] Converted hint->start applied feature.** During
+   Task 3 GREEN, `highs_convert_hint_to_start_is_recorded` failed because a
+   `ConvertHintToStart` conversion pushed the converted start into the
+   application list and a `PlanAdjustment`, but NOT an `AppliedFeature`. Fixed
+   in `resolve_plan_features` to also record the applied feature (SM-04.5: all
+   applications recorded). Files: `src/solver/facade.rs`.
+
+2. **[Rule 1 - Stale assertion] P26-era conformance capability test.**
+   `roml-highs/tests/conformance.rs` asserted `MipStart`/`PartialMipStart` are
+   `Unsupported`. P28 qualifies them `Native` per SM-08.7, so the test's
+   `unqualified_m3` list was updated (removed the two features and added an
+   explicit Native assertion). This is a test expectation update mandated by
+   the P28 capability change, not a weakened test.
+
+### Design decisions recorded
+
+- **Qualified-wins over conversion:** when a feature is qualified by the
+  backend, an explicit conversion policy is NOT applied (conversion is a
+  fallback for unqualified features). Proven by
+  `highs_qualified_start_applies_natively_even_under_conversion_policy`.
+- **Unconvertible requests under a conversion policy** are recorded as
+  `PlanRejection`s (never silent), while the default `Reject` policy returns a
+  typed `SolveError::Plan` before any backend mutation (SM-08.4).
+- **Test backends** (`RecordingBackend`, `LineageTestBackend`, `TestBackend`)
+  gained minimal `OverlaySession` impls (typed `Unsupported` on the three
+  required methods) so `SolverSession::solve`/`solve_with` remain available to
+  them while still routing through the single `solve_plan` executor (D27).
 
 ## Reviewer findings
 
