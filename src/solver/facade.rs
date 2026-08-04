@@ -445,6 +445,84 @@ where
     fn compilation_capabilities(&self) -> BackendCapabilitySet {
         self.backend.typed_capabilities().clone()
     }
+
+    /// Solve the current model with default options.
+    ///
+    /// Plain solve path (D27, review P1): requires ONLY the pre-P28 traits
+    /// (`BackendSession + SessionHealth + BackendMetadata`). A backend that
+    /// does not implement [`OverlaySession`] can call `solve`/`solve_with`
+    /// unchanged — the methods live in this unbounded impl block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError`] when the model cannot be committed, options are
+    /// invalid, synchronization fails (after at most one rebuild retry), the
+    /// backend solve fails, or the native termination is uninterpretable.
+    pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
+        self.solve_with(model, SolveOptions::default())
+    }
+
+    /// Solve the current model with explicit [`SolveOptions`].
+    ///
+    /// Plain solve path (D27, review P1) — see [`SolverSession::solve`].
+    /// Options are validated before any synchronization, so a failed
+    /// validation leaves the model and backend state unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Same failure classes as [`SolverSession::solve`]; additionally returns
+    /// [`SolveError::InvalidOptions`] when `options` fails validation.
+    pub fn solve_with(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+    ) -> Result<Solution, SolveError> {
+        let mut effective = EffectiveSolvePlan::default();
+        self.solve_base(model, options, &mut effective)
+    }
+
+    /// The shared plain solve core (the `C_base` path): options validation +
+    /// capability preflight + commit + synchronize to `C_base` + solve + the
+    /// exact `CompilationId` gate + metadata normalization.
+    ///
+    /// Used directly by [`solve`](Self::solve)/[`solve_with`](Self::solve_with)
+    /// and by [`solve_plan`](Self::solve_plan) for plans whose effective
+    /// content is empty — the `solve == solve_with == empty solve_plan`
+    /// equivalence (D27, SM-07.2) is one code path, not a coincidence.
+    fn solve_base(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+        effective: &mut EffectiveSolvePlan,
+    ) -> Result<Solution, SolveError> {
+        let (request, committed, sync_mode) = self.synchronize_base(model, options)?;
+        let result = self
+            .backend
+            .solve(&request)
+            .map_err(|e| SolveError::from_backend(false, e))?;
+        // Exact `CompilationId` gate (F2, SM-03.9): a plain solve's result
+        // must be tagged C_base — anything else is a typed
+        // CompilationMismatch (no overlay to roll back on this path).
+        let expected = self.compiler.current_compilation();
+        if expected != result.compilation_id {
+            return Err(SolveError::CompilationMismatch {
+                expected,
+                actual: result.compilation_id,
+            });
+        }
+        normalize_result(
+            &result,
+            committed,
+            model.active_objective(),
+            self.backend.name(),
+            sync_mode,
+            effective.clone(),
+            model.lineage(),
+            model.instance(),
+            result.compilation_id,
+            None,
+        )
+    }
 }
 
 /// The concrete warm-start application list produced by
@@ -506,44 +584,6 @@ where
     /// - the ordinary [`SolveError`] classes of [`solve_with`](Self::solve_with)
     ///   (commit, options, synchronization, solve, status).
     ///
-    /// Solve the current model with default options.
-    ///
-    /// Convenience path (D27, SM-07.2): constructs an empty [`SolvePlan`] and
-    /// routes through the single plan executor
-    /// ([`solve_plan`](Self::solve_plan)).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SolveError`] when the model cannot be committed, options are
-    /// invalid, synchronization fails (after at most one rebuild retry), the
-    /// backend solve fails, or the native termination is uninterpretable.
-    pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
-        self.solve_with(model, SolveOptions::default())
-    }
-
-    /// Solve the current model with explicit [`SolveOptions`].
-    ///
-    /// Convenience path (D27, SM-07.2): constructs an empty [`SolvePlan`] and
-    /// routes through the single plan executor
-    /// ([`solve_plan`](Self::solve_plan)). Options are validated before any
-    /// synchronization, so a failed validation leaves the model and backend
-    /// state unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Same failure classes as [`SolverSession::solve`]; additionally returns
-    /// [`SolveError::InvalidOptions`] when `options` fails validation.
-    pub fn solve_with(
-        &mut self,
-        model: &mut Model,
-        options: SolveOptions,
-    ) -> Result<Solution, SolveError> {
-        let plan = SolvePlan::new(options).map_err(|_| {
-            SolveError::InvalidOptions("solve plan identity allocation failed".to_string())
-        })?;
-        self.solve_plan(model, plan)
-    }
-
     /// Execute a [`SolvePlan`] through the single plan executor (P28 Task 2,
     /// design §12; SM-07.1, SM-07.2).
     ///
@@ -604,6 +644,22 @@ where
         //    recorded as rejections (never silent — SM-04.5, SM-08.5).
         let mut effective = EffectiveSolvePlan::default();
         let resolved = self.resolve_plan_features(model, &plan, &mut effective)?;
+
+        // Plain-path shortcut (D27, review P1): when the effective plan has no
+        // overlay content, no objective override, and no starts/hints, the
+        // solve is EXACTLY `solve`/`solve_with` — the shared unbounded plain
+        // core (`solve_base`) runs it, so the equivalence holds and the
+        // backend need not implement `OverlaySession`.
+        let plain = plan.objective_override.is_none()
+            && resolved.effective_overlay.temporary_fixings.is_empty()
+            && resolved.effective_overlay.locks.is_empty()
+            && resolved.effective_overlay.objective_locks.is_empty()
+            && resolved.effective_overlay.cutoffs.is_empty()
+            && resolved.starts.is_empty()
+            && resolved.hints.is_empty();
+        if plain {
+            return self.solve_base(model, plan.options, &mut effective);
+        }
 
         // 3. Commit + synchronize to C_base. Options and the request are
         //    validated against the backend's authoritative typed capability set
@@ -850,27 +906,34 @@ where
             let partial = integer_binary
                 .iter()
                 .any(|v| !start.assignment.values.contains_key(v));
-            // SM-08.2 (Pass-1 review P1-01): the second+ start additionally
-            // requires the backend's `MultipleMipStarts` declaration. The
-            // pinned HiGHS start primitive overwrites the previous incumbent
-            // on every call, so an undeclared second start would be silently
-            // dropped while recorded as applied — the policy ladder below
-            // applies to the multiple-start capability exactly as to any
-            // unqualified feature.
-            let multiple = index >= 1;
-            let feature = if multiple {
-                "MultipleMipStarts"
-            } else if partial {
+            // SM-08.2 (Pass-1 review P1-01) + composition (owner review P1,
+            // disposition 5180307378): a start qualifies only when its
+            // PRIMITIVE capability (`MipStart`/`PartialMipStart`) is declared
+            // AND, for the second+ start, `MultipleMipStarts` is declared.
+            // The pinned HiGHS start primitive overwrites the previous
+            // incumbent on every call, so an undeclared multiple-start
+            // capability would silently drop earlier starts while recording
+            // them as applied; and `MultipleMipStarts` alone never qualifies
+            // any start — the primitive is never bypassed.
+            let primitive = if partial {
                 "PartialMipStart"
             } else {
                 "MipStart"
             };
-            let qualified = if multiple {
-                multiple_mip_starts_qualified
-            } else if partial {
+            let primitive_qualified = if partial {
                 partial_mip_start_qualified
             } else {
                 mip_start_qualified
+            };
+            let multiple = index >= 1;
+            let qualified = primitive_qualified && (!multiple || multiple_mip_starts_qualified);
+            // Name the missing capability for the error/conversion/rejection
+            // messages: the multiple gate when the primitive holds, else the
+            // primitive itself.
+            let feature = if multiple && !multiple_mip_starts_qualified && primitive_qualified {
+                "MultipleMipStarts"
+            } else {
+                primitive
             };
 
             if qualified {
@@ -919,51 +982,62 @@ where
                     detail: format!("{} hint(s)", plan.hints.len()),
                 });
             } else if plan.unsupported == UnsupportedFeaturePolicy::ConvertHintToStart {
-                if mip_start_qualified {
-                    // SM-08.2 (Pass-1 review P1-01): a conversion must never
-                    // silently create a SECOND start — when the plan already
-                    // carries a start and the backend does not declare
-                    // `MultipleMipStarts`, the converted start is a recorded
-                    // rejection (never silent, never overwriting).
-                    if !starts.is_empty() && !multiple_mip_starts_qualified {
-                        effective.rejections.push(PlanRejection {
-                            key: "hints".into(),
-                            reason: "ConvertHintToStart policy but the backend does not qualify \
-                                     MultipleMipStarts; the converted start would overwrite the \
-                                     plan's start — rejection recorded"
-                                .to_string(),
-                        });
-                    } else {
-                        let assignment = PrimalAssignment {
-                            lineage: model.lineage(),
-                            source_instance: Some(model.instance()),
-                            source_revision: Some(model.current_revision()),
-                            values: plan
-                                .hints
-                                .iter()
-                                .map(|(variable, hint)| (*variable, hint.value))
-                                .collect(),
-                        };
-                        starts.push(MipStart::new(assignment, RepairPolicy::BackendDefault));
-                        effective.adjustments.push(PlanAdjustment {
-                            key: "hints".into(),
-                            requested: "variable_hints".into(),
-                            applied: "mip_start".into(),
-                            reason: "backend does not qualify VariableHints; \
-                                     ConvertHintToStart policy"
-                                .to_string(),
-                        });
-                        effective.applied_features.push(AppliedFeature {
-                            feature: "mip_start".into(),
-                            detail: "hints (converted to a MIP start)".into(),
-                        });
-                    }
+                // The generated assignment is classified full/partial like any
+                // start, and the SAME composed gates apply (owner review P1,
+                // disposition 5180307378): the converted start needs its
+                // primitive capability AND, when it would be a second start,
+                // `MultipleMipStarts` — a conversion never bypasses either,
+                // never silently overwrites the plan's own start.
+                let hint_partial = integer_binary
+                    .iter()
+                    .any(|v| !plan.hints.iter().any(|(variable, _)| variable == v));
+                let hint_primitive = if hint_partial {
+                    "PartialMipStart"
                 } else {
+                    "MipStart"
+                };
+                let hint_primitive_qualified = if hint_partial {
+                    partial_mip_start_qualified
+                } else {
+                    mip_start_qualified
+                };
+                let becomes_second = !starts.is_empty();
+                if hint_primitive_qualified && (!becomes_second || multiple_mip_starts_qualified) {
+                    let assignment = PrimalAssignment {
+                        lineage: model.lineage(),
+                        source_instance: Some(model.instance()),
+                        source_revision: Some(model.current_revision()),
+                        values: plan
+                            .hints
+                            .iter()
+                            .map(|(variable, hint)| (*variable, hint.value))
+                            .collect(),
+                    };
+                    starts.push(MipStart::new(assignment, RepairPolicy::BackendDefault));
+                    effective.adjustments.push(PlanAdjustment {
+                        key: "hints".into(),
+                        requested: "variable_hints".into(),
+                        applied: "mip_start".into(),
+                        reason: "backend does not qualify VariableHints; \
+                                 ConvertHintToStart policy"
+                            .to_string(),
+                    });
+                    effective.applied_features.push(AppliedFeature {
+                        feature: "mip_start".into(),
+                        detail: "hints (converted to a MIP start)".into(),
+                    });
+                } else {
+                    let missing = if !hint_primitive_qualified {
+                        hint_primitive
+                    } else {
+                        "MultipleMipStarts"
+                    };
                     effective.rejections.push(PlanRejection {
                         key: "hints".into(),
-                        reason: "ConvertHintToStart policy but the backend qualifies neither \
-                                 VariableHints nor MipStart"
-                            .to_string(),
+                        reason: format!(
+                            "ConvertHintToStart policy but the backend does not qualify {missing} \
+                             for the converted {hint_primitive} start; rejection recorded"
+                        ),
                     });
                 }
             } else if plan.unsupported == UnsupportedFeaturePolicy::Reject {

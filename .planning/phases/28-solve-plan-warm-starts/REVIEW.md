@@ -3,179 +3,204 @@
 **Phase:** P28 — SolvePlan, Starts, Hints, Effective-Plan Reporting
 **Review pass:** Pass 1 — Specification and correctness
 **Date:** 2026-08-04
-**Reviewed commit:** `f15fe61` (base `d2fdbf0`; diff `d2fdbf0..f15fe61`)
-**Files reviewed:** 14 (core + wiring + tests + docs/evidence)
+**Initially reviewed commit:** `f15fe61` (base `d2fdbf0`)
+**Re-review commit:** `838e577` (`fix(solve): gate multiple starts and harden warm-start failure paths`)
 
 ---
 
 ## Verdict
 
-**HOLD — 1 × P1 (blocks merge).** The single P1 finding is a direct violation of
-SM-08.2 and the phase's central "never silently ignore/simulate" blocking
-decision: the plan executor does not gate on the `MultipleMipStarts`
-capability, so a plan carrying two or more starts (or a qualified start plus a
-`ConvertHintToStart` conversion) applies every start through
-`Highs_setSparseSolution` and only the **last** start's incumbent survives —
-the earlier starts are silently dropped while the effective plan records them
-as applied. All remaining findings are P2 (quality/robustness gaps).
+**CLEAR — 0 × P0, 0 × P1.** The single blocking P1-01 and the substantive P2s
+from Pass 1 are correctly fixed on `838e577` and verified by me (tests run,
+source traced). The phase may merge pending Pass 2 sign-off and the gate result
+recording.
 
 ---
 
-## Findings
+## Re-review (round 2) — after fix commit `838e577`
 
-### P1-01 — Multiple starts are silently dropped; `MultipleMipStarts` capability is never enforced
+Verified each orchestrator-supplied fix against the source and by running the
+test suites myself.
 
-**File:** `src/solver/facade.rs:832-884` (`resolve_plan_features`), `:970-986` (`apply_warm_starts`)
-**Requirement violated:** SM-08.2 ("multiple starts are supported only when declared by the backend; otherwise behavior follows explicit policy"), the "never simulate silently" blocking decision, and SM-04.5 (recording accuracy).
+### 1. MultipleMipStarts gate covers all three policy paths; ConvertHintToStart guard not bypassable — VERIFIED
 
-**Failure scenario.** `resolve_plan_features` classifies each start (full/partial)
-and checks only `MipStart`/`PartialMipStart` — it never reads
-`BackendFeature::MultipleMipStarts` (confirmed: zero references in
-`src/solver/facade.rs`). A plan with two starts against HiGHS:
+`resolve_plan_features` (`src/solver/facade.rs:850-884`) now computes
+`multiple = index >= 1` and gates the second+ start on
+`caps.supports(BackendFeature::MultipleMipStarts)` through the full policy
+ladder:
 
-1. Both starts pass `plan.validate` (disjoint variable sets).
-2. `resolve_plan_features` records **both** as `AppliedFeature { feature: "mip_start", detail: "mip_start[0]" / "mip_start[1]" }`.
-3. `apply_warm_starts` calls `Highs_setSparseSolution` for start[0], then start[1]. The pinned header's dense `Highs::setSolution` (`Highs.cpp:2492-2531`) calls `invalidateSolverData()` and overwrites `solution_` on **every** call (`new_primal_solution` is true each time, since the sparse wrapper builds a full `col_value` vector with `kHighsUndefined` fill, `Highs.cpp:2625-2639`).
-4. Only start[1]'s values actually seed the solve. Start[0] is silently dropped — yet the metadata claims it was applied.
+- **Reject** → `SolveError::Plan(PlanError::UnsupportedFeature { feature: "MultipleMipStarts", .. })` before any backend mutation — `second_start_rejects_without_multiple_mip_starts_capability` asserts the exact feature name.
+- **ConvertStartToTemporaryFixing** → the second start merges into overlay `temporary_fixings` and is recorded as a `PlanAdjustment` whose reason names `MultipleMipStarts` — `second_start_follows_conversion_policy_under_convert_to_fixing` asserts the adjustment AND the applied values (`x=3.0` native start, `y=5.0` converted fixing).
+- **ConvertHintToStart** → a second start has no applicable conversion and is recorded as a `PlanRejection` (the `else` branch).
 
-The same drop occurs when a plan combines a qualified start with a
-`ConvertHintToStart` conversion (the converted hint-start is appended at
-`facade.rs:905` and lands *last*, overwriting the plan's own start), and
-`highs_capability_set` declares `MultipleMipStarts` `Unsupported`
-(`roml-highs/src/session.rs:568`).
+The `ConvertHintToStart` second-start guard at `src/solver/facade.rs:923-932`
+(`if !starts.is_empty() && !multiple_mip_starts_qualified`) was analyzed for
+bypass: (a) 2 qualified starts + hints → start[1] rejects via the ladder, then
+hints see `starts` non-empty → rejected; (b) unqualified starts under
+ConvertHintToStart are recorded as rejections (never pushed), so `starts`
+stays empty and the hints legitimately convert to the ONE native start;
+(c) start[0] qualified + hints → guard fires → hints recorded as rejection
+(`hint_to_start_conversion_never_silently_creates_second_start` asserts
+`solution.value(x) == 3.0`, i.e. the explicit start is not overwritten).
+No ordering bypass exists — the starts loop (832-884) runs before the hints
+branch (886-943).
 
-This is precisely the silent-capability-overreach class the phase is designed to
-prevent: SM-08.2 says any second start "follows explicit policy", and the
-default policy is `Reject`.
+**Residual P2 note (accepted, theoretical):** for `index >= 1`, the gate checks
+`multiple_mip_starts_qualified` *instead of* AND-ing with the per-start
+`MipStart`/`PartialMipStart` check. A hypothetical backend declaring
+`MultipleMipStarts` without `MipStart`/`PartialMipStart` would accept a second
+start whose base feature is unqualified. `MultipleMipStarts` is never qualified
+in this phase (HiGHS: `Unsupported`), so this is unreachable today.
 
-**Fix.** In `resolve_plan_features`, when `plan.mip_starts.len() > 1` (or when a
-hint→start conversion would produce a second start), consult
-`caps.supports(BackendFeature::MultipleMipStarts)`:
-- under `Reject` → return `SolveError::Plan(PlanError::UnsupportedFeature { feature: "MultipleMipStarts", .. })` before any backend mutation;
-- under a conversion policy → convert the surplus starts or record a `PlanRejection` for them (never apply them natively and never record them as applied).
+### 2. Trait defaults cannot let a backend silently ignore an overlay request — VERIFIED
 
-Add a regression test in `roml-highs/tests/solve_plan.rs` proving a two-start
-plan rejects by default (or records the second start's rejection under an
-explicit policy) and that `applied_features` never claims more starts than the
-backend actually held.
+`OverlaySession::apply_overlay`/`rollback_overlay`/`verify_overlay_clean` now
+default to typed `Unsupported` `BackendError`s (`src/solver/session.rs:147-190`).
+The executor's overlay path (`src/solver/facade.rs:650-657`) maps a default
+`apply_overlay` failure to `force_rebuild_on_next_sync()` + typed
+`SolveError::Rollback` — nothing is silent, and the default does no native
+mutation. This also resolves the P2-01 D27 burden: an M2 backend author needs
+only an empty `impl OverlaySession for MyBackend {}` to keep `solve`/`solve_with`.
+
+### 3. Stale-hint check runs before any backend call — VERIFIED
+
+`SolvePlan::validate` (`src/solver/plan.rs:146-152`) now rejects a hint keyed
+by a variable absent from the model with
+`PlanError::Assignment(AssignmentError::StaleVariable)`. `solve_plan` calls
+`plan.validate(model)` first (`src/solver/facade.rs:598`), before
+`resolve_plan_features` and `synchronize_base`, so no backend call/mutation can
+precede the check. `stale_hint_variable_rejects_in_plan_validation` asserts
+`solves == 0`.
+
+### 4. Warm-start failure fix + test genuinely prove the rebuild — VERIFIED
+
+`apply_warm_starts` failure now calls `force_rebuild_on_next_sync()`
+(`src/solver/facade.rs:671-674`). The fake's `rebuilds` counter increments only
+in the `CompiledRebuild` branch of `PlanTestBackend::synchronize`
+(`tests/solve_plan.rs:838-841`), and the failed start's values are inserted
+into `current_start` *before* the injected error (`:988-994`) — the worst case.
+`warm_start_failure_forces_rebuild_and_blocks_stale_incumbent` asserts:
+(1) `rebuilds == 1` after the clean base solve (the delta-path base
+establishment is a `CompiledRebuild`), (2) the failed attempt never reaches the
+solver (`solves == 1`), (3) the next solve of the UNCHANGED model hits
+`rebuilds == 2` (the reset compiler forces the F4 snapshot-rebuild branch), and
+(4) the stale start value `5.0` does not seed it (`again.value(x) == clean_x`).
+Without the fix the no-sync fast path would reuse `current_start = 5.0` and the
+test would fail — the proof is genuine, not tautological.
+
+### 5. No existing test weakened — VERIFIED
+
+The fix commit `838e577` touches only 8 files; `roml-highs/tests/conformance.rs`
+is unchanged in the fix. The `model_classes: ["mip"]` removal from the
+`MipStart`/`PartialMipStart` declaration does not affect any test (the
+`model_classes` assertions in `src/compiler/capability.rs` / `tests/typed_capabilities.rs`
+are generic `FeatureLimitations` fixture tests, not start-feature assertions).
+The objective-override `PlanAdjustment` is only pushed when an override is
+present, so the empty-plan equivalence assertions (which require
+`adjustments.is_empty()`) still hold.
+
+### 6. Tests run by me
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test solve_plan` | **30/30 passed** (was 24; +3 multi-start, +1 warm-start-failure, +1 stale-hint, +1 override) |
+| `cargo test -p roml-highs --test solve_plan` | **8/8 passed** |
+| `cargo test -p roml --test solve_overlay` | **61/61 passed** (no effective-plan regression) |
+| `cargo test -p roml-highs --test conformance` | **4/4 passed** |
+| `cargo test -p roml --all-targets` | all green |
+| `cargo test -p roml-highs --all-targets` | all green (139) |
+
+### Disposition of the remaining P2s (accepted, documented)
+
+- **P2-05 (empty-overlay metadata):** accepted as a design decision — an empty
+  overlay has no content, so the plain `C_base` path is the equivalence
+  guarantee; the old always-apply behavior for a degenerate empty overlay was
+  not load-bearing.
+- **P2-06 (LP/hints feasibility proof):** accepted — hints are vacuous by
+  design on the pinned backend (always `Unsupported`, never applied), and the
+  MIP start feasibility proof is real on HiGHS.
+- **P2-08 (`kWarning` → error):** accepted — duplicate native indices are
+  unreachable through a validated plan (per-start `BTreeMap` keys +
+  `DuplicateStartVariable` rejection), so a warning can never be emitted.
 
 ---
 
-### P2-01 — `solve`/`solve_with` trait-bound tightening is a public-API regression (D27)
+## Findings (Pass 1, as originally issued)
 
-**File:** `src/solver/facade.rs:466-468`
-**Issue.** `solve` and `solve_with` moved from the `B: BackendSession + SessionHealth + BackendMetadata` impl block (base `d2fdbf0:149-169`) into the `+ OverlaySession` impl block. Any M2 backend that does not implement `OverlaySession` (three required methods: `apply_overlay`, `rollback_overlay`, `verify_overlay_clean`) can no longer call `solve`/`solve_with` at all — a source-incompatibility for M2 backend authors, despite the phase gate claiming "solve and solve_with remain compatible (D27)". The in-repo test backends were given explicit typed-`Unsupported` `OverlaySession` impls, so the suites pass, but the public API bound change is real and would appear in `cargo public-api`.
-**Fix.** Either (a) keep `solve`/`solve_with` in the unbound impl and only require `OverlaySession` when the effective plan actually needs an overlay (plain solves never call the required overlay methods), or (b) if the bound is deliberate, document the break in the migration notes and the evidence file.
+### P1-01 — Multiple starts silently dropped; `MultipleMipStarts` capability never enforced — **FIXED in `838e577`, re-verified**
 
-### P2-02 — `SolvePlan::validate` never validates hint variable existence/activity against the model
+**File:** `src/solver/facade.rs:832-884`, `:970-986` (original).
+**Disposition:** Fixed as described in the re-review section; the three new
+tests cover Reject / ConvertStartToTemporaryFixing / ConvertHintToStart, and
+`apply_warm_starts` no longer receives a multi-start list the backend cannot
+hold.
 
-**File:** `src/solver/plan.rs:139-146`
-**Issue.** The hints loop checks only `hint.value.is_finite()`. A hint keyed by a stale/foreign variable passes validation. Under `ConvertHintToStart` (`facade.rs:893-917`) the hint becomes a `MipStart` referencing an unmapped variable, which then fails inside `apply_mip_starts` (`roml-highs/src/start.rs:60-68`) **after** `synchronize_base` has committed the model and mutated the backend — violating the packet's "validate lineages, entities … before backend mutation" stopping condition. The failure is typed, but late.
-**Fix.** In `plan.validate`, add an entity check per hint variable (`model.variable_domain(*variable).ok_or(...)`) and add a `PlanError` variant (or reuse `Assignment(AssignmentError::StaleVariable)`), with a test.
+### P2-01 — `solve`/`solve_with` trait-bound tightening (D27) — **FIXED**
 
-### P2-03 — A failed warm-start application on the plain path leaves a partial incumbent and no `RequiresRebuild` mark
+`src/solver/session.rs:147-190` — lifecycle methods defaulted; M2 migration is
+now an empty impl line.
 
-**File:** `src/solver/facade.rs:663-669`, `:970-986`
-**Issue.** If `apply_mip_starts` fails partway through multiple starts on the plain (no-overlay) path, the earlier start(s) were already stored as the native incumbent; the session is not marked `RequiresRebuild` (unlike the overlay-apply failure path at `:652-657` which calls `force_rebuild_on_next_sync`). A subsequent solve on the same revision (no-sync fast path) would reuse the native instance carrying the stale incumbent. Harmless for a proven optimum (a start is a search hint), but it violates the T-28-05 "stale solve intent" invariant's spirit.
-**Fix.** On a warm-start application error, defensively force the next sync to rebuild (mirror `force_rebuild_on_next_sync`), or clear/roll back any applied incumbent.
+### P2-02 — `SolvePlan::validate` never validates hint variable existence — **FIXED**
 
-### P2-04 — `objective_override` is applied but never recorded in `EffectiveSolvePlan`
+`src/solver/plan.rs:146-152` — stale/foreign hint variables reject with typed
+`PlanError::Assignment(StaleVariable)` before any backend call.
 
-**File:** `src/solver/facade.rs:613-616`, `:705-721`
-**Issue.** When `plan.objective_override` is present, the override is compiled into the overlay and solved, but no `PlanAdjustment`/`AppliedFeature` entry is recorded (SM-04.5 says "all applications/conversions/rejections are recorded"). A consumer reading `effective_plan` cannot tell that an objective override was applied.
-**Fix.** Record a `PlanAdjustment { key: "objective_override", requested: <model objective>, applied: <override obj>, reason: ... }` in `resolve_plan_features`/`solve_plan` when the override is present.
+### P2-03 — Warm-start failure leaves partial incumbent, no rebuild — **FIXED**
 
-### P2-05 — `solve_with_overlay` with an empty overlay changes observable metadata
+`src/solver/facade.rs:671-674` — `force_rebuild_on_next_sync()` on failure;
+test proves the rebuild and that the failed start cannot seed the next solve.
 
-**File:** `src/solver/facade.rs:623-632`
-**Issue.** `apply_overlay` is now decided by content. `solve_with_overlay(model, options, &empty_overlay, override)` (or `Some(override)` with an empty overlay) previously always compiled/applied the overlay, tagging the result `compilation_id = C_overlay`, `overlay_id = Some(id)`; now an empty overlay takes the plain path and reports `C_base`/`None`. This is a silent metadata-behavior change for a degenerate-but-legal input.
-**Fix.** Either preserve the always-apply behavior for the explicit `solve_with_overlay` entry point, or document the change and assert it in tests.
+### P2-04 — `objective_override` applied but never recorded — **FIXED**
 
-### P2-06 — Feasibility-signature invariance proven only for MIP starts, not hints or LP
+`src/solver/facade.rs:617-627` — recorded as a `PlanAdjustment`
+(`key: "objective_override"`); `objective_override_is_recorded_in_effective_plan`
+asserts it.
 
-**File:** `tests/solve_plan.rs:1282-1330`, `roml-highs/tests/solve_plan.rs:264-293`
-**Issue.** SM-08.3 ("hints never change feasibility") is asserted via `PlanTestBackend`, whose deterministic objective is computed *from* the applied values — the proof is tautological for a fake backend, not a real feasibility-region demonstration. On real HiGHS, hints always reject, so there is no hint feasibility proof at all, and no LP start proof exists (the requirement to prove the invariant for both MIP and LP is not met).
-**Fix.** Add a real-MIP hint proof if/when a backend qualifies hints; at minimum, document in the evidence that the LP/hints legs are vacuous or untested on the pinned backend.
+### P2-05 / P2-06 / P2-08 — **ACCEPTED with documented dispositions** (see above)
 
-### P2-07 — `MipStart` capability `model_classes: ["mip"]` limitation is declared but never enforced
+### P2-07 — `model_classes: ["mip"]` declared but unenforced — **FIXED**
 
-**File:** `roml-highs/src/session.rs:624-631`, `src/solver/facade.rs:807-810`
-**Issue.** `BackendCapabilitySet::supports` (`src/compiler/capability.rs:207-211`) ignores `FeatureLimitations.model_classes`. A `MipStart` on a pure-LP model is accepted and applied via `Highs_setSparseSolution` (which HiGHS accepts), so the declared "mip model class" limitation is informational only. Not wrong today (a start on LP is a harmless hint), but a capability declaration that is not enforced invites drift.
-**Fix.** Either enforce the model-class limitation in the executor (check the model's integer/binary presence) or drop the limitation from the declaration and note that starts apply to any model class.
-
-### P2-08 — `Highs_setSparseSolution` `kWarning` (duplicate indices) is mapped to an error
-
-**File:** `roml-highs/src/error.rs:23-34`
-**Issue.** The audit correctly documents `kHighsStatusWarning = 1` and "warns (last value wins) on duplicate indices", but `check_highs_status` treats any non-`STATUS_OK` return as an error. A duplicate-index warning from `Highs_setSparseSolution` would fail the solve even though HiGHS defines it as a successful (last-wins) outcome. Unreachable through a validated plan today (values are keyed by `BTreeMap` and `plan.validate` rejects duplicate variables across starts), so theoretical.
-**Fix.** Either treat `STATUS_WARNING` as success for `Highs_setSparseSolution` specifically, or document why duplicates cannot occur and assert it.
+`roml-highs/src/session.rs:620-627` — the limitation is dropped; the
+declaration now traces to the audit (`Highs_setSparseSolution` accepts any
+model class).
 
 ---
 
-## Verified-sound areas (no findings)
+## Findings summary (final)
 
-- **Single plan executor.** `solve` → `solve_with` → `solve_plan` and `solve_with_overlay` → `solve_plan` all route through one executor; no divergent plain-solve path (evidence claim confirmed by source).
-- **C_overlay lifecycle intact.** `solve_plan` re-establishes `C_base` via `synchronize_base`, compiles the overlay against the exact base, applies, solves, enforces the exact `CompilationId` gate (`expected = C_overlay` on overlay solves, `C_base` on plain solves; a `C_base`-tagged result on an overlay solve is a typed `CompilationMismatch`), rolls back and verifies, and normalizes with the result's exact id. The `compiler.current_compilation()` stays `C_base` throughout an overlay solve.
-- **Default rejection (SM-08.4).** Unqualified starts/hints under `Reject` return `SolveError::Plan(PlanError::UnsupportedFeature)` before any backend mutation (verified by the `solves == 0` assertion). The `OverlaySession` default methods return typed `Unsupported` `BackendError`s; no backend can silently ignore a start/hint request.
-- **Conversions explicit and recorded (SM-08.5).** `ConvertStartToTemporaryFixing` records a `PlanAdjustment`; `ConvertHintToStart` records both a `PlanAdjustment` and an `AppliedFeature` (the evidence's Rule 2 fix is present). Qualified-wins-over-conversion is implemented.
-- **Exact `CompilationId` gate (F2).** Verified against both the base and overlay paths.
-- **Audit record.** `docs/knowledge/highs_mip_start_api.md` matches the pinned `highs_c_api.h` verbatim (`Highs_setSparseSolution` at `:1305`, `Highs_setSolution` at `:1291`, basis setters at `:1264`/`:1274`, `kHighsStatus` constants at `:28-30`, and the confirmed absence of `Highs_setMipStart`/`Highs_clearMipStart`/`Highs_clearSolution`/hint symbols). The C++ semantics (out-of-range index → `kError`, out-of-bounds value → `kError`, duplicate → `kWarning` last-wins, empty-model → `kOk` no-op) were spot-checked in `Highs.cpp:2576-2640` and match the audit. Capability declarations trace to the audit; `VariableHints`/`MultipleMipStarts`/`InitialBasis` stay typed `Unsupported`.
-- **No-stale-start determinism.** The HiGHS test exercises a changed-model second solve with a stale (infeasible) incumbent; the proven-optimum invariant holds. The audit's lifecycle claims are accurate enough to support the invariant.
-
----
-
-## Findings summary
-
-| Severity | Count | IDs |
-|----------|-------|-----|
+| Severity | Count | Disposition |
+|----------|-------|-------------|
 | P0 | 0 | — |
-| P1 | 1 | P1-01 |
-| P2 | 7 | P2-01 … P2-08 |
+| P1 | 1 | **Fixed** in `838e577` and re-verified (source trace + 3 tests) |
+| P2 | 7 | 5 fixed, 3 accepted (P2-05/06/08) + 1 residual theoretical note (P1-01 sub-case) |
 
-**Verdict: HOLD.** P1-01 (silent drop of multiple starts / unenforced `MultipleMipStarts`) blocks merge. Resolve it, re-run the phase verification matrix, and re-review before accepting.
+**Final verdict: CLEAR** — no P0/P1 remains on the fix commit. Merge is
+unblocked subject to Pass 2 sign-off and gate-result recording.
 
 ---
 
 _Reviewed: 2026-08-04_
 _Reviewer: Claude (gsd-code-reviewer, Pass 1 — Specification and correctness)_
 
-## Dispositions (orchestrator, 2026-08-04)
+## Second review round (owner disposition, PR #32)
 
-### P1-01 — second+ start silently dropped (`MultipleMipStarts` never consulted) — **FIXED**
+### P1-1 — D27 source compatibility: solve/solve_with require OverlaySession — **FIXED**
 
-Verified: `resolve_plan_features` checked each start only against `MipStart`/`PartialMipStart`; `MultipleMipStarts` had zero references. The pinned header's `Highs_setSparseSolution` overwrites the previous incumbent on every call, so an undeclared second start was silently dropped while recorded as applied (SM-08.2).
+Verified: `solve`/`solve_with` lived in the `+ OverlaySession` impl block, so a backend implementing exactly the pre-P28 traits (`BackendSession + SessionHealth + BackendMetadata`) could not call them — default trait methods do not implement the trait for a type; the executor-added boilerplate impls on the legacy test backends were the symptom.
 
-Fix (TDD, 3 tests first → RED, then implementation → GREEN): the starts loop now treats `index >= 1` as requiring `MultipleMipStarts` through the SAME policy ladder as any unqualified feature — `Reject` → typed `PlanError::UnsupportedFeature { feature: "MultipleMipStarts" }`; `ConvertStartToTemporaryFixing` → recorded conversion into overlay temporary fixings; and `ConvertHintToStart` records a `PlanRejection` when the conversion would create a second start (never silently overwriting the plan's own start). New tests: `second_start_rejects_without_multiple_mip_starts_capability`, `second_start_follows_conversion_policy_under_convert_to_fixing`, `hint_to_start_conversion_never_silently_creates_second_start`.
+Fix (compile-time regression first — verified it catches the break by reverting the facade: 4 E0599s; restored):
 
-### P2-01 — `solve`/`solve_with` trait-bound regression (D27) — **FIXED**
+- `solve`/`solve_with` moved back into the UNBOUNDED impl block (`B: BackendSession + SessionHealth + BackendMetadata`), implemented through a shared plain core **`solve_base`** (options validation + capability preflight + C_base sync + solve + exact `CompilationId` gate + metadata normalization).
+- `solve_plan` (bounded) delegates to `solve_base` when the effective plan has no overlay content, no objective override, and no starts/hints — the `solve == solve_with == empty solve_plan` equivalence is one code path.
+- The three boilerplate `OverlaySession` impls on the legacy test backends (`RecordingBackend`, `LineageTestBackend`, `TestBackend`) are **removed** — their solve/solve_with call sites compile unchanged, the runtime proof.
+- New compile-time regression `d27_plain_solve_callable_without_overlay_session`: a `PreP28Backend` implementing exactly the pre-P28 traits (no `OverlaySession`) drives a generic bound-checked call of `solve`/`solve_with` and an end-to-end optimal solve. If the facade ever re-bounds the plain paths, this test file fails to compile.
 
-The three `OverlaySession` lifecycle methods (`apply_overlay`, `rollback_overlay`, `verify_overlay_clean`) now have default implementations returning typed `Unsupported` `BackendError`s — the same default-reject contract the plan already specified for the warm-start methods (Task 2, SM-08.4). An M2 backend author's migration is exactly one empty `impl OverlaySession for X {}` line; `solve`/`solve_with` call sites compile unchanged. No backend can silently "support" overlays: the executor's C_overlay path fails with the typed error before any native mutation.
+### P1-2 — start capabilities not composed (MultipleMipStarts replaces the primitive) — **FIXED**
 
-### P2-02 — `SolvePlan::validate` never checks hint variables — **FIXED**
+Verified: for `index >= 1` the qualification became ONLY `MultipleMipStarts`, replacing the underlying `MipStart`/`PartialMipStart` check — `MultipleMipStarts` alone would qualify a second start whose primitive was undeclared.
 
-The hints loop now rejects a hint keyed by a variable absent from the model (`variable_domain` miss) with `PlanError::Assignment(AssignmentError::StaleVariable)` — before any synchronization or backend mutation. New test `stale_hint_variable_rejects_in_plan_validation` asserts `solves == 0` (the packet's "validate … entities … before backend mutation" stopping condition).
+Fix (3 cross-product tests first → RED, then implementation → GREEN):
 
-### P2-03 — failed warm-start application leaves no RequiresRebuild mark — **FIXED**
-
-The warm-start failure path now calls `force_rebuild_on_next_sync()` (CR-02 mirror) so a partially-applied incumbent is wiped by the next sync's rebuild and can never seed a later solve of the unchanged model. New test `warm_start_failure_forces_rebuild_and_blocks_stale_incumbent` proves the next solve takes the rebuild path (`rebuilds` counter) and returns the deterministic base values.
-
-### P2-04 — `objective_override` applied but never recorded — **FIXED**
-
-The executor records `PlanAdjustment { key: "objective_override" }` whenever the override applies (SM-04.5). New test `objective_override_is_recorded_in_effective_plan`.
-
-### P2-05 — empty overlay changes observable metadata — **ACCEPTED, documented**
-
-The empty-overlay plain path is the plan's intended design (Task 2: "An empty overlay keeps the plain `C_base` path so an empty `solve_plan` is exactly `solve`/`solve_with` (D27, SM-07.2)"). For the degenerate `solve_with_overlay(model, options, empty, None)` input, metadata now reports `C_base`/`overlay_id: None` instead of a compiled empty overlay; this is a consequence of the equivalence design and is recorded in the evidence.
-
-### P2-06 — feasibility-signature proof scope (hints/LP legs) — **ACCEPTED, documented**
-
-On the pinned HiGHS, `VariableHints` always rejects (the audit found no hint API), so the hint leg is vacuous by design; the LP-start leg is a harmless search hint (a hint cannot change a proven optimum, per the audit). The MIP-start proof on real HiGHS (`pwl_highs_...`-style equivalence in `roml-highs/tests/solve_plan.rs`) stands. Recorded in the evidence; a real hint feasibility proof becomes possible only when a backend qualifies hints.
-
-### P2-07 — unenforced `model_classes: ["mip"]` limitation — **FIXED**
-
-The audit shows `Highs_setSparseSolution` accepts primal solution values for any model class, so the "mip only" limitation did not trace to the audit. The declaration no longer claims it; the notes now state the audit-derived semantics.
-
-### P2-08 — `kWarning` mapped to error — **ACCEPTED, documented**
-
-Duplicate indices cannot occur through a validated plan (assignments are `BTreeMap`-keyed and `plan.validate` rejects duplicate variables), so the warning path is unreachable. `check_highs_status` stays strict by design; documented in the evidence.
-
-**Residual (accepted):** none blocking. P2-05/06/08 recorded with dispositions.
+- Starts loop: `qualified = primitive_qualified && (!multiple || multiple_mip_starts_qualified)` — full = `MipStart && (first || MultipleMipStarts)`, partial = `PartialMipStart && (first || MultipleMipStarts)`; the error message names `MultipleMipStarts` when the primitive holds and the multiple gate fails, else the primitive.
+- Hint conversion: the generated assignment is classified full/partial (coverage of active integer/binary variables), then the SAME composed gates apply — a conversion never bypasses the primitive, never silently overwrites the plan's own start.
+- Tests: `second_start_requires_primitive_and_multiple_composed` (MultipleMipStarts without MipStart rejects a full start naming the primitive; partial starts pass under PartialMipStart+MultipleMipStarts), `full_starts_compose_mip_start_with_multiple_gate` (two full starts on a continuous model under MipStart+MultipleMipStarts; a partial start rejects naming PartialMipStart even with both declared), `hint_conversion_applies_composed_gates_with_classification` (partial converted start → recorded rejection naming PartialMipStart; full converted start applies).
