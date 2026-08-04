@@ -74,7 +74,7 @@ Additional P32-anchored files verified present: `src/compiler/bridge/{indicator,
 |---|---|---|
 | 1 | `1804c90` | `feat(model): add piecewise linear semantics` |
 | 2 | `ba88f54` | `feat(compiler): add zero-binary PWL one-sided rows` |
-| 3 | `f7c8047` | `feat(model): add piecewise linear functions` |
+| 3 | `4d01605` | `feat(model): add piecewise linear functions` |
 
 ---
 
