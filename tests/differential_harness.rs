@@ -3397,3 +3397,94 @@ fn dx_f1_unrelated_bounds_change_stays_incremental() {
         "an unrelated bounds change advances the backend CompilationId"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 12: Combined fixing/effective-bound construct differentials (P27×P32)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The P27×P32 cross-phase note: P27 changed effective-bound semantics and fixing
+// deltas, so the P32 construct bridges must (a) reject a `SetVariableFixing` on
+// a construct dependency with `RebuildRequired` BEFORE any compiled delta is
+// emitted (never advancing CompilationId), and (b) derive bound analysis and
+// Big-M from the EFFECTIVE base (declared ∩ fixing ∩ activity — the compiled
+// snapshot folds fixing into effective bounds), never stale declared values.
+// Each test proves: incremental-after-fixing-mutation equals a fresh snapshot
+// rebuild (the rejected delta does not advance compiler/backend CompilationId,
+// and the recovery rebuild equals a fresh compile and incorporates the mutation).
+
+/// (a) a fixing on a variable feeding an exact minmax selector forces a rebuild
+/// (the selector M values are derived from the operands' effective intervals).
+#[test]
+fn dx_f1_fixing_on_exact_minmax_selector_forces_rebuild() {
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.fix(x1, 0.5).unwrap();
+    });
+}
+
+/// (b) a fixing on a binary-product operand forces a rebuild (the L/U interval
+/// endpoints feeding the product rows are effective bounds).
+#[test]
+fn dx_f1_fixing_on_binary_product_operand_forces_rebuild() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model.add_binary_times_linear(b, f.into(), None).unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.fix(f, 0.25).unwrap();
+    });
+}
+
+/// (c) an unfix restoring the previous semantics forces a rebuild: the baseline
+/// carries a fixed operand, the unfix restores the declared bounds, and the
+/// recovery rebuild equals a fresh compile of the unfixed state.
+#[test]
+fn dx_f1_unfix_restores_previous_semantics() {
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    // The BASELINE has x1 fixed (its effective interval is [0.5, 0.5]); the
+    // mutation unfixes it, restoring the declared [0, 1] semantics.
+    model.fix(x1, 0.5).unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.unfix(x1).unwrap();
+    });
+}
+
+/// (d) an inactive-variable `[0,0]` effective base feeding a bound-derived
+/// indicator forces a rebuild, and the recovery rebuild's Big-M is derived from
+/// the `[0,0]` effective base (not the stale declared `[0,10]`).
+#[test]
+fn dx_f1_inactive_effective_base_feeds_bound_derived_indicator() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    model
+        .add_indicator(z, IndicatorDirection::WhenOne, (2.0 * x).le(5.0), None)
+        .unwrap();
+    // The mutation makes the bound-feeding operand INACTIVE — its effective
+    // base folds to [0, 0] (declared ∩ fixing ∩ activity), so the recovery
+    // rebuild's indicator Big-M must derive from [0, 0], not the declared
+    // [0, 10] (P27×P32: the bridge reads effective bounds, never stale declared).
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_variable_active(x, false).unwrap();
+    });
+}

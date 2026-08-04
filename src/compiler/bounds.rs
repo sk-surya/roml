@@ -209,15 +209,20 @@ impl BoundAnalyzer {
         }
     }
 
-    /// Convenience over a canonical snapshot's declared variable bounds and
-    /// evaluated parameter values.
+    /// Convenience over a canonical snapshot's EFFECTIVE variable bounds and
+    /// evaluated parameter values (P27×P32).
     ///
-    /// A variable absent from the snapshot is treated as free (conservative:
-    /// an unbounded interval can only produce an `UnboundedBigM`, never an
-    /// unsafe finite M). A parameter absent from the snapshot is a typed
-    /// [`BoundError::MissingParameter`] (F5) — a missing parameter is never
-    /// defaulted to zero, because a silently wrong interval endpoint is worse
-    /// than a typed rejection.
+    /// The bridge paths derive their Big-M / selector M values from the
+    /// snapshot's EFFECTIVE bounds — the compiled snapshot folds persistent
+    /// fixing and activity into the solver-facing base (`declared ∩ fixing ∩
+    /// activity`; inactive → `[0,0]`), and bound analysis must match that fold
+    /// or a fixed/inactive variable's generated rows would go stale against the
+    /// compiled variable bounds. A variable absent from the snapshot is treated
+    /// as free (conservative: an unbounded interval can only produce an
+    /// `UnboundedBigM`, never an unsafe finite M). A parameter absent from the
+    /// snapshot is a typed [`BoundError::MissingParameter`] (F5) — a missing
+    /// parameter is never defaulted to zero, because a silently wrong interval
+    /// endpoint is worse than a typed rejection.
     pub fn interval_of_snapshot(
         &self,
         function: &ScalarFunction,
@@ -228,7 +233,7 @@ impl BoundAnalyzer {
                 .variables
                 .iter()
                 .find(|e| e.id == v)
-                .map(|e| e.bounds)
+                .map(snapshot_effective_bounds)
                 .unwrap_or(Bounds::UNBOUNDED)
         };
         let parameter_values = |p: ParamId| {
@@ -640,8 +645,30 @@ where
     }
 }
 
+/// The solver-facing EFFECTIVE bounds of a snapshot variable (P27×P32).
+///
+/// Mirrors [`crate::Model::effective_bounds`](crate::model::Model::effective_bounds)
+/// and the identity compiler's snapshot fold (SM-05.3, WR-02): activity is
+/// folded FIRST (an inactive variable's solver-facing bounds are `[0,0]`
+/// regardless of any fixing), then a fixed variable's bounds fold to
+/// `[value, value]` (D6), falling back to the declared bounds when unfixed.
+/// The bridge bound-analysis paths derive their Big-M / selector M values from
+/// this effective base — never stale declared values.
+fn snapshot_effective_bounds(entry: &crate::snapshot::VariableEntry) -> Bounds {
+    if !entry.active {
+        return Bounds::new(0.0, 0.0);
+    }
+    match &entry.fixing {
+        Some(fixing) => Bounds {
+            lower: entry.bounds.lower.max(fixing.value),
+            upper: entry.bounds.upper.min(fixing.value),
+        },
+        None => entry.bounds,
+    }
+}
+
 /// Derive the one-sided Big-M for `function` against `rhs` directly from a
-/// canonical snapshot's declared variable bounds and evaluated parameter
+/// canonical snapshot's EFFECTIVE variable bounds and evaluated parameter
 /// values (a crate-internal convenience the P32 bridges use). Returns the
 /// finite M together with the [`BoundTrace`] provenance sources so a bridge can
 /// record the SM-13.5 bound-evidence report entry.
@@ -666,7 +693,7 @@ pub(crate) fn bound_big_m_implied_snapshot(
             .variables
             .iter()
             .find(|e| e.id == v)
-            .map(|e| e.bounds)
+            .map(snapshot_effective_bounds)
             .unwrap_or(Bounds::UNBOUNDED)
     };
     // F5: a parameter referenced by the function but absent from the snapshot
