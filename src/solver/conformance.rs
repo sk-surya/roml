@@ -153,6 +153,7 @@ fn full_rebuild<F: BackendFixture>(fixture: &F) {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
+            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c0,

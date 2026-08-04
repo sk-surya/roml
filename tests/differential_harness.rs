@@ -45,15 +45,19 @@ use roml::advanced::{
     OriginMap, SupportLevel,
 };
 use roml::compiler::capability::CompilationPolicy;
+use roml::construct::{AbsoluteValueVariant, IndicatorDirection, MinMaxRelation, MinMaxSense};
 use roml::delta::{DeltaBatch, ModelOp};
+use roml::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use roml::id::{ConId, Generation, ObjId, ParamId, VarId};
 use roml::model::coefficient::CoefficientTarget;
 use roml::model::{Bounds, ConstraintBounds, Sense, VarType};
+use roml::prelude::{binary, continuous};
 use roml::revision::ModelRevision;
 use roml::snapshot::{take_snapshot, ModelSnapshot};
 use roml::solver::reference::{NormalizedView, ReferenceBackend};
 use roml::sync::{AdapterCursor, ApplyOutcome, SyncCoordinator};
 use roml::value_expr::ValueExpr;
+use roml::ConstraintExprExt;
 use roml::Model;
 use std::collections::HashMap;
 
@@ -105,9 +109,18 @@ fn make_snapshot(
     params: Vec<(ParamId, f64)>,
     cells: Vec<((CoefficientTarget, VarId), ValueExpr, f64, Vec<ParamId>)>,
 ) -> ModelSnapshot {
-    let vars: HashMap<VarId, (Bounds, VarType, bool, Option<f64>)> = variables
+    let vars: HashMap<
+        VarId,
+        (
+            Bounds,
+            VarType,
+            bool,
+            Option<f64>,
+            Option<roml::VariableFixing>,
+        ),
+    > = variables
         .into_iter()
-        .map(|(id, b, vt, a, s)| (id, (b, vt, a, s)))
+        .map(|(id, b, vt, a, s)| (id, (b, vt, a, s, None)))
         .collect();
     let cons: HashMap<ConId, (ConstraintBounds, bool)> = constraints
         .into_iter()
@@ -1174,7 +1187,7 @@ fn dx_set_parameter_round_trip() {
 fn build_snapshot_from_view(rev: ModelRevision, view: &NormalizedView) -> ModelSnapshot {
     let mut variables = HashMap::new();
     for (id, bounds, var_type, active, semi) in &view.variables {
-        variables.insert(*id, (*bounds, *var_type, *active, *semi));
+        variables.insert(*id, (*bounds, *var_type, *active, *semi, None));
     }
 
     let mut constraints = HashMap::new();
@@ -1743,7 +1756,10 @@ fn dx_multi_adapter_cursor_independence() {
 
     // Verify B's state at r1 is correct by comparing with snapshot rebuild at r1
     let mut vars_r1 = HashMap::new();
-    vars_r1.insert(v1, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+    vars_r1.insert(
+        v1,
+        (Bounds::NON_NEGATIVE, VarType::Continuous, true, None, None),
+    );
     let mut cons_r1 = HashMap::new();
     cons_r1.insert(c, (ConstraintBounds::le(100.0), true));
     let mut params_r1 = HashMap::new();
@@ -1809,9 +1825,10 @@ fn dx_rebuild_determinism() {
             VarType::Continuous,
             true,
             Some(5.0),
+            None,
         ),
     );
-    variables.insert(v2, (Bounds::BINARY, VarType::Binary, false, None));
+    variables.insert(v2, (Bounds::BINARY, VarType::Binary, false, None, None));
 
     let mut constraints = HashMap::new();
     constraints.insert(c, (ConstraintBounds::le(50.0), true));
@@ -1952,6 +1969,7 @@ fn dx_semicontinuous_partial_apply() {
             VarType::Continuous,
             true,
             Some(5.0), // semi-continuous lower bound
+            None,
         ),
     );
     let cons_r2: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();
@@ -2041,6 +2059,7 @@ fn dx_semicontinuous_partial_apply() {
             VarType::Continuous,
             true,
             Some(5.0),
+            None,
         ),
     );
     let cons_r2b: HashMap<ConId, (ConstraintBounds, bool)> = HashMap::new();
@@ -3107,4 +3126,365 @@ fn dx_compiled_delta_valid_envelope_advances_compilation_and_revision() {
         backend.compiled_revision, delta.to_revision,
         "a valid envelope advances the compiled canonical revision"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 11: F1 — bridge dependency graph persisted + dependency-affecting
+// delta invalidation
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The bridge dependency graph (BridgeDependency) is persisted in the compiled
+// session. A dependency-affecting delta — a `SetParameter` on a parameter a
+// construct's artifact evaluates, a `SetVariableBounds` on a variable whose
+// domain feeds the artifact's Big-M/selector M values, or a `RemoveVariable` of
+// a referenced variable — must be rejected with `RebuildRequired` BEFORE any
+// compiled delta is emitted, and must NOT advance the compiler/backend
+// `CompilationId`. The recovery (rebuild from the mutated snapshot) must equal
+// a fresh snapshot rebuild, and must incorporate the mutation.
+
+/// Full + construct bridges for the F1 compiled-path tests.
+fn f1_construct_caps() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for f in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(f, FeatureSupport::native(Default::default()));
+    }
+    for f in [
+        BackendFeature::Indicator,
+        BackendFeature::Reification,
+        BackendFeature::Boolean,
+        BackendFeature::Cardinality,
+        BackendFeature::MinMax,
+        BackendFeature::AbsoluteValue,
+        BackendFeature::BinaryProduct,
+    ] {
+        set.set(f, FeatureSupport::bridge(Default::default()));
+    }
+    set
+}
+
+/// F1: assert a dependency-affecting delta forces `RebuildRequired`, does not
+/// advance the compiler/backend `CompilationId`, and that the recovery rebuild
+/// of the mutated snapshot equals a fresh snapshot rebuild and incorporates the
+/// mutation.
+fn f1_assert_dependency_delta_forces_rebuild(model: &mut Model, mutate: impl Fn(&mut Model)) {
+    let source_instance = model.instance();
+    let policy = CompilationPolicy::Portable;
+    let caps = f1_construct_caps();
+
+    // Flush the model adds to a known revision, then compile the baseline.
+    model.commit().expect("flush model adds to r1");
+    let snap_r1 = model.take_snapshot().unwrap();
+    let r1 = snap_r1.revision;
+
+    let mut session = CompilationSession::new();
+    let compiled_base = session
+        .compile_snapshot(source_instance, &snap_r1, &policy, &caps)
+        .expect("baseline snapshot must compile");
+    let base_id = compiled_base.compilation_id;
+    let mut backend = fresh();
+    backend
+        .rebuild_compiled(&compiled_base)
+        .expect("baseline rebuild");
+
+    // Mutate the model and commit — the delta batch must carry the op.
+    mutate(model);
+    model.commit().expect("commit the mutation");
+    let batches = model.deltas_since(r1).expect("delta batches since r1");
+    assert_eq!(batches.len(), 1, "exactly one delta batch per mutation");
+    let batch = batches[0];
+
+    // The dependency-affecting delta must be rejected with RebuildRequired.
+    let err = session
+        .compile_delta(batch, base_id, source_instance, &policy, &caps)
+        .expect_err("a dependency-affecting delta must be rejected, not compiled");
+    assert!(
+        matches!(err, CompileError::RebuildRequired(_)),
+        "expected RebuildRequired, got {err:?}"
+    );
+
+    // F1(d): a rejected delta must NOT advance the compiler/backend
+    // CompilationId.
+    assert_eq!(
+        session.current_compilation(),
+        Some(base_id),
+        "a rejected delta must not advance the compiler CompilationId"
+    );
+    assert_eq!(
+        backend.current_compilation,
+        Some(base_id),
+        "a rejected delta must not advance the backend CompilationId"
+    );
+
+    // Recovery: rebuild from the mutated snapshot on the SAME session — must
+    // equal a fresh snapshot rebuild (no corruption from the rejected delta).
+    let snap_r2 = model.take_snapshot().unwrap();
+    let compiled_recover = session
+        .compile_snapshot(source_instance, &snap_r2, &policy, &caps)
+        .expect("recovery rebuild of the mutated snapshot");
+    let mut fresh_session = CompilationSession::new();
+    let compiled_fresh = fresh_session
+        .compile_snapshot(source_instance, &snap_r2, &policy, &caps)
+        .expect("fresh rebuild of the mutated snapshot");
+
+    assert_eq!(
+        compiled_recover.variables, compiled_fresh.variables,
+        "recovery compiled variables must equal a fresh rebuild"
+    );
+    assert_eq!(
+        compiled_recover.linear_rows, compiled_fresh.linear_rows,
+        "recovery compiled rows must equal a fresh rebuild"
+    );
+    assert_eq!(
+        compiled_recover.objectives, compiled_fresh.objectives,
+        "recovery compiled objectives must equal a fresh rebuild"
+    );
+
+    // The rebuild must incorporate the mutation (the generated bridge artifact
+    // reflects the new parameter value / widened domain — not a stale copy).
+    assert_ne!(
+        compiled_recover.linear_rows, compiled_base.linear_rows,
+        "the rebuilt bridge rows must differ from the stale baseline (mutation incorporated)"
+    );
+}
+
+/// F1: a parameterized indicator's `SetParameter` change forces a rebuild.
+#[test]
+fn dx_f1_parameterized_indicator_parameter_change_forces_rebuild() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    let p = model.add_parameter(2.0).unwrap();
+    model
+        .add_indicator(z, IndicatorDirection::WhenOne, (p * x).le(5.0), None)
+        .unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_parameter(p, 10.0).unwrap();
+    });
+}
+
+/// F1: a parameterized reification's `SetParameter` change forces a rebuild
+/// (the set threshold is re-evaluated by the bridge).
+#[test]
+fn dx_f1_parameterized_reification_parameter_change_forces_rebuild() {
+    let mut model = Model::new();
+    let x = model.add_variable(binary()).unwrap();
+    let y = model.add_variable(binary()).unwrap();
+    let p = model.add_parameter(2.0).unwrap();
+    let relation = FunctionConstraint {
+        function: ScalarFunction::Linear(x + y),
+        set: ScalarSet::LessEqual(ValueExpr::param(p)),
+    };
+    model
+        .add_reify(relation, None, None)
+        .expect("integral-threshold reification builds");
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_parameter(p, 3.0).unwrap(); // integral -> integral (F3 keeps it valid)
+    });
+}
+
+/// F1: a bound-derived indicator's `SetVariableBounds` change forces a rebuild
+/// (the Big-M is derived from the operand's declared bounds).
+#[test]
+fn dx_f1_bound_derived_indicator_bound_change_forces_rebuild() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    model
+        .add_indicator(z, IndicatorDirection::WhenOne, (2.0 * x).le(5.0), None)
+        .unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_variable_bounds(x, Bounds::new(0.0, 20.0)).unwrap();
+    });
+}
+
+/// F1: a bound-derived minmax's `SetVariableBounds` change forces a rebuild
+/// (the selector M values are derived from the operands' intervals).
+#[test]
+fn dx_f1_bound_derived_minmax_bound_change_forces_rebuild() {
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_variable_bounds(x1, Bounds::new(0.0, 10.0)).unwrap();
+    });
+}
+
+/// F1: a bound-derived absolute-value's `SetVariableBounds` change forces a
+/// rebuild (M_p/M_n are derived from the expression interval).
+#[test]
+fn dx_f1_bound_derived_absolute_value_bound_change_forces_rebuild() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-1.0, 1.0)).unwrap();
+    model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_variable_bounds(x, Bounds::new(-5.0, 5.0)).unwrap();
+    });
+}
+
+/// F1: a bound-derived binary-times-linear product's `SetVariableBounds` change
+/// forces a rebuild (the L/U interval endpoints feed the product rows).
+#[test]
+fn dx_f1_bound_derived_binary_product_bound_change_forces_rebuild() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model.add_binary_times_linear(b, f.into(), None).unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_variable_bounds(f, Bounds::new(0.0, 5.0)).unwrap();
+    });
+}
+
+/// F1: a bounds change on a variable NOT referenced by any construct stays
+/// incrementally compilable — the dependency graph narrows the rebuild set
+/// rather than rebuilding everything.
+#[test]
+fn dx_f1_unrelated_bounds_change_stays_incremental() {
+    let source_instance = Model::new().instance();
+    let policy = CompilationPolicy::Portable;
+    let caps = f1_construct_caps();
+
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    let unrelated = model.add_variable(continuous().bounds(0.0, 5.0)).unwrap();
+    model
+        .add_indicator(z, IndicatorDirection::WhenOne, (2.0 * x).le(5.0), None)
+        .unwrap();
+    model.commit().expect("flush adds");
+    let snap_r1 = model.take_snapshot().unwrap();
+    let r1 = snap_r1.revision;
+
+    let mut session = CompilationSession::new();
+    let compiled_base = session
+        .compile_snapshot(source_instance, &snap_r1, &policy, &caps)
+        .expect("baseline must compile");
+    let base_id = compiled_base.compilation_id;
+    let mut backend = fresh();
+    backend.rebuild_compiled(&compiled_base).unwrap();
+
+    // Change the bounds of a variable NO construct references.
+    model
+        .set_variable_bounds(unrelated, Bounds::new(0.0, 100.0))
+        .unwrap();
+    model.commit().expect("commit the mutation");
+    let batch = &model.deltas_since(r1).expect("delta batches since r1")[0];
+
+    let delta = session
+        .compile_delta(batch, base_id, source_instance, &policy, &caps)
+        .expect("an unrelated bounds change must stay incrementally compilable (F1)");
+    backend
+        .apply_compiled_delta(&delta)
+        .expect("the unrelated bounds delta must apply");
+    assert_eq!(
+        backend.current_compilation,
+        Some(delta.to_compilation),
+        "an unrelated bounds change advances the backend CompilationId"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section 12: Combined fixing/effective-bound construct differentials (P27×P32)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The P27×P32 cross-phase note: P27 changed effective-bound semantics and fixing
+// deltas, so the P32 construct bridges must (a) reject a `SetVariableFixing` on
+// a construct dependency with `RebuildRequired` BEFORE any compiled delta is
+// emitted (never advancing CompilationId), and (b) derive bound analysis and
+// Big-M from the EFFECTIVE base (declared ∩ fixing ∩ activity — the compiled
+// snapshot folds fixing into effective bounds), never stale declared values.
+// Each test proves: incremental-after-fixing-mutation equals a fresh snapshot
+// rebuild (the rejected delta does not advance compiler/backend CompilationId,
+// and the recovery rebuild equals a fresh compile and incorporates the mutation).
+
+/// (a) a fixing on a variable feeding an exact minmax selector forces a rebuild
+/// (the selector M values are derived from the operands' effective intervals).
+#[test]
+fn dx_f1_fixing_on_exact_minmax_selector_forces_rebuild() {
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.fix(x1, 0.5).unwrap();
+    });
+}
+
+/// (b) a fixing on a binary-product operand forces a rebuild (the L/U interval
+/// endpoints feeding the product rows are effective bounds).
+#[test]
+fn dx_f1_fixing_on_binary_product_operand_forces_rebuild() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let f = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model.add_binary_times_linear(b, f.into(), None).unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.fix(f, 0.25).unwrap();
+    });
+}
+
+/// (c) an unfix restoring the previous semantics forces a rebuild: the baseline
+/// carries a fixed operand, the unfix restores the declared bounds, and the
+/// recovery rebuild equals a fresh compile of the unfixed state.
+#[test]
+fn dx_f1_unfix_restores_previous_semantics() {
+    let mut model = Model::new();
+    let x1 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let x2 = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model
+        .add_minmax(
+            vec![x1.into(), x2.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+    // The BASELINE has x1 fixed (its effective interval is [0.5, 0.5]); the
+    // mutation unfixes it, restoring the declared [0, 1] semantics.
+    model.fix(x1, 0.5).unwrap();
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.unfix(x1).unwrap();
+    });
+}
+
+/// (d) an inactive-variable `[0,0]` effective base feeding a bound-derived
+/// indicator forces a rebuild, and the recovery rebuild's Big-M is derived from
+/// the `[0,0]` effective base (not the stale declared `[0,10]`).
+#[test]
+fn dx_f1_inactive_effective_base_feeds_bound_derived_indicator() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let z = model.add_variable(binary()).unwrap();
+    model
+        .add_indicator(z, IndicatorDirection::WhenOne, (2.0 * x).le(5.0), None)
+        .unwrap();
+    // The mutation makes the bound-feeding operand INACTIVE — its effective
+    // base folds to [0, 0] (declared ∩ fixing ∩ activity), so the recovery
+    // rebuild's indicator Big-M must derive from [0, 0], not the declared
+    // [0, 10] (P27×P32: the bridge reads effective bounds, never stale declared).
+    f1_assert_dependency_delta_forces_rebuild(&mut model, move |m| {
+        m.set_variable_active(x, false).unwrap();
+    });
 }
