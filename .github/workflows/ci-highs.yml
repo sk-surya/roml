@@ -13,6 +13,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # CI cache generation. ALL cache keys (apt lists/debs, cargo registry,
+  # highs-sys/target builds, the system HiGHS install) compose from this one
+  # value — bump it and commit to force a full refresh of every cache (e.g.
+  # after a runner-image distro bump, an apt mirror change, or a toolchain
+  # upgrade). The apt key also hashes .github/actions/ci-cache/action.yml,
+  # so package-set changes there refresh the apt caches automatically.
+  CI_CACHE_VERSION: "2026-08"
+
 jobs:
   test-bundled:
     name: Test (bundled, ${{ matrix.os }})
@@ -22,17 +31,16 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
       - name: Install nextest
         uses: taiki-e/install-action@nextest
-      - name: Install native deps (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
       - name: Install native deps (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config
@@ -57,13 +65,14 @@ jobs:
     name: Lint + doc (HiGHS)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p roml-highs --all-targets --features bundled -- -D warnings
       - run: RUSTDOCFLAGS="-D warnings" cargo doc -p roml-highs --no-deps --features bundled
@@ -72,49 +81,53 @@ jobs:
     name: MSRV (HiGHS, 1.85)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.85"
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
+          toolchain: "1.85"
       - run: cargo check -p roml-highs --features bundled
 
   feature-exclusivity:
     name: Feature exclusivity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
       - run: "! cargo check -p roml-highs --features bundled,system 2>&1"
 
   system:
     name: Test (system, ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
       - name: Install nextest
         uses: taiki-e/install-action@nextest
-      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
       - name: Set HiGHS install prefix
         run: echo "HIGHS_PREFIX=$HOME/highs-install" >> "$GITHUB_ENV"
       - name: Cache HiGHS 1.9.0 install
         id: highs-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/highs-install
-          key: highs-1.9.0-${{ runner.os }}
+          key: highs-1.9.0-${{ runner.os }}-${{ env.CI_CACHE_VERSION }}
       - name: Build HiGHS 1.9.0 from source
         if: steps.highs-cache.outputs.cache-hit != 'true'
         run: |
@@ -135,13 +148,14 @@ jobs:
     name: Package verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
       - run: cargo package -p roml --locked
       - name: Packed consumer test (roml)
         run: |
