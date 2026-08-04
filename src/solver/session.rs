@@ -20,7 +20,7 @@ use crate::delta::DeltaBatch;
 use crate::id::{ConId, VarId};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
-use crate::solver::backend::{BackendCapabilities, BackendError};
+use crate::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
 use crate::solver::callback::CallbackHandler;
 use crate::solver::overlay::{CompiledOverlay, OverlayApplyReceipt, OverlayRollbackOutcome};
 use crate::solver::plan::{MipStart, VariableHints};
@@ -147,8 +147,18 @@ pub trait OverlaySession {
     /// silently reused).
     fn apply_overlay(
         &mut self,
-        overlay: &CompiledOverlay,
-    ) -> Result<OverlayApplyReceipt, BackendError>;
+        _overlay: &CompiledOverlay,
+    ) -> Result<OverlayApplyReceipt, BackendError> {
+        // Default-reject (review P2-01, SM-08.4): a backend that does not
+        // qualify overlays needs no implementation and can never silently
+        // ignore an overlay request — the executor's C_overlay path fails
+        // with this typed Unsupported error before any native mutation.
+        Err(BackendError::new(
+            "this backend does not qualify overlay application",
+            ErrorCategory::Unsupported,
+            HealthEffect::Recoverable,
+        ))
+    }
 
     /// Roll back an applied overlay, transitioning `C_overlay → C_base`.
     ///
@@ -158,8 +168,14 @@ pub trait OverlaySession {
     /// `RequiresRebuild`).
     fn rollback_overlay(
         &mut self,
-        receipt: &OverlayApplyReceipt,
-    ) -> Result<OverlayRollbackOutcome, BackendError>;
+        _receipt: &OverlayApplyReceipt,
+    ) -> Result<OverlayRollbackOutcome, BackendError> {
+        Err(BackendError::new(
+            "this backend does not qualify overlay rollback",
+            ErrorCategory::Unsupported,
+            HealthEffect::Recoverable,
+        ))
+    }
 
     /// Verify the backend's canonical compiled state is restored to the base
     /// after a `Clean` rollback.
@@ -168,7 +184,13 @@ pub trait OverlaySession {
     ///
     /// Returns a [`BackendError`] when the compiled maps / `current_compilation`
     /// do not match the base — the session is marked `RequiresRebuild`.
-    fn verify_overlay_clean(&mut self) -> Result<(), BackendError>;
+    fn verify_overlay_clean(&mut self) -> Result<(), BackendError> {
+        Err(BackendError::new(
+            "this backend does not qualify overlay verification",
+            ErrorCategory::Unsupported,
+            HealthEffect::Recoverable,
+        ))
+    }
 
     /// Apply qualified MIP starts to the backend's current compiled state
     /// (P28; SM-08.1, SM-08.4).

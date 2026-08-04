@@ -338,3 +338,18 @@ stopping condition).
 ## Gate result
 
 (Completed by the orchestrator after the review gates resolve with no P0/P1.)
+
+## Review gates (executed)
+
+Two independent review passes at the phase boundary.
+
+- **Pass 1 (spec/correctness) — HOLD (P1-01 blocking):** the single-executor, C_overlay lifecycle, exact-`CompilationId` gate, default rejection, recorded conversions, and the audit record all verified sound. One P1: the executor never consulted `MultipleMipStarts`, so a second+ start was silently dropped by HiGHS's overwriting `Highs_setSparseSolution` while recorded as applied (SM-08.2). Seven P2 + one additional P2 from Pass 2.
+- **Pass 2 (integration/ops) — MERGEABLE (0 P0/P1):** incremental/rebuild behavior, failure recovery, cross-platform declarations, public API, docs, migration, and E2E all wired; three P2s (one substantive: warm-start failure state).
+
+### Review-fix round (orchestrator, after Pass 1)
+
+**P1-01 — FIXED (TDD, 3 tests):** the starts loop gates `index >= 1` on `MultipleMipStarts` through the policy ladder (Reject → typed `PlanError`; ConvertStartToTemporaryFixing → recorded conversion; ConvertHintToStart → recorded rejection when it would create a second start). **P2-03 — FIXED (TDD):** `force_rebuild_on_next_sync()` on the warm-start failure path (CR-02 mirror) + test proving the next solve rebuilds and the failed start cannot seed it. **P2-01 — FIXED:** the three `OverlaySession` lifecycle methods defaulted with typed-Unsupported default-reject implementations (M2 backend migration = one empty impl line; D27). **P2-02 — FIXED (TDD):** `SolvePlan::validate` rejects stale hint variables before any backend mutation (`solves == 0` asserted). **P2-04 — FIXED (TDD):** `objective_override` recorded as a `PlanAdjustment`. **P2-07 — FIXED:** `model_classes: ["mip"]` limitation dropped (the audit shows `setSparseSolution` accepts any model class; the declaration now traces to the audit). **P2-05/06/08 — ACCEPTED, documented** (empty-overlay equivalence design; hints vacuous-by-design on the pinned backend; `kWarning` unreachable through validated plans). Full dispositions in `.planning/phases/28-solve-plan-warm-starts/REVIEW.md`.
+
+Post-fix verification (all exit 0): `cargo test -p roml --test solve_plan` **30/30**; roml all-targets green (35 suites); roml-highs all-targets green (19 suites); clippy both crates `-D warnings`; rustdoc both crates `-D warnings`; fmt clean.
+
+**Gate status:** P1-01 and the substantive P2s resolved; Pass-1 re-review pending on the fix commit; Pass 2 unaffected (no integration-surface change beyond the trait defaults and declaration notes).
