@@ -35,7 +35,7 @@ use crate::construct::{
     classify_curvature_from_slopes, PiecewiseLinearConstraint, PwlCurvature, PwlPoint, PwlRelation,
 };
 use crate::function::ScalarFunction;
-use crate::model::ConstraintBounds;
+use crate::model::{Bounds, ConstraintBounds, VarType};
 
 /// Compile one PWL construct into its rows (design §17).
 pub(crate) fn compile(
@@ -159,15 +159,184 @@ pub(crate) fn compile(
             record_zero_binary_decisions(&mut finalizer, "concave hypograph");
         }
         PwlRelation::ExactGraph => {
-            // Task 3 lands the deterministic exact segment-binary bridge. Until
-            // then the exact graph is a typed error — never a relaxation.
-            return Err(CompileError::UnsupportedFeature(
-                "exact PWL graph bridge lands in P33 Task 3".to_string(),
-            ));
+            emit_exact_graph(&mut finalizer, payload, ctx)?;
+            let segment_count = payload.points.len() - 1;
+            finalizer.add_decision(FormulationDecision {
+                decision: "pwl.representation".to_string(),
+                selection: "exact segment binaries".to_string(),
+                reason: format!(
+                    "the exact graph of a {curvature:?} PWL compiles to the deterministic exact \
+                     segment-binary convex-combination formulation (adjacency binaries, SM-14.4); \
+                     SOS2/native PWL are never selected because native_payloads_available() is \
+                     false and HiGHS declares no native SOS2/PWL (P32 F4)"
+                ),
+            });
+            finalizer.add_decision(FormulationDecision {
+                decision: "pwl.generated_binaries".to_string(),
+                selection: format!("{segment_count}"),
+                reason: format!(
+                    "one adjacency binary per segment ({segment_count} segments) — SM-14.4"
+                ),
+            });
+            finalizer.add_decision(FormulationDecision {
+                decision: "pwl.generated_auxiliary_variables".to_string(),
+                selection: format!("{}", payload.points.len()),
+                reason: "one convex-combination weight per point (SM-14.4)".to_string(),
+            });
+            finalizer.add_decision(FormulationDecision {
+                decision: "pwl.binary_introduction_reason".to_string(),
+                selection: "exactness of the (possibly nonconvex) graph".to_string(),
+                reason: "the exact graph requires adjacency binaries to enforce the \
+                         at-most-two-adjacent-weights condition; no convex relaxation is emitted \
+                         (SM-14.4/SM-14.5)"
+                    .to_string(),
+            });
+            record_scaling_diagnostic(&mut finalizer, payload, ctx)?;
         }
     }
 
     Ok(finalizer.finish())
+}
+
+/// Record the numerical scaling diagnostic (ROADMAP P33): the value span over
+/// the breakpoint span (average segment-slope magnitude).
+fn record_scaling_diagnostic(
+    finalizer: &mut BridgeFinalizer,
+    payload: &PiecewiseLinearConstraint,
+    ctx: &BridgeContext,
+) -> Result<(), CompileError> {
+    let x_span = payload.points.last().map(|p| p.x).unwrap_or(0.0)
+        - payload.points.first().map(|p| p.x).unwrap_or(0.0);
+    let mut values = Vec::with_capacity(payload.points.len());
+    for i in 0..payload.points.len() {
+        values.push(eval_point_value(&payload.points, i, ctx)?);
+    }
+    let v_min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let v_max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let v_span = v_max - v_min;
+    let avg_slope = if x_span > 0.0 { v_span / x_span } else { 0.0 };
+    finalizer.add_decision(FormulationDecision {
+        decision: "pwl.scaling".to_string(),
+        selection: format!("value_span {v_span:.6} over x_span {x_span:.6}"),
+        reason: format!(
+            "numerical scaling diagnostic: average segment-slope magnitude {avg_slope:.6} \
+             (value span {v_span:.6} / breakpoint span {x_span:.6})"
+        ),
+    });
+    Ok(())
+}
+
+/// Emit the deterministic exact segment-binary convex-combination formulation
+/// (design §17, SM-14.4/SM-14.5). With points `(x_0, v_0)..(x_m, v_m)`:
+///
+/// - weights `lambda_i >= 0` (`i in 0..m`) with `sum lambda = 1`;
+/// - `argument = sum_i x_i * lambda_i`;
+/// - `output = sum_i v_i * lambda_i`;
+/// - adjacency binaries `z_k` (`k in 0..m-1`) with `sum z = 1`;
+/// - `lambda_0 <= z_0`, `lambda_i <= z_{i-1} + z_i` for interior `i`,
+///   `lambda_m <= z_{m-1}`.
+///
+/// No Big-M is introduced anywhere (SM-13.2, D12). Entities are emitted in
+/// deterministic order: weight variables, segment binaries, then rows.
+fn emit_exact_graph(
+    finalizer: &mut BridgeFinalizer,
+    payload: &PiecewiseLinearConstraint,
+    ctx: &BridgeContext,
+) -> Result<(), CompileError> {
+    let y = resolve_variable(ctx.variable_ids, payload.output, ctx.construct)?;
+    let (arg_coefficients, arg_constant) = function_coefficients(
+        &ScalarFunction::Linear(payload.argument.clone()),
+        ctx.construct,
+        ctx.variable_ids,
+        ctx.parameter_values,
+    )?;
+    let m = payload.points.len();
+    debug_assert!(m >= 2, "builder validates at least two points");
+
+    // Weight variables lambda_0..lambda_{m-1} (continuous, nonnegative).
+    let lambdas: Vec<CompiledVariableId> = (0..m)
+        .map(|_| {
+            finalizer.add_variable(
+                GeneratedRole::PwlWeightVariable,
+                VarType::Continuous,
+                Bounds::new(0.0, f64::INFINITY),
+                None,
+            )
+        })
+        .collect();
+    // Segment binaries z_0..z_{m-2} (one per segment).
+    let zs: Vec<CompiledVariableId> = (0..m - 1)
+        .map(|_| {
+            finalizer.add_variable(
+                GeneratedRole::PwlSegmentBinary,
+                VarType::Binary,
+                Bounds::BINARY,
+                None,
+            )
+        })
+        .collect();
+
+    // sum_i lambda_i = 1.
+    finalizer.add_row(
+        GeneratedRole::PwlExactGraphRow,
+        ConstraintBounds::eq(1.0),
+        lambdas.iter().map(|&l| (l, 1.0)).collect(),
+        None,
+    );
+    // argument = sum_i x_i * lambda_i  ⇔  argument - sum x_i lambda_i = 0.
+    let mut arg_row: Vec<(CompiledVariableId, f64)> = arg_coefficients.clone();
+    for (i, &l) in lambdas.iter().enumerate() {
+        arg_row.push((l, -payload.points[i].x));
+    }
+    finalizer.add_row(
+        GeneratedRole::PwlExactGraphRow,
+        ConstraintBounds::eq(-arg_constant),
+        arg_row,
+        None,
+    );
+    // output = sum_i v_i * lambda_i  ⇔  output - sum v_i lambda_i = 0.
+    let mut out_row: Vec<(CompiledVariableId, f64)> = vec![(y, 1.0)];
+    for (i, &l) in lambdas.iter().enumerate() {
+        let v_i = eval_point_value(&payload.points, i, ctx)?;
+        out_row.push((l, -v_i));
+    }
+    finalizer.add_row(
+        GeneratedRole::PwlExactGraphRow,
+        ConstraintBounds::eq(0.0),
+        out_row,
+        None,
+    );
+    // sum_k z_k = 1.
+    finalizer.add_row(
+        GeneratedRole::PwlExactGraphRow,
+        ConstraintBounds::eq(1.0),
+        zs.iter().map(|&z| (z, 1.0)).collect(),
+        None,
+    );
+    // lambda_0 <= z_0.
+    finalizer.add_row(
+        GeneratedRole::PwlExactGraphRow,
+        ConstraintBounds::le(0.0),
+        vec![(lambdas[0], 1.0), (zs[0], -1.0)],
+        None,
+    );
+    // lambda_i <= z_{i-1} + z_i for interior i in 1..m-1.
+    for i in 1..m - 1 {
+        finalizer.add_row(
+            GeneratedRole::PwlExactGraphRow,
+            ConstraintBounds::le(0.0),
+            vec![(lambdas[i], 1.0), (zs[i - 1], -1.0), (zs[i], -1.0)],
+            None,
+        );
+    }
+    // lambda_{m-1} <= z_{m-2}.
+    finalizer.add_row(
+        GeneratedRole::PwlExactGraphRow,
+        ConstraintBounds::le(0.0),
+        vec![(lambdas[m - 1], 1.0), (zs[m - 2], -1.0)],
+        None,
+    );
+    Ok(())
 }
 
 /// Record the shared zero-binary representation/count/reason report entries
