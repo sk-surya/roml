@@ -805,6 +805,19 @@ impl CompilationSession {
                     fixing: _,
                     effective_bounds,
                 } => {
+                    // F1 (P27×P32): a fixing/unfixing on a construct dependency
+                    // changes the variable's EFFECTIVE bounds — the exact
+                    // bridge artifact (Big-M / selector M values, product
+                    // L/U endpoints) derives from those effective bounds, so a
+                    // compiled delta would leave the generated rows stale. Force
+                    // a deterministic rebuild BEFORE any compiled delta is
+                    // emitted; the rejection never advances the CompilationId.
+                    if Self::construct_depends_on_variable(&current.construct_dependencies, *var) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableFixing for {var:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
                     require_feature(
                         capabilities,
                         policy,
