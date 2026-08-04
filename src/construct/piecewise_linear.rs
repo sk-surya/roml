@@ -16,8 +16,13 @@
 //! The direct evaluator ([`PiecewiseLinearConstraint::evaluate`]) performs
 //! linear interpolation between breakpoints and extrapolation per the explicit
 //! [`ExtrapolationPolicy`]. Point values are `ValueExpr`s (parameter-dependent
-//! values are supported and evaluated at compile time by the bridge); the
-//! direct evaluator resolves constant point values.
+//! values are supported and evaluated at compile time by the bridge). The
+//! constant-only operations ([`evaluate`](PiecewiseLinearConstraint::evaluate),
+//! [`classify_curvature`](PiecewiseLinearConstraint::classify_curvature),
+//! [`segment_slopes`](PiecewiseLinearConstraint::segment_slopes)) return a
+//! typed [`PwlEvalError`] for parameter-dependent point values — never a panic
+//! for a valid payload; the `_with` resolver variants evaluate parameterized
+//! payloads (review P1).
 
 use crate::expr::LinExpr;
 use crate::id::{ParamId, VarId};
@@ -133,80 +138,169 @@ impl PiecewiseLinearConstraint {
         deps
     }
 
-    /// The resolved numeric value at breakpoint `i`.
+    /// The resolved numeric value at breakpoint `i` (constant-only).
     ///
-    /// The direct evaluator and curvature classification resolve point values
-    /// as constants; parameter-dependent point values are evaluated by the
-    /// compiler bridge against the snapshot's parameter values (a panic here
-    /// is a programming error — direct evaluation requires constant values).
-    fn point_value(&self, i: usize) -> f64 {
-        self.points[i]
-            .value
-            .as_constant()
-            .expect("direct PWL evaluation/classification requires constant point values")
+    /// A parameter-dependent point value is a typed
+    /// [`ParameterizedPointValue`](PwlEvalError::ParameterizedPointValue) error
+    /// — a valid parameterized payload never panics (review P1). Use
+    /// [`point_value_with`](Self::point_value_with) for parameterized payloads.
+    fn point_value(&self, i: usize) -> Result<f64, PwlEvalError> {
+        match self.points[i].value.as_constant() {
+            Some(value) => Ok(value),
+            None => Err(PwlEvalError::ParameterizedPointValue {
+                index: i,
+                parameter: self.points[i].value.dependencies().into_iter().next(),
+            }),
+        }
     }
 
-    /// The segment slopes `s_i = (v_{i+1} - v_i) / (x_{i+1} - x_i)`.
+    /// The resolved numeric value at breakpoint `i` through a parameter
+    /// resolver; a resolver that cannot supply a parameter is a typed
+    /// [`MissingParameter`](PwlEvalError::MissingParameter) error (F5) —
+    /// never a silent default of zero.
+    fn point_value_with<R>(&self, i: usize, resolve: &R) -> Result<f64, PwlEvalError>
+    where
+        R: Fn(ParamId) -> Option<f64>,
+    {
+        self.points[i]
+            .value
+            .eval_checked(|parameter| resolve(parameter).ok_or(parameter))
+            .map_err(|parameter| PwlEvalError::MissingParameter { parameter })
+    }
+
+    /// The segment slopes `s_i = (v_{i+1} - v_i) / (x_{i+1} - x_i)`
+    /// (constant-only; see [`segment_slopes_with`](Self::segment_slopes_with)).
     ///
     /// Deterministic (SM-14.2): breakpoints are strictly increasing, so the
     /// denominator is finite and positive.
-    pub fn segment_slopes(&self) -> Vec<f64> {
+    pub fn segment_slopes(&self) -> Result<Vec<f64>, PwlEvalError> {
+        self.slopes_impl(|i| self.point_value(i))
+    }
+
+    /// The segment slopes for a parameterized payload, resolving point values
+    /// through `resolve` (review P1).
+    pub fn segment_slopes_with<R>(&self, resolve: &R) -> Result<Vec<f64>, PwlEvalError>
+    where
+        R: Fn(ParamId) -> Option<f64>,
+    {
+        self.slopes_impl(|i| self.point_value_with(i, resolve))
+    }
+
+    fn slopes_impl<F>(&self, value_at: F) -> Result<Vec<f64>, PwlEvalError>
+    where
+        F: Fn(usize) -> Result<f64, PwlEvalError>,
+    {
         (0..self.points.len().saturating_sub(1))
             .map(|i| {
-                (self.point_value(i + 1) - self.point_value(i))
-                    / (self.points[i + 1].x - self.points[i].x)
+                let v0 = value_at(i)?;
+                let v1 = value_at(i + 1)?;
+                Ok((v1 - v0) / (self.points[i + 1].x - self.points[i].x))
             })
             .collect()
     }
 
     /// Classify the PWL curvature deterministically from segment slopes
-    /// (SM-14.2): affine when all slopes are equal, convex when slopes are
-    /// non-decreasing, concave when non-increasing, non-convex on a slope sign
-    /// change.
-    pub fn classify_curvature(&self) -> PwlCurvature {
-        classify_curvature_from_slopes(&self.segment_slopes())
+    /// (SM-14.2; constant-only — see
+    /// [`classify_curvature_with`](Self::classify_curvature_with)): affine
+    /// when all slopes are equal, convex when slopes are non-decreasing,
+    /// concave when non-increasing, non-convex on a slope sign change.
+    pub fn classify_curvature(&self) -> Result<PwlCurvature, PwlEvalError> {
+        Ok(classify_curvature_from_slopes(&self.segment_slopes()?))
     }
 
-    /// Directly evaluate the PWL function at `x` (SM-14.2/14.7).
+    /// Curvature classification for a parameterized payload (review P1).
+    pub fn classify_curvature_with<R>(&self, resolve: &R) -> Result<PwlCurvature, PwlEvalError>
+    where
+        R: Fn(ParamId) -> Option<f64>,
+    {
+        Ok(classify_curvature_from_slopes(
+            &self.segment_slopes_with(resolve)?,
+        ))
+    }
+
+    /// Directly evaluate the PWL function at `x` (SM-14.2/14.7;
+    /// constant-only — see [`evaluate_with`](Self::evaluate_with)).
     ///
     /// Linear interpolation between breakpoints; extrapolation follows the
     /// explicit [`ExtrapolationPolicy`] outside the breakpoint range (constant
     /// clamps to the end value, linear continues the end segment slope).
-    pub fn evaluate(&self, x: f64) -> f64 {
+    pub fn evaluate(&self, x: f64) -> Result<f64, PwlEvalError> {
+        self.evaluate_impl(x, |i| self.point_value(i))
+    }
+
+    /// Directly evaluate the PWL function at `x` for a parameterized payload,
+    /// resolving point values through `resolve` (review P1).
+    pub fn evaluate_with<R>(&self, x: f64, resolve: &R) -> Result<f64, PwlEvalError>
+    where
+        R: Fn(ParamId) -> Option<f64>,
+    {
+        self.evaluate_impl(x, |i| self.point_value_with(i, resolve))
+    }
+
+    fn evaluate_impl<F>(&self, x: f64, value_at: F) -> Result<f64, PwlEvalError>
+    where
+        F: Fn(usize) -> Result<f64, PwlEvalError>,
+    {
         let n = self.points.len();
         debug_assert!(n >= 2, "builder validates at least two points");
         // Left extrapolation.
         if x <= self.points[0].x {
             return match self.extrapolation {
-                ExtrapolationPolicy::Constant => self.point_value(0),
+                ExtrapolationPolicy::Constant => value_at(0),
                 ExtrapolationPolicy::Linear => {
-                    let slope = (self.point_value(1) - self.point_value(0))
-                        / (self.points[1].x - self.points[0].x);
-                    self.point_value(0) + slope * (x - self.points[0].x)
+                    let v0 = value_at(0)?;
+                    let v1 = value_at(1)?;
+                    let slope = (v1 - v0) / (self.points[1].x - self.points[0].x);
+                    Ok(v0 + slope * (x - self.points[0].x))
                 }
             };
         }
         // Right extrapolation.
         if x >= self.points[n - 1].x {
             return match self.extrapolation {
-                ExtrapolationPolicy::Constant => self.point_value(n - 1),
+                ExtrapolationPolicy::Constant => value_at(n - 1),
                 ExtrapolationPolicy::Linear => {
-                    let slope = (self.point_value(n - 1) - self.point_value(n - 2))
-                        / (self.points[n - 1].x - self.points[n - 2].x);
-                    self.point_value(n - 1) + slope * (x - self.points[n - 1].x)
+                    let vn1 = value_at(n - 1)?;
+                    let vn2 = value_at(n - 2)?;
+                    let slope = (vn1 - vn2) / (self.points[n - 1].x - self.points[n - 2].x);
+                    Ok(vn1 + slope * (x - self.points[n - 1].x))
                 }
             };
         }
         // Interior interpolation over the segment containing `x`.
         for i in 0..n - 1 {
             if x >= self.points[i].x && x <= self.points[i + 1].x {
-                let slope = (self.point_value(i + 1) - self.point_value(i))
-                    / (self.points[i + 1].x - self.points[i].x);
-                return self.point_value(i) + slope * (x - self.points[i].x);
+                let v0 = value_at(i)?;
+                let v1 = value_at(i + 1)?;
+                let slope = (v1 - v0) / (self.points[i + 1].x - self.points[i].x);
+                return Ok(v0 + slope * (x - self.points[i].x));
             }
         }
         unreachable!("x lies within the breakpoint range");
     }
+}
+
+/// A typed error from the payload's semantic operations when a point value
+/// depends on model parameters (review P1): a parameterized payload is VALID
+/// (the compiler bridge resolves it), so the constant-only operations return
+/// this error instead of panicking; the `_with` resolver variants evaluate
+/// parameterized payloads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PwlEvalError {
+    /// Breakpoint `index` carries a parameter-dependent value; use the `_with`
+    /// resolver variant.
+    ParameterizedPointValue {
+        /// The breakpoint index.
+        index: usize,
+        /// The first parameter the value depends on (when known).
+        parameter: Option<ParamId>,
+    },
+    /// The resolver did not supply a value for this parameter (F5) — never a
+    /// silent default of zero.
+    MissingParameter {
+        /// The parameter the resolver could not supply.
+        parameter: ParamId,
+    },
 }
 
 /// Classify PWL curvature deterministically from segment slopes (SM-14.2).
