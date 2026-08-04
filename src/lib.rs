@@ -45,8 +45,9 @@ pub use assignment::{
 pub use construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
-    FormulationPreference, IndicatorConstraint, IndicatorDirection, MinMaxConstraint,
-    MinMaxRelation, MinMaxSense, ProductOperand, ReificationConstraint,
+    ExtrapolationPolicy, FormulationPreference, IndicatorConstraint, IndicatorDirection,
+    MinMaxConstraint, MinMaxRelation, MinMaxSense, PiecewiseLinearConstraint, ProductOperand,
+    PwlCurvature, PwlPoint, PwlRelation, ReificationConstraint,
 };
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};

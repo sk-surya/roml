@@ -538,6 +538,15 @@ impl CompilationSession {
                     next_variable_index,
                     next_row_index,
                 )?,
+                // P33 Task 1 lands the PWL payload/semantics only; the bridge
+                // (one-sided zero-binary and exact segment-binary) lands in
+                // Tasks 2/3. A PWL construct is rejected here until then — never
+                // silently relaxed.
+                ConstructKind::PiecewiseLinear(_payload) => {
+                    return Err(CompileError::UnsupportedFeature(
+                        "piecewise-linear bridge lands in P33 Tasks 2/3".into(),
+                    ));
+                }
                 // Test-only crate-private P32 fixture scaffolding is never
                 // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
                 // builds).
@@ -1364,6 +1373,26 @@ fn validate_construct_finiteness(
             for op in [&payload.left, &payload.right] {
                 if let ProductOperand::Linear(expr) = op {
                     validate_lin_expr_finiteness(expr, construct, parameter_values)?;
+                }
+            }
+            Ok(())
+        }
+        ConstructKind::PiecewiseLinear(payload) => {
+            validate_lin_expr_finiteness(&payload.argument, construct, parameter_values)?;
+            for point in &payload.points {
+                let value = point
+                    .value
+                    .eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
+                    .map_err(|parameter| CompileError::MissingConstructParameter {
+                        construct,
+                        parameter,
+                    })?;
+                if !value.is_finite() {
+                    return Err(CompileError::InvalidBigM {
+                        construct,
+                        expression: format!("pwl point value {:?}", point.value),
+                        reason: format!("non-finite evaluated point value {value}"),
+                    });
                 }
             }
             Ok(())
