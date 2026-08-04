@@ -526,16 +526,18 @@ const M2_NATIVE_FEATURES: [BackendFeature; 5] = [
     BackendFeature::IncrementalCoefficients,
 ];
 
-/// The M3 features P32 qualifies as exact ROML **bridge** support for HiGHS
+/// The M3 features P32/P33 qualify as exact ROML **bridge** support for HiGHS
 /// (SM-04.2).
 ///
-/// HiGHS has no qualified native indicator/minmax/abs/product primitives
+/// HiGHS has no qualified native indicator/minmax/abs/product/PWL primitives
 /// (SM-04.3: no official-header audit), and no native reification/Boolean/
-/// cardinality primitives; P32 declares these as exact ROML portable
+/// cardinality primitives; P32/P33 declare these as exact ROML portable
 /// formulations (`SupportLevel::Bridge`). `Auto` compilation prefers a
 /// qualified native primitive, otherwise this exact bridge; `NativeRequired`
-/// rejects a bridge-only feature.
-const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 7] = [
+/// rejects a bridge-only feature. P33 declares `PiecewiseLinear` Bridge-only
+/// (exact segment binaries) — `Sos2`/`NativePiecewiseLinear` stay Unsupported
+/// (no false native claim — P32 F4 rule).
+const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 8] = [
     BackendFeature::Indicator,
     BackendFeature::Reification,
     BackendFeature::Boolean,
@@ -543,6 +545,7 @@ const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 7] = [
     BackendFeature::MinMax,
     BackendFeature::AbsoluteValue,
     BackendFeature::BinaryProduct,
+    BackendFeature::PiecewiseLinear,
 ];
 
 /// Every M3 feature that P26/P32 does **not** qualify as native or bridge for

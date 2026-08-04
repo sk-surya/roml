@@ -44,6 +44,7 @@ pub use boolean::{BooleanConstraint, BooleanKind};
 pub use cardinality::{CardinalityConstraint, CardinalityKind};
 pub use indicator::{IndicatorConstraint, IndicatorDirection};
 pub use minmax::{MinMaxConstraint, MinMaxRelation, MinMaxSense};
+pub(crate) use piecewise_linear::classify_curvature_from_slopes;
 pub use piecewise_linear::{
     ExtrapolationPolicy, PiecewiseLinearConstraint, PwlCurvature, PwlPoint, PwlRelation,
 };

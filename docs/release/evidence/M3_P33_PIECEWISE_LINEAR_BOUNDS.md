@@ -72,7 +72,8 @@ Additional P32-anchored files verified present: `src/compiler/bridge/{indicator,
 
 | # | SHA | Message |
 |---|---|---|
-| 1 | (recorded after commit) | `feat(model): add piecewise linear semantics` |
+| 1 | `1804c90` | `feat(model): add piecewise linear semantics` |
+| 2 | (recorded after commit) | `feat(compiler): add zero-binary PWL one-sided rows` |
 
 ---
 
@@ -132,5 +133,61 @@ The `ConstructKind::PiecewiseLinear` session dispatch was added as a typed `Unsu
 ## Task 2 — One-sided zero-binary PWL bridges (convex epigraph / concave hypograph) and reports
 
 **Phase:** P33  **Requirements:** SM-14.3, SM-14.6, SM-13.5, SM-13.4 (exercised)
+**Status:** complete — committed as `feat(compiler): add zero-binary PWL one-sided rows`.
+
+### TDD — RED failures (recorded before implementation)
+
+`cargo test -p roml --test piecewise_linear` failed to compile — `BackendFeature::PiecewiseLinear` and the PWL `GeneratedRole` variants did not exist, and the PWL session dispatch was the Task 1 placeholder (returns `UnsupportedFeature`). Expected failures, recorded verbatim:
+
+```text
+error[E0599]: no variant, associated function, or constant named `PiecewiseLinear` found for enum `BackendFeature`
+error[E0599]: no variant, associated function, or constant named `PwlEpigraphRow` found for enum `GeneratedRole`
+error[E0599]: no variant, associated function, or constant named `PwlHypographRow` found for enum `GeneratedRole`
+```
+
+The compile-success tests (`pwl_convex_epigraph_compiles_with_zero_binaries_and_supporting_rows`, etc.) additionally fail against the Task 1 placeholder dispatch, which returns `UnsupportedFeature` for any PWL construct.
+
+### Implementation
+
+- **`src/compiler/bridge/piecewise_linear.rs` (create)** — the PWL bridge:
+  - `compile(payload, ctx, next_variable_index, next_row_index)` dispatches on `relation` (D24) after `select_path` gating on `BackendFeature::PiecewiseLinear`.
+  - **Convex epigraph** (curvature Convex/Affine): zero-binary supporting-inequality rows `output >= v_i + s_i*(argument - x_i)` for every breakpoint `i` via `BridgeFinalizer::add_row` with `GeneratedRole::PwlEpigraphRow` (SM-14.3). The final breakpoint uses the last segment slope.
+  - **Concave hypograph** (curvature Concave/Affine): the mirror zero-binary rows `output <= v_i + s_i*(argument - x_i)` with `GeneratedRole::PwlHypographRow` (SM-14.3).
+  - **Relation/curvature mismatch** (`Epigraph` on non-convex, `Hypograph` on non-concave): typed `CompileError::UnsupportedFeature` — never a silent relaxation (D13). `ExactGraph` is a typed `UnsupportedFeature` until Task 3.
+  - **Report (SM-14.6/SM-13.5):** `pwl.path` (exact bridge, no native claim), `pwl.curvature`, `pwl.relation`, `pwl.representation` (`"supporting inequalities (...)"`), `pwl.generated_binaries` (`"0"`), `pwl.binary_avoidance_reason`, `pwl.argument_interval` (from `BoundAnalyzer::interval_of_snapshot`, with bound sources), `pwl.breakpoint_range`.
+  - Curvature is classified from the EVALUATED point values (parameter-dependent values resolve against the snapshot's parameter map) via the shared `classify_curvature_from_slopes` helper — never panics on parameter-dependent PWL.
+- **`src/compiler/origin.rs`** — additive `GeneratedRole::{PwlEpigraphRow, PwlHypographRow, PwlExactGraphRow, PwlSegmentBinary, PwlWeightVariable}` (`#[non_exhaustive]` stays).
+- **`src/compiler/capability.rs`** — additive `BackendFeature::PiecewiseLinear` variant (P32 additive-feature pattern).
+- **`src/compiler/session.rs`** — `ConstructKind::PiecewiseLinear` dispatched through the P32 bridge framework.
+- **`src/compiler/bridge/mod.rs`** — `pub(crate) mod piecewise_linear;`.
+- **`roml-highs/src/session.rs`** — `BackendFeature::PiecewiseLinear` declared `SupportLevel::Bridge` (no native claim); `Sos2`/`NativePiecewiseLinear` stay `Unsupported` (P32 F4 rule, SM-04.3).
+- **`src/construct/piecewise_linear.rs`** — shared `classify_curvature_from_slopes(slopes)` helper (constant and evaluated classification never diverge).
+- **`tests/piecewise_linear.rs`** — 7 new tests: zero-binary + exact row-shape proofs for convex epigraph and concave hypograph, both mismatch rejections, the report/bound-evidence assertions, exact-graph-still-error, and origin completeness.
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test piecewise_linear` | 0 — **22 passed; 0 failed** |
+| `cargo test -p roml --all-targets` | 0 — **909 passed; 0 failed; 0 ignored** |
+| `cargo test -p roml-highs --all-targets` | 0 — **131 passed; 0 failed; 0 ignored** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 — docs generated, no warnings |
+| `cargo fmt --all -- --check` | 0 — formatting clean |
+
+### Acceptance criteria
+
+- All commands exit 0.
+- Convex `Epigraph` and concave `Hypograph` PWL constructs compile to supporting-inequality linear rows with zero generated binaries (SM-14.3) — proven by a direct assertion on the compiled snapshot.
+- The compilation report states curvature, relation, representation, generated counts, and why binaries were avoided (SM-14.6) and records the argument interval + bound sources as bound evidence (SM-13.5).
+- `BackendFeature::PiecewiseLinear` is declared `SupportLevel::Bridge` on HiGHS with no native claim (SM-04.2/SM-04.3).
+
+---
+
+## Task 3 — Exact graph via deterministic exact segment binaries, randomized equivalence, HiGHS, and OR review
+
+**Phase:** P33  **Requirements:** SM-14.4, SM-14.5, SM-14.6, SM-14.7, SM-13.1 (argument interval), SM-13.2 (no unproven Big-M)
 
 <!-- gsd:write-continue -->

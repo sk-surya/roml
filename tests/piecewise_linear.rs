@@ -9,6 +9,15 @@
 //! `Model::add_piecewise_linear` builder returning a stable `Construct` handle
 //! plus the output-variable handle (SM-12.8).
 
+use roml::compiler::backend_ir::{
+    BackendSnapshot, CompiledConstraintId, CompiledEntityRef, CompiledLinearRow, CompiledVariableId,
+};
+use roml::compiler::capability::{
+    BackendCapabilitySet, BackendFeature, CompilationPolicy, FeatureSupport,
+};
+use roml::compiler::origin::{EntityOrigin, GeneratedRole};
+use roml::compiler::session::CompilationSession;
+use roml::compiler::CompileError;
 use roml::construct::{
     ConstructKind, ExtrapolationPolicy, FormulationPreference, PiecewiseLinearConstraint,
     PwlCurvature, PwlPoint, PwlRelation,
@@ -77,6 +86,110 @@ fn pwl_payload(model: &Model, k: roml::Construct) -> PiecewiseLinearConstraint {
         ConstructKind::PiecewiseLinear(payload) => payload.clone(),
         other => panic!("expected PiecewiseLinear payload, got {other:?}"),
     }
+}
+
+/// Capability set with the PWL bridge declared (Tasks 2/3).
+fn pwl_bridge_caps() -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for f in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(f, FeatureSupport::native(Default::default()));
+    }
+    set.set(
+        BackendFeature::PiecewiseLinear,
+        FeatureSupport::bridge(Default::default()),
+    );
+    set
+}
+
+/// Compile a model snapshot, panicking on failure.
+fn compile(
+    model: &Model,
+    policy: CompilationPolicy,
+    caps: &BackendCapabilitySet,
+) -> BackendSnapshot {
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    session
+        .compile_snapshot(model.instance(), &snapshot, &policy, caps)
+        .expect("snapshot must compile")
+}
+
+/// Compile a model snapshot, expecting a typed error.
+fn compile_err(
+    model: &Model,
+    policy: CompilationPolicy,
+    caps: &BackendCapabilitySet,
+) -> CompileError {
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    session
+        .compile_snapshot(model.instance(), &snapshot, &policy, caps)
+        .expect_err("snapshot compilation must fail")
+}
+
+/// The compiled id of a user variable (exactly one compiled projection).
+fn compiled_user_var(compiled: &BackendSnapshot, var: VarId) -> CompiledVariableId {
+    let ids = compiled
+        .origin_map
+        .variables_for_origin(&EntityOrigin::UserVariable(var));
+    assert_eq!(ids.len(), 1, "each user variable has one compiled id");
+    ids[0]
+}
+
+/// Compiled constraint ids tracing to a construct role.
+fn compiled_rows_for_role(
+    compiled: &BackendSnapshot,
+    construct: roml::Construct,
+    role: GeneratedRole,
+) -> Vec<CompiledConstraintId> {
+    compiled
+        .origin_map
+        .constraints_for_origin(&EntityOrigin::Construct { construct, role })
+}
+
+/// The compiled row for a compiled constraint id.
+fn compiled_row(compiled: &BackendSnapshot, id: CompiledConstraintId) -> &CompiledLinearRow {
+    compiled
+        .linear_rows
+        .iter()
+        .find(|r| r.id == id)
+        .expect("row present in compiled snapshot")
+}
+
+/// Generated binary variable ids tracing to a construct (any role).
+fn generated_binaries_for_construct(
+    compiled: &BackendSnapshot,
+    construct: roml::Construct,
+) -> Vec<CompiledVariableId> {
+    compiled
+        .variables
+        .iter()
+        .filter(|v| v.var_type == roml::model::VarType::Binary)
+        .filter(|v| {
+            matches!(
+                compiled
+                    .origin_map
+                    .origin_for(CompiledEntityRef::Variable(v.id)),
+                Some(EntityOrigin::Construct { construct: c, .. }) if *c == construct
+            )
+        })
+        .map(|v| v.id)
+        .collect()
+}
+
+/// The coefficient on `var` in a compiled row (0.0 when absent).
+fn row_coefficient(row: &CompiledLinearRow, var: CompiledVariableId) -> f64 {
+    row.coefficients
+        .iter()
+        .find(|(id, _)| *id == var)
+        .map(|(_, c)| *c)
+        .unwrap_or(0.0)
 }
 
 // ===========================================================================
@@ -405,4 +518,289 @@ fn pwl_builder_rejects_missing_parameter_in_point_value() {
         )
         .unwrap_err();
     assert_eq!(err, ModelError::ParameterNotFound(ghost_param));
+}
+
+// ===========================================================================
+// Task 2 — Zero-binary one-sided PWL bridges (SM-14.3) and reports
+// ===========================================================================
+
+/// Convex PWL `[(0,0),(1,1),(2,4)]` — slopes `1, 3` → Convex. Epigraph rows
+/// `output >= v_i + s_i*(x - x_i)`: `output - x >= 0`; `output - 3x >= -2`
+/// twice.
+#[test]
+fn pwl_convex_epigraph_compiles_with_zero_binaries_and_supporting_rows() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let (k, output) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Constant,
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+
+    // SM-14.3: zero generated binaries.
+    assert!(
+        generated_binaries_for_construct(&compiled, k).is_empty(),
+        "convex epigraph must introduce zero generated binaries (SM-14.3)"
+    );
+
+    let xid = compiled_user_var(&compiled, x);
+    let yid = compiled_user_var(&compiled, output);
+    let rows = compiled_rows_for_role(&compiled, k, GeneratedRole::PwlEpigraphRow);
+    assert_eq!(rows.len(), 3, "one supporting row per breakpoint");
+    // Expected: (coeff on y, coeff on x, lower bound) per breakpoint i.
+    let expected: [(f64, f64, f64); 3] = [
+        (1.0, -1.0, 0.0),  // output - x >= 0
+        (1.0, -3.0, -2.0), // output - 3x >= -2
+        (1.0, -3.0, -2.0), // output - 3x >= -2 (last segment slope)
+    ];
+    for (i, rid) in rows.iter().enumerate() {
+        let row = compiled_row(&compiled, *rid);
+        assert!(
+            (row.bounds.lower - expected[i].2).abs() < 1e-9,
+            "row {i} lower bound: got {}, expected {}",
+            row.bounds.lower,
+            expected[i].2
+        );
+        assert_eq!(
+            row_coefficient(row, yid),
+            expected[i].0,
+            "row {i} output coeff"
+        );
+        assert_eq!(
+            row_coefficient(row, xid),
+            expected[i].1,
+            "row {i} argument coeff"
+        );
+        // SM-02.5: every generated row carries a construct origin.
+        assert!(
+            matches!(
+                compiled.origin_map.constraint_origin(*rid),
+                Some(EntityOrigin::Construct { construct: c, .. }) if *c == k
+            ),
+            "row {i} must carry a Construct origin"
+        );
+    }
+}
+
+/// Concave PWL `[(0,0),(1,3),(2,4)]` — slopes `3, 1` → Concave. Hypograph rows
+/// `output <= v_i + s_i*(x - x_i)`: `output - 3x <= 0`; `output - x <= 2`
+/// twice.
+#[test]
+fn pwl_concave_hypograph_compiles_with_zero_binaries_and_supporting_rows() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let (k, output) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            concave_pwl(),
+            PwlRelation::Hypograph,
+            ExtrapolationPolicy::Constant,
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+
+    assert!(
+        generated_binaries_for_construct(&compiled, k).is_empty(),
+        "concave hypograph must introduce zero generated binaries (SM-14.3)"
+    );
+
+    let xid = compiled_user_var(&compiled, x);
+    let yid = compiled_user_var(&compiled, output);
+    let rows = compiled_rows_for_role(&compiled, k, GeneratedRole::PwlHypographRow);
+    assert_eq!(rows.len(), 3, "one supporting row per breakpoint");
+    let expected: [(f64, f64, f64); 3] = [
+        (1.0, -3.0, 0.0), // output - 3x <= 0
+        (1.0, -1.0, 2.0), // output - x <= 2
+        (1.0, -1.0, 2.0), // output - x <= 2
+    ];
+    for (i, rid) in rows.iter().enumerate() {
+        let row = compiled_row(&compiled, *rid);
+        assert!(
+            (row.bounds.upper - expected[i].2).abs() < 1e-9,
+            "row {i} upper bound: got {}, expected {}",
+            row.bounds.upper,
+            expected[i].2
+        );
+        assert_eq!(
+            row_coefficient(row, yid),
+            expected[i].0,
+            "row {i} output coeff"
+        );
+        assert_eq!(
+            row_coefficient(row, xid),
+            expected[i].1,
+            "row {i} argument coeff"
+        );
+    }
+}
+
+/// Epigraph on a non-convex PWL is a typed compile error — never a silent
+/// relaxation (D13).
+#[test]
+fn pwl_epigraph_on_nonconvex_pwl_is_typed_error() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 3.0)).unwrap();
+    model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            nonconvex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "Epigraph on a non-convex PWL must be a typed CompileError, got {err:?}"
+    );
+}
+
+/// Hypograph on a non-concave (convex) PWL is a typed compile error — never a
+/// silent relaxation (D13).
+#[test]
+fn pwl_hypograph_on_nonconcave_pwl_is_typed_error() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(), // convex, not concave
+            PwlRelation::Hypograph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "Hypograph on a non-concave PWL must be a typed CompileError, got {err:?}"
+    );
+}
+
+/// The compilation report records curvature, relation, representation, zero
+/// generated binaries, the binary-avoidance reason, and the argument interval
+/// + bound sources (SM-14.6, SM-13.5).
+#[test]
+fn pwl_report_records_curvature_relation_representation_and_bound_evidence() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let (_k, _) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+
+    let decisions = &compiled.report.formulation_decisions;
+    let find = |key: &str| {
+        decisions
+            .iter()
+            .find(|d| d.decision == key)
+            .unwrap_or_else(|| panic!("missing report decision {key}"))
+    };
+
+    assert_eq!(find("pwl.curvature").selection, "Convex");
+    assert_eq!(find("pwl.relation").selection, "Epigraph");
+    let rep = find("pwl.representation");
+    assert!(
+        rep.selection.contains("supporting inequalities"),
+        "representation must name supporting inequalities, got {}",
+        rep.selection
+    );
+    assert_eq!(find("pwl.generated_binaries").selection, "0");
+    assert!(
+        find("pwl.binary_avoidance_reason")
+            .reason
+            .contains("zero generated binaries"),
+        "binary-avoidance reason must explain why binaries were avoided"
+    );
+
+    // SM-13.5: the argument interval and its bound sources are recorded.
+    let arg_interval = find("pwl.argument_interval");
+    assert!(
+        arg_interval.selection.contains("[0, 2]") || arg_interval.selection.contains("0"),
+        "argument interval must be recorded, got {}",
+        arg_interval.selection
+    );
+    assert!(
+        arg_interval.reason.contains("DeclaredVariableBounds"),
+        "argument interval must carry bound-source provenance, got {}",
+        arg_interval.reason
+    );
+
+    // The PWL construct is Bridge-only (no native claim).
+    assert!(
+        compiled
+            .report
+            .formulation_decisions
+            .iter()
+            .any(|d| d.decision == "pwl.path" && d.selection.contains("bridge")),
+        "pwl.path decision must record the bridge path"
+    );
+}
+
+/// ExactGraph is not yet compiled by the one-sided bridge (Task 3 adds the
+/// exact representation) — it must be a typed error, never a relaxation.
+#[test]
+fn pwl_exact_graph_is_typed_error_before_task3() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "exact-graph compilation must be a typed error before the Task 3 bridge, got {err:?}"
+    );
+}
+
+/// Every generated PWL row carries `EntityOrigin::Construct { construct, role }`
+/// (SM-02.5) — verified per row above; this test asserts origin completeness at
+/// the snapshot level.
+#[test]
+fn pwl_zero_binary_rows_are_origin_complete() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let (k, _) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    let rows = compiled_rows_for_role(&compiled, k, GeneratedRole::PwlEpigraphRow);
+    assert_eq!(rows.len(), 3);
+    // No compiled entity is missing an origin.
+    assert!(
+        compiled
+            .origin_map
+            .missing_origins(
+                &compiled.variables,
+                &compiled.linear_rows,
+                &compiled.objectives
+            )
+            .is_empty(),
+        "every compiled entity must carry an origin (SM-02.5)"
+    );
 }

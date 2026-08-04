@@ -18,6 +18,7 @@ pub(crate) mod boolean;
 pub(crate) mod cardinality;
 pub(crate) mod indicator;
 pub(crate) mod minmax;
+pub(crate) mod piecewise_linear;
 pub(crate) mod product;
 pub(crate) mod reification;
 
