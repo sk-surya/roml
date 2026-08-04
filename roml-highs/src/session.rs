@@ -614,14 +614,17 @@ pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabi
         );
     }
 
-    // P28 (SM-08.7): the pinned-header audit qualifies the native MIP start
-    // primitive for MIP model classes.
+    // P28 (SM-08.7): the pinned-header audit qualifies the native start
+    // primitive. No model-class limitation is declared (review P2-07): the
+    // audit shows `Highs_setSparseSolution` accepts primal solution values
+    // for any model class — a start is a search hint and never changes a
+    // proven optimum — so an unenforced "mip only" restriction would be a
+    // capability declaration that does not trace to the audit.
     for feature in QUALIFIED_MIP_START_FEATURES {
         set.set(
             feature,
             FeatureSupport::native(FeatureLimitations {
                 minimum_version: Some(version.clone()),
-                model_classes: vec!["mip".to_string()],
                 notes: vec![
                     "qualified via Highs_setSparseSolution (pinned header audit; \
                      docs/knowledge/highs_mip_start_api.md); a start is a search hint and \

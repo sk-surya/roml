@@ -580,8 +580,14 @@ struct PlanTestState {
     revision: ModelRevision,
     health: AdapterHealth,
     solves: usize,
+    rebuilds: usize,
     current_compilation: Option<CompilationId>,
     fail_solve: bool,
+    /// Inject a failure in `apply_mip_starts` AFTER the values were inserted
+    /// (worst-case: a partially-applied incumbent exists when the error
+    /// surfaces — the CR-02-mirror fix must force a rebuild so it cannot
+    /// seed a later solve).
+    fail_starts: bool,
 }
 
 impl Default for PlanTestState {
@@ -590,8 +596,10 @@ impl Default for PlanTestState {
             revision: ModelRevision::ZERO,
             health: AdapterHealth::Ready,
             solves: 0,
+            rebuilds: 0,
             current_compilation: None,
             fail_solve: false,
+            fail_starts: false,
         }
     }
 }
@@ -827,6 +835,10 @@ impl BackendSession for PlanTestBackend {
                 s.revision = snapshot.source_revision;
                 s.health = AdapterHealth::Ready;
                 s.current_compilation = Some(snapshot.compilation_id);
+                // A rebuild recreates the native state: any incumbent (applied
+                // warm start) is wiped with it.
+                s.rebuilds += 1;
+                self.current_start.clear();
                 Ok(SyncReceipt {
                     cursor: AdapterCursor {
                         applied_revision: s.revision,
@@ -975,6 +987,13 @@ impl OverlaySession for PlanTestBackend {
             for (var, value) in &start.assignment.values {
                 self.current_start.insert(*var, *value);
             }
+        }
+        if self.state.borrow().fail_starts {
+            return Err(BackendError::new(
+                "injected start application failure",
+                ErrorCategory::Unsupported,
+                HealthEffect::Recoverable,
+            ));
         }
         Ok(())
     }
@@ -1382,4 +1401,282 @@ fn no_stale_start_leakage_into_subsequent_solve() {
         "the old start value (5.0) must NOT leak into the unrelated solve"
     );
     let _ = z;
+}
+
+/// A failed warm-start application must poison the session (CR-02 mirror): the
+/// partially-applied incumbent is wiped by the forced rebuild, so the next
+/// solve of the unchanged model is deterministic and equal to a fresh
+/// no-start solve.
+#[test]
+fn warm_start_failure_forces_rebuild_and_blocks_stale_incumbent() {
+    let (mut model, x, _y, _obj) = mip_fixture();
+    let (backend, state) = PlanTestBackend::new();
+    let mut session = SolverSession::new(backend);
+
+    // Establish the base: one clean solve.
+    let clean = session.solve(&mut model).unwrap();
+    let clean_x = clean.value(x).unwrap();
+    assert_eq!(state.borrow().solves, 1);
+    // The first solve established the compiled base via a CompiledRebuild.
+    assert_eq!(state.borrow().rebuilds, 1);
+
+    // A plan whose start application FAILS at the backend (worst case: the
+    // values were already inserted into native state before the error).
+    state.borrow_mut().fail_starts = true;
+    let start = MipStart::new(
+        assignment_for(&model, BTreeMap::from([(x, 5.0)])),
+        RepairPolicy::BackendDefault,
+    );
+    let plan = SolvePlan {
+        options: SolveOptions::default(),
+        overlay: roml::SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![]).unwrap(),
+        mip_starts: vec![start],
+        hints: VariableHints::default(),
+        objective_override: None,
+        lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+        unsupported: UnsupportedFeaturePolicy::Reject,
+    };
+    let err = session.solve_plan(&mut model, plan).unwrap_err();
+    assert!(
+        matches!(err, SolveError::Solve(_)),
+        "the start-application failure must surface as a typed backend error, got {err:?}"
+    );
+    // The failed attempt never reached the solver.
+    assert_eq!(
+        state.borrow().solves,
+        1,
+        "no solve must run after the failure"
+    );
+
+    // The session is poisoned: the next solve of the UNCHANGED model must
+    // rebuild (wiping the partially-applied incumbent) and be deterministic.
+    state.borrow_mut().fail_starts = false;
+    let empty = SolvePlan::new(SolveOptions::default()).unwrap();
+    let again = session.solve_plan(&mut model, empty).unwrap();
+
+    assert_eq!(
+        state.borrow().rebuilds,
+        2,
+        "a warm-start failure must force a rebuild on the next sync (CR-02 mirror)"
+    );
+    assert_eq!(
+        again.value(x),
+        Some(clean_x),
+        "the failed start value (5.0) must NOT seed the next solve of the unchanged model"
+    );
+    assert_eq!(again.objective_value(), clean.objective_value());
+}
+
+// ── 5. MultipleMipStarts gating (SM-08.2; Pass-1 review P1-01) ──────────────
+
+/// The second+ start requires the backend's `MultipleMipStarts` declaration
+/// (SM-08.2). `Highs_setSparseSolution` overwrites the previous incumbent on
+/// every call, so an undeclared second start would be silently dropped while
+/// recorded as applied — the default policy must reject it with a typed
+/// `PlanError` naming `MultipleMipStarts`.
+#[test]
+fn second_start_rejects_without_multiple_mip_starts_capability() {
+    let (mut model, x, y, _obj) = mip_fixture();
+    let (backend, _state) = PlanTestBackend::new();
+    let mut session = SolverSession::new(backend);
+
+    // Two starts over DISJOINT variables (a duplicate-variable plan is
+    // rejected earlier by `SolvePlan::validate` — this test reaches the
+    // capability gate).
+    let start = |variable: VarId, value: f64| {
+        MipStart::new(
+            assignment_for(&model, BTreeMap::from([(variable, value)])),
+            RepairPolicy::BackendDefault,
+        )
+    };
+    let plan = SolvePlan {
+        options: SolveOptions::default(),
+        overlay: roml::SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![]).unwrap(),
+        mip_starts: vec![start(x, 3.0), start(y, 5.0)],
+        hints: VariableHints::default(),
+        objective_override: None,
+        lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+        unsupported: UnsupportedFeaturePolicy::Reject,
+    };
+    let err = session.solve_plan(&mut model, plan).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SolveError::Plan(PlanError::UnsupportedFeature {
+                feature: "MultipleMipStarts",
+                ..
+            })
+        ),
+        "a second start must reject with a typed PlanError naming MultipleMipStarts, got {err:?}"
+    );
+}
+
+/// Under `ConvertStartToTemporaryFixing`, the undeclared second start follows
+/// the explicit conversion policy: it becomes an overlay temporary fixing and
+/// the conversion is RECORDED — never silently dropped.
+#[test]
+fn second_start_follows_conversion_policy_under_convert_to_fixing() {
+    let (mut model, x, y, _obj) = mip_fixture();
+    let (backend, _state) = PlanTestBackend::new();
+    let mut session = SolverSession::new(backend);
+
+    let start = |variable: VarId, value: f64| {
+        MipStart::new(
+            assignment_for(&model, BTreeMap::from([(variable, value)])),
+            RepairPolicy::BackendDefault,
+        )
+    };
+    let plan = SolvePlan {
+        options: SolveOptions::default(),
+        overlay: roml::SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![]).unwrap(),
+        mip_starts: vec![start(x, 3.0), start(y, 5.0)],
+        hints: VariableHints::default(),
+        objective_override: None,
+        lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+        unsupported: UnsupportedFeaturePolicy::ConvertStartToTemporaryFixing,
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+
+    // The first start applied natively; the second was converted and recorded.
+    let effective = &solution.metadata().effective_plan;
+    assert!(
+        effective
+            .adjustments
+            .iter()
+            .any(|a| a.requested == "mip_start"
+                && a.applied == "overlay_temporary_fixing"
+                && a.reason.contains("MultipleMipStarts")),
+        "the second start's conversion must be recorded naming MultipleMipStarts, got {effective:?}"
+    );
+    assert_eq!(
+        solution.value(x),
+        Some(3.0),
+        "the first start must apply natively"
+    );
+    assert_eq!(
+        solution.value(y),
+        Some(5.0),
+        "the converted fixing must bind y to the second start's value"
+    );
+}
+
+/// `ConvertHintToStart` must never silently create a SECOND start: when the
+/// plan already carries a start and the backend does not declare
+/// `MultipleMipStarts`, the converted start is a recorded `PlanRejection`.
+#[test]
+fn hint_to_start_conversion_never_silently_creates_second_start() {
+    let (mut model, x, _y, _obj) = mip_fixture();
+    // Backend qualifies MipStart but NOT VariableHints (so the hint policy
+    // path is exercised) and NOT MultipleMipStarts.
+    let (backend, _state) = PlanTestBackend::new_with_caps(caps_without_variable_hints());
+    let mut session = SolverSession::new(backend);
+
+    let mut hints = VariableHints::default();
+    hints.insert(
+        x,
+        VariableHint {
+            value: 7.0,
+            priority: HintPriority(10),
+        },
+    );
+    let plan = SolvePlan {
+        options: SolveOptions::default(),
+        overlay: roml::SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![]).unwrap(),
+        mip_starts: vec![MipStart::new(
+            assignment_for(&model, BTreeMap::from([(x, 3.0)])),
+            RepairPolicy::BackendDefault,
+        )],
+        hints,
+        objective_override: None,
+        lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+        unsupported: UnsupportedFeaturePolicy::ConvertHintToStart,
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+
+    let effective = &solution.metadata().effective_plan;
+    assert!(
+        effective
+            .rejections
+            .iter()
+            .any(|r| r.reason.contains("MultipleMipStarts")),
+        "a hint conversion that would create a second start must be a recorded \
+         rejection, got {effective:?}"
+    );
+    // Only the explicit start was applied: the conversion did not silently
+    // overwrite it.
+    assert_eq!(
+        solution.value(x),
+        Some(3.0),
+        "the explicit start must remain the only applied start"
+    );
+}
+
+// ── 6. Review-fix round: hint validation + override recording ───────────────
+
+/// A hint keyed by a variable absent from the model must be rejected in plan
+/// validation, BEFORE any backend mutation (packet "validate lineages,
+/// entities … before backend mutation"; Pass-1 review P2-02).
+#[test]
+fn stale_hint_variable_rejects_in_plan_validation() {
+    let (mut model, _x, _y, _obj) = mip_fixture();
+    let stale = roml::VarId::new(999, roml::id::Generation::new());
+    let mut hints = VariableHints::default();
+    hints.insert(
+        stale,
+        VariableHint {
+            value: 1.0,
+            priority: HintPriority(0),
+        },
+    );
+    let plan = SolvePlan {
+        options: SolveOptions::default(),
+        overlay: roml::SolveOverlay::new(BTreeMap::new(), vec![], vec![], vec![]).unwrap(),
+        mip_starts: vec![],
+        hints,
+        objective_override: None,
+        lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+        unsupported: UnsupportedFeaturePolicy::Reject,
+    };
+    let (backend, state) = PlanTestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let err = session.solve_plan(&mut model, plan).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SolveError::Plan(PlanError::Assignment(AssignmentError::StaleVariable {
+                variable
+            })) if variable == stale
+        ),
+        "a stale hint variable must reject in plan validation, got {err:?}"
+    );
+    assert_eq!(
+        state.borrow().solves,
+        0,
+        "no backend mutation may happen before the hint validation"
+    );
+}
+
+/// An applied `objective_override` must be recorded in the effective plan
+/// (SM-04.5 "all applications are recorded"; Pass-1 review P2-04).
+#[test]
+fn objective_override_is_recorded_in_effective_plan() {
+    let (mut model, _x, _y, obj) = mip_fixture();
+    let (backend, _state) = PlanTestBackend::new();
+    let mut session = SolverSession::new(backend);
+
+    let plan = SolvePlan {
+        objective_override: Some(roml::ObjectivePolicy::Single(obj)),
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+    assert!(
+        solution
+            .metadata()
+            .effective_plan
+            .adjustments
+            .iter()
+            .any(|a| a.key == "objective_override"),
+        "the applied objective override must be recorded, got {:?}",
+        solution.metadata().effective_plan.adjustments
+    );
 }

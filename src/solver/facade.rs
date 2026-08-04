@@ -614,6 +614,16 @@ where
         let objective_override = plan.objective_override.map(|policy| match policy {
             ObjectivePolicy::Single(obj) => obj,
         });
+        // SM-04.5 (review P2-04): an applied override is recorded — a consumer
+        // reading the effective plan can tell that the objective was replaced.
+        if objective_override.is_some() {
+            effective.adjustments.push(PlanAdjustment {
+                key: "objective_override".into(),
+                requested: "model objective".into(),
+                applied: "override objective".into(),
+                reason: "ObjectivePolicy::Single override compiled into the overlay (P28)".into(),
+            });
+        }
 
         // An overlay apply is needed only when the effective overlay (the
         // plan's overlay plus any start->fixing conversions) has content or an
@@ -661,6 +671,11 @@ where
 
         // 5. Apply qualified starts/hints through the OverlaySession methods.
         if let Err(e) = self.apply_warm_starts(&resolved, &mut effective) {
+            // CR-02 mirror: a warm-start application failure leaves the session
+            // RequiresRebuild so a partially-applied incumbent is never
+            // silently reused by a later solve of the unchanged model (the
+            // no-sync fast path would otherwise keep the stale start).
+            self.force_rebuild_on_next_sync();
             // Rollback is ALWAYS attempted on the failure paths (SM-07.4).
             if let Some(receipt) = &overlay_receipt {
                 let _ = self.rollback_and_verify(receipt);
@@ -807,6 +822,7 @@ where
         let caps = self.compilation_capabilities();
         let mip_start_qualified = caps.supports(BackendFeature::MipStart);
         let partial_mip_start_qualified = caps.supports(BackendFeature::PartialMipStart);
+        let multiple_mip_starts_qualified = caps.supports(BackendFeature::MultipleMipStarts);
         let variable_hints_qualified = caps.supports(BackendFeature::VariableHints);
 
         // Active integer/binary variables, for classifying partial starts.
@@ -834,12 +850,24 @@ where
             let partial = integer_binary
                 .iter()
                 .any(|v| !start.assignment.values.contains_key(v));
-            let feature = if partial {
+            // SM-08.2 (Pass-1 review P1-01): the second+ start additionally
+            // requires the backend's `MultipleMipStarts` declaration. The
+            // pinned HiGHS start primitive overwrites the previous incumbent
+            // on every call, so an undeclared second start would be silently
+            // dropped while recorded as applied — the policy ladder below
+            // applies to the multiple-start capability exactly as to any
+            // unqualified feature.
+            let multiple = index >= 1;
+            let feature = if multiple {
+                "MultipleMipStarts"
+            } else if partial {
                 "PartialMipStart"
             } else {
                 "MipStart"
             };
-            let qualified = if partial {
+            let qualified = if multiple {
+                multiple_mip_starts_qualified
+            } else if partial {
                 partial_mip_start_qualified
             } else {
                 mip_start_qualified
@@ -892,29 +920,44 @@ where
                 });
             } else if plan.unsupported == UnsupportedFeaturePolicy::ConvertHintToStart {
                 if mip_start_qualified {
-                    let assignment = PrimalAssignment {
-                        lineage: model.lineage(),
-                        source_instance: Some(model.instance()),
-                        source_revision: Some(model.current_revision()),
-                        values: plan
-                            .hints
-                            .iter()
-                            .map(|(variable, hint)| (*variable, hint.value))
-                            .collect(),
-                    };
-                    starts.push(MipStart::new(assignment, RepairPolicy::BackendDefault));
-                    effective.adjustments.push(PlanAdjustment {
-                        key: "hints".into(),
-                        requested: "variable_hints".into(),
-                        applied: "mip_start".into(),
-                        reason: "backend does not qualify VariableHints; \
-                                 ConvertHintToStart policy"
-                            .to_string(),
-                    });
-                    effective.applied_features.push(AppliedFeature {
-                        feature: "mip_start".into(),
-                        detail: "hints (converted to a MIP start)".into(),
-                    });
+                    // SM-08.2 (Pass-1 review P1-01): a conversion must never
+                    // silently create a SECOND start — when the plan already
+                    // carries a start and the backend does not declare
+                    // `MultipleMipStarts`, the converted start is a recorded
+                    // rejection (never silent, never overwriting).
+                    if !starts.is_empty() && !multiple_mip_starts_qualified {
+                        effective.rejections.push(PlanRejection {
+                            key: "hints".into(),
+                            reason: "ConvertHintToStart policy but the backend does not qualify \
+                                     MultipleMipStarts; the converted start would overwrite the \
+                                     plan's start — rejection recorded"
+                                .to_string(),
+                        });
+                    } else {
+                        let assignment = PrimalAssignment {
+                            lineage: model.lineage(),
+                            source_instance: Some(model.instance()),
+                            source_revision: Some(model.current_revision()),
+                            values: plan
+                                .hints
+                                .iter()
+                                .map(|(variable, hint)| (*variable, hint.value))
+                                .collect(),
+                        };
+                        starts.push(MipStart::new(assignment, RepairPolicy::BackendDefault));
+                        effective.adjustments.push(PlanAdjustment {
+                            key: "hints".into(),
+                            requested: "variable_hints".into(),
+                            applied: "mip_start".into(),
+                            reason: "backend does not qualify VariableHints; \
+                                     ConvertHintToStart policy"
+                                .to_string(),
+                        });
+                        effective.applied_features.push(AppliedFeature {
+                            feature: "mip_start".into(),
+                            detail: "hints (converted to a MIP start)".into(),
+                        });
+                    }
                 } else {
                     effective.rejections.push(PlanRejection {
                         key: "hints".into(),

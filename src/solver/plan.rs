@@ -143,6 +143,15 @@ impl SolvePlan {
                     value: hint.value,
                 });
             }
+            // Entity check (review P2-02): a hint keyed by a stale or foreign
+            // variable would fail only LATER inside a conversion or the
+            // backend application, after the model was committed — the packet
+            // requires entity validation before any backend mutation.
+            if model.variable_domain(*variable).is_none() {
+                return Err(PlanError::Assignment(AssignmentError::StaleVariable {
+                    variable: *variable,
+                }));
+            }
         }
 
         Ok(())
