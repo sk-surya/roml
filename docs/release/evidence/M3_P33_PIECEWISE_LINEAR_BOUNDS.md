@@ -330,7 +330,9 @@ parameter dependency/update tests (Task 1 `parameter_dependencies` derivation). 
 
 ## Public API diff
 
-`cargo public-api -p roml` grew from **18792** items (P32 baseline capture) to **22178** items. The P33
+`cargo public-api -p roml` grew from **18792** items (P32 baseline capture) to **22178** items. Caveat
+(P33 Pass-1 review P2-03): the P32 baseline capture was taken mid-P32 (`192cd005…`), so the raw delta
+overstates the P33-only surface; the additive-vs-unintended analysis below is unaffected. The P33
 additions (all additive, `#[non_exhaustive]` boundaries preserved):
 
 - `roml::construct::{PiecewiseLinearConstraint, PwlRelation, ExtrapolationPolicy, PwlCurvature, PwlPoint}` (and `roml::` / `roml::advanced::` re-exports; `roml::construct::piecewise_linear::*`).
@@ -365,10 +367,37 @@ TDD RED→GREEN transition, not a plan deviation.
 - **OR review pending:** Pass 1 (spec/correctness) and Pass 2 (integration/operations) have not yet run;
   this evidence bundle records the implementation state for those gates.
 
-## Review gates (pending)
+## Review gates (executed)
 
-Per `EXECUTION.md` § "Review gates", P33 receives two independent review passes at the phase boundary
-(after Task 3). `autonomous: false` — the executor pauses here and the orchestrator runs Pass 1
-(specification and correctness) and Pass 2 (integration and operations). This evidence bundle is the input
-to those gates. P0/P1 findings block merge; P2 findings may merge only when explicitly accepted and
-scheduled.
+Per `EXECUTION.md` § "Review gates", P33 received two independent review passes at the phase boundary.
+
+- **Pass 1 (spec/correctness) — CONDITIONAL (P1-01 blocking):** the exact segment-binary formulation,
+  one-sided rows, curvature gating, and nonconvex-exactness proof all re-derived correct; one P1 finding:
+  no compiled formulation honored the declared `ExtrapolationPolicy` (argument interval vs breakpoint
+  range never checked). Three P2 + two info items.
+- **Pass 2 (integration/ops) — PASS:** 0 findings across all severities; wiring, frozen-contract
+  preservation, failure recovery, HiGHS Bridge-only honesty, additive-only public API, E2E suites all
+  re-verified green.
+
+### Review-fix round (orchestrator, after Pass 1)
+
+**P1-01 — FIXED (TDD).** New typed `CompileError::ExtrapolationConflict { construct, expression,
+interval, range, policy }`; the bridge now computes `leaves_range` from the bound-derived argument
+interval vs the breakpoint range and rejects: Constant one-sided (epigraph/hypograph) when the argument
+can leave the range; the exact graph under either policy. Linear one-sided compiles exactly (proven at
+`x = -1` → `f_lin = -1` and `x = 3` → `f_lin = 7`). A `pwl.extrapolation` report decision records the
+policy and disposition (SM-14.6). Five new tests (RED first): Constant epigraph reject, Constant
+hypograph reject, Linear one-sided exactness outside the range, exact-graph reject under both policies,
+report schema. **P2-02 — FIXED:** the one-sided path now records `pwl.generated_auxiliary_variables` and
+`pwl.scaling`, matching the exact path's schema. **P2-03 — FIXED in evidence** (baseline-capture caveat
+recorded above). **P2-01 — ACCEPTED, scheduled** (public `evaluate` remains constant-value-only;
+documented; `Result`-signature change deferred). **IN-01 — FIXED** (vacuous assertion tightened).
+**IN-02 — RESOLVED** (policy now read at compile time).
+
+Post-fix verification (all exit 0): `cargo test -p roml --test piecewise_linear` **32/32**; `cargo test
+-p roml --all-targets` green (35 suites); `cargo test -p roml-highs --all-targets` green (18 suites);
+clippy both crates `-D warnings`; rustdoc both crates `-D warnings`; `cargo fmt --check`. Full
+dispositions in `.planning/phases/33-piecewise-linear-bounds/REVIEW.md`.
+
+**Gate status:** P1-01 resolved; Pass 1 re-review pending on the fix commit; Pass 2 unaffected (no
+integration-surface change beyond the new typed error variant and report entries).

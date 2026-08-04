@@ -32,7 +32,8 @@ use crate::compiler::origin::GeneratedRole;
 use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
 use crate::construct::{
-    classify_curvature_from_slopes, PiecewiseLinearConstraint, PwlCurvature, PwlPoint, PwlRelation,
+    classify_curvature_from_slopes, ExtrapolationPolicy, PiecewiseLinearConstraint, PwlCurvature,
+    PwlPoint, PwlRelation,
 };
 use crate::function::ScalarFunction;
 use crate::model::{Bounds, ConstraintBounds, VarType};
@@ -109,6 +110,34 @@ pub(crate) fn compile(
         reason: "the finite breakpoint range of the PWL graph (SM-13.5)".to_string(),
     });
 
+    // SM-14.1 / review P1-01: the extrapolation policy is enforced at compile
+    // time. The supporting rows are exact only for the LINEARLY-extrapolated
+    // function (a convex PL function is the max of its supporting lines), and
+    // the exact segment-binary formulation pins the argument to the breakpoint
+    // range (`argument = sum x_i * lambda_i`). When the bound-derived argument
+    // interval leaves the range, the declared function and the compiled rows
+    // diverge (Constant one-sided: relaxation or restriction at the clamps;
+    // exact graph: silent domain narrowing) — a typed `ExtrapolationConflict`
+    // rejection is the only honest behavior (design §19; D13).
+    let lo = trace.result.lower;
+    let hi = trace.result.upper;
+    let leaves_range = !lo.is_finite() || !hi.is_finite() || lo < x_min || hi > x_max;
+    finalizer.add_decision(FormulationDecision {
+        decision: "pwl.extrapolation".to_string(),
+        selection: format!("{:?}", payload.extrapolation),
+        reason: format!(
+            "argument interval [{lo}, {hi}] vs breakpoint range [{x_min}, {x_max}]: {}",
+            if leaves_range {
+                "the argument can leave the breakpoint range — only the linear \
+                 one-sided case compiles exactly; other combinations reject \
+                 (ExtrapolationConflict; never a silent change of the feasible set)"
+            } else {
+                "the argument cannot leave the breakpoint range; the declared \
+                 policy is compiled exactly"
+            }
+        ),
+    });
+
     match payload.relation {
         PwlRelation::Epigraph => {
             if !matches!(curvature, PwlCurvature::Convex | PwlCurvature::Affine) {
@@ -116,6 +145,9 @@ pub(crate) fn compile(
                     "PWL relation/curvature mismatch: Epigraph on {curvature:?} (D13, SM-14.3) — \
                      never a silent relaxation"
                 )));
+            }
+            if leaves_range && payload.extrapolation == ExtrapolationPolicy::Constant {
+                return Err(extrapolation_conflict(payload, ctx, lo, hi, x_min, x_max));
             }
             emit_supporting_rows(
                 &mut finalizer,
@@ -133,6 +165,7 @@ pub(crate) fn compile(
                 ),
             });
             record_zero_binary_decisions(&mut finalizer, "convex epigraph");
+            record_scaling_diagnostic(&mut finalizer, payload, ctx)?;
         }
         PwlRelation::Hypograph => {
             if !matches!(curvature, PwlCurvature::Concave | PwlCurvature::Affine) {
@@ -140,6 +173,9 @@ pub(crate) fn compile(
                     "PWL relation/curvature mismatch: Hypograph on {curvature:?} (D13, SM-14.3) — \
                      never a silent relaxation"
                 )));
+            }
+            if leaves_range && payload.extrapolation == ExtrapolationPolicy::Constant {
+                return Err(extrapolation_conflict(payload, ctx, lo, hi, x_min, x_max));
             }
             emit_supporting_rows(
                 &mut finalizer,
@@ -157,8 +193,12 @@ pub(crate) fn compile(
                 ),
             });
             record_zero_binary_decisions(&mut finalizer, "concave hypograph");
+            record_scaling_diagnostic(&mut finalizer, payload, ctx)?;
         }
         PwlRelation::ExactGraph => {
+            if leaves_range {
+                return Err(extrapolation_conflict(payload, ctx, lo, hi, x_min, x_max));
+            }
             emit_exact_graph(&mut finalizer, payload, ctx)?;
             let segment_count = payload.points.len() - 1;
             finalizer.add_decision(FormulationDecision {
@@ -339,13 +379,38 @@ fn emit_exact_graph(
     Ok(())
 }
 
+/// Build the typed `ExtrapolationConflict` error for a PWL whose argument
+/// interval leaves its breakpoint range (SM-14.1, review P1-01).
+fn extrapolation_conflict(
+    payload: &PiecewiseLinearConstraint,
+    ctx: &BridgeContext,
+    lo: f64,
+    hi: f64,
+    x_min: f64,
+    x_max: f64,
+) -> CompileError {
+    CompileError::ExtrapolationConflict {
+        construct: ctx.construct,
+        expression: format!("pwl argument: {:?}", payload.argument),
+        interval: format!("[{lo}, {hi}]"),
+        range: format!("[{x_min}, {x_max}]"),
+        policy: format!("{:?}", payload.extrapolation),
+    }
+}
+
 /// Record the shared zero-binary representation/count/reason report entries
-/// (SM-14.6).
+/// (SM-14.6; review P2-02: the same schema keys as the exact path).
 fn record_zero_binary_decisions(finalizer: &mut BridgeFinalizer, selection: &str) {
     finalizer.add_decision(FormulationDecision {
         decision: "pwl.generated_binaries".to_string(),
         selection: "0".to_string(),
         reason: "one-sided supporting-inequality rows need no binaries (SM-14.3)".to_string(),
+    });
+    finalizer.add_decision(FormulationDecision {
+        decision: "pwl.generated_auxiliary_variables".to_string(),
+        selection: "0".to_string(),
+        reason: "one-sided supporting-inequality rows introduce no auxiliaries (SM-14.3)"
+            .to_string(),
     });
     finalizer.add_decision(FormulationDecision {
         decision: "pwl.binary_avoidance_reason".to_string(),
