@@ -911,6 +911,10 @@ where
                                  ConvertHintToStart policy"
                             .to_string(),
                     });
+                    effective.applied_features.push(AppliedFeature {
+                        feature: "mip_start".into(),
+                        detail: "hints (converted to a MIP start)".into(),
+                    });
                 } else {
                     effective.rejections.push(PlanRejection {
                         key: "hints".into(),
