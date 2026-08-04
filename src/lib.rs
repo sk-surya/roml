@@ -74,6 +74,10 @@ pub use solver::backend::{
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };
+pub use solver::plan::{
+    HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
+    UnsupportedFeaturePolicy, VariableHint, VariableHints,
+};
 pub use solver::request::{
     ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult, SolveSolution,
 };

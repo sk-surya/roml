@@ -100,6 +100,15 @@ pub use crate::solver::overlay::{
     OverlayApplyReceipt, OverlayError, OverlayOp, OverlayRollbackOutcome, SolveOverlay,
 };
 
+/// Solve plan, warm-start, and unsupported/conversion policy types (P28
+/// Task 1; SM-07.1, SM-08). Backend authors gate warm-start application on
+/// these; the plan executor and the `OverlaySession` warm-start methods
+/// consume them.
+pub use crate::solver::plan::{
+    HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
+    UnsupportedFeaturePolicy, VariableHint, VariableHints,
+};
+
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
 
