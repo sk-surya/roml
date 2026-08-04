@@ -155,6 +155,7 @@ pub use crate::compiler::bridge::{
 pub use crate::construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, ConstructEntry, ConstructKind,
-    IndicatorConstraint, IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense,
-    ProductOperand, ReificationConstraint,
+    ExtrapolationPolicy, IndicatorConstraint, IndicatorDirection, MinMaxConstraint, MinMaxRelation,
+    MinMaxSense, PiecewiseLinearConstraint, ProductOperand, PwlCurvature, PwlPoint, PwlRelation,
+    ReificationConstraint,
 };
