@@ -820,8 +820,8 @@ fn pwl_report_records_curvature_relation_representation_and_bound_evidence() {
     // SM-13.5: the argument interval and its bound sources are recorded.
     let arg_interval = find("pwl.argument_interval");
     assert!(
-        arg_interval.selection.contains("[0, 2]") || arg_interval.selection.contains("0"),
-        "argument interval must be recorded, got {}",
+        arg_interval.selection.contains("[0, 2]"),
+        "argument interval must be recorded exactly, got {}",
         arg_interval.selection
     );
     assert!(
@@ -1199,5 +1199,183 @@ fn pwl_exact_graph_entities_are_origin_complete() {
             )
             .is_empty(),
         "every compiled entity must carry an origin (SM-02.5)"
+    );
+}
+
+// ===========================================================================
+// P1-01 review fix — extrapolation policy is enforced at compile time
+// ===========================================================================
+//
+// The bridge previously never read `ExtrapolationPolicy`: supporting rows are
+// exact only for the LINEARLY-extrapolated function, and the exact segment-
+// binary formulation pins the argument to the breakpoint range. When the
+// bound-derived argument interval can leave the breakpoint range, the compiled
+// model silently diverges from the declared function. The fix: reject with
+// `CompileError::ExtrapolationConflict` (Constant one-sided; exact graph under
+// either policy) and compile exactly only the Linear one-sided case.
+
+/// Constant extrapolation + an argument that can leave the breakpoint range:
+/// the clamped function diverges from the supporting rows (relaxation when the
+/// first slope is positive, restriction when negative) — a typed rejection,
+/// never a silent change of the feasible set.
+#[test]
+fn pwl_constant_extrapolation_rejects_when_argument_leaves_breakpoint_range() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-1.0, 3.0)).unwrap();
+    let (_, _) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Constant,
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    assert!(
+        matches!(err, CompileError::ExtrapolationConflict { .. }),
+        "Constant extrapolation with an argument that can leave the breakpoint \
+         range must reject with ExtrapolationConflict, got {err:?}"
+    );
+}
+
+/// The hypograph mirror of the same rule.
+#[test]
+fn pwl_constant_hypograph_rejects_when_argument_leaves_breakpoint_range() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-1.0, 3.0)).unwrap();
+    let (_, _) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            concave_pwl(),
+            PwlRelation::Hypograph,
+            ExtrapolationPolicy::Constant,
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let err = compile_err(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    assert!(
+        matches!(err, CompileError::ExtrapolationConflict { .. }),
+        "Constant hypograph with an out-of-range argument must reject, got {err:?}"
+    );
+}
+
+/// Linear extrapolation + one-sided: the supporting rows are EXACT for the
+/// linearly-extrapolated convex function everywhere (a convex PL function is
+/// the max of its supporting lines), so compilation succeeds and the rows
+/// imply exactly the linear extension outside the breakpoint range.
+#[test]
+fn pwl_linear_extrapolation_one_sided_compiles_exactly_outside_range() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(-1.0, 3.0)).unwrap();
+    let (k, output) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Linear,
+            Some(FormulationPreference::Portable),
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+
+    let xid = compiled_user_var(&compiled, x);
+    let yid = compiled_user_var(&compiled, output);
+    let rows = compiled_rows_for_role(&compiled, k, GeneratedRole::PwlEpigraphRow);
+    assert_eq!(rows.len(), 3, "one supporting row per breakpoint");
+
+    // Evaluate the row implication at points outside the breakpoint range:
+    // the binding row must equal the linear extension f_lin.
+    // convex_pwl = [(0,0),(1,1),(2,4)], slopes 1, 3 → f_lin(-1) = -1, f_lin(3) = 7.
+    for (x_val, expected_lb) in [(-1.0, -1.0), (3.0, 7.0)] {
+        let mut max_lb = f64::NEG_INFINITY;
+        for rid in &rows {
+            let row = compiled_row(&compiled, *rid);
+            let x_coeff = row_coefficient(row, xid);
+            let y_coeff = row_coefficient(row, yid);
+            assert_eq!(y_coeff, 1.0, "row must be output >= ...");
+            let implied = (row.bounds.lower - x_coeff * x_val) / y_coeff;
+            max_lb = max_lb.max(implied);
+        }
+        assert!(
+            (max_lb - expected_lb).abs() < 1e-9,
+            "at x={x_val} the supporting rows must imply output >= {expected_lb} \
+             (the linear extension), got {max_lb}"
+        );
+    }
+}
+
+/// The exact segment-binary formulation pins the argument to the breakpoint
+/// range (`argument = sum x_i * lambda_i`), so an argument that can leave the
+/// range silently narrows the user's declared bounds under EITHER policy —
+/// a typed rejection.
+#[test]
+fn pwl_exact_graph_rejects_when_argument_leaves_breakpoint_range() {
+    for extrapolation in [ExtrapolationPolicy::Constant, ExtrapolationPolicy::Linear] {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(-1.0, 3.0)).unwrap();
+        let _ = model
+            .add_piecewise_linear(
+                LinExpr::from(x),
+                convex_pwl(),
+                PwlRelation::ExactGraph,
+                extrapolation,
+                None,
+            )
+            .unwrap();
+        let err = compile_err(&model, CompilationPolicy::Auto, &pwl_bridge_caps());
+        assert!(
+            matches!(err, CompileError::ExtrapolationConflict { .. }),
+            "exact graph with an argument that can leave the breakpoint range \
+             must reject under {extrapolation:?}, got {err:?}"
+        );
+    }
+}
+
+/// The compilation report records the extrapolation policy and its
+/// disposition, and the one-sided path records the same schema keys as the
+/// exact path (review P2-02: generated auxiliaries + scaling).
+#[test]
+fn pwl_report_records_extrapolation_decision_and_full_schema() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let _ = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::Epigraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Auto, &pwl_bridge_caps());
+
+    let decisions = &compiled.report.formulation_decisions;
+    let find = |key: &str| {
+        decisions
+            .iter()
+            .find(|d| d.decision == key)
+            .unwrap_or_else(|| panic!("missing report decision {key}"))
+    };
+    let ext = find("pwl.extrapolation");
+    assert!(
+        ext.selection.contains("Constant"),
+        "extrapolation policy must be recorded, got {}",
+        ext.selection
+    );
+    assert!(
+        ext.reason.contains("breakpoint range"),
+        "the disposition must reference the breakpoint range, got {}",
+        ext.reason
+    );
+    // P2-02: one-sided path records the same schema keys as the exact path.
+    assert_eq!(
+        find("pwl.generated_auxiliary_variables").selection,
+        "0",
+        "one-sided rows generate no auxiliaries"
+    );
+    assert!(
+        find("pwl.scaling").selection.contains("x_span"),
+        "a scaling diagnostic must be recorded on the one-sided path too"
     );
 }
