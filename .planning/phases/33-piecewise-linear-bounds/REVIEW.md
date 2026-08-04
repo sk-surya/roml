@@ -392,3 +392,72 @@ Fix (TDD, 3 tests first → RED, then implementation → GREEN):
 - Public API: `PwlEvalError` added to `roml::construct` re-exports; the three methods' signatures now return `Result`.
 
 Verification: `cargo test -p roml --test piecewise_linear` **35/35**; roml all-targets green (35 suites); roml-highs all-targets green (18 suites); clippy both crates `-D warnings`; rustdoc `-D warnings`; fmt clean.
+
+## Re-review (second round, fix commit c7a0d8b, 2026-08-04) — gsd-code-reviewer
+
+Re-reviewed the parameterized-PWL fix commit `c7a0d8b` against the owner's
+second-round disposition (P1: constant-only semantic operations panicked on
+valid parameterized payloads). **Verdict: PASS — the panic path is removed;
+the resolver variants are correct; no regressions introduced.** Re-ran on the
+fix commit: `cargo test -p roml --test piecewise_linear` **35/35 green**;
+`cargo clippy -p roml --all-targets -- -D warnings` **clean**.
+
+### P1 — FIXED (verified)
+
+1. **No valid-payload panic path remains.** Grep over
+   `src/construct/piecewise_linear.rs` finds only `debug_assert!(n >= 2, ...)`
+   (debug-only; unreachable via the builder) and
+   `unreachable!("x lies within the breakpoint range")` (reachable only for a
+   NaN argument `x` — an invalid input, not a valid-payload scenario). The
+   `as_constant().expect(...)` path is removed: `point_value` now returns
+   `Result<f64, PwlEvalError>` with `ParameterizedPointValue { index, parameter }`
+   for parameter-dependent points. `segment_slopes`, `classify_curvature`, and
+   `evaluate` all propagate the typed error.
+
+2. **Resolver variants evaluate correctly for interpolation and both
+   extrapolation policies.** `segment_slopes_with`, `classify_curvature_with`,
+   and `evaluate_with` share the `slopes_impl`/`evaluate_impl` cores with the
+   constant-only versions. Re-derived the resolver-test math: points
+   `(0,0),(1,p),(2,4)` with `p → 1.0` give slopes `[1, 3]` → Convex;
+   `evaluate_with(0.5)` = `0 + 1·0.5` = `0.5`; Constant extrapolation clamps
+   `evaluate_with(-1)` → `0` and `evaluate_with(3)` → `4`; Linear extrapolation
+   `evaluate_with(3)` = `4 + 3·(3−2)` = `7`. All match the test expectations.
+
+3. **Missing-parameter behavior is typed (F5).** `point_value_with` routes
+   through `eval_checked(|p| resolve(p).ok_or(p))` and maps to
+   `PwlEvalError::MissingParameter { parameter }` — never a panic and never a
+   silent default of zero. Covered by `pwl_missing_parameter_is_typed_error`.
+
+4. **Bridge path unaffected.** `src/compiler/bridge/piecewise_linear.rs` is
+   unchanged by `c7a0d8b`; it uses its own `eval_point_value` (resolving
+   against `ctx.parameter_values` → typed `MissingConstructParameter`) and
+   `classify_evaluated_curvature`, and never calls the payload's public
+   methods. No in-crate caller depends on the old `f64`-returning signatures
+   (grep-verified).
+
+5. **Existing tests updated, not weakened.** All constant-payload call sites
+   were mechanically updated to `.unwrap()` on the now-`Result` returns; the
+   IN-01 assertion tightening and the P1-01 gate tests are preserved.
+
+### Regression check
+
+- The 35-test focused suite is green (the 32 pre-fix tests plus the 3 new
+  parameterized tests).
+- `PwlEvalError` is re-exported from `roml::construct` and imported by the new
+  tests; the three changed public methods now return `Result`, which is a
+  breaking change to an unreleased P33 API — acceptable at this phase boundary
+  and recorded in the evidence public-API section.
+
+### Info (residual, non-blocking)
+
+- `evaluate(NaN)` / `evaluate_with(NaN, …)` still reaches `unreachable!`
+  (all interval comparisons fail on NaN), panicking instead of returning a
+  typed error. This is pre-existing, reachable only with an invalid (NaN)
+  argument — not a valid-payload panic — and outside this fix's scope. If the
+  "never a panic" contract is to be absolute, a `NonFiniteArgument` guard would
+  close it; suggest scheduling with P2-01.
+
+**Re-review verdict: PASS — the parameterized-payload panic is fixed as
+specified; resolver variants verified for interpolation and both extrapolation
+policies; missing-parameter behavior is typed; the bridge path is unaffected;
+no regressions. Merge gate cleared for the second-round P1.**
