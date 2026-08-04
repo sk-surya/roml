@@ -13,7 +13,7 @@ use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::{CellKey, CoefficientTarget};
-use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
+use crate::model::{Bounds, ConstraintBounds, Sense, VarType, VariableFixing};
 use crate::revision::ModelRevision;
 use crate::value_expr::ValueExpr;
 
@@ -73,7 +73,12 @@ pub struct ModelSnapshot {
 pub struct VariableEntry {
     /// The variable's unique identifier.
     pub id: VarId,
-    /// Current bounds for this variable.
+    /// **Declared** bounds for this variable (P27 Task 8, SM-05.1).
+    ///
+    /// The solver-facing effective bounds fold any persistent fixing
+    /// ([`fixing`](Self::fixing)) into `[value, value]`; the identity compiler
+    /// performs that fold (SM-05.3). `bounds` remains the declared view so a
+    /// rebuild can reconstruct both declared and effective state.
     pub bounds: Bounds,
     /// Variable type (Continuous, Integer, or Binary).
     pub var_type: VarType,
@@ -81,6 +86,9 @@ pub struct VariableEntry {
     pub active: bool,
     /// Semi-continuous lower bound, if set.
     pub semicontinuous_lower: Option<f64>,
+    /// Optional persistent fixing (P27 Task 8, SM-05.1). Carried so the
+    /// fixing survives `commit` → snapshot → rebuild (the phase gate).
+    pub fixing: Option<VariableFixing>,
 }
 
 /// A constraint in a snapshot.
@@ -217,6 +225,13 @@ fn reconstruct_function_entry(
     }
 }
 
+/// A snapshot's per-variable record (P27 Task 8, SM-05.1):
+/// `(declared bounds, type, active, semi-continuous lower, fixing)`.
+///
+/// The declared bounds and the optional persistent fixing are carried
+/// separately so a rebuild can reconstruct both declared and effective state.
+pub type SnapshotVariableRecord = (Bounds, VarType, bool, Option<f64>, Option<VariableFixing>);
+
 /// Build a snapshot from a model by extracting canonical state.
 ///
 /// This is the reference implementation. The projection must be
@@ -224,7 +239,7 @@ fn reconstruct_function_entry(
 /// is produced every time.
 pub fn take_snapshot(
     revision: ModelRevision,
-    variables: &HashMap<VarId, (Bounds, VarType, bool, Option<f64>)>,
+    variables: &HashMap<VarId, SnapshotVariableRecord>,
     constraints: &HashMap<ConId, (ConstraintBounds, bool)>,
     objectives: &HashMap<ObjId, (Sense, bool, f64)>,
     parameters: &HashMap<ParamId, f64>,
@@ -233,12 +248,13 @@ pub fn take_snapshot(
     let mut vars: Vec<_> = variables
         .iter()
         .map(
-            |(&id, &(bounds, var_type, active, semicontinuous_lower))| VariableEntry {
+            |(&id, &(bounds, var_type, active, semicontinuous_lower, ref fixing))| VariableEntry {
                 id,
                 bounds,
                 var_type,
                 active,
                 semicontinuous_lower,
+                fixing: fixing.clone(),
             },
         )
         .collect();
@@ -331,7 +347,10 @@ mod tests {
         let con = make_con(0);
 
         let mut variables = HashMap::new();
-        variables.insert(var, (Bounds::NON_NEGATIVE, VarType::Continuous, true, None));
+        variables.insert(
+            var,
+            (Bounds::NON_NEGATIVE, VarType::Continuous, true, None, None),
+        );
 
         let mut constraints = HashMap::new();
         constraints.insert(con, (ConstraintBounds::le(10.0), true));

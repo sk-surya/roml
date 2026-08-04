@@ -13,10 +13,11 @@
 //! be kept (latest, named snapshots, etc.). Expression evaluation against
 //! solutions does not require solver access.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub mod metadata;
 
+use crate::assignment::PrimalAssignment;
 use crate::id::{ConId, ObjId, VarId};
 use crate::solver::SolveStatus;
 
@@ -110,6 +111,28 @@ impl Solution {
     /// Get all variable values.
     pub fn values(&self) -> &HashMap<VarId, f64> {
         &self.values
+    }
+
+    /// Produce a lineage-bound [`PrimalAssignment`] of this solution's
+    /// user-variable values (SM-06.2, design §11.1).
+    ///
+    /// Binds the SOLVED model's real lineage/instance/revision from the
+    /// metadata (CR-02 pattern: real solved identity, never fresh
+    /// [`SolveMetadata::default()`] counter ids). Compiler-only variables are
+    /// excluded structurally at extraction — solution values are keyed by user
+    /// [`VarId`], so the produced assignment never fabricates a value for a
+    /// generated entity. The assignment makes no feasibility/optimality claim.
+    pub fn primal_assignment(&self) -> PrimalAssignment {
+        PrimalAssignment {
+            lineage: self.metadata.model_lineage,
+            source_instance: Some(self.metadata.model_instance),
+            source_revision: Some(self.metadata.model_revision),
+            values: self
+                .values
+                .iter()
+                .map(|(var, value)| (*var, *value))
+                .collect::<BTreeMap<_, _>>(),
+        }
     }
 
     /// Get the objective value.
