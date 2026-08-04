@@ -71,6 +71,9 @@ pub use solution::{
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
+pub use solver::effective_plan::{
+    AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
+};
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };

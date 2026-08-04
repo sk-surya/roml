@@ -43,11 +43,30 @@ or warm-start capability declarations exist in the baseline surface.
 
 ## Commit trail
 
-(Tasks 1–3 commits recorded as they land.)
+- `40ef027` — `feat(solve): add solve plan starts and hints types` (Task 1)
+- (Task 2 commit pending; Task 3 pending)
 
 ## Public interfaces
 
-(Task 1/2/3 public surface recorded as it lands.)
+### Task 1 — SolvePlan, starts, hints, policy (landed)
+
+New public types (exported from `roml` root and `roml::advanced`, mirroring the
+overlay/assignment export convention):
+
+- `SolvePlan { options, overlay, mip_starts, hints, objective_override, lex_stage_policy, unsupported }` + `SolvePlan::new(SolveOptions) -> Result<Self, IdentityOverflow>` + `SolvePlan::validate(&Model) -> Result<(), PlanError>`
+- `MipStart { assignment, repair, name }` + `MipStart::new(PrimalAssignment, RepairPolicy)`
+- `RepairPolicy { BackendDefault, RejectIncomplete, AllowRepair }`
+- `VariableHints` (private `BTreeMap<Variable, VariableHint>` + `get`/`insert`/`iter`/`is_empty`/`len`)
+- `VariableHint { value: f64, priority: HintPriority }`
+- `HintPriority(pub i32)`
+- `UnsupportedFeaturePolicy { #[default] Reject, ConvertHintToStart, ConvertStartToTemporaryFixing }`
+- `PlanError` (wraps `AssignmentError`; adds `DuplicateStartVariable`, `OverlayConflict`, `NonFiniteHintValue`, `IncompleteStart`, `UnsupportedFeature`)
+- `ObjectivePolicy` (`#[non_exhaustive]`, `Single` only — P31 extension surface) and `LexStagePolicy { RequireOptimal, UseBestFeasible }`
+
+Also: `SolveOptions` gained `#[derive(PartialEq)]` (required by the packet's
+`SolvePlan: PartialEq`; `SolveRequest` was already `PartialEq`).
+
+New test surface: `tests/solve_plan.rs` (16 Task 1 tests).
 
 ## Focused verification
 
@@ -63,6 +82,48 @@ the Task 1 types do not yet exist.
 
 This is the expected missing-types RED; no behavioral test can run until the
 Task 1 types are implemented.
+
+### Task 1 — GREEN
+
+- `cargo test -p roml --test solve_plan`: 16 passed (types, validation,
+  conversion policy, basis distinctness).
+- `cargo test -p roml --all-targets`: pass.
+- `cargo clippy -p roml --all-targets -- -D warnings`: pass.
+- `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps`: pass.
+- `cargo public-api -p roml`: exit 0 (new types present; raw diff recorded
+  under "Public API and packaging").
+- `cargo fmt --all -- --check`: pass.
+
+### Task 2 — RED (expected failures)
+
+Task 2 tests (equivalence, metadata recording, feasibility signature,
+no-stale-start, conversions) were added to `tests/solve_plan.rs` before the
+executor existed. Expected RED: `E0599`/`E0433` — `SolverSession::solve_plan`
+does not exist, `EffectiveSolvePlan`/`AppliedFeature`/`PlanAdjustment`/
+`PlanRejection` are not exported, and `SolveMetadata::effective_plan` is
+absent. Recorded before the Task 2 implementation.
+
+### Task 2 — GREEN
+
+- `cargo test -p roml --test solve_plan`: 24 passed (16 Task 1 + 8 Task 2:
+  equivalence, metadata recording, two conversions, two default-rejections,
+  feasibility-signature, no-stale-start).
+- `cargo test -p roml --all-targets`: pass (P27 overlay + M2 suites not
+  regressed — D27).
+- `cargo clippy -p roml --all-targets -- -D warnings`: pass.
+- `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps`: pass.
+- `cargo public-api -p roml`: exit 0 (`solve_plan`, `EffectiveSolvePlan`,
+  `SolveMetadata::effective_plan` present).
+- `cargo fmt --all -- --check`: pass.
+
+**Single-executor source assertion:** `grep -n "self.solve_plan" src/solver/facade.rs`
+shows exactly three delegations — `solve` → `solve_with` → `solve_plan`,
+`solve_with` → `solve_plan`, and `solve_with_overlay` → `solve_plan`. There is
+no divergent plain-solve path: all solve façades route through the one plan
+executor. Backends that do not implement `OverlaySession` were given default
+`OverlaySession` impls (typed `Unsupported` on the required overlay methods) so
+`SolverSession::solve`/`solve_with` remain available to them while still
+routing through the executor.
 
 ## Full verification
 

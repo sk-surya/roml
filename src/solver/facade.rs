@@ -6,23 +6,33 @@
 //!   constructs golden-path solutions directly;
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
+use std::collections::BTreeMap;
+
 use log::warn;
 
+use crate::assignment::PrimalAssignment;
 use crate::compiler::backend_ir::CompilationId;
-use crate::compiler::capability::CompilationPolicy;
+use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::OverlayId;
 use crate::compiler::session::CompilationSession;
 use crate::id::ObjId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
-use crate::model::Model;
+use crate::model::{Model, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
 use crate::solution::{Solution, SolutionBuilder};
 use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
+use crate::solver::effective_plan::{
+    AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
+};
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
     compile_overlay, OverlayApplyReceipt, OverlayRollbackOutcome, SolveOverlay,
+};
+use crate::solver::plan::{
+    LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
+    UnsupportedFeaturePolicy, VariableHints,
 };
 use crate::solver::request::{validate_request, SolveRequest, SolveResult};
 use crate::solver::session::{
@@ -30,8 +40,7 @@ use crate::solver::session::{
 };
 use crate::solver::{SolveError, SolveStatus};
 use crate::sync::{AdapterCursor, AdapterHealth};
-
-use crate::compiler::capability::BackendCapabilitySet;
+use crate::Variable;
 
 /// Normalize a backend [`SolveResult`] into a user-facing [`Solution`].
 ///
@@ -52,6 +61,7 @@ pub fn normalize_result(
     active_objective: Option<ObjId>,
     backend_name: &str,
     synchronization: SynchronizationMode,
+    effective_plan: EffectiveSolvePlan,
     model_lineage: ModelLineageId,
     model_instance: ModelInstanceId,
     compilation_id: Option<CompilationId>,
@@ -80,6 +90,10 @@ pub fn normalize_result(
             // P27 Task 10 (D28 overlay artifacts): `Some(overlay.id)` on an
             // overlay solve; `None` for a plain solve.
             overlay_id,
+            // P28 (SM-04.5, SM-07.7): the effective solve plan — applied
+            // features, adjustments/conversions, rejections, and objective
+            // stages — recorded on every real solve.
+            effective_plan,
         });
 
     if let Some(value) = result.solution.as_ref().and_then(|s| s.objective_value) {
@@ -157,77 +171,6 @@ where
             compiler: CompilationSession::new(),
             bound_instance: None,
         }
-    }
-
-    /// Solve the current model with default options.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SolveError`] when the model cannot be committed, options are
-    /// invalid, synchronization fails (after at most one rebuild retry), the
-    /// backend solve fails, or the native termination is uninterpretable.
-    pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
-        self.solve_with(model, SolveOptions::default())
-    }
-
-    /// Solve the current model with explicit [`SolveOptions`].
-    ///
-    /// Options are validated before any synchronization, so a failed
-    /// validation leaves the model and backend state unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Same failure classes as [`SolverSession::solve`]; additionally returns
-    /// [`SolveError::InvalidOptions`] when `options` fails validation.
-    pub fn solve_with(
-        &mut self,
-        model: &mut Model,
-        options: SolveOptions,
-    ) -> Result<Solution, SolveError> {
-        // 0-7. Validate, commit, and synchronize exactly as the plain solve
-        // path, establishing the exact base `CompilationId` (`C_base`).
-        let (request, committed, sync_mode) = self.synchronize_base(model, options)?;
-
-        // 8. Solve exactly once (the request was built and validated against
-        // the backend's typed capabilities in `synchronize_base`).
-        let result = self
-            .backend
-            .solve(&request)
-            .map_err(|e| SolveError::from_backend(false, e))?;
-
-        // F2 (SM-03.9): the exact `CompilationId` is the only stale-state
-        // authority. The backend must report the compiled state the façade
-        // synchronized to (the compiler's current compiled state). A result
-        // tagged with a DIFFERENT id means the solve ran against some other
-        // compiled state — reject it as a typed error, never accept it
-        // silently. F5: `result.compilation_id` is `Option<CompilationId>`;
-        // a `None` from a real backend result is still a mismatch (backends
-        // must populate `Some`).
-        let expected = self.compiler.current_compilation();
-        if expected != result.compilation_id {
-            return Err(SolveError::CompilationMismatch {
-                expected,
-                actual: result.compilation_id,
-            });
-        }
-
-        // 9. Normalize and attach metadata. The solved model's lineage and
-        // instance ids are bound here (CR-02, SM-02.7) — there is no separate
-        // model-binds-solution step; normalize_result must never fall back to
-        // fresh default ids. F2 threads the result's exact `CompilationId`
-        // into the metadata. A plain solve carries no overlay id.
-        let active_objective = model.active_objective();
-        normalize_result(
-            &result,
-            committed,
-            active_objective,
-            self.backend.name(),
-            sync_mode,
-            model.lineage(),
-            model.instance(),
-            result.compilation_id,
-            None,
-        )
     }
 
     /// Synchronize the backend to the model's committed canonical state,
@@ -504,6 +447,22 @@ where
     }
 }
 
+/// The concrete warm-start application list produced by
+/// [`SolverSession::resolve_plan_features`] (P28 Task 2).
+///
+/// Starts/hints here are QUALIFIED (the backend declares native support) and
+/// will be applied through the `OverlaySession` warm-start methods; the
+/// effective overlay carries the plan's overlay plus any
+/// `ConvertStartToTemporaryFixing` conversions.
+struct ResolvedPlanFeatures {
+    /// Qualified starts to apply natively, in plan order.
+    starts: Vec<MipStart>,
+    /// Qualified hints to apply natively.
+    hints: VariableHints,
+    /// The effective overlay (plan overlay + conversions).
+    effective_overlay: SolveOverlay,
+}
+
 impl<B> SolverSession<B>
 where
     B: BackendSession + SessionHealth + BackendMetadata + OverlaySession,
@@ -546,67 +505,206 @@ where
     ///   a `CompilationId` other than `C_overlay` (extraction failure);
     /// - the ordinary [`SolveError`] classes of [`solve_with`](Self::solve_with)
     ///   (commit, options, synchronization, solve, status).
-    pub fn solve_with_overlay(
+    ///
+    /// Solve the current model with default options.
+    ///
+    /// Convenience path (D27, SM-07.2): constructs an empty [`SolvePlan`] and
+    /// routes through the single plan executor
+    /// ([`solve_plan`](Self::solve_plan)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError`] when the model cannot be committed, options are
+    /// invalid, synchronization fails (after at most one rebuild retry), the
+    /// backend solve fails, or the native termination is uninterpretable.
+    pub fn solve(&mut self, model: &mut Model) -> Result<Solution, SolveError> {
+        self.solve_with(model, SolveOptions::default())
+    }
+
+    /// Solve the current model with explicit [`SolveOptions`].
+    ///
+    /// Convenience path (D27, SM-07.2): constructs an empty [`SolvePlan`] and
+    /// routes through the single plan executor
+    /// ([`solve_plan`](Self::solve_plan)). Options are validated before any
+    /// synchronization, so a failed validation leaves the model and backend
+    /// state unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Same failure classes as [`SolverSession::solve`]; additionally returns
+    /// [`SolveError::InvalidOptions`] when `options` fails validation.
+    pub fn solve_with(
         &mut self,
         model: &mut Model,
         options: SolveOptions,
-        overlay: &SolveOverlay,
-        objective_override: Option<ObjId>,
     ) -> Result<Solution, SolveError> {
-        // 0-7. Commit and synchronize exactly as `solve_with` so `C_base` is
-        // established (the overlay is NEVER compiled into the CompilationSession;
-        // `compiler.current_compilation()` stays `C_base` throughout).
-        let (request, committed, sync_mode) = self.synchronize_base(model, options)?;
+        let plan = SolvePlan::new(options).map_err(|_| {
+            SolveError::InvalidOptions("solve plan identity allocation failed".to_string())
+        })?;
+        self.solve_plan(model, plan)
+    }
 
-        // Compile the overlay against the exact base (the phase gate "exact
-        // compilation mismatches reject before mutation" — a stale/invalid
-        // overlay fails BEFORE any backend mutation).
-        let compiled = compile_overlay(model, &self.compiler, overlay, objective_override)
-            .map_err(SolveError::Overlay)?;
+    /// Execute a [`SolvePlan`] through the single plan executor (P28 Task 2,
+    /// design §12; SM-07.1, SM-07.2).
+    ///
+    /// This is the ONE plan-execution entry point: `solve`, `solve_with`, and
+    /// `solve_with_overlay` all construct a [`SolvePlan`] and delegate here, so
+    /// there is no divergent code path (the plan executor is the single
+    /// place where a solve attempt is validated, synchronized, overlaid,
+    /// warm-started, solved, extracted, and normalized).
+    ///
+    /// The pinned lifecycle:
+    ///
+    /// ```text
+    /// validate plan (typed SolveError::Plan before any synchronization)
+    /// -> resolve starts/hints against backend typed capabilities + policy
+    ///    (default-reject error, or recorded conversion/rejection)
+    /// -> commit + compile/synchronize canonical state      (C_base established)
+    /// -> compile overlay against the exact C_base          (fresh C_overlay)
+    /// -> apply overlay                                     (C_base -> C_overlay)
+    /// -> apply qualified starts/hints                      (recorded features)
+    /// -> solve                                             (result tagged C_base
+    ///    or C_overlay)
+    /// -> validate result.compilation_id == expected (C_overlay on an overlay
+    ///    solve, C_base otherwise) — a mismatch is a typed CompilationMismatch
+    /// -> rollback overlay + verify C_base restored
+    /// -> normalize with the EffectiveSolvePlan (SM-04.5, SM-07.7)
+    /// ```
+    ///
+    /// An empty plan (no overlay content, no override, no starts/hints) is
+    /// exactly `solve`/`solve_with`: the overlay path is skipped and the
+    /// result is tagged `C_base` (D27, SM-07.2).
+    ///
+    /// # Errors
+    ///
+    /// - [`SolveError::Plan`] — the plan failed validation or requested an
+    ///   unqualified feature under the default-reject policy (SM-08.4), before
+    ///   any synchronization or backend mutation;
+    /// - [`SolveError::Overlay`] — the overlay failed to compile (stale base,
+    ///   assignment/band/value validation, unknown objective);
+    /// - [`SolveError::Rollback`] — a backend error during apply, rollback, or
+    ///   post-rollback verification (the backend is marked `RequiresRebuild`);
+    /// - [`SolveError::CompilationMismatch`] — the solve result was tagged with
+    ///   a `CompilationId` other than the expected compiled state;
+    /// - the ordinary [`SolveError`] classes of `solve_with` (commit, options,
+    ///   synchronization, solve, status).
+    pub fn solve_plan(
+        &mut self,
+        model: &mut Model,
+        plan: SolvePlan,
+    ) -> Result<Solution, SolveError> {
+        // 1. Validate the plan against the model BEFORE any synchronization
+        //    (design §12 "validate plan" step; SM-08.4).
+        plan.validate(model).map_err(SolveError::Plan)?;
 
-        // Apply: backend C_base -> C_overlay. An apply failure leaves the
-        // backend marked RequiresRebuild (never a half-overlaid state silently
-        // reused). CR-02: NEVER trust the backend to have self-marked after a
-        // partial apply — defensively force the next solve to rebuild so the
-        // no-sync fast path can never reuse the half-overlaid native state.
-        let receipt = match self.backend.apply_overlay(&compiled) {
-            Ok(receipt) => receipt,
-            Err(e) => {
-                self.force_rebuild_on_next_sync();
-                return Err(SolveError::Rollback(e));
-            }
+        // 2. Resolve starts/hints against the backend's typed capabilities and
+        //    the plan's unsupported-feature policy. Default rejection returns a
+        //    typed error BEFORE any backend mutation; explicit conversions are
+        //    recorded; unconvertible requests under a conversion policy are
+        //    recorded as rejections (never silent — SM-04.5, SM-08.5).
+        let mut effective = EffectiveSolvePlan::default();
+        let resolved = self.resolve_plan_features(model, &plan, &mut effective)?;
+
+        // 3. Commit + synchronize to C_base. Options and the request are
+        //    validated against the backend's authoritative typed capability set
+        //    inside `synchronize_base`.
+        let (request, committed, sync_mode) = self.synchronize_base(model, plan.options)?;
+
+        // The objective override (P28: `ObjectivePolicy::Single` only).
+        let objective_override = plan.objective_override.map(|policy| match policy {
+            ObjectivePolicy::Single(obj) => obj,
+        });
+
+        // An overlay apply is needed only when the effective overlay (the
+        // plan's overlay plus any start->fixing conversions) has content or an
+        // objective override is present. An empty overlay keeps the plain
+        // C_base path so an empty `solve_plan` is exactly `solve`/`solve_with`
+        // (D27, SM-07.2).
+        let apply_overlay = objective_override.is_some()
+            || !resolved.effective_overlay.temporary_fixings.is_empty()
+            || !resolved.effective_overlay.locks.is_empty()
+            || !resolved.effective_overlay.objective_locks.is_empty()
+            || !resolved.effective_overlay.cutoffs.is_empty();
+        let applied_overlay_id = if apply_overlay {
+            Some(resolved.effective_overlay.id)
+        } else {
+            None
         };
 
-        // Solve against C_overlay.
+        let mut overlay_receipt: Option<OverlayApplyReceipt> = None;
+        let mut solved_compilation: Option<CompilationId> = None;
+
+        if apply_overlay {
+            // 4. Compile the overlay against the exact base (a stale/invalid
+            //    overlay fails BEFORE any backend mutation) and apply it. The
+            //    overlay is NEVER compiled into the CompilationSession;
+            //    `compiler.current_compilation()` stays C_base throughout.
+            let compiled = compile_overlay(
+                model,
+                &self.compiler,
+                &resolved.effective_overlay,
+                objective_override,
+            )
+            .map_err(SolveError::Overlay)?;
+            solved_compilation = Some(compiled.compilation_id);
+            let receipt = match self.backend.apply_overlay(&compiled) {
+                Ok(receipt) => receipt,
+                Err(e) => {
+                    // CR-02: an apply failure leaves the session RequiresRebuild
+                    // so the half-overlaid native state is never silently reused.
+                    self.force_rebuild_on_next_sync();
+                    return Err(SolveError::Rollback(e));
+                }
+            };
+            overlay_receipt = Some(receipt);
+        }
+
+        // 5. Apply qualified starts/hints through the OverlaySession methods.
+        if let Err(e) = self.apply_warm_starts(&resolved, &mut effective) {
+            // Rollback is ALWAYS attempted on the failure paths (SM-07.4).
+            if let Some(receipt) = &overlay_receipt {
+                let _ = self.rollback_and_verify(receipt);
+            }
+            return Err(e);
+        }
+
+        // 6. Solve exactly once.
         let result = match self.backend.solve(&request) {
             Ok(result) => result,
             Err(e) => {
                 let err = SolveError::from_backend(false, e);
-                // Rollback is ALWAYS attempted, even on solve failure (SM-07.4).
-                let _ = self.rollback_and_verify(&receipt);
+                if let Some(receipt) = &overlay_receipt {
+                    let _ = self.rollback_and_verify(receipt);
+                }
                 return Err(err);
             }
         };
 
-        // Extraction gate: the result MUST be tagged with C_overlay — NOT
-        // `compiler.current_compilation()` (C_base), which would false-fail the
-        // overlay solve. A result tagged with anything else is a typed
-        // CompilationMismatch, and rollback is still attempted.
-        if result.compilation_id != Some(compiled.compilation_id) {
+        // 7. Exact `CompilationId` extraction gate (F2, SM-03.9). The result
+        //    must be tagged with C_overlay on an overlay solve (NOT
+        //    `compiler.current_compilation()`, which stays C_base), or C_base
+        //    on a plain solve. Anything else is a typed CompilationMismatch
+        //    and rollback is still attempted.
+        let expected = solved_compilation.or_else(|| self.compiler.current_compilation());
+        if expected != result.compilation_id {
             let err = SolveError::CompilationMismatch {
-                expected: Some(compiled.compilation_id),
+                expected,
                 actual: result.compilation_id,
             };
-            let _ = self.rollback_and_verify(&receipt);
+            if let Some(receipt) = &overlay_receipt {
+                let _ = self.rollback_and_verify(receipt);
+            }
             return Err(err);
         }
 
-        // Rollback + verify C_base restored (SM-07.4, SM-07.5).
-        self.rollback_and_verify(&receipt)?;
+        // 8. Rollback + verify C_base restored (SM-07.4, SM-07.5).
+        if let Some(receipt) = &overlay_receipt {
+            self.rollback_and_verify(receipt)?;
+        }
 
-        // Normalize with compilation_id = C_overlay and overlay_id = Some.
-        // The active objective for an override solve is the override; a plain
-        // overlay solve keeps the model's active objective.
+        // 9. Normalize with the effective plan and the exact compilation id.
+        //    The active objective for an override solve is the override; a
+        //    plain solve keeps the model's active objective.
         let active_objective = objective_override.or_else(|| model.active_objective());
         normalize_result(
             &result,
@@ -614,11 +712,273 @@ where
             active_objective,
             self.backend.name(),
             sync_mode,
+            effective,
             model.lineage(),
             model.instance(),
-            Some(compiled.compilation_id),
-            Some(overlay.id),
+            result.compilation_id,
+            applied_overlay_id,
         )
+    }
+
+    /// Solve the current model under a reversible solve overlay (P27 Task 10,
+    /// design §12, SM-07.3..SM-07.6).
+    ///
+    /// Convenience path: constructs a [`SolvePlan`] carrying the overlay and
+    /// objective override, then routes through the single plan executor
+    /// ([`solve_plan`](Self::solve_plan)).
+    ///
+    /// The pinned lifecycle (see [`solve_plan`](Self::solve_plan)):
+    ///
+    /// ```text
+    /// commit canonical model
+    /// -> compile/synchronize canonical state          (C_base established)
+    /// -> compile overlay against the exact C_base     (fresh C_overlay)
+    /// -> apply overlay                                (C_base -> C_overlay)
+    /// -> solve                                         (result tagged C_overlay)
+    /// -> validate result.compilation_id == C_overlay  (NOT C_base — the
+    ///    compiler stays at C_base throughout the overlay solve)
+    /// -> rollback overlay (always attempted, even on solve/extraction
+    ///    failure)                                     (C_overlay -> C_base)
+    /// -> on RequiresRebuild, mark the backend RequiresRebuild (D7, D22)
+    /// -> verify C_base restored
+    /// -> normalize the result with compilation_id = C_overlay and
+    ///    overlay_id = Some(overlay.id)
+    /// ```
+    ///
+    /// Temporary fixings, solution locks, objective-lock rows, and cutoffs
+    /// never advance the canonical model revision (SM-07.3). An uncertain
+    /// rollback marks the session `RequiresRebuild`; the next solve forces a
+    /// snapshot rebuild before reuse (SM-07.5).
+    ///
+    /// # Errors
+    ///
+    /// - [`SolveError::Overlay`] — the overlay failed to compile (stale base,
+    ///   assignment/band/value validation, unknown objective) before any
+    ///   backend mutation;
+    /// - [`SolveError::Rollback`] — a backend error during apply, rollback, or
+    ///   post-rollback verification (the backend is marked `RequiresRebuild`);
+    /// - [`SolveError::CompilationMismatch`] — the solve result was tagged with
+    ///   a `CompilationId` other than `C_overlay` (extraction failure);
+    /// - the ordinary [`SolveError`] classes of [`solve_with`](Self::solve_with)
+    ///   (commit, options, synchronization, solve, status).
+    pub fn solve_with_overlay(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+        overlay: &SolveOverlay,
+        objective_override: Option<ObjId>,
+    ) -> Result<Solution, SolveError> {
+        let plan = SolvePlan {
+            options,
+            overlay: overlay.clone(),
+            mip_starts: Vec::new(),
+            hints: VariableHints::default(),
+            objective_override: objective_override.map(ObjectivePolicy::Single),
+            lex_stage_policy: LexStagePolicy::RequireOptimal,
+            unsupported: UnsupportedFeaturePolicy::Reject,
+        };
+        self.solve_plan(model, plan)
+    }
+
+    /// Resolve the plan's starts/hints against the backend's typed
+    /// capabilities and the plan's unsupported-feature policy, producing the
+    /// concrete application list and recording every conversion/rejection in
+    /// `effective`.
+    ///
+    /// - A qualified start/hint is queued for native application and recorded
+    ///   as an [`AppliedFeature`] (SM-04.5).
+    /// - Under [`UnsupportedFeaturePolicy::ConvertStartToTemporaryFixing`], an
+    ///   unqualified start is merged into the effective overlay's temporary
+    ///   fixings and recorded as a [`PlanAdjustment`] (SM-08.5).
+    /// - Under [`UnsupportedFeaturePolicy::ConvertHintToStart`], unqualified
+    ///   hints become a [`MipStart`] when `MipStart` is qualified, recorded as
+    ///   a [`PlanAdjustment`]; otherwise they are recorded as a
+    ///   [`PlanRejection`].
+    /// - Under [`UnsupportedFeaturePolicy::Reject`] (the default), any
+    ///   unqualified start/hint returns a typed
+    ///   [`PlanError::UnsupportedFeature`] error BEFORE any backend mutation
+    ///   (SM-08.4).
+    fn resolve_plan_features(
+        &self,
+        model: &Model,
+        plan: &SolvePlan,
+        effective: &mut EffectiveSolvePlan,
+    ) -> Result<ResolvedPlanFeatures, SolveError> {
+        let caps = self.compilation_capabilities();
+        let mip_start_qualified = caps.supports(BackendFeature::MipStart);
+        let partial_mip_start_qualified = caps.supports(BackendFeature::PartialMipStart);
+        let variable_hints_qualified = caps.supports(BackendFeature::VariableHints);
+
+        // Active integer/binary variables, for classifying partial starts.
+        let integer_binary: Vec<Variable> = model
+            .take_snapshot()
+            .map_err(|_| {
+                SolveError::Plan(PlanError::UnsupportedFeature {
+                    feature: "model snapshot",
+                    policy: plan.unsupported,
+                })
+            })?
+            .variables
+            .iter()
+            .filter(|v| v.active && matches!(v.var_type, VarType::Integer | VarType::Binary))
+            .map(|v| v.id)
+            .collect();
+
+        let mut starts: Vec<MipStart> = Vec::new();
+        let mut hints = VariableHints::default();
+        let mut effective_overlay = plan.overlay.clone();
+        let mut converted_fixings: Option<BTreeMap<Variable, f64>> = None;
+
+        for (index, start) in plan.mip_starts.iter().enumerate() {
+            let key = format!("mip_start[{index}]");
+            let partial = integer_binary
+                .iter()
+                .any(|v| !start.assignment.values.contains_key(v));
+            let feature = if partial {
+                "PartialMipStart"
+            } else {
+                "MipStart"
+            };
+            let qualified = if partial {
+                partial_mip_start_qualified
+            } else {
+                mip_start_qualified
+            };
+
+            if qualified {
+                starts.push(start.clone());
+                effective.applied_features.push(AppliedFeature {
+                    feature: "mip_start".into(),
+                    detail: key.clone(),
+                });
+            } else if plan.unsupported == UnsupportedFeaturePolicy::ConvertStartToTemporaryFixing {
+                let fixings = converted_fixings
+                    .get_or_insert_with(|| effective_overlay.temporary_fixings.clone());
+                for (variable, value) in &start.assignment.values {
+                    fixings.insert(*variable, *value);
+                }
+                effective.adjustments.push(PlanAdjustment {
+                    key,
+                    requested: "mip_start".into(),
+                    applied: "overlay_temporary_fixing".into(),
+                    reason: format!(
+                        "backend does not qualify {feature}; ConvertStartToTemporaryFixing policy"
+                    ),
+                });
+            } else if plan.unsupported == UnsupportedFeaturePolicy::Reject {
+                return Err(SolveError::Plan(PlanError::UnsupportedFeature {
+                    feature,
+                    policy: plan.unsupported,
+                }));
+            } else {
+                // ConvertHintToStart cannot convert a start; record the
+                // rejection (never silent).
+                effective.rejections.push(PlanRejection {
+                    key,
+                    reason: format!(
+                        "backend does not qualify {feature} under {:?}; no applicable conversion",
+                        plan.unsupported
+                    ),
+                });
+            }
+        }
+
+        if !plan.hints.is_empty() {
+            if variable_hints_qualified {
+                hints = plan.hints.clone();
+                effective.applied_features.push(AppliedFeature {
+                    feature: "variable_hint".into(),
+                    detail: format!("{} hint(s)", plan.hints.len()),
+                });
+            } else if plan.unsupported == UnsupportedFeaturePolicy::ConvertHintToStart {
+                if mip_start_qualified {
+                    let assignment = PrimalAssignment {
+                        lineage: model.lineage(),
+                        source_instance: Some(model.instance()),
+                        source_revision: Some(model.current_revision()),
+                        values: plan
+                            .hints
+                            .iter()
+                            .map(|(variable, hint)| (*variable, hint.value))
+                            .collect(),
+                    };
+                    starts.push(MipStart::new(assignment, RepairPolicy::BackendDefault));
+                    effective.adjustments.push(PlanAdjustment {
+                        key: "hints".into(),
+                        requested: "variable_hints".into(),
+                        applied: "mip_start".into(),
+                        reason: "backend does not qualify VariableHints; \
+                                 ConvertHintToStart policy"
+                            .to_string(),
+                    });
+                } else {
+                    effective.rejections.push(PlanRejection {
+                        key: "hints".into(),
+                        reason: "ConvertHintToStart policy but the backend qualifies neither \
+                                 VariableHints nor MipStart"
+                            .to_string(),
+                    });
+                }
+            } else if plan.unsupported == UnsupportedFeaturePolicy::Reject {
+                return Err(SolveError::Plan(PlanError::UnsupportedFeature {
+                    feature: "VariableHints",
+                    policy: plan.unsupported,
+                }));
+            } else {
+                // ConvertStartToTemporaryFixing cannot convert hints; record
+                // the rejection (never silent).
+                effective.rejections.push(PlanRejection {
+                    key: "hints".into(),
+                    reason: format!(
+                        "backend does not qualify VariableHints under {:?}; no applicable \
+                         conversion",
+                        plan.unsupported
+                    ),
+                });
+            }
+        }
+
+        if let Some(fixings) = converted_fixings {
+            effective_overlay = SolveOverlay::new(
+                fixings,
+                effective_overlay.locks,
+                effective_overlay.objective_locks,
+                effective_overlay.cutoffs,
+            )
+            .map_err(|_| {
+                SolveError::Plan(PlanError::UnsupportedFeature {
+                    feature: "overlay identity",
+                    policy: plan.unsupported,
+                })
+            })?;
+        }
+
+        Ok(ResolvedPlanFeatures {
+            starts,
+            hints,
+            effective_overlay,
+        })
+    }
+
+    /// Apply the resolved starts/hints through the backend's `OverlaySession`
+    /// warm-start methods. A backend rejection (e.g. a native return-code
+    /// failure) maps to a typed [`SolveError`].
+    fn apply_warm_starts(
+        &mut self,
+        resolved: &ResolvedPlanFeatures,
+        _effective: &mut EffectiveSolvePlan,
+    ) -> Result<(), SolveError> {
+        if !resolved.starts.is_empty() {
+            self.backend
+                .apply_mip_starts(&resolved.starts)
+                .map_err(|e| SolveError::from_backend(false, e))?;
+        }
+        if !resolved.hints.is_empty() {
+            self.backend
+                .apply_variable_hints(&resolved.hints)
+                .map_err(|e| SolveError::from_backend(false, e))?;
+        }
+        Ok(())
     }
 
     /// Roll back an applied overlay and verify the base compiled state is
@@ -717,6 +1077,7 @@ mod tests {
             Some(obj),
             "ReferenceBackend",
             SynchronizationMode::Rebuild,
+            EffectiveSolvePlan::default(),
             lineage,
             instance,
             Some(CompilationId::allocate().unwrap()),
@@ -767,6 +1128,7 @@ mod tests {
             None,
             "ReferenceBackend",
             SynchronizationMode::NoChange,
+            EffectiveSolvePlan::default(),
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
             Some(CompilationId::allocate().unwrap()),
@@ -798,6 +1160,7 @@ mod tests {
             None,
             "ReferenceBackend",
             SynchronizationMode::NoChange,
+            EffectiveSolvePlan::default(),
             ModelLineageId::allocate().unwrap(),
             ModelInstanceId::allocate().unwrap(),
             Some(CompilationId::allocate().unwrap()),
@@ -826,6 +1189,7 @@ mod tests {
                 None,
                 "ReferenceBackend",
                 SynchronizationMode::NoChange,
+                EffectiveSolvePlan::default(),
                 ModelLineageId::allocate().unwrap(),
                 ModelInstanceId::allocate().unwrap(),
                 Some(CompilationId::allocate().unwrap()),
@@ -874,6 +1238,7 @@ mod tests {
                 Some(obj),
                 "ReferenceBackend",
                 SynchronizationMode::NoChange,
+                EffectiveSolvePlan::default(),
                 model.lineage(),
                 model.instance(),
                 Some(CompilationId::allocate().unwrap()),

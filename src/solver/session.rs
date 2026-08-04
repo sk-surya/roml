@@ -23,6 +23,7 @@ use crate::snapshot::ModelSnapshot;
 use crate::solver::backend::{BackendCapabilities, BackendError};
 use crate::solver::callback::CallbackHandler;
 use crate::solver::overlay::{CompiledOverlay, OverlayApplyReceipt, OverlayRollbackOutcome};
+use crate::solver::plan::{MipStart, VariableHints};
 use crate::solver::request::{SolveRequest, SolveResult};
 use crate::sync::{AdapterCursor, AdapterHealth};
 
@@ -168,6 +169,54 @@ pub trait OverlaySession {
     /// Returns a [`BackendError`] when the compiled maps / `current_compilation`
     /// do not match the base — the session is marked `RequiresRebuild`.
     fn verify_overlay_clean(&mut self) -> Result<(), BackendError>;
+
+    /// Apply qualified MIP starts to the backend's current compiled state
+    /// (P28; SM-08.1, SM-08.4).
+    ///
+    /// The default implementation REJECTS with a typed `Unsupported`
+    /// [`BackendError`]: a backend that does not qualify starts needs no
+    /// change and can never silently ignore a start request. A backend that
+    /// qualifies starts (per its [`BackendCapabilitySet`]) overrides this
+    /// method and maps each start's user-`Variable` values through its
+    /// compiled-keyed origin maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`BackendError`] by default
+    /// ([`crate::solver::backend::ErrorCategory::Unsupported`],
+    /// [`crate::solver::backend::HealthEffect::Recoverable`]); a qualifying
+    /// backend returns an error when a start cannot be applied (e.g. an
+    /// index/value the native API rejects).
+    fn apply_mip_starts(&mut self, starts: &[MipStart]) -> Result<(), BackendError> {
+        let _ = starts;
+        Err(BackendError::new(
+            "this backend does not qualify MIP starts",
+            crate::solver::backend::ErrorCategory::Unsupported,
+            crate::solver::backend::HealthEffect::Recoverable,
+        ))
+    }
+
+    /// Apply qualified variable hints to the backend's current compiled state
+    /// (P28; SM-08.3, SM-08.4).
+    ///
+    /// The default implementation REJECTS with a typed `Unsupported`
+    /// [`BackendError`] — absent hints reject by default (the pinned HiGHS
+    /// audit finds no hint API in the bundled version). A qualifying backend
+    /// overrides this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`BackendError`] by default
+    /// ([`crate::solver::backend::ErrorCategory::Unsupported`],
+    /// [`crate::solver::backend::HealthEffect::Recoverable`]).
+    fn apply_variable_hints(&mut self, hints: &VariableHints) -> Result<(), BackendError> {
+        let _ = hints;
+        Err(BackendError::new(
+            "this backend does not qualify variable hints",
+            crate::solver::backend::ErrorCategory::Unsupported,
+            crate::solver::backend::HealthEffect::Recoverable,
+        ))
+    }
 }
 
 /// Optional trait — for backends that support solver callbacks.
