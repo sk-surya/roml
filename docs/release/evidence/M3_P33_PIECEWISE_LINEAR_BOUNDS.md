@@ -405,3 +405,19 @@ integration-surface change beyond the new typed error variant and report entries
 ## Second review round (owner disposition, PR #31)
 
 **P1 — constant-only semantic operations panicked on valid parameterized payloads — FIXED (TDD, 3 tests).** `point_value`'s `as_constant().expect(...)` path is removed; `evaluate`/`classify_curvature`/`segment_slopes` now return a typed `PwlEvalError` (`ParameterizedPointValue { index, parameter }` for parameter-dependent points; `MissingParameter { parameter }` for unresolved parameters, F5) and the `_with` resolver variants (`evaluate_with`, `classify_curvature_with`, `segment_slopes_with`) evaluate parameterized payloads. Parameterized tests cover slopes, curvature, interpolation, Constant/Linear extrapolation, and missing-parameter behavior. Post-fix verification: piecewise_linear 35/35, roml 35 suites, roml-highs 18 suites, clippy/rustdoc clean.
+
+## Rebase note (2026-08-04)
+
+After PR #33 (CI caching) merged onto main, the P33 branch was rebased onto `main@53d5615` and force-pushed. All commit SHAs changed (content identical). Pre-rebase → post-rebase:
+
+| Pre-rebase | Post-rebase | Message |
+|---|---|---|
+| `1804c90` | (rebase base; see plan commit) | `feat(model): add piecewise linear semantics` |
+| `ba88f54` | (rebase base) | `feat(compiler): add zero-binary PWL one-sided rows` |
+| `4d01605` | (rebase base) | `feat(model): add piecewise linear functions` |
+| `ad707a4` | (rebase base) | `docs(33): record P33 commit trail in evidence` |
+| `ffb72ca` | `b529989` | `fix(compiler): enforce PWL extrapolation policy at compile time` |
+| `c7a0d8b` | `a2adbcc` | `fix(model): typed errors and resolver variants for parameterized PWL` |
+| (new) | `006f8be` | `docs(33): record pass-1 re-review verdict for the parameterized-PWL fix` |
+
+Branch head: `006f8be` on `main@53d5615`. Review dispositions referenced pre-rebase heads (`ffb72ca`, `c7a0d8b`); their content is preserved verbatim in the rebased commits above.
