@@ -73,7 +73,8 @@ Additional P32-anchored files verified present: `src/compiler/bridge/{indicator,
 | # | SHA | Message |
 |---|---|---|
 | 1 | `1804c90` | `feat(model): add piecewise linear semantics` |
-| 2 | (recorded after commit) | `feat(compiler): add zero-binary PWL one-sided rows` |
+| 2 | `ba88f54` | `feat(compiler): add zero-binary PWL one-sided rows` |
+| 3 | `f7c8047` | `feat(model): add piecewise linear functions` |
 
 ---
 
@@ -189,5 +190,185 @@ The compile-success tests (`pwl_convex_epigraph_compiles_with_zero_binaries_and_
 ## Task 3 — Exact graph via deterministic exact segment binaries, randomized equivalence, HiGHS, and OR review
 
 **Phase:** P33  **Requirements:** SM-14.4, SM-14.5, SM-14.6, SM-14.7, SM-13.1 (argument interval), SM-13.2 (no unproven Big-M)
+**Status:** implementation complete — committed as `feat(model): add piecewise linear functions`. **Independent review pending** (P33 gate, `autonomous: false` — the orchestrator runs Pass 1/Pass 2 next).
 
-<!-- gsd:write-continue -->
+### TDD — RED failures (recorded before implementation)
+
+The exact-graph compile-success tests failed against the Task 2 bridge, which still returned the placeholder typed error. Expected failure, recorded verbatim:
+
+```text
+thread 'pwl_exact_graph_feasible_set_equals_graph_for_all_curvatures' panicked:
+  snapshot must compile: UnsupportedFeature("exact PWL graph bridge lands in P33 Task 3")
+```
+
+The same `UnsupportedFeature` failure hit `pwl_nonconvex_exact_graph_excludes_convex_relaxation`,
+`pwl_exact_graph_selects_segment_binaries_and_reports`, `pwl_exact_graph_randomized_fixed_input_agreement`,
+and `pwl_exact_graph_entities_are_origin_complete`. The obsolete `pwl_exact_graph_is_typed_error_before_task3`
+test was removed once the Task 3 bridge landed.
+
+### Implementation
+
+- **`src/compiler/bridge/piecewise_linear.rs`** — the exact-graph bridge (`PwlRelation::ExactGraph`):
+  the deterministic exact segment-binary convex-combination formulation with points `(x_i, v_i)`:
+  - weights `lambda_i >= 0` (`i in 0..m`, role `PwlWeightVariable`) with `sum lambda = 1`;
+  - `argument = sum_i x_i * lambda_i` and `output = sum_i v_i * lambda_i` (equality rows);
+  - adjacency binaries `z_k` (`k in 0..m-1`, role `PwlSegmentBinary`) with `sum z = 1`;
+  - `lambda_0 <= z_0`, `lambda_i <= z_{i-1} + z_i` (interior), `lambda_m <= z_{m-1}`.
+  - **No Big-M is introduced anywhere** (SM-13.2, D12). Entities are emitted in deterministic order
+    (weights, then binaries, then rows) through `BridgeFinalizer` with `EntityOrigin::Construct`
+    roles (SM-02.5).
+  - Report decisions (SM-14.6): `pwl.representation` (`"exact segment binaries"`), `pwl.generated_binaries`
+    (one per segment), `pwl.generated_auxiliary_variables` (one weight per point),
+    `pwl.binary_introduction_reason` (exactness of the possibly-nonconvex graph; no convex relaxation),
+    and `pwl.scaling` (numerical scaling diagnostic — value span over breakpoint span, ROADMAP P33).
+    SOS2/native PWL are never selected because `native_payloads_available()` is false and HiGHS declares
+    no native SOS2/PWL (P32 F4).
+  - `NativeRequired` on a PWL construct rejects with `CompileError::UnsupportedFeature` via `select_path`.
+- **`tests/piecewise_linear.rs`** — 6 new Task 3 tests:
+  - `pwl_exact_graph_feasible_set_equals_graph_for_all_curvatures` — the compiled formulation's
+    feasible set equals the graph (on-graph feasible, `y ± delta` infeasible) for all four curvature
+    classes (SM-14.4).
+  - `pwl_nonconvex_exact_graph_excludes_convex_relaxation` — the **phase-gate proof**: the convex-hull
+    point `(x=1, y=0.5)` of the zigzag graph `[(0,0),(1,1),(2,0),(3,1)]` is infeasible in the compiled
+    formulation, so no convex relaxation is emitted (SM-14.5).
+  - `pwl_exact_graph_selects_segment_binaries_and_reports` — representation selection + report entries
+    + scaling diagnostic (SM-14.4/SM-14.6).
+  - `pwl_native_required_rejects_exact_graph` — `NativeRequired` → `UnsupportedFeature` (P32 F4).
+  - `pwl_exact_graph_randomized_fixed_input_agreement` — fixed-seed LCG random arguments over the tested
+    domain; direct `evaluate` agrees with the compiled formulation for all curvature classes (SM-14.7).
+  - `pwl_exact_graph_entities_are_origin_complete` — role inventory + origin completeness (SM-02.5).
+- **`roml-highs/tests/formulation_equivalence.rs`** — `pwl_highs_exact_graph_matches_reference_for_all_curvatures`:
+  reference-vs-portable feasible-set equality on HiGHS for convex, concave, and nonconvex PWL exact graphs
+  under both `Auto` (→ bridge) and `Portable` policies (SM-14.4/SM-14.7).
+- **`.planning/.../TRACEABILITY.md`** — P33 evidence path updated to `M3_P33_PIECEWISE_LINEAR_BOUNDS.md`;
+  SM-12 row marked closed (P32 primary, SM-12.8 advanced by P33); SM-13/SM-14 marked closed in P33
+  (implementation; independent review pending per the P33 gate).
+
+### Nonconvex-exactness proof (SM-14.5)
+
+Zigzag graph `[(0,0), (1,1), (2,0), (3,1)]` (slopes `1, -1, 1`, curvature `NonConvex`). The convex hull of
+the graph contains `(1, 0.5)` (on the chord `(0,0)-(2,0)`), but `f(1) = 1`. The compiled exact segment-binary
+formulation makes `(x=1, y=0.5)` **infeasible** while `(x=1, y=1)` is feasible — the exact graph never
+falls back to a convex relaxation.
+
+### Randomized-equivalence corpus (SM-14.7)
+
+For each curvature class (affine/convex/concave/nonconvex), 64 fixed-seed LCG arguments sampled uniformly
+over the breakpoint domain. For every sample, the direct `evaluate` value is feasible in the compiled
+formulation and `y ± 0.05` is infeasible. Total 256 fixed-input checks across the four classes, all passing.
+
+### Representation report examples
+
+Convex exact graph `[(0,0),(1,1),(2,4)]` (2 segments):
+
+```text
+pwl.path:                       exact bridge (no qualified native PWL/SOS2; F4)
+pwl.curvature:                  Convex
+pwl.relation:                   ExactGraph
+pwl.argument_interval:          [0, 2]  (bound sources: [Constant, DeclaredVariableBounds(...)])
+pwl.representation:             exact segment binaries
+pwl.generated_binaries:         2 (one adjacency binary per segment)
+pwl.generated_auxiliary_variables: 3 (one convex-combination weight per point)
+pwl.binary_introduction_reason: exactness of the (possibly nonconvex) graph; no convex relaxation
+pwl.scaling:                    value_span 4.000000 over x_span 2.000000 (avg |slope| 2.000000)
+```
+
+### Focused verification
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test piecewise_linear` | 0 — **27 passed; 0 failed** |
+| `cargo test -p roml-highs --test formulation_equivalence pwl` | 0 — **1 passed; 0 failed** |
+| `cargo test -p roml --all-targets` | 0 — **914 passed; 0 failed; 0 ignored** |
+| `cargo test -p roml-highs --all-targets` | 0 — **132 passed; 0 failed; 0 ignored** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 — clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 — clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 — docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 — docs generated, no warnings |
+| `cargo public-api -p roml` | 0 — 22178 items (raw; baseline 18792) |
+| `cargo fmt --all -- --check` | 0 — formatting clean |
+
+### Acceptance criteria
+
+- All commands exit 0.
+- Exact graphs compile through deterministic exact segment binaries for all curvature classes; nonconvex
+  exact graphs never fall back to a convex relaxation (SM-14.4, SM-14.5).
+- Randomized fixed-input PWL evaluations agree with compiled formulations over the tested domain for all
+  curvature classes (SM-14.7).
+- The compilation report states curvature, relation, representation, generated counts, and why binaries
+  were introduced or avoided (SM-14.6) and records the argument interval + bound sources (SM-13.5).
+- No Big-M is introduced without a finite proof; no default Big-M constant exists (SM-13.2, D12).
+- `NativeRequired` on PWL rejects with `CompileError::UnsupportedFeature`; no native PWL/SOS2 claim is made
+  (P32 F4 rule).
+- Every generated PWL entity carries `EntityOrigin::Construct { construct, role }` (SM-02.5).
+
+---
+
+## Phase-level verification matrix (P33)
+
+All commands run in the implementation worktree on `phase-roml-P33-piecewise-linear-bounds` at HEAD
+`c7cacf5 + Task 1-3 commits`. All exit 0.
+
+| Command | Exit | Result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | formatting clean |
+| `cargo test -p roml --test piecewise_linear` | 0 | **27 passed; 0 failed** |
+| `cargo test -p roml-highs --test formulation_equivalence pwl` | 0 | **1 passed; 0 failed** |
+| `cargo test -p roml --all-targets` | 0 | **914 passed; 0 failed; 0 ignored** |
+| `cargo test -p roml-highs --all-targets` | 0 | **132 passed; 0 failed; 0 ignored** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | 0 | clean, warnings denied |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | 0 | docs generated, no warnings |
+| `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps` | 0 | docs generated, no warnings |
+| `cargo public-api -p roml` | 0 | 22178 items (raw) |
+
+Per P30–P33 mandatory checks in `EXECUTION.md`: algebra/reference formulation tests (row-shape assertions in
+Task 2, exact-graph feasibility-set equality in Task 3); native/portable equivalence (HiGHS
+reference-vs-portable PWL sections); generated-origin completeness (SM-02.5 asserted for every generated
+entity); no-silent-relaxation tests (relation/curvature mismatch rejections + nonconvex-exactness proof);
+parameter dependency/update tests (Task 1 `parameter_dependencies` derivation). No skips.
+
+## Public API diff
+
+`cargo public-api -p roml` grew from **18792** items (P32 baseline capture) to **22178** items. The P33
+additions (all additive, `#[non_exhaustive]` boundaries preserved):
+
+- `roml::construct::{PiecewiseLinearConstraint, PwlRelation, ExtrapolationPolicy, PwlCurvature, PwlPoint}` (and `roml::` / `roml::advanced::` re-exports; `roml::construct::piecewise_linear::*`).
+- `Model::add_piecewise_linear` (SM-12.8 stable-handle + output-variable builder).
+- `ModelError::{PwlTooFewPoints, PwlNonFiniteBreakpoint(f64), PwlNonFinitePointValue, PwlDuplicateBreakpoint { value }, PwlOutOfOrderBreakpoint { value, previous }}`.
+- `BackendFeature::PiecewiseLinear` (additive).
+- `GeneratedRole::{PwlEpigraphRow, PwlHypographRow, PwlExactGraphRow, PwlSegmentBinary, PwlWeightVariable}` (additive).
+- `PwlPoint::from<(f64, f64)>`, `PiecewiseLinearConstraint::{classify_curvature, segment_slopes, evaluate, parameter_dependencies}`.
+
+Raw capture: `docs/release/evidence/M3_P33_public_api_roml.txt`.
+
+## Deviations from Plan
+
+**None.** The plan was executed exactly as written. The obsolete
+`pwl_exact_graph_is_typed_error_before_task3` test (which asserted the Task 2 placeholder behavior) was
+removed when the Task 3 exact-graph bridge landed — the placeholder was replaced by the real
+implementation, and the remaining Task 3 tests cover exact-graph compilation. This is the natural
+TDD RED→GREEN transition, not a plan deviation.
+
+## Residual risks
+
+- **Numerical scaling diagnostics are recorded but not yet hardened:** `pwl.scaling` reports the value
+  span over the breakpoint span; the ROADMAP P33 diagnostics surface is minimal and will be exercised by
+  the P34 numerical-quality audit.
+- **SOS2 / native PWL remain unqualified** (Bridge-only honesty decision): a future backend that qualifies
+  native SOS2/PWL would select it under `Auto`; M3 declares none, so the emitted representation is always
+  the exact segment-binary formulation.
+- **Parameter-dependent point values:** the direct `evaluate`/`classify_curvature` on the payload resolve
+  constant point values only; the compiler bridge resolves parameter-dependent values against the snapshot.
+  A user calling `evaluate` on a parameter-dependent payload panics with a clear message (documented
+  limitation; the compile path is the correct evaluator for parameter-dependent PWL).
+- **OR review pending:** Pass 1 (spec/correctness) and Pass 2 (integration/operations) have not yet run;
+  this evidence bundle records the implementation state for those gates.
+
+## Review gates (pending)
+
+Per `EXECUTION.md` § "Review gates", P33 receives two independent review passes at the phase boundary
+(after Task 3). `autonomous: false` — the executor pauses here and the orchestrator runs Pass 1
+(specification and correctness) and Pass 2 (integration and operations). This evidence bundle is the input
+to those gates. P0/P1 findings block merge; P2 findings may merge only when explicitly accepted and
+scheduled.

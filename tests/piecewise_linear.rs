@@ -9,6 +9,8 @@
 //! `Model::add_piecewise_linear` builder returning a stable `Construct` handle
 //! plus the output-variable handle (SM-12.8).
 
+use std::collections::HashMap;
+
 use roml::compiler::backend_ir::{
     BackendSnapshot, CompiledConstraintId, CompiledEntityRef, CompiledLinearRow, CompiledVariableId,
 };
@@ -190,6 +192,95 @@ fn row_coefficient(row: &CompiledLinearRow, var: CompiledVariableId) -> f64 {
         .find(|(id, _)| *id == var)
         .map(|(_, c)| *c)
         .unwrap_or(0.0)
+}
+
+/// Generated variable ids tracing to a construct role (deterministic order).
+fn generated_vars_for_role(
+    compiled: &BackendSnapshot,
+    construct: roml::Construct,
+    role: GeneratedRole,
+) -> Vec<CompiledVariableId> {
+    compiled
+        .origin_map
+        .variables_for_origin(&EntityOrigin::Construct { construct, role })
+}
+
+/// All compiled linear rows hold for the given fixed compiled-variable values
+/// (unprovided variables are treated as 0).
+fn rows_hold(compiled: &BackendSnapshot, values: &HashMap<CompiledVariableId, f64>) -> bool {
+    compiled.linear_rows.iter().all(|row| {
+        let sum: f64 = row
+            .coefficients
+            .iter()
+            .map(|(vid, c)| values.get(vid).copied().unwrap_or(0.0) * c)
+            .sum();
+        row.bounds.lower - 1e-9 <= sum && sum <= row.bounds.upper + 1e-9
+    })
+}
+
+/// Fixed context for exact-graph feasibility checks over one compiled PWL.
+struct ExactGraphCtx<'a> {
+    compiled: &'a BackendSnapshot,
+    x_var: CompiledVariableId,
+    y_var: CompiledVariableId,
+    points: &'a [(f64, f64)],
+    z_binaries: &'a [CompiledVariableId],
+    lambda_weights: &'a [CompiledVariableId],
+}
+
+impl ExactGraphCtx<'_> {
+    /// Whether the exact-graph formulation admits `(argument = x, output = y)`.
+    ///
+    /// Algebraic existential check over the segment binaries (P32 Task 17
+    /// pattern): for each segment `k`, place `z_k = 1`, compute the two weight
+    /// values from `x`'s position in the segment, and verify every compiled row
+    /// holds.
+    fn feasible(&self, x: f64, y: f64) -> bool {
+        for k in 0..self.z_binaries.len() {
+            let (xk, _) = self.points[k];
+            let (xk1, _) = self.points[k + 1];
+            if xk <= x && x <= xk1 {
+                let t = (x - xk) / (xk1 - xk);
+                let mut values: HashMap<CompiledVariableId, f64> = HashMap::new();
+                values.insert(self.x_var, x);
+                values.insert(self.y_var, y);
+                for (i, z) in self.z_binaries.iter().enumerate() {
+                    values.insert(*z, if i == k { 1.0 } else { 0.0 });
+                }
+                for (i, l) in self.lambda_weights.iter().enumerate() {
+                    let value = if i == k {
+                        1.0 - t
+                    } else if i == k + 1 {
+                        t
+                    } else {
+                        0.0
+                    };
+                    values.insert(*l, value);
+                }
+                if rows_hold(self.compiled, &values) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// A tiny deterministic LCG for fixed-seed "random" tests (no external dep).
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0
+    }
+
+    /// Uniform `f64` in `[0, 1)`.
+    fn next_f64(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
 }
 
 // ===========================================================================
@@ -750,28 +841,6 @@ fn pwl_report_records_curvature_relation_representation_and_bound_evidence() {
     );
 }
 
-/// ExactGraph is not yet compiled by the one-sided bridge (Task 3 adds the
-/// exact representation) — it must be a typed error, never a relaxation.
-#[test]
-fn pwl_exact_graph_is_typed_error_before_task3() {
-    let mut model = Model::new();
-    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
-    model
-        .add_piecewise_linear(
-            LinExpr::from(x),
-            convex_pwl(),
-            PwlRelation::ExactGraph,
-            ExtrapolationPolicy::Constant,
-            None,
-        )
-        .unwrap();
-    let err = compile_err(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
-    assert!(
-        matches!(err, CompileError::UnsupportedFeature(_)),
-        "exact-graph compilation must be a typed error before the Task 3 bridge, got {err:?}"
-    );
-}
-
 /// Every generated PWL row carries `EntityOrigin::Construct { construct, role }`
 /// (SM-02.5) — verified per row above; this test asserts origin completeness at
 /// the snapshot level.
@@ -792,6 +861,334 @@ fn pwl_zero_binary_rows_are_origin_complete() {
     let rows = compiled_rows_for_role(&compiled, k, GeneratedRole::PwlEpigraphRow);
     assert_eq!(rows.len(), 3);
     // No compiled entity is missing an origin.
+    assert!(
+        compiled
+            .origin_map
+            .missing_origins(
+                &compiled.variables,
+                &compiled.linear_rows,
+                &compiled.objectives
+            )
+            .is_empty(),
+        "every compiled entity must carry an origin (SM-02.5)"
+    );
+}
+
+// ===========================================================================
+// Task 3 — Exact graph via deterministic exact segment binaries (SM-14.4/14.5)
+// ===========================================================================
+
+/// The exact-graph feasible set equals the graph for every curvature class:
+/// `y = f(x)` is feasible and `y ± delta` is infeasible (SM-14.4).
+#[test]
+fn pwl_exact_graph_feasible_set_equals_graph_for_all_curvatures() {
+    let curves: [(&str, Vec<PwlPoint>); 4] = [
+        ("affine", affine_pwl()),
+        ("convex", convex_pwl()),
+        ("concave", concave_pwl()),
+        ("nonconvex", nonconvex_pwl()),
+    ];
+    for (name, points) in curves {
+        let pts: Vec<(f64, f64)> = points
+            .iter()
+            .map(|p| (p.x, p.value.as_constant().unwrap()))
+            .collect();
+        let x0 = points[0].x;
+        let xn = points[points.len() - 1].x;
+        let payload = pwl_payload_direct(
+            points.clone(),
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+        );
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(x0, xn)).unwrap();
+        let (k, output) = model
+            .add_piecewise_linear(
+                LinExpr::from(x),
+                points,
+                PwlRelation::ExactGraph,
+                ExtrapolationPolicy::Constant,
+                None,
+            )
+            .unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+        let ctx = ExactGraphCtx {
+            compiled: &compiled,
+            x_var: compiled_user_var(&compiled, x),
+            y_var: compiled_user_var(&compiled, output),
+            points: &pts,
+            z_binaries: &generated_vars_for_role(&compiled, k, GeneratedRole::PwlSegmentBinary),
+            lambda_weights: &generated_vars_for_role(
+                &compiled,
+                k,
+                GeneratedRole::PwlWeightVariable,
+            ),
+        };
+
+        // Sample each breakpoint and each segment midpoint.
+        let mut samples: Vec<f64> = pts.iter().map(|p| p.0).collect();
+        for w in pts.windows(2) {
+            samples.push(0.5 * (w[0].0 + w[1].0));
+        }
+        for xv in samples {
+            let yv = payload.evaluate(xv);
+            assert!(
+                ctx.feasible(xv, yv),
+                "{name}: on-graph y={yv} at x={xv} must be feasible (SM-14.4)"
+            );
+            assert!(
+                !ctx.feasible(xv, yv + 0.05),
+                "{name}: y+delta must be infeasible — the exact graph, not a relaxation"
+            );
+            assert!(
+                !ctx.feasible(xv, yv - 0.05),
+                "{name}: y-delta must be infeasible — the exact graph, not a relaxation"
+            );
+        }
+    }
+}
+
+/// A three-segment zigzag PWL: slopes `1, -1, 1` — NonConvex, with a convex-hull
+/// point (1, 0.5) that is NOT on the graph.
+fn nonconvex_zigzag() -> Vec<PwlPoint> {
+    pwl_points(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, 1.0)])
+}
+
+/// Nonconvex exact graphs never fall back to a convex relaxation (SM-14.5):
+/// a point admitted by the convex hull of the graph but not on the graph is
+/// infeasible in the compiled formulation. The phase-gate proof test.
+#[test]
+fn pwl_nonconvex_exact_graph_excludes_convex_relaxation() {
+    let points = nonconvex_zigzag();
+    let pts: Vec<(f64, f64)> = points
+        .iter()
+        .map(|p| (p.x, p.value.as_constant().unwrap()))
+        .collect();
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 3.0)).unwrap();
+    let (k, output) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            points,
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    let ctx = ExactGraphCtx {
+        compiled: &compiled,
+        x_var: compiled_user_var(&compiled, x),
+        y_var: compiled_user_var(&compiled, output),
+        points: &pts,
+        z_binaries: &generated_vars_for_role(&compiled, k, GeneratedRole::PwlSegmentBinary),
+        lambda_weights: &generated_vars_for_role(&compiled, k, GeneratedRole::PwlWeightVariable),
+    };
+    assert_eq!(
+        ctx.z_binaries.len(),
+        3,
+        "three segments → three adjacency binaries"
+    );
+
+    // On-graph: (x=1, y=1) is feasible.
+    assert!(ctx.feasible(1.0, 1.0));
+    // Convex-hull point: (x=1, y=0.5) lies on the chord (0,0)-(2,0) — admitted by
+    // the convex hull of the graph but NOT on the graph (f(1)=1). It must be
+    // infeasible: no convex relaxation (SM-14.5).
+    assert!(
+        !ctx.feasible(1.0, 0.5),
+        "the convex-hull point (1, 0.5) must be infeasible in the exact formulation \
+         (SM-14.5: never a convex relaxation)"
+    );
+}
+
+/// Under `Auto`/`Portable` the exact graph selects the deterministic exact
+/// segment-binary representation; the report records representation, generated
+/// counts, the binary-introduction reason, and a scaling diagnostic (SM-14.4,
+/// SM-14.6, ROADMAP P33).
+#[test]
+fn pwl_exact_graph_selects_segment_binaries_and_reports() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let (k, _) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Auto, &pwl_bridge_caps());
+
+    let decisions = &compiled.report.formulation_decisions;
+    let find = |key: &str| {
+        decisions
+            .iter()
+            .find(|d| d.decision == key)
+            .unwrap_or_else(|| panic!("missing report decision {key}"))
+    };
+    let rep = find("pwl.representation");
+    assert!(
+        rep.selection.contains("exact segment binaries"),
+        "representation must name exact segment binaries, got {}",
+        rep.selection
+    );
+    assert_eq!(
+        find("pwl.generated_binaries").selection,
+        "2",
+        "two segments → two adjacency binaries"
+    );
+    assert_eq!(
+        find("pwl.generated_auxiliary_variables").selection,
+        "3",
+        "three points → three weights"
+    );
+    assert!(
+        find("pwl.binary_introduction_reason")
+            .reason
+            .contains("no convex relaxation"),
+        "the report must explain the binary introduction, got {}",
+        find("pwl.binary_introduction_reason").reason
+    );
+    assert!(
+        find("pwl.scaling").selection.contains("x_span"),
+        "a scaling diagnostic must be recorded"
+    );
+
+    // Role inventory: n-1 segment binaries, n weight variables.
+    assert_eq!(
+        generated_vars_for_role(&compiled, k, GeneratedRole::PwlSegmentBinary).len(),
+        2
+    );
+    assert_eq!(
+        generated_vars_for_role(&compiled, k, GeneratedRole::PwlWeightVariable).len(),
+        3
+    );
+}
+
+/// `NativeRequired` on a PWL construct rejects with `CompileError::UnsupportedFeature`
+/// — no native PWL/SOS2 payload exists (P32 F4 rule).
+#[test]
+fn pwl_native_required_rejects_exact_graph() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let err = compile_err(
+        &model,
+        CompilationPolicy::NativeRequired,
+        &pwl_bridge_caps(),
+    );
+    assert!(
+        matches!(err, CompileError::UnsupportedFeature(_)),
+        "NativeRequired on a Bridge-only PWL must reject (P32 F4), got {err:?}"
+    );
+}
+
+/// Randomized fixed-input agreement (SM-14.7): fixed-seed random arguments over
+/// the tested domain; the direct `evaluate` value is feasible in the compiled
+/// exact-graph formulation, and `y ± delta` is infeasible — for all four
+/// curvature classes.
+#[test]
+fn pwl_exact_graph_randomized_fixed_input_agreement() {
+    let curves: [(&str, Vec<PwlPoint>); 4] = [
+        ("affine", affine_pwl()),
+        ("convex", convex_pwl()),
+        ("concave", concave_pwl()),
+        ("nonconvex", nonconvex_pwl()),
+    ];
+    let mut rng = Lcg(0x9E37_79B9_7F4A_7C15);
+    for (name, points) in curves {
+        let pts: Vec<(f64, f64)> = points
+            .iter()
+            .map(|p| (p.x, p.value.as_constant().unwrap()))
+            .collect();
+        let x0 = points[0].x;
+        let xn = points[points.len() - 1].x;
+        let payload = pwl_payload_direct(
+            points.clone(),
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+        );
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(x0, xn)).unwrap();
+        let (k, output) = model
+            .add_piecewise_linear(
+                LinExpr::from(x),
+                points,
+                PwlRelation::ExactGraph,
+                ExtrapolationPolicy::Constant,
+                None,
+            )
+            .unwrap();
+        let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+        let ctx = ExactGraphCtx {
+            compiled: &compiled,
+            x_var: compiled_user_var(&compiled, x),
+            y_var: compiled_user_var(&compiled, output),
+            points: &pts,
+            z_binaries: &generated_vars_for_role(&compiled, k, GeneratedRole::PwlSegmentBinary),
+            lambda_weights: &generated_vars_for_role(
+                &compiled,
+                k,
+                GeneratedRole::PwlWeightVariable,
+            ),
+        };
+
+        for _ in 0..64 {
+            let xv = x0 + rng.next_f64() * (xn - x0);
+            let yv = payload.evaluate(xv);
+            assert!(
+                ctx.feasible(xv, yv),
+                "{name}: direct evaluate {yv} at x={xv} must be feasible in the compiled \
+                 formulation (SM-14.7)"
+            );
+            assert!(
+                !ctx.feasible(xv, yv + 0.05),
+                "{name}: y+delta must be infeasible (exact graph, SM-14.7)"
+            );
+        }
+    }
+}
+
+/// Every generated exact-graph entity carries `EntityOrigin::Construct { construct,
+/// role }` (SM-02.5) — origin completeness across the generated binaries, weights,
+/// and rows.
+#[test]
+fn pwl_exact_graph_entities_are_origin_complete() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let (k, _) = model
+        .add_piecewise_linear(
+            LinExpr::from(x),
+            convex_pwl(),
+            PwlRelation::ExactGraph,
+            ExtrapolationPolicy::Constant,
+            None,
+        )
+        .unwrap();
+    let compiled = compile(&model, CompilationPolicy::Portable, &pwl_bridge_caps());
+    assert_eq!(
+        generated_vars_for_role(&compiled, k, GeneratedRole::PwlSegmentBinary).len(),
+        2
+    );
+    assert_eq!(
+        generated_vars_for_role(&compiled, k, GeneratedRole::PwlWeightVariable).len(),
+        3
+    );
+    assert_eq!(
+        compiled_rows_for_role(&compiled, k, GeneratedRole::PwlExactGraphRow).len(),
+        7,
+        "sum-lambda, argument, output, sum-z, and three adjacency rows"
+    );
     assert!(
         compiled
             .origin_map
