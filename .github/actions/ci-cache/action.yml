@@ -82,10 +82,20 @@ runs:
     - name: Collect apt lists (only after a clean install)
       if: ${{ !cancelled() && !failure() && runner.os == 'Linux' }}
       shell: bash
-      run: sudo cp -n /var/lib/apt/lists/* /tmp/ci-apt-cache/lists/ 2>/dev/null || true
+      run: |
+        # The root-owned mode-600 `lock` file is EXCLUDED: the cache-save tar
+        # (running as the runner user) cannot read it and the whole save would
+        # fail ("/usr/bin/tar ... Cannot open: Permission denied"). The lock
+        # has no cache value.
+        sudo find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock \
+          -exec cp -n {} /tmp/ci-apt-cache/lists/ \; 2>/dev/null || true
 
     - name: Save apt cache
-      if: always() && runner.os == 'Linux'
+      # Only the job that did NOT restore saves: concurrent saves of the same
+      # key collide ("Unable to reserve cache ... another job may be creating
+      # this cache"). The winner's cache serves every job on the next run;
+      # after a version bump all jobs miss and one of them saves.
+      if: ${{ always() && steps.apt-restore.outputs.cache-hit != 'true' && runner.os == 'Linux' }}
       uses: actions/cache/save@v4
       with:
         path: /tmp/ci-apt-cache
@@ -110,7 +120,10 @@ runs:
           ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-
 
     - name: Save cargo cache
-      if: always()
+      # Only the job that did NOT restore saves (same key-collision rationale
+      # as the apt save above; a restore-keys fallback counts as a miss and
+      # upgrades the cache to the full key).
+      if: ${{ always() && steps.cargo-restore.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v4
       with:
         path: |
