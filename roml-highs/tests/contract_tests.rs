@@ -246,7 +246,6 @@ fn c2_full_rebuild() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -254,7 +253,6 @@ fn c2_full_rebuild() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -504,7 +502,6 @@ fn c4_commuting_square() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c0,
@@ -552,7 +549,6 @@ fn c4_commuting_square() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c0,
@@ -656,7 +652,6 @@ fn c5_activity_toggle() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -781,7 +776,6 @@ fn c6_objective_switch() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -895,7 +889,6 @@ fn c7_unsupported_rejection() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: Some(2.0), // Unsupported!
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![],
@@ -955,7 +948,6 @@ fn c8_optimal_lp_status() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -963,7 +955,6 @@ fn c8_optimal_lp_status() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -1040,7 +1031,6 @@ fn c8_infeasible_lp_status() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c0,
@@ -1101,7 +1091,6 @@ fn c8_unbounded_lp_status() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -1156,7 +1145,6 @@ fn c9_optimal_lp_with_extraction() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -1164,7 +1152,6 @@ fn c9_optimal_lp_with_extraction() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -1252,7 +1239,6 @@ fn c9_infeasible_lp() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c0,
@@ -1315,7 +1301,6 @@ fn c9_unbounded_lp() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -1362,7 +1347,6 @@ fn c9_optimal_mip() {
             var_type: VarType::Binary,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c0,
@@ -1435,7 +1419,6 @@ fn c9_solution_extraction() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -1443,7 +1426,6 @@ fn c9_solution_extraction() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -1546,7 +1528,6 @@ fn c9_objective_offset_constant() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -1827,7 +1808,6 @@ fn c13_active_objective_sense_change() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -1894,7 +1874,6 @@ fn c13_set_objective_cell_on_inactive_objective() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![
@@ -1970,7 +1949,6 @@ fn c13_semicontinuous_rejected_before_any_mutation() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![],
@@ -2041,7 +2019,6 @@ fn c13_inactive_objective_sense_change() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![
@@ -2121,7 +2098,6 @@ fn c14_rebuild_inactive_variable_fixed_to_zero() {
             var_type: VarType::Continuous,
             active: false,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -2176,7 +2152,6 @@ fn c15_rebuild_inactive_constraint_ignored() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c,
@@ -2308,7 +2283,6 @@ fn c17_delta_set_cell_objective_updates_native_cost() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -2368,7 +2342,6 @@ fn c18_delta_remove_cell_objective_clears_cost() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -2430,7 +2403,6 @@ fn c19_delta_set_objective_cell_on_constraint_target_rejected() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![ConstraintEntry {
             id: c,
@@ -2511,7 +2483,6 @@ fn c20_delta_set_objective_cell_on_active_objective_applies_immediately() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -2571,7 +2542,6 @@ fn c21_rebuild_with_inverted_bounds_rejected() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {

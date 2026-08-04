@@ -119,7 +119,6 @@ fn binary_mip_snapshot() -> ModelSnapshot {
                 var_type: VarType::Binary,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -127,7 +126,6 @@ fn binary_mip_snapshot() -> ModelSnapshot {
                 var_type: VarType::Binary,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -190,7 +188,6 @@ fn unique_lp_snapshot() -> ModelSnapshot {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -198,7 +195,6 @@ fn unique_lp_snapshot() -> ModelSnapshot {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {

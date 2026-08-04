@@ -6,7 +6,6 @@
 
 use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature};
-use crate::compiler::origin::OverlayId;
 use crate::solver::LpAlgorithm;
 
 /// A solve request — immutable solver policy for one solve attempt.
@@ -104,11 +103,6 @@ pub struct SolveResult {
     /// by the façade as a mismatch (a result with no compiled state is never
     /// accepted).
     pub compilation_id: Option<CompilationId>,
-    /// The solve overlay this result was produced under (P27 Task 10,
-    /// D28/SM-03.9 overlay artifacts). `None` for a plain solve. Backends do
-    /// not know the overlay id; the façade records `Some(overlay.id)` in the
-    /// normalized [`SolveMetadata`](crate::SolveMetadata) on an overlay solve.
-    pub overlay_id: Option<OverlayId>,
 }
 
 /// The configuration that was actually applied by the solver.

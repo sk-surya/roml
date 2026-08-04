@@ -67,8 +67,8 @@ fn sense_to_highs(sense: Sense) -> HighsInt {
 }
 
 /// F5: a typed error for an op referencing a compiled variable not present in
-/// the held native state (no silent skip). Shared with the overlay path.
-pub(crate) fn missing_variable(id: CompiledVariableId) -> BackendError {
+/// the held native state (no silent skip).
+fn missing_variable(id: CompiledVariableId) -> BackendError {
     BackendError::new(
         format!("compiled variable {id:?} is not present in the held native state"),
         ErrorCategory::InvalidInput,
@@ -107,99 +107,6 @@ unsafe fn clear_all_costs(raw: *mut c_void) -> Result<(), BackendError> {
             raw,
             "Highs_changeColsCostByRange (clear all costs)",
         )?;
-    }
-    Ok(())
-}
-
-/// Project a compiled objective policy onto the single-objective HiGHS
-/// surface (P27 Task 10).
-///
-/// Shared by the `BackendOp::SetObjectivePolicy` delta arm and the overlay
-/// apply/rollback path. Clears all column costs, then projects the policy:
-/// `Single` applies the objective's costs/sense/offset; `None` clears the
-/// offset and deactivates the objective. Weighted/Lexicographic (P31
-/// constructs) are rejected with a typed `Unsupported` error — never silently
-/// treated as no-active-objective (F4).
-pub(crate) fn project_objective_policy(
-    raw: *mut c_void,
-    policy: &CompiledObjectivePolicy,
-    col_map: &IndexMap<CompiledVariableId>,
-    compiled_to_user_objective: &HashMap<CompiledObjectiveId, ObjId>,
-    obj_costs: &HashMap<CompiledObjectiveId, HashMap<CompiledVariableId, f64>>,
-    obj_senses: &HashMap<CompiledObjectiveId, Sense>,
-    obj_offsets: &HashMap<CompiledObjectiveId, f64>,
-    active_obj: &mut Option<ObjId>,
-) -> Result<(), BackendError> {
-    // SAFETY: raw is a valid HiGHS instance handle.
-    unsafe {
-        clear_all_costs(raw)?;
-    }
-    match policy {
-        CompiledObjectivePolicy::Single(cid) => {
-            if let Some(obj) = compiled_to_user_objective.get(cid).copied() {
-                if let Some(costs) = obj_costs.get(cid) {
-                    for (vid, &cost) in costs {
-                        if let Some(col) = col_map.get(*vid) {
-                            // SAFETY: raw is valid; col is a live native index.
-                            unsafe {
-                                check_highs_status(
-                                    Highs_changeColCost(raw, col, cost),
-                                    raw,
-                                    "Highs_changeColCost",
-                                )?;
-                            }
-                        }
-                    }
-                }
-                if let Some(&sense) = obj_senses.get(cid) {
-                    // SAFETY: raw is valid.
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeObjectiveSense(raw, sense_to_highs(sense)),
-                            raw,
-                            "Highs_changeObjectiveSense",
-                        )?;
-                    }
-                }
-                if let Some(&offset) = obj_offsets.get(cid) {
-                    // SAFETY: raw is valid.
-                    unsafe {
-                        check_highs_status(
-                            Highs_changeObjectiveOffset(raw, offset),
-                            raw,
-                            "Highs_changeObjectiveOffset",
-                        )?;
-                    }
-                }
-                *active_obj = Some(obj);
-            }
-        }
-        CompiledObjectivePolicy::None => {
-            // SAFETY: raw is valid.
-            unsafe {
-                check_highs_status(
-                    Highs_changeObjectiveOffset(raw, 0.0),
-                    raw,
-                    "Highs_changeObjectiveOffset",
-                )?;
-            }
-            *active_obj = None;
-        }
-        // F4: Weighted/Lexicographic cannot be represented on the
-        // single-objective HiGHS surface in P26 — reject with a typed error,
-        // never silently treat as no-active-objective.
-        CompiledObjectivePolicy::Weighted(_) => {
-            return Err(BackendError::unsupported(
-                "weighted objective policy is not supported by the P26 HiGHS \
-                 projection (P31 compiles it)",
-            ));
-        }
-        CompiledObjectivePolicy::Lexicographic(_) => {
-            return Err(BackendError::unsupported(
-                "lexicographic objective policy is not supported by the P26 HiGHS \
-                 projection (P31 compiles it)",
-            ));
-        }
     }
     Ok(())
 }
@@ -818,18 +725,72 @@ pub(crate) fn apply_backend_delta(
             }
 
             BackendOp::SetObjectivePolicy(policy) => {
-                // Shared projection (P27 Task 10): the overlay apply/rollback
-                // path uses the exact same compiled-policy projection.
-                project_objective_policy(
-                    raw,
-                    policy,
-                    col_map,
-                    compiled_to_user_objective,
-                    obj_costs,
-                    obj_senses,
-                    obj_offsets,
-                    active_obj,
-                )?;
+                unsafe {
+                    clear_all_costs(raw)?;
+                }
+                match policy {
+                    CompiledObjectivePolicy::Single(cid) => {
+                        if let Some(obj) = compiled_to_user_objective.get(cid).copied() {
+                            if let Some(costs) = obj_costs.get(cid) {
+                                for (vid, &cost) in costs {
+                                    if let Some(col) = col_map.get(*vid) {
+                                        unsafe {
+                                            check_highs_status(
+                                                Highs_changeColCost(raw, col, cost),
+                                                raw,
+                                                "Highs_changeColCost",
+                                            )?;
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(&sense) = obj_senses.get(cid) {
+                                unsafe {
+                                    check_highs_status(
+                                        Highs_changeObjectiveSense(raw, sense_to_highs(sense)),
+                                        raw,
+                                        "Highs_changeObjectiveSense",
+                                    )?;
+                                }
+                            }
+                            if let Some(&offset) = obj_offsets.get(cid) {
+                                unsafe {
+                                    check_highs_status(
+                                        Highs_changeObjectiveOffset(raw, offset),
+                                        raw,
+                                        "Highs_changeObjectiveOffset",
+                                    )?;
+                                }
+                            }
+                            *active_obj = Some(obj);
+                        }
+                    }
+                    CompiledObjectivePolicy::None => {
+                        unsafe {
+                            check_highs_status(
+                                Highs_changeObjectiveOffset(raw, 0.0),
+                                raw,
+                                "Highs_changeObjectiveOffset",
+                            )?;
+                        }
+                        *active_obj = None;
+                    }
+                    // F4: Weighted/Lexicographic cannot be represented on the
+                    // single-objective HiGHS surface in P26 — reject with a
+                    // typed error, never silently treat as no-active-objective.
+                    CompiledObjectivePolicy::Weighted(_) => {
+                        return Err(BackendError::unsupported(
+                            "weighted objective policy is not supported by the P26 HiGHS \
+                             projection (P31 compiles it)",
+                        ));
+                    }
+                    CompiledObjectivePolicy::Lexicographic(_) => {
+                        return Err(BackendError::unsupported(
+                            "lexicographic objective policy is not supported by the P26 HiGHS \
+                             projection (P31 compiles it)",
+                        ));
+                    }
+                }
             }
 
             // `BackendOp` is #[non_exhaustive] (the pinned 15-variant

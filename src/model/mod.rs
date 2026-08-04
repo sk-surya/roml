@@ -29,10 +29,7 @@ pub(crate) use parameter::ParameterStore;
 pub use parameter::{parameter, ParameterDef};
 pub(crate) use transaction::Transaction;
 pub(crate) use variable::VariableStore;
-pub use variable::{
-    binary, continuous, integer, Bounds, FixingProvenance, SemiDomain, VarType, VariableDef,
-    VariableDomain, VariableFixing,
-};
+pub use variable::{binary, continuous, integer, Bounds, VarType, VariableDef};
 
 /// Semantic alias for a variable handle (D8). A plain type alias of [`VarId`].
 pub type Variable = crate::id::VarId;
@@ -43,13 +40,9 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
-#[cfg(test)]
-use crate::construct::FixturePayload;
 use crate::construct::{
-    derive_parameter_dependencies, AbsoluteValueConstraint, AbsoluteValueVariant,
-    BinaryProductConstraint, BooleanKind, CardinalityKind, Construct, ConstructEntry,
-    ConstructKind, ConstructStore, FormulationPreference, IndicatorConstraint, IndicatorDirection,
-    MinMaxConstraint, MinMaxRelation, MinMaxSense, ProductOperand, ReificationConstraint,
+    derive_parameter_dependencies, Construct, ConstructEntry, ConstructKind, ConstructStore,
+    FixturePayload, FormulationPreference,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -64,8 +57,6 @@ use crate::solution::Solution;
 // Legacy import removed.
 
 use crate::value_expr::ValueExpr;
-
-use std::collections::HashSet;
 
 use log::warn;
 
@@ -92,89 +83,6 @@ pub enum ModelError {
     NonFiniteValue(&'static str),
     /// A value was NaN.
     NaNValue(&'static str),
-    /// A logical construct required a binary variable but received a
-    /// non-binary one (continuous or integer) (SM-12.2).
-    NonBinaryVariable(VarId),
-    /// A cardinality construct received the same binary variable more than
-    /// once (SM-12.5).
-    DuplicateCardinalityVariable(VarId),
-    /// A cardinality construct received an invalid `k` (negative, non-integral,
-    /// or greater than the input length) (SM-12.5).
-    InvalidCardinalityK {
-        /// The offending `k` value.
-        k: f64,
-        /// Why the value is invalid.
-        reason: &'static str,
-    },
-    /// Continuous exact reification without an explicit separation tolerance
-    /// (SM-12.2, D14).
-    ContinuousReificationWithoutSeparation,
-    /// A reification separation tolerance was non-finite or non-positive
-    /// (SM-12.2, D14).
-    InvalidReificationSeparation(f64),
-    /// Reification currently supports `le`/`ge` threshold relations only;
-    /// equality/interval relations need a disjunctive complement not in the
-    /// P32 two-implication contract.
-    UnsupportedReificationSet,
-    /// A proven-integer reification with the inferred unit gap requires an
-    /// integral set threshold: `f > rhs ⟺ f >= rhs + 1` is exact only for an
-    /// integer `rhs`, so a fractional threshold on a proven-integer expression
-    /// is a typed build-time rejection (SM-12.2, D14; CR-01).
-    NonIntegralReificationThreshold(f64),
-    /// A construct input list was empty (Boolean any/all, cardinality).
-    EmptyConstructInput,
-    /// A min/max construct requires at least two operands (SM-12.3).
-    MinMaxTooFewOperands,
-    /// A min-epigraph / max-hypograph relation is trivially satisfiable
-    /// (SM-12.3) — a min epigraph (`output >= min`) and a max hypograph
-    /// (`output <= max`) impose no constraint.
-    TriviallySatisfiableMinMax,
-    /// An absolute-value-family expression is unbounded (free variable or
-    /// unbounded parameter) — the bounded exact bridge cannot be built
-    /// (SM-12.4).
-    UnboundedConstructExpression,
-    /// A clamp variant has invalid bounds (`lower > upper` or non-finite)
-    /// (SM-12.4).
-    InvalidClampBounds {
-        /// The offending lower bound.
-        lower: f64,
-        /// The offending upper bound.
-        upper: f64,
-    },
-    /// A product of two continuous operands is not exact MILP — no exact path
-    /// exists and no relaxation is emitted (SM-12.7, D23).
-    ContinuousTimesContinuousProduct,
-    /// A fix value lies outside the variable's declared bounds (SM-05.5).
-    ValueOutOfBounds {
-        /// The variable being fixed.
-        variable: VarId,
-        /// The rejected fix value.
-        value: f64,
-        /// The declared bounds the value must lie inside.
-        bounds: Bounds,
-    },
-    /// A fix value on an integer/binary variable is not integral beyond the
-    /// named integrality tolerance (SM-05.5).
-    NonIntegralValue {
-        /// The variable being fixed.
-        variable: VarId,
-        /// The rejected non-integral fix value.
-        value: f64,
-        /// The integrality tolerance used for the check.
-        tolerance: f64,
-    },
-    /// Declared-bound changes that exclude an active fixing fail atomically
-    /// (SM-05.6): the fixing value is outside the requested bounds.
-    BoundsExcludeFixing {
-        /// The variable with the active fixing.
-        variable: VarId,
-        /// The active fixing value.
-        value: f64,
-        /// The requested bounds that exclude the fixing value.
-        bounds: Bounds,
-    },
-    /// The integrality tolerance must be finite and non-negative.
-    InvalidIntegralityTolerance(f64),
     /// Revision counter overflow.
     RevisionOverflow,
     /// An opaque identity counter was exhausted (ids never wrap).
@@ -201,93 +109,6 @@ impl std::fmt::Display for ModelError {
             }
             Self::NonFiniteValue(label) => write!(f, "Value must be finite: {label}"),
             Self::NaNValue(label) => write!(f, "Value must not be NaN: {label}"),
-            Self::NonBinaryVariable(id) => {
-                write!(
-                    f,
-                    "a binary variable is required here, got non-binary {id:?}"
-                )
-            }
-            Self::DuplicateCardinalityVariable(id) => {
-                write!(f, "cardinality input contains a duplicate variable {id:?}")
-            }
-            Self::InvalidCardinalityK { k, reason } => {
-                write!(f, "invalid cardinality k = {k}: {reason}")
-            }
-            Self::ContinuousReificationWithoutSeparation => write!(
-                f,
-                "continuous exact reification requires an explicit separation tolerance \
-                 (D14); the unit gap is inferred only for proven-integer expressions"
-            ),
-            Self::InvalidReificationSeparation(s) => {
-                write!(
-                    f,
-                    "invalid reification separation tolerance {s}: must be finite and > 0"
-                )
-            }
-            Self::UnsupportedReificationSet => write!(
-                f,
-                "reification currently supports le/ge threshold relations only (P32 \
-                 two-implication contract)"
-            ),
-            Self::NonIntegralReificationThreshold(v) => write!(
-                f,
-                "reification with the inferred unit gap requires an integral set threshold \
-                 (D14, CR-01); got {v}: the unit gap `f > rhs ⟺ f >= rhs + 1` is exact only \
-                 for an integer rhs — pass an explicit separation tolerance instead"
-            ),
-            Self::EmptyConstructInput => write!(f, "construct input list must not be empty"),
-            Self::MinMaxTooFewOperands => {
-                write!(f, "a min/max construct requires at least two operands")
-            }
-            Self::TriviallySatisfiableMinMax => write!(
-                f,
-                "a min-epigraph / max-hypograph min/max relation is trivially satisfiable \
-                 (D13): choose exact or the complementary one-sided relation"
-            ),
-            Self::UnboundedConstructExpression => write!(
-                f,
-                "an absolute-value-family construct requires a bounded expression (free \
-                 variables or unbounded parameters are a typed rejection; the bounded exact \
-                 bridge cannot be built)"
-            ),
-            Self::InvalidClampBounds { lower, upper } => {
-                write!(
-                    f,
-                    "invalid clamp bounds [{lower}, {upper}]: lower must be finite and <= upper"
-                )
-            }
-            Self::ContinuousTimesContinuousProduct => write!(
-                f,
-                "a continuous-times-continuous product is not exact MILP (D23, SM-12.7); \
-                 exact products cover binary-binary and binary-times-bounded-linear only"
-            ),
-            Self::ValueOutOfBounds {
-                variable,
-                value,
-                bounds,
-            } => write!(
-                f,
-                "fix value {value} for variable {variable:?} lies outside declared bounds {bounds:?}"
-            ),
-            Self::NonIntegralValue {
-                variable,
-                value,
-                tolerance,
-            } => write!(
-                f,
-                "fix value {value} for integer variable {variable:?} is not integral within tolerance {tolerance}"
-            ),
-            Self::BoundsExcludeFixing {
-                variable,
-                value,
-                bounds,
-            } => write!(
-                f,
-                "declared bounds {bounds:?} for variable {variable:?} exclude the active fixing value {value}"
-            ),
-            Self::InvalidIntegralityTolerance(tolerance) => {
-                write!(f, "integrality tolerance must be >= 0 and finite, got {tolerance}")
-            }
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -411,15 +232,11 @@ impl Clone for Model {
 }
 
 /// Model-level constants used by algebraic introspection (slack and violation
-/// checks) and fixing validation (SM-05.5).
+/// checks).
 #[derive(Clone, Debug)]
 pub struct ModelConstants {
     /// Tolerance for considering a constraint violated (negative slack).
     pub feasibility_tolerance: f64,
-    /// Named integrality tolerance used by fix validation on integer/binary
-    /// variables (SM-05.5). Default is consistent with the feasibility
-    /// tolerance convention (1e-9).
-    pub integrality_tolerance: f64,
 }
 
 impl Default for ModelConstants {
@@ -427,7 +244,6 @@ impl Default for ModelConstants {
         // default tolerance is a small epsilon used in slack/violation checks.
         Self {
             feasibility_tolerance: 1e-9,
-            integrality_tolerance: 1e-9,
         }
     }
 }
@@ -442,80 +258,7 @@ impl ModelConstants {
     pub fn set_feas_tol(feasibility_tolerance: f64) -> Self {
         Self {
             feasibility_tolerance,
-            integrality_tolerance: 1e-9,
         }
-    }
-}
-
-/// Map a distinct [`BoundAnalyzer`](crate::compiler::bounds::BoundAnalyzer)
-/// failure to the matching [`ModelError`] variant so the specific cause is
-/// preserved (IN-02) instead of collapsing every failure into one generic
-/// `NonFiniteValue`.
-fn bound_error_to_model_error(err: crate::compiler::bounds::BoundError) -> ModelError {
-    use crate::compiler::bounds::BoundError;
-    match err {
-        BoundError::NonFiniteCoefficient { .. } => {
-            ModelError::NonFiniteValue("expression coefficient")
-        }
-        BoundError::NonFiniteBound { .. } => ModelError::NaNValue("expression variable bound"),
-        BoundError::InvalidBounds { .. } => ModelError::InvalidBounds,
-        BoundError::NonFiniteConstant => ModelError::NonFiniteValue("expression constant"),
-        BoundError::NonFiniteParameterValue { .. } => {
-            ModelError::NonFiniteValue("expression parameter value")
-        }
-        BoundError::MissingParameter { .. } => {
-            ModelError::NonFiniteValue("expression missing parameter")
-        }
-        BoundError::ArithmeticNan => ModelError::NaNValue("expression interval arithmetic"),
-        BoundError::UnsupportedFunctionKind => {
-            ModelError::NonFiniteValue("unsupported function kind")
-        }
-    }
-}
-
-#[cfg(test)]
-mod bound_error_mapping_tests {
-    use super::*;
-    use crate::compiler::bounds::BoundError;
-
-    /// IN-02: each distinct `BoundAnalyzer` failure maps to the matching
-    /// `ModelError` variant — the specific cause is preserved, never collapsed
-    /// into one generic `NonFiniteValue("expression bounds")`. (The distinct
-    /// causes are defensive: `validate_expression_entities` and the interval
-    /// clamping preempt most of them through the public builders, but the
-    /// mapping keeps the analyzer reason observable wherever one surfaces.)
-    #[test]
-    fn expression_interval_maps_distinct_bound_error_causes() {
-        let v = VarId::new(0, crate::id::Generation::new());
-        let p = ParamId::new(0, crate::id::Generation::new());
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::NonFiniteCoefficient { variable: v }),
-            ModelError::NonFiniteValue("expression coefficient")
-        ));
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::NonFiniteBound { variable: v }),
-            ModelError::NaNValue("expression variable bound")
-        ));
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::InvalidBounds { variable: v }),
-            ModelError::InvalidBounds
-        ));
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::NonFiniteConstant),
-            ModelError::NonFiniteValue("expression constant")
-        ));
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::NonFiniteParameterValue { parameter: p }),
-            ModelError::NonFiniteValue("expression parameter value")
-        ));
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::ArithmeticNan),
-            ModelError::NaNValue("expression interval arithmetic")
-        ));
-        assert!(matches!(
-            bound_error_to_model_error(BoundError::UnsupportedFunctionKind),
-            ModelError::NonFiniteValue("unsupported function kind")
-        ));
     }
 }
 
@@ -649,470 +392,13 @@ impl Model {
     /// error rather than wrapping.
     ///
     /// P25 (F3): exercised only by the in-crate construct lifecycle tests.
-    ///
-    /// Test-only (A30): the `Fixture` variant and [`FixturePayload`] are
-    /// `#[cfg(test)]`-gated, so this method exists only in test builds and is
-    /// absent from the public API surface in non-test builds.
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn add_construct_fixture(
         &mut self,
         payload: FixturePayload,
         preference: FormulationPreference,
     ) -> Result<Construct, ModelError> {
-        self.add_construct(ConstructKind::Fixture(payload), Some(preference))
-    }
-
-    /// Add an indicator construct (design §16.1, packet Task 16).
-    ///
-    /// `direction` selects the one-way implication: `WhenOne` means
-    /// `activator = 1 ⇒ relation`, `WhenZero` means `activator = 0 ⇒ relation`.
-    /// The activator must be a binary variable (a continuous or integer
-    /// activator is a typed [`ModelError::NonBinaryVariable`]). The optional
-    /// per-construct [`FormulationPreference`] narrows the global compilation
-    /// policy (A29 single authority — stored on the [`ConstructEntry`]).
-    pub fn add_indicator(
-        &mut self,
-        activator: VarId,
-        direction: IndicatorDirection,
-        relation: impl Into<FunctionConstraint>,
-        preference: Option<FormulationPreference>,
-    ) -> Result<Construct, ModelError> {
-        self.require_binary(activator)?;
-        let fc = relation.into();
-        let payload = IndicatorConstraint {
-            activator,
-            direction,
-            function: fc.function,
-            set: fc.set,
-        };
-        self.add_construct(ConstructKind::Indicator(payload), preference)
-    }
-
-    /// Add a reification construct (design §16.2, packet Task 16).
-    ///
-    /// `relation` is reified to a binary `b = 1 ⟺ relation`. Continuous exact
-    /// reification requires an explicit `separation` tolerance (D14); when
-    /// `separation` is `None` the unit gap is inferred only when the expression
-    /// is proven integer-valued (all variables integer/binary with integral
-    /// constant coefficients). The optional per-construct
-    /// [`FormulationPreference`] narrows the global compilation policy.
-    pub fn add_reify(
-        &mut self,
-        relation: impl Into<FunctionConstraint>,
-        separation: Option<f64>,
-        preference: Option<FormulationPreference>,
-    ) -> Result<Construct, ModelError> {
-        if let Some(tol) = separation {
-            if !tol.is_finite() || tol <= 0.0 {
-                return Err(ModelError::InvalidReificationSeparation(tol));
-            }
-        }
-        let fc = relation.into();
-        let proven = self.expression_is_proven_integral(&fc.function);
-        if separation.is_none() && !proven {
-            return Err(ModelError::ContinuousReificationWithoutSeparation);
-        }
-        // P32 reification is the two-implication threshold contract (le/ge).
-        // Equality/interval reification needs a disjunctive complement — a
-        // typed build-time rejection, never a silent relaxation.
-        match &fc.set {
-            ScalarSet::LessEqual(_) | ScalarSet::GreaterEqual(_) => {}
-            ScalarSet::EqualTo(_) | ScalarSet::Interval { .. } => {
-                return Err(ModelError::UnsupportedReificationSet);
-            }
-        }
-        // CR-01: the inferred unit gap `f > rhs ⟺ f >= rhs + 1` is exact only
-        // when the set threshold is integral (an integer-valued f separated by
-        // a non-integral rhs silently excludes the integer just above rhs from
-        // both b=0 and b=1). Validate every threshold for integrality at build
-        // time; a fractional threshold on a proven-integer expression is a
-        // typed rejection (an explicit separation tolerance is the exact path
-        // for fractional thresholds, D14).
-        if separation.is_none() && proven {
-            let eval = |e: &ValueExpr| e.eval(|p| self.parameters.get_value(p).unwrap_or(0.0));
-            let integral = |v: f64| v.is_finite() && (v - v.round()).abs() < 1e-9;
-            let check = |v: f64| -> Result<(), ModelError> {
-                if integral(v) {
-                    Ok(())
-                } else {
-                    Err(ModelError::NonIntegralReificationThreshold(v))
-                }
-            };
-            match &fc.set {
-                ScalarSet::LessEqual(upper) => check(eval(upper))?,
-                ScalarSet::GreaterEqual(lower) => check(eval(lower))?,
-                ScalarSet::EqualTo(_) | ScalarSet::Interval { .. } => unreachable!(
-                    "equality/interval reification is rejected above before the integrality check"
-                ),
-            }
-        }
-        // The reification result is a fresh binary variable the construct owns
-        // (design §16.2: `reify` creates and returns the indicator variable).
-        // IN-03 atomicity: reserve the construct id BEFORE creating the
-        // activator so a construct-id failure cannot leave an orphaned
-        // variable in the arena/changelog.
-        let id =
-            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
-        let activator = self.add_variable_internal(Bounds::BINARY, VarType::Binary, None);
-        let payload = ReificationConstraint {
-            activator,
-            function: fc.function,
-            set: fc.set,
-            separation_tolerance: separation,
-            proven_integrality: proven,
-        };
-        self.add_construct_allocated(id, ConstructKind::Reification(payload), preference)
-    }
-
-    /// Add a Boolean construct (design §16.4, packet Task 16).
-    ///
-    /// `kind` selects implication, equivalence, any (at-least-one), or all
-    /// (all-ones) over binary variables. Every referenced variable must be
-    /// binary. The optional per-construct [`FormulationPreference`] narrows the
-    /// global compilation policy.
-    pub fn add_boolean(
-        &mut self,
-        kind: BooleanKind,
-        preference: Option<FormulationPreference>,
-    ) -> Result<Construct, ModelError> {
-        match &kind {
-            BooleanKind::Implication {
-                antecedent,
-                consequent,
-            } => {
-                self.require_binary(*antecedent)?;
-                self.require_binary(*consequent)?;
-            }
-            BooleanKind::Equivalence { left, right } => {
-                self.require_binary(*left)?;
-                self.require_binary(*right)?;
-            }
-            BooleanKind::Any { variables } | BooleanKind::All { variables } => {
-                if variables.is_empty() {
-                    return Err(ModelError::EmptyConstructInput);
-                }
-                for &v in variables {
-                    self.require_binary(v)?;
-                }
-            }
-        }
-        self.add_construct(
-            ConstructKind::Boolean(crate::construct::BooleanConstraint { kind }),
-            preference,
-        )
-    }
-
-    /// Add a cardinality construct (design §16.4, packet Task 16).
-    ///
-    /// Exactly/at-most/at-least `k` of `variables` are `1`. `k` is validated:
-    /// it must be finite, non-negative, integral, and no greater than the input
-    /// length (typed [`ModelError::InvalidCardinalityK`] otherwise); the input
-    /// list must be non-empty, all-binary, and duplicate-free (typed errors).
-    /// The optional per-construct [`FormulationPreference`] narrows the global
-    /// compilation policy.
-    pub fn add_cardinality(
-        &mut self,
-        variables: impl IntoIterator<Item = VarId>,
-        kind: CardinalityKind,
-        k: f64,
-        preference: Option<FormulationPreference>,
-    ) -> Result<Construct, ModelError> {
-        let variables: Vec<VarId> = variables.into_iter().collect();
-        if variables.is_empty() {
-            return Err(ModelError::EmptyConstructInput);
-        }
-        let mut seen = HashSet::new();
-        for &v in &variables {
-            if !seen.insert(v) {
-                return Err(ModelError::DuplicateCardinalityVariable(v));
-            }
-            self.require_binary(v)?;
-        }
-        if !k.is_finite() {
-            return Err(ModelError::InvalidCardinalityK {
-                k,
-                reason: "k must be finite",
-            });
-        }
-        if k < 0.0 {
-            return Err(ModelError::InvalidCardinalityK {
-                k,
-                reason: "k must be non-negative",
-            });
-        }
-        if (k - k.round()).abs() > 1e-9 {
-            return Err(ModelError::InvalidCardinalityK {
-                k,
-                reason: "k must be an integer",
-            });
-        }
-        let kk = k.round() as usize;
-        if kk > variables.len() {
-            return Err(ModelError::InvalidCardinalityK {
-                k,
-                reason: "k exceeds the input length",
-            });
-        }
-        let payload = crate::construct::CardinalityConstraint {
-            variables,
-            kind,
-            k: kk,
-        };
-        self.add_construct(ConstructKind::Cardinality(payload), preference)
-    }
-
-    /// Add a min/max construct (design §16.3, packet Task 17a; SM-12.3, D13).
-    ///
-    /// `operands` must contain at least two finite linear expressions.
-    /// `relation` selects the exact equality or the one-sided epigraph/
-    /// hypograph relation — these are distinct semantics and exactness is never
-    /// inferred from objective context (D13). The trivially-satisfiable
-    /// `Min`+`Epigraph` and `Max`+`Hypograph` combinations are typed rejections.
-    /// The builder creates the output variable (the construct's canonical
-    /// result) and returns it alongside the stable [`Construct`] handle
-    /// (SM-12.8). The optional per-construct [`FormulationPreference`] narrows
-    /// the global compilation policy (A29).
-    pub fn add_minmax(
-        &mut self,
-        operands: Vec<LinExpr>,
-        sense: MinMaxSense,
-        relation: MinMaxRelation,
-        preference: Option<FormulationPreference>,
-    ) -> Result<(Construct, VarId), ModelError> {
-        if operands.len() < 2 {
-            return Err(ModelError::MinMaxTooFewOperands);
-        }
-        // A min epigraph (output >= min) and a max hypograph (output <= max)
-        // are trivially satisfiable — reject them (SM-12.3, D13).
-        if matches!(sense, MinMaxSense::Min) && relation == MinMaxRelation::Epigraph {
-            return Err(ModelError::TriviallySatisfiableMinMax);
-        }
-        if matches!(sense, MinMaxSense::Max) && relation == MinMaxRelation::Hypograph {
-            return Err(ModelError::TriviallySatisfiableMinMax);
-        }
-        for expr in &operands {
-            // Reject non-finite constants/coefficients and stale entities
-            // before any mutation (API-06.5).
-            self.validate_expression_entities(expr)?;
-            // F2: the operand interval is validated (finite endpoints, no NaN)
-            // but is NOT encoded as the output variable's declared bounds — the
-            // interval is mutable (variable bounds / parameter values change),
-            // so a frozen build-time bound would over-restrict a full rebuild.
-            self.expression_interval(expr)?;
-        }
-        // The output variable's declared bounds are a parameter/domain-
-        // independent conservative domain: the exact selector / one-sided rows
-        // enforce the relation from the CURRENT operand intervals at compile
-        // time (F2). An unbounded operand still fails at compile time with
-        // `UnboundedBigM` for the exact relation.
-        let output_bounds = match relation {
-            MinMaxRelation::Exact => Bounds::UNBOUNDED,
-            MinMaxRelation::Epigraph => Bounds::UNBOUNDED,
-            MinMaxRelation::Hypograph => Bounds::UNBOUNDED,
-        };
-        // IN-03 atomicity: reserve the construct id BEFORE creating the output
-        // variable so a construct-id failure cannot leave an orphaned variable
-        // in the arena/changelog.
-        let id =
-            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
-        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
-        let payload = MinMaxConstraint {
-            operands,
-            output,
-            sense,
-            relation,
-        };
-        let construct =
-            self.add_construct_allocated(id, ConstructKind::MinMax(payload), preference)?;
-        Ok((construct, output))
-    }
-
-    /// Add an absolute-value-family construct (design §16.3, packet Task 17b;
-    /// SM-12.4).
-    ///
-    /// `expression` must be bounded (a finite `BoundAnalyzer` interval) — a free
-    /// variable or unbounded parameter is a typed [`ModelError`] because the
-    /// exact bridge requires finite derived bounds (never an arbitrary Big-M,
-    /// D12). `Clamp` requires finite `lower <= upper`. The builder creates the
-    /// output variable (the construct's canonical result, preserved as a
-    /// top-level construct origin) and returns it alongside the stable
-    /// [`Construct`] handle (SM-12.8).
-    pub fn add_absolute_value(
-        &mut self,
-        expression: LinExpr,
-        variant: AbsoluteValueVariant,
-        preference: Option<FormulationPreference>,
-    ) -> Result<(Construct, VarId), ModelError> {
-        self.validate_expression_entities(&expression)?;
-        let interval = self.expression_interval(&expression)?;
-        if !interval.is_bounded() {
-            return Err(ModelError::UnboundedConstructExpression);
-        }
-        // F2: the expression interval is validated (and required bounded) at
-        // build time, but the output variable's declared bounds are NOT derived
-        // from it — the interval is mutable (variable bounds / parameter values
-        // change), so a frozen build-time bound would over-restrict a full
-        // rebuild. Only static sign/clamp facts are encoded; the exact bridge
-        // rows enforce the relationship from the CURRENT interval at compile
-        // time.
-        let output_bounds = match variant {
-            // z = |x|: the static sign fact is z >= 0; the upper bound is
-            // derived by the bridge at compile time.
-            AbsoluteValueVariant::Absolute => Bounds::new(0.0, f64::INFINITY),
-            // z = max(x, 0): the static sign fact is z >= 0.
-            AbsoluteValueVariant::PositivePart => Bounds::new(0.0, f64::INFINITY),
-            // Clamp bounds are fixed constants — a parameter-independent static
-            // fact that IS retained.
-            AbsoluteValueVariant::Clamp { lower, upper } => {
-                if !lower.is_finite() || !upper.is_finite() || lower > upper {
-                    return Err(ModelError::InvalidClampBounds { lower, upper });
-                }
-                Bounds::new(lower, upper)
-            }
-        };
-        // IN-03 atomicity: reserve the construct id BEFORE creating the output
-        // variable so a construct-id failure cannot leave an orphaned variable
-        // in the arena/changelog.
-        let id =
-            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
-        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
-        let payload = AbsoluteValueConstraint {
-            expression,
-            output,
-            variant,
-        };
-        let construct =
-            self.add_construct_allocated(id, ConstructKind::AbsoluteValue(payload), preference)?;
-        Ok((construct, output))
-    }
-
-    /// Add a binary product construct (design §16.5, packet Task 17c; SM-12.6,
-    /// SM-12.7, D23).
-    ///
-    /// The operand combination must be exactly one of Binary×Binary,
-    /// Binary×Linear, or Linear×Binary. A continuous×continuous request is a
-    /// typed rejection (SM-12.7) and produces no compiled entities; a non-binary
-    /// variable in a `Binary` operand is a typed rejection (SM-12.6). The
-    /// builder creates the output variable (the construct's canonical result)
-    /// and returns it alongside the stable [`Construct`] handle (SM-12.8).
-    pub fn add_binary_product(
-        &mut self,
-        left: ProductOperand,
-        right: ProductOperand,
-        preference: Option<FormulationPreference>,
-    ) -> Result<(Construct, VarId), ModelError> {
-        let (left, right) = self.validate_product_operands(left, right)?;
-        // F2: the output variable's declared bounds are a conservative static
-        // domain — never the build-time linear-operand interval, which is
-        // mutable (variable bounds / parameter values change). The exact
-        // product rows enforce the relationship from the CURRENT interval at
-        // compile time.
-        let output_bounds = match (&left, &right) {
-            // w = a·b with a,b binary → w ∈ {0,1} is a static binary fact.
-            (ProductOperand::Binary(_), ProductOperand::Binary(_)) => Bounds::new(0.0, 1.0),
-            // w = b·f: the reachable set {0} ∪ [L,U] depends on f's CURRENT
-            // interval — the bridge derives L/U at compile time.
-            (ProductOperand::Binary(_), ProductOperand::Linear(_))
-            | (ProductOperand::Linear(_), ProductOperand::Binary(_)) => Bounds::UNBOUNDED,
-            _ => unreachable!("builder validates exactly one binary operand"),
-        };
-        // IN-03 atomicity: reserve the construct id BEFORE creating the output
-        // variable so a construct-id failure cannot leave an orphaned variable
-        // in the arena/changelog.
-        let id =
-            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
-        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
-        let payload = BinaryProductConstraint {
-            left,
-            right,
-            output,
-        };
-        let construct =
-            self.add_construct_allocated(id, ConstructKind::BinaryProduct(payload), preference)?;
-        Ok((construct, output))
-    }
-
-    /// Convenience builder: `output = binary * expression` (binary-times-
-    /// bounded-linear, design §16.5; SM-12.6).
-    ///
-    /// Equivalent to [`Self::add_binary_product`] with
-    /// `ProductOperand::Binary(binary)` × `ProductOperand::Linear(expression)`.
-    pub fn add_binary_times_linear(
-        &mut self,
-        binary: VarId,
-        expression: LinExpr,
-        preference: Option<FormulationPreference>,
-    ) -> Result<(Construct, VarId), ModelError> {
-        self.add_binary_product(
-            ProductOperand::Binary(binary),
-            ProductOperand::Linear(expression),
-            preference,
-        )
-    }
-
-    /// Validate the two product operands: exactly one binary operand, and any
-    /// binary operand must be a true binary variable (SM-12.6).
-    fn validate_product_operands(
-        &mut self,
-        left: ProductOperand,
-        right: ProductOperand,
-    ) -> Result<(ProductOperand, ProductOperand), ModelError> {
-        let left_binary = matches!(left, ProductOperand::Binary(_));
-        let right_binary = matches!(right, ProductOperand::Binary(_));
-        if !left_binary && !right_binary {
-            // Two continuous/linear operands: no exact MILP path exists.
-            return Err(ModelError::ContinuousTimesContinuousProduct);
-        }
-        if let ProductOperand::Binary(var) = &left {
-            self.require_binary(*var)?;
-        }
-        if let ProductOperand::Binary(var) = &right {
-            self.require_binary(*var)?;
-        }
-        if let ProductOperand::Linear(expr) = &left {
-            self.validate_expression_entities(expr)?;
-        }
-        if let ProductOperand::Linear(expr) = &right {
-            self.validate_expression_entities(expr)?;
-        }
-        Ok((left, right))
-    }
-
-    /// Compute the deterministic interval of a linear expression over the
-    /// model's declared variable bounds and evaluated parameter values, using
-    /// the compiler's [`BoundAnalyzer`](crate::compiler::bounds::BoundAnalyzer)
-    /// (the single interval semantics — SM-13.1).
-    fn expression_interval(
-        &self,
-        expr: &LinExpr,
-    ) -> Result<crate::compiler::bounds::Interval, ModelError> {
-        let analyzer = crate::compiler::bounds::BoundAnalyzer::new();
-        let variable_bounds = |v: VarId| {
-            self.variables
-                .get(v)
-                .map(|d| d.domain.bounds)
-                .unwrap_or(Bounds::UNBOUNDED)
-        };
-        let parameter_values = |p: ParamId| self.parameters.get_value(p).unwrap_or(0.0);
-        analyzer
-            .interval_of(
-                &crate::function::ScalarFunction::Linear(expr.clone()),
-                variable_bounds,
-                parameter_values,
-            )
-            .map(|trace| trace.result)
-            .map_err(bound_error_to_model_error)
-    }
-
-    /// Shared construct-add: allocate the arena entry, record the
-    /// self-contained `Change::ConstructAdded` (A29: payload + preference single
-    /// authority), and return the stable generation-safe handle.
-    fn add_construct(
-        &mut self,
-        kind: ConstructKind,
-        preference: Option<FormulationPreference>,
-    ) -> Result<Construct, ModelError> {
-        let preference = preference.unwrap_or(FormulationPreference::Auto);
+        let kind = ConstructKind::Fixture(payload);
         let construct = self
             .constructs
             .add(kind.clone(), preference)
@@ -1125,70 +411,6 @@ impl Model {
             active: true,
         });
         Ok(construct)
-    }
-
-    /// Atomic construct-add with a PRE-ALLOCATED id (IN-03).
-    ///
-    /// A builder that creates a variable (output/activator) reserves the
-    /// construct id FIRST via [`crate::identity::ConstructId::allocate`], then
-    /// creates the variable, then calls this helper. Nothing fallible remains
-    /// after the id is reserved, so a construct-add failure can never leave an
-    /// orphaned variable in the arena/changelog.
-    fn add_construct_allocated(
-        &mut self,
-        id: Construct,
-        kind: ConstructKind,
-        preference: Option<FormulationPreference>,
-    ) -> Result<Construct, ModelError> {
-        let preference = preference.unwrap_or(FormulationPreference::Auto);
-        self.constructs
-            .add_with_id(id, kind.clone(), preference)
-            .map_err(|_| ModelError::IdentityOverflow)?;
-        // Constructs start active (design §7).
-        self.changelog.push(Change::ConstructAdded {
-            construct: id,
-            kind,
-            preference,
-            active: true,
-        });
-        Ok(id)
-    }
-
-    /// Require `var` to exist and be a binary variable (SM-12.2).
-    fn require_binary(&self, var: VarId) -> Result<(), ModelError> {
-        match self.variables.get(var).map(|d| d.domain.var_type) {
-            Some(VarType::Binary) => Ok(()),
-            Some(_) => Err(ModelError::NonBinaryVariable(var)),
-            None => Err(ModelError::VariableNotFound(var)),
-        }
-    }
-
-    /// Whether `function` is proven integer-valued over its domain (D14).
-    ///
-    /// All referenced variables must be binary/integer and every coefficient
-    /// (including the constant term) must be an integral constant. A
-    /// parameterized coefficient is conservatively NOT proven integral.
-    fn expression_is_proven_integral(&self, function: &ScalarFunction) -> bool {
-        match function {
-            ScalarFunction::Linear(expr) => {
-                let constant_ok = expr.constant.is_finite()
-                    && (expr.constant - expr.constant.round()).abs() < 1e-9;
-                constant_ok
-                    && expr
-                        .terms
-                        .iter()
-                        .all(|term| match term.coeff.as_constant() {
-                            Some(v) => v.is_finite() && (v - v.round()).abs() < 1e-9,
-                            None => false,
-                        })
-                    && expr.terms.iter().all(|term| {
-                        matches!(
-                            self.variables.get(term.var).map(|d| d.domain.var_type),
-                            Some(VarType::Binary) | Some(VarType::Integer)
-                        )
-                    })
-            }
-        }
     }
 
     /// Read a construct entry by id.
@@ -1379,158 +601,8 @@ impl Model {
     }
 
     /// Get variable bounds.
-    ///
-    /// This is the **declared** bound view (SM-05.1). Use
-    /// [`Self::effective_bounds`] for the bounds the solver actually applies
-    /// (declared ∩ active fixing).
     pub fn variable_bounds(&self, var: VarId) -> Option<Bounds> {
-        self.variables.get(var).map(|d| d.domain.bounds)
-    }
-
-    /// The declared domain of a variable (design §10, SM-05.1).
-    ///
-    /// Returns `None` for a stale/removed variable. The declared domain
-    /// separates declared bounds/type/semi from the optional persistent
-    /// fixing; see [`Self::effective_bounds`] for the solver-facing bounds.
-    pub fn variable_domain(&self, var: VarId) -> Option<VariableDomain> {
-        self.variables.get(var).map(|d| d.domain)
-    }
-
-    /// The declared bounds of a variable (SM-05.1).
-    ///
-    /// The declared bounds are independent of any persistent fixing — they are
-    /// what `unfix` restores. Returns `None` for a stale/removed variable.
-    pub fn declared_bounds(&self, var: VarId) -> Option<Bounds> {
-        self.variables.get(var).map(|d| d.domain.bounds)
-    }
-
-    /// The effective bounds of a variable (SM-05.1).
-    ///
-    /// The effective bounds are `declared ∩ fixing`: for a fixed variable the
-    /// effective bounds equal `[value, value]` (D6: fixing compiles as bound
-    /// tightening, SM-05.3). For an unfixed variable the effective bounds
-    /// equal the declared bounds. Returns `None` for a stale/removed variable.
-    pub fn effective_bounds(&self, var: VarId) -> Option<Bounds> {
-        let data = self.variables.get(var)?;
-        // WR-02: the solver-facing bounds fold the fixing FIRST (SM-05.3),
-        // THEN the activity — an inactive variable's solver-facing bounds are
-        // `[0,0]` regardless of its fixing, matching `compile_snapshot`'s
-        // fold (the model API, `compile_snapshot`, and `compile_delta` must
-        // agree).
-        if !data.active {
-            return Some(Bounds::new(0.0, 0.0));
-        }
-        match &data.fixing {
-            Some(fixing) => Some(Bounds {
-                lower: data.domain.bounds.lower.max(fixing.value),
-                upper: data.domain.bounds.upper.min(fixing.value),
-            }),
-            None => Some(data.domain.bounds),
-        }
-    }
-
-    /// The named integrality tolerance used by fix validation on integer and
-    /// binary variables (SM-05.5).
-    pub fn integrality_tolerance(&self) -> f64 {
-        self.constants.integrality_tolerance
-    }
-
-    /// Set the named integrality tolerance used by fix validation (SM-05.5).
-    ///
-    /// Fallible (D10): a negative, NaN, or infinite tolerance is rejected
-    /// before any state change.
-    pub fn set_integrality_tolerance(&mut self, tolerance: f64) -> Result<(), ModelError> {
-        if !tolerance.is_finite() || tolerance < 0.0 {
-            return Err(ModelError::InvalidIntegralityTolerance(tolerance));
-        }
-        self.constants.integrality_tolerance = tolerance;
-        Ok(())
-    }
-
-    /// Fix a variable to a value (SM-05.2, design §10).
-    ///
-    /// A typed atomic canonical mutation: validates finiteness, in-domain,
-    /// and (for integer/binary variables) integrality within the named
-    /// integrality tolerance (SM-05.5), then records a
-    /// [`VariableFixing`] with [`FixingProvenance::User`]. Fixing is
-    /// represented as bound tightening — a fixed variable's effective bounds
-    /// become `[value, value]` (D6, SM-05.3) — and emits
-    /// [`Change::VariableFixingChanged`] (compiled to
-    /// `ModelOp::SetVariableFixing`). `commit` advances the canonical
-    /// revision exactly once.
-    ///
-    /// A failed validation leaves the model fully unchanged (no pending
-    /// change, no revision advance).
-    pub fn fix(&mut self, var: VarId, value: f64) -> Result<(), ModelError> {
-        let data = self
-            .variables
-            .get(var)
-            .ok_or(ModelError::VariableNotFound(var))?;
-        if !value.is_finite() {
-            return Err(ModelError::NonFiniteValue("variable fixing value"));
-        }
-        let bounds = data.domain.bounds;
-        if value < bounds.lower || value > bounds.upper {
-            return Err(ModelError::ValueOutOfBounds {
-                variable: var,
-                value,
-                bounds,
-            });
-        }
-        let tolerance = self.constants.integrality_tolerance;
-        if matches!(data.domain.var_type, VarType::Integer | VarType::Binary) {
-            let nearest = value.round();
-            if (value - nearest).abs() > tolerance {
-                return Err(ModelError::NonIntegralValue {
-                    variable: var,
-                    value,
-                    tolerance,
-                });
-            }
-        }
-
-        let fixing = VariableFixing {
-            value,
-            provenance: FixingProvenance::User,
-        };
-        self.variables
-            .get_mut(var)
-            .expect("variable liveness verified above")
-            .fixing = Some(fixing.clone());
-        self.changelog.push(Change::VariableFixingChanged {
-            var,
-            fixing: Some(fixing),
-            effective_bounds: Bounds::new(value, value),
-        });
-        Ok(())
-    }
-
-    /// Unfix a variable, restoring the **current** declared bounds (SM-05.4,
-    /// design §10).
-    ///
-    /// A typed atomic canonical mutation. The effective bounds after `unfix`
-    /// equal the declared bounds at the time of the call, not the bounds at
-    /// the time the variable was fixed. Unfixing an already-unfixed variable
-    /// records no change.
-    pub fn unfix(&mut self, var: VarId) -> Result<(), ModelError> {
-        let data = self
-            .variables
-            .get(var)
-            .ok_or(ModelError::VariableNotFound(var))?;
-        if data.fixing.is_none() {
-            return Ok(());
-        }
-        let declared = data.domain.bounds;
-        self.variables
-            .get_mut(var)
-            .expect("variable liveness verified above")
-            .fixing = None;
-        self.changelog.push(Change::VariableFixingChanged {
-            var,
-            fixing: None,
-            effective_bounds: declared,
-        });
-        Ok(())
+        self.variables.get(var).map(|d| d.bounds)
     }
 
     /// Get a variable's name (D6/API-05.5).
@@ -1550,15 +622,10 @@ impl Model {
     /// Fallible (D10/API-06.1/06.2/06.4): inverted or NaN bounds are rejected
     /// before any mutation, ±inf misuse (a `+inf` lower or `-inf` upper) is
     /// rejected, and a binary variable must stay inside `[0, 1]`.
-    ///
-    /// Atomicity guard (SM-05.6): the requested bounds are validated against
-    /// any **active fixing** — bounds that exclude the fixing value return a
-    /// typed [`ModelError::BoundsExcludeFixing`] with no state change (the
-    /// fixing value must always lie inside the declared bounds).
     pub fn set_variable_bounds(&mut self, var: VarId, bounds: Bounds) -> Result<(), ModelError> {
         let data = self
             .variables
-            .get(var)
+            .get_mut(var)
             .ok_or(ModelError::VariableNotFound(var))?;
         if !bounds.is_valid() {
             return Err(ModelError::InvalidBounds);
@@ -1569,27 +636,12 @@ impl Model {
         if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
             return Err(ModelError::NonFiniteValue("variable upper bound"));
         }
-        if data.domain.var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
+        if data.var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
             return Err(ModelError::InvalidBinaryBounds);
         }
-        // SM-05.6: a declared-bound change that excludes the active fixing
-        // value fails atomically — validate before any mutation.
-        if let Some(fixing) = &data.fixing {
-            if fixing.value < bounds.lower || fixing.value > bounds.upper {
-                return Err(ModelError::BoundsExcludeFixing {
-                    variable: var,
-                    value: fixing.value,
-                    bounds,
-                });
-            }
-        }
-        let data = self
-            .variables
-            .get_mut(var)
-            .expect("variable liveness verified above");
-        let old = data.domain.bounds;
+        let old = data.bounds;
         if old != bounds {
-            data.domain.bounds = bounds;
+            data.bounds = bounds;
             self.changelog.push(Change::VariableBoundsChanged {
                 var,
                 old,
@@ -1622,9 +674,9 @@ impl Model {
             .variables
             .get_mut(var)
             .ok_or(ModelError::VariableNotFound(var))?;
-        let old = data.domain.var_type;
+        let old = data.var_type;
         if old != var_type {
-            data.domain.var_type = var_type;
+            data.var_type = var_type;
             self.changelog.push(Change::VariableTypeChanged {
                 var,
                 old,
@@ -1661,20 +713,6 @@ impl Model {
         }
         if lower > bounds.lower {
             self.set_variable_bounds(var, Bounds::new(lower, bounds.upper))?;
-        }
-        // Record the declared semi-continuous domain (design §10) alongside
-        // the legacy `semicontinuous_lower` map (drives the snapshot and the
-        // compile-boundary rejection, P26 behavior unchanged).
-        if let Some(data) = self.variables.get_mut(var) {
-            let semi = match data.domain.var_type {
-                VarType::Integer => SemiDomain::Integer {
-                    nonzero_lower: lower,
-                },
-                VarType::Continuous | VarType::Binary => SemiDomain::Continuous {
-                    nonzero_lower: lower,
-                },
-            };
-            data.domain.semi = Some(semi);
         }
         self.semicontinuous_lower.insert(var, lower);
         self.changelog
@@ -1955,13 +993,6 @@ impl Model {
     /// Get the active objective.
     pub fn active_objective(&self) -> Option<ObjId> {
         self.objectives.active()
-    }
-
-    /// Get an objective's optimization sense (P27 Task 9 overlay compiler:
-    /// objective-lock degradation rows follow the objective's sense, design
-    /// §15.2). Returns `None` for a stale/removed objective.
-    pub fn objective_sense(&self, obj: ObjId) -> Option<Sense> {
-        self.objectives.get(obj).map(|data| data.sense)
     }
 
     /// Get the constant offset for an objective.
@@ -2568,16 +1599,7 @@ impl Model {
         let mut variables = HashMap::new();
         for (id, data) in self.variables.iter() {
             let sc_lower = self.semicontinuous_lower.get(&id).copied();
-            variables.insert(
-                id,
-                (
-                    data.domain.bounds,
-                    data.domain.var_type,
-                    data.active,
-                    sc_lower,
-                    data.fixing.clone(),
-                ),
-            );
+            variables.insert(id, (data.bounds, data.var_type, data.active, sc_lower));
         }
 
         let mut constraints = HashMap::new();
@@ -2810,23 +1832,6 @@ impl Model {
             }
         }
 
-        // 10. Fixing invariant (SM-05.5, P27 Task 8): every live variable with
-        // an active fixing satisfies `declared.lower <= fixing.value <=
-        // declared.upper`. `fix` and `set_variable_bounds` enforce this at
-        // mutation time; this re-checks the stored state.
-        for (var, data) in self.variables.iter() {
-            if !data.active {
-                continue;
-            }
-            let bounds = data.domain.bounds;
-            if !self::validation::fixing_within_declared(data.fixing.as_ref(), bounds) {
-                let value = data.fixing.as_ref().map(|f| f.value).unwrap_or(f64::NAN);
-                violations.push(format!(
-                    "variable {var:?} fixing value {value} lies outside declared bounds {bounds:?}"
-                ));
-            }
-        }
-
         if violations.is_empty() {
             Ok(())
         } else {
@@ -2944,24 +1949,16 @@ impl Model {
         let mut vars: Vec<_> = self.variables.iter().collect();
         vars.sort_by_key(|(id, _)| id.index());
         for (id, data) in &vars {
-            let lb = format_bound(data.domain.bounds.lower);
-            let ub = format_bound(data.domain.bounds.upper);
-            let type_s = match data.domain.var_type {
+            let lb = format_bound(data.bounds.lower);
+            let ub = format_bound(data.bounds.upper);
+            let type_s = match data.var_type {
                 VarType::Continuous => "Continuous",
                 VarType::Integer => "Integer",
                 VarType::Binary => "Binary",
             };
             let inactive = if !data.active { " [inactive]" } else { "" };
-            let fixing_s = match &data.fixing {
-                Some(fixing) => format!(" fixed={}", fixing.value),
-                None => String::new(),
-            };
             let label = entity_label("x", id.index(), &data.name);
-            writeln!(
-                out,
-                "    {label}: [{lb}, {ub}] {type_s}{fixing_s}{inactive}"
-            )
-            .unwrap();
+            writeln!(out, "    {label}: [{lb}, {ub}] {type_s}{inactive}").unwrap();
         }
 
         // Parameters
@@ -3060,15 +2057,8 @@ impl Model {
     ) -> impl Iterator<Item = (VarId, f64)> + 'a {
         self.variables.iter_active().filter_map(move |(var, data)| {
             let val = solution.value_or_zero(var);
-            // The effective (solver-facing) bounds govern feasibility: for a
-            // fixed variable this is the equal bound [value, value].
-            let bounds = data
-                .fixing
-                .as_ref()
-                .map(|f| Bounds::new(f.value, f.value))
-                .unwrap_or(data.domain.bounds);
-            let lower_viol = bounds.lower - val; // positive if val < lb
-            let upper_viol = val - bounds.upper; // positive if val > ub
+            let lower_viol = data.bounds.lower - val; // positive if val < lb
+            let upper_viol = val - data.bounds.upper; // positive if val > ub
             let violation = lower_viol.max(upper_viol);
             if violation > self.constants.feasibility_tolerance {
                 Some((var, violation))
@@ -3132,15 +2122,6 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::VariableBoundsChanged {
             var, new: bounds, ..
         } => Ok(ModelOp::SetVariableBounds { var, bounds }),
-        Change::VariableFixingChanged {
-            var,
-            fixing,
-            effective_bounds,
-        } => Ok(ModelOp::SetVariableFixing {
-            var,
-            fixing,
-            effective_bounds,
-        }),
         Change::VariableTypeChanged {
             var, new: var_type, ..
         } => Ok(ModelOp::SetVariableType { var, var_type }),
@@ -3765,10 +2746,10 @@ mod tests {
 // ── Construct lifecycle (P25 Task 4, design §7) ────────────────────────────
 //
 // Moved IN-CRATE from tests/semantic_ir.rs (F3): these exercise the
-// `#[cfg(test)]`-gated fixture scaffolding (`FixturePayload`,
-// `ConstructKind::Fixture`, `add_construct_fixture`, `Model::construct`, and
-// the pub(crate) snapshot / delta `.constructs` fields), which is test-only
-// and absent from the public API surface (A30).
+// crate-private fixture scaffolding (`FixturePayload`, `ConstructKind::Fixture`,
+// `add_construct_fixture`, `Model::construct`, and the pub(crate) snapshot /
+// delta `.constructs` fields), which is not part of the public surface until
+// P32.
 #[cfg(test)]
 mod construct_tests {
     // `ConstructKind` is single-variant (`Fixture`) in P25. The tests keep the
@@ -3779,7 +2760,10 @@ mod construct_tests {
     use super::*;
 
     fn fixture(key: &str, value: f64) -> FixturePayload {
-        FixturePayload::new(key.to_string(), value)
+        FixturePayload {
+            key: key.to_string(),
+            value,
+        }
     }
 
     #[test]

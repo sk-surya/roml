@@ -8,15 +8,15 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 | SM-02 Identity/metadata/provenance | P25 | P26 compilation/origin IDs; P29 reports | Partially closed: SM-02.1, 02.3, 02.7 closed in P25; SM-02.4/02.5 closed in P26; SM-02.2 foundations only (validation mechanism P27); SM-02.6 foundations in P26, full in P29 |
 | SM-03 Compiler/backend IR | P26 | P34 equivalence and stale-state evidence | Partially closed: SM-03.1–03.8 closed in P26; SM-03.9 partial (results and metadata carry exact `CompilationId` with façade mismatch rejection in P26; overlay artifacts P27, analysis artifacts P29); P34 evidence pending |
 | SM-04 Typed capabilities | P26 | P28/P29/P31/P33 backend features | Partially closed: SM-04.1, 04.3, 04.4 closed in P26; SM-04.2 partial (typed set reports Native/Bridge separately; bridge features land P32); SM-04.5 deferred to P28; P28+/P33 features pending |
-| SM-05 Persistent fixing | P27 | P34 regression/performance | Closed in P27 (`M3_P27_FIXING_LOCKS_OVERLAYS.md`); P34 regression/performance pending |
-| SM-06 Assignments/solution reuse | P27 | P28 starts/hints | Closed in P27 (`M3_P27_FIXING_LOCKS_OVERLAYS.md`); P28 starts/hints pending |
-| SM-07 SolvePlan/overlays | P27–P28 | P31 objective locks; P34 failure matrix | Partially closed: SM-07.3–07.6 closed in P27; SM-07.1–07.2/07.7 → P28; P31 objective locks (stage optimum `z`), P34 failure matrix pending |
+| SM-05 Persistent fixing | P27 | P34 regression/performance | Planned |
+| SM-06 Assignments/solution reuse | P27 | P28 starts/hints | Planned |
+| SM-07 SolvePlan/overlays | P27–P28 | P31 objective locks; P34 failure matrix | Planned |
 | SM-08 Starts/hints | P28 | P34 support matrix | Planned |
 | SM-09 IIS/conflicts | P29 | P34 docs/fresh consumers | Planned |
 | SM-10 Soft constraints | P30 | P34 examples/equivalence | Planned |
 | SM-11 Objective policies | P31 | P34 native/portable corpus | Planned |
-| SM-12 Common constructs | P32 | P34 public qualification | Partially closed: SM-12.3/12.4/12.6/12.7 closed in P32; remaining clauses P33/P34 |
-| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Partially closed: SM-13.1-13.6 (compiler foundations) closed in P32; full closure P33 |
+| SM-12 Common constructs | P32 | P34 public qualification | Planned |
+| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Planned |
 | SM-14 PWL | P33 | P34 solver/version matrix | Planned |
 | SM-15 Qualification/NLP readiness | P34 | all phase evidence | Planned |
 
@@ -73,7 +73,7 @@ Must include:
 - subsequent-solve leak checks;
 - HiGHS incremental bound evidence.
 
-Closes: SM-05, SM-06, SM-07.3–SM-07.6, SM-02.2 (assignment validation: lineage + generations + value/domain).
+Closes: SM-05, SM-06, SM-07.3–SM-07.6.
 
 ### P28 evidence
 

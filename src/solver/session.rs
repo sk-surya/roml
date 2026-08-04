@@ -22,7 +22,6 @@ use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solver::backend::{BackendCapabilities, BackendError};
 use crate::solver::callback::CallbackHandler;
-use crate::solver::overlay::{CompiledOverlay, OverlayApplyReceipt, OverlayRollbackOutcome};
 use crate::solver::request::{SolveRequest, SolveResult};
 use crate::sync::{AdapterCursor, AdapterHealth};
 
@@ -109,65 +108,6 @@ pub trait SolutionView {
 
     /// The objective value from the last solve, if available.
     fn objective_value(&self) -> Option<f64>;
-}
-
-/// Optional trait — transactional solve-overlay apply/rollback (P27 Task 10,
-/// design §12).
-///
-/// A backend that supports reversible solve overlays implements this bounded
-/// trait alongside [`SessionHealth`]/[`SolutionView`]. The lifecycle is
-/// transactional from the caller's perspective (SM-07.4):
-///
-/// 1. [`apply_overlay`](Self::apply_overlay) transitions the backend compiled
-///    state `C_base → C_overlay` and returns an explicit
-///    [`OverlayApplyReceipt`];
-/// 2. the solve runs against `C_overlay`;
-/// 3. [`rollback_overlay`](Self::rollback_overlay) transitions back
-///    `C_overlay → C_base` and reports an explicit
-///    [`OverlayRollbackOutcome`] — a fallible rollback is NEVER delegated
-///    solely to `Drop`;
-/// 4. [`verify_overlay_clean`](Self::verify_overlay_clean) asserts the backend
-///    canonical state is restored to `C_base` after a `Clean` rollback.
-///
-/// An uncertain rollback returns
-/// [`OverlayRollbackOutcome::RequiresRebuild`] and marks the session
-/// `RequiresRebuild` (D7 invariant, D22); the next solve forces a snapshot
-/// rebuild before reuse.
-pub trait OverlaySession {
-    /// Apply a compiled overlay against the backend's exact base compiled
-    /// state, transitioning `C_base → C_overlay`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BackendError`] when the overlay's `base_compilation` does
-    /// not match the backend's current compiled state (rejected BEFORE any
-    /// mutation), or when a native apply call fails (the backend then marks
-    /// itself `RequiresRebuild` so a partially applied overlay is never
-    /// silently reused).
-    fn apply_overlay(
-        &mut self,
-        overlay: &CompiledOverlay,
-    ) -> Result<OverlayApplyReceipt, BackendError>;
-
-    /// Roll back an applied overlay, transitioning `C_overlay → C_base`.
-    ///
-    /// Returns [`OverlayRollbackOutcome::Clean`] when the base is provably
-    /// restored and [`OverlayRollbackOutcome::RequiresRebuild`] when the
-    /// rollback could not be proven clean (the session is then marked
-    /// `RequiresRebuild`).
-    fn rollback_overlay(
-        &mut self,
-        receipt: &OverlayApplyReceipt,
-    ) -> Result<OverlayRollbackOutcome, BackendError>;
-
-    /// Verify the backend's canonical compiled state is restored to the base
-    /// after a `Clean` rollback.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BackendError`] when the compiled maps / `current_compilation`
-    /// do not match the base — the session is marked `RequiresRebuild`.
-    fn verify_overlay_clean(&mut self) -> Result<(), BackendError>;
 }
 
 /// Optional trait — for backends that support solver callbacks.

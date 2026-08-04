@@ -22,13 +22,13 @@
 //! returns [`IdentityOverflow`] — the counter never wraps to 0 and ids are
 //! never reused. Exhaustion is practically unreachable (2^64 allocations).
 //!
-//! The fallible allocation APIs (e.g. the test-only
-//! `Model::add_construct_fixture` / the construct arena) surface exhaustion as
-//! the typed [`IdentityOverflow`] error. The infallible constructors —
-//! [`Model`](crate::Model)`::default`, `Clone`, and `SolveMetadata::default` —
-//! must return a value, so they `expect`/`panic`; but because the counters
-//! saturate, a panicking constructor never re-issues an id. The panic therefore
-//! fires only when the family counter is *truly* exhausted.
+//! The fallible allocation APIs (e.g. `Model::add_construct_fixture` / the
+//! construct arena) surface exhaustion as the typed [`IdentityOverflow`]
+//! error. The infallible constructors — [`Model`](crate::Model)`::default`,
+//! `Clone`, and `SolveMetadata::default` — must return a value, so they
+//! `expect`/`panic`; but because the counters saturate, a panicking
+//! constructor never re-issues an id. The panic therefore fires only when the
+//! family counter is *truly* exhausted.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

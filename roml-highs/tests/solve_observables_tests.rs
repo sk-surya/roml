@@ -107,7 +107,6 @@ fn q5_objective_offset() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -167,7 +166,6 @@ fn q5_dual_values() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -175,7 +173,6 @@ fn q5_dual_values() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -276,7 +273,6 @@ fn q5_reduced_costs() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
             VariableEntry {
                 id: v1,
@@ -284,7 +280,6 @@ fn q5_reduced_costs() {
                 var_type: VarType::Continuous,
                 active: true,
                 semicontinuous_lower: None,
-                fixing: None,
             },
         ],
         constraints: vec![ConstraintEntry {
@@ -465,7 +460,6 @@ fn q5_status_infeasible_or_unbounded() {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         }],
         constraints: vec![],
         objectives: vec![ObjectiveEntry {
@@ -739,7 +733,6 @@ fn time_limit_mip_snapshot() -> ModelSnapshot {
             var_type: VarType::Binary,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         });
         cells.push(CellEntry {
             cell_key: (CoefficientTarget::Objective(o), var_id(i)),
@@ -826,7 +819,6 @@ fn iteration_limit_lp_snapshot() -> ModelSnapshot {
             var_type: VarType::Continuous,
             active: true,
             semicontinuous_lower: None,
-            fixing: None,
         });
         cells.push(CellEntry {
             cell_key: (CoefficientTarget::Objective(o), var_id(i)),

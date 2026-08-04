@@ -33,8 +33,8 @@ static OVERLAY_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl OverlayId {
     /// Allocate a fresh opaque overlay id. The first issued id is 1; zero is
     /// reserved. Returns [`IdentityOverflow`] on counter exhaustion instead of
-    /// wrapping. Used by [`SolveOverlay::new`](crate::solver::overlay::SolveOverlay::new)
-    /// (P27) and referenced by every overlay-generated entity and receipt.
+    /// wrapping. Unused in P26 (overlay lifecycle lands in P27).
+    #[allow(dead_code)]
     pub(crate) fn allocate() -> Result<Self, IdentityOverflow> {
         match OVERLAY_ID_COUNTER.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pre| {
             if pre == u64::MAX {
@@ -53,83 +53,12 @@ impl OverlayId {
 /// (design §5).
 ///
 /// An implementation-detail marker refined with the bridge tasks (P32/P33)
-/// and the overlay tasks (P27). The enum is `#[non_exhaustive]`; P26 declared
-/// it empty (no construct/overlay generated entities yet). P32 Task 15 added
-/// the generic [`Bridge`](Self::Bridge) role; P32 Task 16 adds the
-/// per-construct role variants for the logical constructs (indicator rows,
-/// reification rows, Boolean rows, cardinality rows). P27 adds the
-/// solve-overlay row roles; the enum stays `#[non_exhaustive]` so both
-/// families can extend it without breaking match arms.
+/// and the overlay tasks (P27). The enum is `#[non_exhaustive]` and empty in
+/// P26: no construct/overlay generates entities yet, so no role value can be
+/// constructed.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GeneratedRole {
-    /// A generated bridge entity whose precise role is refined by the
-    /// per-construct bridge modules. Task 15's `BridgeFinalizer` uses this
-    /// generic role for every entity it generates.
-    Bridge,
-    /// An indicator implication row (the exact one-way Big-M row; also the
-    /// exact row emitted when a qualified native indicator is selected — the
-    /// P32 backend IR has no native-constraint representation, so the native
-    /// selection is recorded as a formulation decision and the emitted exact
-    /// row carries this role via `IndicatorNative`).
-    IndicatorImplicationRow,
-    /// A row generated under a qualified native `BackendFeature::Indicator`
-    /// selection (distinct role so the selection is observable in the origin
-    /// map).
-    IndicatorNative,
-    /// A reification implication row (`b = 1 ⇒ relation`).
-    ReificationImplicationRow,
-    /// A reification complement row (`b = 0 ⇒ relation complement`, honoring
-    /// the separation tolerance).
-    ReificationComplement,
-    /// A Boolean implication row (`a ⇒ b`).
-    BooleanImplicationRow,
-    /// A Boolean equivalence row (`a ⟺ b`).
-    BooleanEquivalenceRow,
-    /// A Boolean any (at-least-one) row.
-    BooleanAnyRow,
-    /// A Boolean all (all-ones) row.
-    BooleanAllRow,
-    /// A cardinality row (exactly/at-most/at-least `k`).
-    CardinalityRow,
-    /// A max-epigraph row (`x_i <= y`, zero binaries — P32 Task 17a).
-    MinMaxEpigraphRow,
-    /// A min-hypograph row (`x_i >= y`, zero binaries — P32 Task 17a).
-    MinMaxHypographRow,
-    /// An exact min/max selector row (P32 Task 17a).
-    MinMaxSelectorRow,
-    /// An exact min/max selector binary (one per operand, sum = 1 — P32 Task 17a).
-    MinMaxSelectorBinary,
-    /// An exact absolute-value decomposition row (`z = p + n`, `p - n = x`).
-    AbsoluteValueDecompositionRow,
-    /// The exact absolute-value/positive-part nonnegativity row (`p <= M_p·b`).
-    AbsoluteValuePositivePartRow,
-    /// The exact absolute-value/positive-part negative-part row (`n <= M_n·(1-b)`).
-    AbsoluteValueNegativePartRow,
-    /// The exact absolute-value selector binary (`b`).
-    AbsoluteValueSelectorBinary,
-    /// A clamp inner max-selector row (P32 Task 17b).
-    ClampInnerSelectorRow,
-    /// A clamp inner max-selector binary (P32 Task 17b).
-    ClampInnerSelectorBinary,
-    /// A clamp outer min-selector row (P32 Task 17b).
-    ClampOuterSelectorRow,
-    /// A clamp outer min-selector binary (P32 Task 17b).
-    ClampOuterSelectorBinary,
-    /// A binary-binary product row (P32 Task 17c).
-    BinaryProductRow,
-    /// A binary-times-bounded-linear product row (P32 Task 17c).
-    BinaryProductLinearRow,
-    /// The binary-times-linear product's bound row (`w >= L·b` / `w <= U·b`,
-    /// P32 Task 17c).
-    BinaryProductBoundRow,
-    /// A temporary row added for an [`ObjectiveLock`](crate::solver::overlay::ObjectiveLock)
-    /// (P27 Task 9).
-    ObjectiveLockRow,
-    /// A temporary row added for an [`ObjectiveCutoff`](crate::solver::overlay::ObjectiveCutoff)
-    /// (P27 Task 9).
-    CutoffRow,
-}
+pub enum GeneratedRole {}
 
 /// The origin of a generated compiled entity (design §4.4, §5; D5).
 ///
@@ -182,14 +111,6 @@ impl OriginMap {
     /// Number of recorded origin entries.
     pub fn len(&self) -> usize {
         self.variables.len() + self.constraints.len() + self.objectives.len()
-    }
-
-    /// Merge `other`'s origins into this map (P32 construct compilation
-    /// merges each bridge's origin map into the session's).
-    pub fn merge(&mut self, other: OriginMap) {
-        self.variables.extend(other.variables);
-        self.constraints.extend(other.constraints);
-        self.objectives.extend(other.objectives);
     }
 
     /// True when no origin has been recorded.
