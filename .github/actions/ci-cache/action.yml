@@ -36,7 +36,7 @@ runs:
     - name: Restore apt cache
       id: apt-restore
       if: runner.os == 'Linux'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: /tmp/ci-apt-cache
         key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ inputs.cache-version }}-${{ hashFiles('.github/actions/ci-cache/action.yml') }}
@@ -96,7 +96,7 @@ runs:
       # this cache"). The winner's cache serves every job on the next run;
       # after a version bump all jobs miss and one of them saves.
       if: ${{ always() && steps.apt-restore.outputs.cache-hit != 'true' && runner.os == 'Linux' }}
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: /tmp/ci-apt-cache
         key: ${{ runner.os }}-${{ runner.arch }}-apt-${{ inputs.cache-version }}-${{ hashFiles('.github/actions/ci-cache/action.yml') }}
@@ -109,7 +109,7 @@ runs:
     # staleness, which cargo repairs by rebuilding only what changed.
     - name: Restore cargo cache
       id: cargo-restore
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: |
           ~/.cargo/registry
@@ -124,7 +124,7 @@ runs:
       # as the apt save above; a restore-keys fallback counts as a miss and
       # upgrades the cache to the full key).
       if: ${{ always() && steps.cargo-restore.outputs.cache-hit != 'true' }}
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: |
           ~/.cargo/registry
