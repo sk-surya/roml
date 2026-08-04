@@ -4,16 +4,16 @@
 **Review pass:** Pass 1 — Specification and correctness
 **Date:** 2026-08-04
 **Initially reviewed commit:** `f15fe61` (base `d2fdbf0`)
-**Re-review commit:** `838e577` (`fix(solve): gate multiple starts and harden warm-start failure paths`)
+**Re-review commits:** `838e577` (round 2), `14e2e72` (round 3)
 
 ---
 
 ## Verdict
 
-**CLEAR — 0 × P0, 0 × P1.** The single blocking P1-01 and the substantive P2s
-from Pass 1 are correctly fixed on `838e577` and verified by me (tests run,
-source traced). The phase may merge pending Pass 2 sign-off and the gate result
-recording.
+**CLEAR — 0 × P0, 0 × P1.** The blocking P1-01 and the owner's P1-1/P1-2 from
+the second disposition are correctly fixed and re-verified by me on `14e2e72`
+(source trace + tests run). The phase may merge pending Pass 2 sign-off and the
+gate-result recording.
 
 ---
 
@@ -51,6 +51,7 @@ branch (886-943).
 `MultipleMipStarts` without `MipStart`/`PartialMipStart` would accept a second
 start whose base feature is unqualified. `MultipleMipStarts` is never qualified
 in this phase (HiGHS: `Unsupported`), so this is unreachable today.
+*(This residual is resolved in round 3 by the composed gate — see below.)*
 
 ### 2. Trait defaults cannot let a backend silently ignore an overlay request — VERIFIED
 
@@ -61,6 +62,7 @@ The executor's overlay path (`src/solver/facade.rs:650-657`) maps a default
 `SolveError::Rollback` — nothing is silent, and the default does no native
 mutation. This also resolves the P2-01 D27 burden: an M2 backend author needs
 only an empty `impl OverlaySession for MyBackend {}` to keep `solve`/`solve_with`.
+*(Superseded in round 3 by the unbounded `solve_base` — see below.)*
 
 ### 3. Stale-hint check runs before any backend call — VERIFIED
 
@@ -127,18 +129,20 @@ present, so the empty-plan equivalence assertions (which require
 
 ## Findings (Pass 1, as originally issued)
 
-### P1-01 — Multiple starts silently dropped; `MultipleMipStarts` capability never enforced — **FIXED in `838e577`, re-verified**
+### P1-01 — Multiple starts silently dropped; `MultipleMipStarts` capability never enforced — **FIXED in `838e577`, refined in `14e2e72`, re-verified**
 
 **File:** `src/solver/facade.rs:832-884`, `:970-986` (original).
-**Disposition:** Fixed as described in the re-review section; the three new
+**Disposition:** Fixed as described in the re-review sections; the three new
 tests cover Reject / ConvertStartToTemporaryFixing / ConvertHintToStart, and
 `apply_warm_starts` no longer receives a multi-start list the backend cannot
-hold.
+hold. The composed gate in `14e2e72` additionally removes the round-2 residual
+(primitive AND multiple composition).
 
 ### P2-01 — `solve`/`solve_with` trait-bound tightening (D27) — **FIXED**
 
 `src/solver/session.rs:147-190` — lifecycle methods defaulted; M2 migration is
-now an empty impl line.
+now an empty impl line. *(Round 3 supersedes the mechanism with the unbounded
+`solve_base` — see the round-3 section.)*
 
 ### P2-02 — `SolvePlan::validate` never validates hint variable existence — **FIXED**
 
@@ -166,22 +170,6 @@ model class).
 
 ---
 
-## Findings summary (final)
-
-| Severity | Count | Disposition |
-|----------|-------|-------------|
-| P0 | 0 | — |
-| P1 | 1 | **Fixed** in `838e577` and re-verified (source trace + 3 tests) |
-| P2 | 7 | 5 fixed, 3 accepted (P2-05/06/08) + 1 residual theoretical note (P1-01 sub-case) |
-
-**Final verdict: CLEAR** — no P0/P1 remains on the fix commit. Merge is
-unblocked subject to Pass 2 sign-off and gate-result recording.
-
----
-
-_Reviewed: 2026-08-04_
-_Reviewer: Claude (gsd-code-reviewer, Pass 1 — Specification and correctness)_
-
 ## Second review round (owner disposition, PR #32)
 
 ### P1-1 — D27 source compatibility: solve/solve_with require OverlaySession — **FIXED**
@@ -204,3 +192,108 @@ Fix (3 cross-product tests first → RED, then implementation → GREEN):
 - Starts loop: `qualified = primitive_qualified && (!multiple || multiple_mip_starts_qualified)` — full = `MipStart && (first || MultipleMipStarts)`, partial = `PartialMipStart && (first || MultipleMipStarts)`; the error message names `MultipleMipStarts` when the primitive holds and the multiple gate fails, else the primitive.
 - Hint conversion: the generated assignment is classified full/partial (coverage of active integer/binary variables), then the SAME composed gates apply — a conversion never bypasses the primitive, never silently overwrites the plan's own start.
 - Tests: `second_start_requires_primitive_and_multiple_composed` (MultipleMipStarts without MipStart rejects a full start naming the primitive; partial starts pass under PartialMipStart+MultipleMipStarts), `full_starts_compose_mip_start_with_multiple_gate` (two full starts on a continuous model under MipStart+MultipleMipStarts; a partial start rejects naming PartialMipStart even with both declared), `hint_conversion_applies_composed_gates_with_classification` (partial converted start → recorded rejection naming PartialMipStart; full converted start applies).
+
+---
+
+## Re-review (round 3) — after fix commit `14e2e72` (reviewer verification of the owner disposition)
+
+Verified each of the owner's round-3 fixes against the source and by running
+the test suites myself. All dispositions confirmed.
+
+### 1. `solve`/`solve_with` in the UNBOUNDED impl; `solve_plan`'s plain shortcut delegates to `solve_base` — VERIFIED
+
+Grep of `src/solver/facade.rs` confirms the structure:
+
+- Unbounded impl at `:163-166` (`B: BackendSession + SessionHealth + BackendMetadata`) contains `solve` (`:461`), `solve_with` (`:475`), and the private plain core `solve_base` (`:492`).
+- Bounded impl at `:544-546` (`+ OverlaySession`) contains `solve_plan` (`:631`), whose plain shortcut is `return self.solve_base(model, plan.options, &mut effective)` (`:661`).
+
+`solve_with` calls `solve_base` directly; `solve_plan` with an empty effective
+plan (no overlay content, no override, no starts/hints) calls the same
+`solve_base`. The `solve == solve_with == empty solve_plan` equivalence is one
+code path. `solve_base` uses `model.active_objective()` (correct — a plain plan
+has no override) and normalizes with `overlay_id = None`, matching the plain
+path. Rust resolves `self.solve_base(...)` from the bounded block because the
+bounded bounds are a superset of the unbounded ones.
+
+### 2. Equivalence tests pass — VERIFIED
+
+`solve_solve_with_and_empty_solve_plan_are_equivalent` (roml) and
+`highs_solve_solve_with_and_empty_solve_plan_are_equivalent` (HiGHS) both pass
+within their suites (34/34 and 8/8). Identical status, objective, primal,
+`SynchronizationMode`, revision, and `compilation_id` are asserted for
+`solve`/`solve_with`/empty-`solve_plan`.
+
+### 3. `PreP28Backend` regression genuinely requires no `OverlaySession` — VERIFIED
+
+`PreP28Backend` (`tests/solve_plan.rs`) implements exactly three traits:
+`BackendSession`, `SessionHealth`, `BackendMetadata` — no `OverlaySession` impl
+anywhere. The generic helper
+`assert_plain_solve_callable<B: BackendSession + SessionHealth + BackendMetadata>`
+makes the compile-time claim: if `solve`/`solve_with` ever move back into the
+bounded block, `session.solve(model)`/`session.solve_with(...)` fail to resolve
+(E0599) and the test file stops compiling. The runtime leg (an end-to-end
+optimal solve through `SolverSession<PreP28Backend>`) proves the plain path
+works for a backend with no overlay surface at all.
+
+### 4. Composed gate covers all four cross-product corners; hint conversion cannot bypass either gate — VERIFIED
+
+For the starts loop, `qualified = primitive_qualified && (!multiple || multiple_mip_starts_qualified)`. The four corners (traced against the code):
+
+| Start | primitive | multiple | qualified | error names |
+|---|---|---|---|---|
+| 1st | MipStart ✓ | — | ✓ | — |
+| 1st | MipStart ✗ | — | ✗ | `MipStart` |
+| 2nd | MipStart ✓, MultipleMipStarts ✓ | ✓ | ✓ | — |
+| 2nd | MipStart ✓, MultipleMipStarts ✗ | ✗ | ✗ | `MultipleMipStarts` |
+| 2nd | MipStart ✗, MultipleMipStarts ✓ | ✗ | ✗ | `MipStart` (primitive) |
+
+The `feature`-naming condition (`multiple && !multiple_mip_starts_qualified && primitive_qualified` → `MultipleMipStarts`, else the primitive) is correct. The three cross-product tests exercise the corners: `second_start_requires_primitive_and_multiple_composed` (MultipleMipStarts-without-MipStart rejects a full start naming `MipStart`; two partial starts qualify under `PartialMipStart + MultipleMipStarts`), `full_starts_compose_mip_start_with_multiple_gate` (two full starts on a continuous-only model qualify; a partial start rejects naming `PartialMipStart` even with `MipStart + MultipleMipStarts`), and `hint_conversion_applies_composed_gates_with_classification` (partial converted start → recorded rejection naming `PartialMipStart`; full converted start applies).
+
+The hint conversion computes `hint_partial` (any active integer/binary variable absent from the hints), derives the primitive (`PartialMipStart`/`MipStart`), and applies the SAME composed condition `hint_primitive_qualified && (!becomes_second || multiple_mip_starts_qualified)`. It cannot bypass either gate: the primitive check is enforced (partial conversion needs `PartialMipStart` even when `MipStart` + `MultipleMipStarts` are declared — tested), and the multiple gate is enforced (`becomes_second` reflects whether a native start already exists — the starts loop runs before the hints branch, so no ordering bypass).
+
+The round-2 residual (multiple gate replacing the primitive) is resolved: the primitive is now always AND-ed.
+
+### 5. Removed `OverlaySession` impls left no dead code — VERIFIED
+
+`git diff 838e577..HEAD` shows the three boilerplate impls fully removed from
+`tests/solver_facade.rs`, `tests/lineage_metadata.rs`, `tests/solve_options.rs`,
+with their now-unused imports cleaned up. `cargo clippy -p roml --all-targets -- -D warnings` and `cargo clippy -p roml-highs --all-targets -- -D warnings` are both clean (no dead-code/warnings).
+
+### 6. Tests run by me
+
+| Command | Result |
+|---|---|
+| `cargo test -p roml --test solve_plan` | **34/34 passed** (was 30; +1 D27 regression, +3 cross-product) |
+| `cargo test -p roml --all-targets` | **35 targets, 0 failures** |
+| `cargo test -p roml-highs --test solve_plan` | **8/8 passed** |
+| `cargo clippy -p roml --all-targets -- -D warnings` | clean |
+| `cargo clippy -p roml-highs --all-targets -- -D warnings` | clean |
+
+### Round-3 residual note (accepted, theoretical)
+
+The composed gate is now correct. One theoretical note remains unchanged from
+round 2 and is NOT a defect: `solve_plan`'s plain shortcut delegates to
+`solve_base` only after `plan.validate` + `resolve_plan_features` have run, so
+a plan that is plain (no starts/hints/overlay) is always a no-op for those two
+stages — no observable behavior change. The `solve_with_overlay` empty-overlay
+metadata behavior (P2-05) is unchanged and remains an accepted design decision.
+
+---
+
+## Findings summary (final)
+
+| Severity | Count | Disposition |
+|----------|-------|-------------|
+| P0 | 0 | — |
+| P1 | 1 | **Fixed** in `838e577`, refined in `14e2e72`, re-verified (source trace + tests) |
+| P2 | 7 | 5 fixed, 3 accepted (P2-05/06/08); round-2 residual resolved by the composed gate |
+
+**Final verdict: CLEAR** — no P0/P1 remains on `14e2e72`. The D27 plain-solve
+contract and the start-capability composition are both correctly implemented
+and regression-tested. Merge is unblocked subject to Pass 2 sign-off and
+gate-result recording.
+
+---
+
+_Reviewed: 2026-08-04_
+_Reviewer: Claude (gsd-code-reviewer, Pass 1 — Specification and correctness)_
