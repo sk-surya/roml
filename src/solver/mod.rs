@@ -14,7 +14,6 @@ pub mod conformance;
 pub mod error;
 pub mod facade;
 pub mod options;
-pub mod overlay;
 pub mod reference;
 pub mod request;
 pub mod session;

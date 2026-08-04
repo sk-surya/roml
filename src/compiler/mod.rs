@@ -14,14 +14,11 @@
 //! [`crate::advanced`].
 
 pub mod backend_ir;
-pub mod bounds;
-pub mod bridge;
 pub mod capability;
 pub mod origin;
 pub mod report;
 pub mod session;
 
-use crate::construct::Construct;
 use backend_ir::{CompilationId, CompiledEntityRef, CompiledObjectiveId};
 
 /// A typed compilation/bridge failure (design §19, SM-13 foundations).
@@ -31,7 +28,7 @@ use backend_ir::{CompilationId, CompiledEntityRef, CompiledObjectiveId};
 /// unsupported-feature rejections (exercised by Task 7), objective-policy
 /// validation, and identity-counter exhaustion. Later phases add the
 /// bridge/Big-M variants (`UnboundedBigM`, ...) defined by the design.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
     /// A generated compiled entity has no recorded origin (D5, SM-02.5).
     ///
@@ -128,78 +125,6 @@ pub enum CompileError {
     /// Mirrors [`crate::IdentityOverflow`]: checked atomic allocation
     /// saturates and reports this error rather than re-issuing ids.
     IdentityOverflow,
-
-    /// No finite Big-M exists for a construct's bounds (SM-13.2/13.4, D12).
-    ///
-    /// The absence of a finite derived/validated Big-M is a typed error
-    /// naming the construct and the missing/unbounded expression — never a
-    /// silent default constant (design §9 rule 6, §19).
-    UnboundedBigM {
-        /// The construct that requires the Big-M.
-        construct: Construct,
-        /// The expression the Big-M was being derived for.
-        expression: String,
-    },
-
-    /// The bound analysis for a Big-M rejected non-finite input (SM-13.1,
-    /// design §19 "unbounded or invalid Big-M").
-    ///
-    /// A NaN/infinite coefficient, bound, constant, or parameter value, or
-    /// NaN interval arithmetic, surfaces as this typed error — no NaN
-    /// propagates silently.
-    InvalidBigM {
-        /// The construct that requires the Big-M.
-        construct: Construct,
-        /// The expression the Big-M was being derived for.
-        expression: String,
-        /// Why the derivation was invalid.
-        reason: String,
-    },
-
-    /// A construct references an entity absent from the compiled snapshot
-    /// (design §19 — errors identify the construct).
-    ///
-    /// Constructs are validated at build time, but a variable can be removed
-    /// after the construct was added; compiling such a construct is a typed
-    /// error naming the construct and the missing reference — never a silently
-    /// dropped coefficient.
-    MissingConstructReference {
-        /// The construct with the dangling reference.
-        construct: Construct,
-        /// The referenced variable that has no compiled counterpart.
-        variable: crate::id::VarId,
-    },
-
-    /// A construct references a parameter absent from the compiled snapshot
-    /// (F5).
-    ///
-    /// Constructs are validated at build time, but a parameter can be removed
-    /// after the construct was added; the bridge must NEVER default a missing
-    /// parameter to zero (a silently wrong coefficient/threshold). Compiling
-    /// such a construct is a typed error naming the construct and the missing
-    /// parameter.
-    MissingConstructParameter {
-        /// The construct with the dangling parameter reference.
-        construct: Construct,
-        /// The referenced parameter that has no compiled counterpart.
-        parameter: crate::id::ParamId,
-    },
-
-    /// An inferred-unit-gap reification's threshold is no longer integral at
-    /// compile time (F3).
-    ///
-    /// The builder validates the inferred unit gap once at build time (D14);
-    /// when the threshold is parameter-dependent the value can change to a
-    /// non-integral number, silently breaking the `f > rhs ⟺ f >= rhs + 1`
-    /// unit-gap exactness. The bridge revalidates threshold integrality at
-    /// EVERY compilation and returns this typed error before any backend
-    /// mutation.
-    NonIntegralReificationThreshold {
-        /// The reification construct with the invalid threshold.
-        construct: Construct,
-        /// The evaluated (fractional) threshold value.
-        threshold: f64,
-    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -238,47 +163,6 @@ impl std::fmt::Display for CompileError {
                 )
             }
             Self::IdentityOverflow => write!(f, "identity counter exhausted (ids never wrap)"),
-            Self::UnboundedBigM {
-                construct,
-                expression,
-            } => write!(
-                f,
-                "no finite Big-M exists for construct {construct:?} and expression {expression:?} \
-                 — add bounds or an explicit validated M"
-            ),
-            Self::InvalidBigM {
-                construct,
-                expression,
-                reason,
-            } => write!(
-                f,
-                "invalid Big-M for construct {construct:?} and expression {expression:?}: {reason}"
-            ),
-            Self::MissingConstructReference {
-                construct,
-                variable,
-            } => write!(
-                f,
-                "construct {construct:?} references variable {variable:?} absent from the \
-                 compiled snapshot (the variable was likely removed after the construct was added)"
-            ),
-            Self::MissingConstructParameter {
-                construct,
-                parameter,
-            } => write!(
-                f,
-                "construct {construct:?} references parameter {parameter:?} absent from the \
-                 compiled snapshot (a missing parameter is never defaulted to zero — F5)"
-            ),
-            Self::NonIntegralReificationThreshold {
-                construct,
-                threshold,
-            } => write!(
-                f,
-                "reification construct {construct:?} has non-integral inferred-unit-gap \
-                 threshold {threshold} at compile time (D14 — the unit gap is exact only for \
-                 integral thresholds)"
-            ),
         }
     }
 }

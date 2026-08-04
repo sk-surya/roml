@@ -12,7 +12,7 @@ use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::constraint::ConstraintBounds;
 use crate::model::objective::Sense;
-use crate::model::variable::{Bounds, VarType, VariableFixing};
+use crate::model::variable::{Bounds, VarType};
 
 /// A single atomic change to the model.
 ///
@@ -75,23 +75,6 @@ pub enum Change {
         var: VarId,
         /// The semi-continuous lower bound.
         lower: f64,
-    },
-
-    /// A variable's persistent fixing changed (P27 Task 8, SM-05.2).
-    ///
-    /// Carries the `effective_bounds` the compiled delta must apply so the
-    /// resulting [`crate::delta::ModelOp::SetVariableFixing`] is
-    /// self-contained (mirrors [`crate::delta::ModelOp::SetConstraintBounds`]):
-    /// `Some(fixing)` → `[value, value]`; `None` (unfix) → the **current**
-    /// declared bounds (SM-05.4).
-    VariableFixingChanged {
-        /// The affected variable.
-        var: VarId,
-        /// The new fixing, or `None` when the variable was unfixed.
-        fixing: Option<VariableFixing>,
-        /// The effective bounds to apply (equal bounds for a fix; the current
-        /// declared bounds for an unfix).
-        effective_bounds: Bounds,
     },
 
     // ========== Constraint Changes ==========

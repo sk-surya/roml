@@ -21,7 +21,7 @@ use crate::callback::CallbackState;
 use crate::index_map::IndexMap;
 use roml::advanced::{
     BackendCapabilitySet, CompilationId, CompiledConstraintId, CompiledObjectiveId,
-    CompiledObjectivePolicy, CompiledVariableId,
+    CompiledVariableId,
 };
 use roml::id::{ConId, ObjId, VarId};
 use roml::model::objective::Sense;
@@ -85,17 +85,6 @@ pub struct HighsSession {
     /// `to_compilation`; a `CompiledDeltaBatch` whose `from_compilation` does
     /// not match is rejected before any op is applied (WR-1).
     pub(crate) current_compilation: Option<CompilationId>,
-
-    /// The active compiled objective policy (P27 Task 10). Maintained by
-    /// `synchronize` from the snapshot's policy and each accepted batch's
-    /// `SetObjectivePolicy` op. The overlay apply/rollback captures and
-    /// restores this so an objective override never leaks into a later solve.
-    pub(crate) compiled_objective_policy: CompiledObjectivePolicy,
-
-    /// Transactional overlay state captured at apply (P27 Task 10). `None`
-    /// when no overlay is applied. Set by `apply_overlay`, consumed by
-    /// `rollback_overlay`, and used by `verify_overlay_clean`.
-    pub(crate) overlay_state: Option<crate::session::HighsOverlayState>,
 
     /// The version-aware authoritative typed capability set (F3, SM-04.1),
     /// computed once at construction from the runtime HiGHS version. The
@@ -226,8 +215,6 @@ impl HighsSession {
             compiled_to_user_constraint: HashMap::new(),
             compiled_to_user_objective: HashMap::new(),
             current_compilation: None,
-            compiled_objective_policy: CompiledObjectivePolicy::None,
-            overlay_state: None,
             typed_capabilities,
             current_solution: None,
             last_status: None,

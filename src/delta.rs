@@ -10,7 +10,7 @@ use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionEntry, ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::{CellKey, CoefficientTarget};
-use crate::model::{Bounds, ConstraintBounds, Sense, VarType, VariableFixing};
+use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::value_expr::ValueExpr;
 
@@ -50,25 +50,6 @@ pub enum ModelOp {
         var: VarId,
         /// New bounds.
         bounds: Bounds,
-    },
-
-    /// Change a variable's persistent fixing (P27 Task 8, SM-05.2).
-    ///
-    /// Self-contained (mirrors [`Self::SetConstraintBounds`]): carries the
-    /// `effective_bounds` the backend must apply. `Some(fixing)` is the
-    /// equal-bound representation `[value, value]` (SM-05.3); `None` is an
-    /// unfix that restores the **current** declared bounds (SM-05.4). The
-    /// identity compiler lowers this to `BackendOp::SetVariableBounds` when
-    /// the backend declares `BackendFeature::IncrementalBounds`, else selects
-    /// a deterministic rebuild (D22, SM-05.7).
-    SetVariableFixing {
-        /// The affected variable.
-        var: VarId,
-        /// The new fixing, or `None` when the variable was unfixed.
-        fixing: Option<VariableFixing>,
-        /// The effective bounds to apply (equal bounds for a fix; the current
-        /// declared bounds for an unfix).
-        effective_bounds: Bounds,
     },
 
     /// Change variable activity.

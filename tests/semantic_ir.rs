@@ -567,9 +567,8 @@ fn model_invariants_verify_legacy_fields_against_semantic_view() {
 // =========================================================================
 //
 // The construct-lifecycle tests moved IN-CRATE (F3): they exercise the
-// `#[cfg(test)]`-gated fixture scaffolding (`FixturePayload`,
-// `ConstructKind::Fixture`, `add_construct_fixture`, `Model::construct`,
-// snapshot/delta `.constructs`) which is test-only and absent from the public
-// API surface (A30). They live in `src/model/mod.rs`
-// (`#[cfg(test)] mod construct_tests`) so they can construct fixture payloads
-// and read crate-private snapshot/delta construct entries.
+// crate-private fixture scaffolding (`FixturePayload`, `ConstructKind::Fixture`,
+// `add_construct_fixture`, `Model::construct`, snapshot/delta `.constructs`)
+// which is not part of the public surface until P32. They live in
+// `src/model/mod.rs` (`#[cfg(test)] mod construct_tests`) so they can construct
+// fixture payloads and read crate-private snapshot/delta construct entries.

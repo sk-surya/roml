@@ -280,7 +280,6 @@ impl BackendSession for LineageTestBackend {
                 self.current_compilation
                     .expect("a solve must follow a compiled synchronization"),
             ),
-            overlay_id: None,
         })
     }
 
