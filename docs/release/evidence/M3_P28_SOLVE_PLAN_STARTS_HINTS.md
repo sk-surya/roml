@@ -361,3 +361,19 @@ Post-fix verification (all exit 0): `cargo test -p roml --test solve_plan` **30/
 **P1-2 — start capabilities not composed — FIXED (3 cross-product tests first).** Start qualification is now `primitive && (first || MultipleMipStarts)` (full = `MipStart && …`, partial = `PartialMipStart && …`); the error names `MultipleMipStarts` when the primitive holds and the multiple gate fails, else the primitive. `ConvertHintToStart` classifies the generated assignment full/partial and applies the same composed gates — a conversion never bypasses the primitive and never silently overwrites the plan's own start. Cross-product tests cover MultipleMipStarts without each primitive, two full starts under both gates, and partial/full converted starts.
 
 Post-fix verification: solve_plan **34/34** (incl. the compile-time regression and 3 cross-product tests); roml all-targets green (35 suites, incl. the three legacy-backend files); roml-highs all-targets green (19 suites); clippy both crates `-D warnings`; rustdoc `-D warnings`; fmt clean.
+
+## Rebase note (2026-08-04)
+
+After PR #33 (CI caching) merged onto main, the P28 branch was rebased onto `main@53d5615` and force-pushed. All commit SHAs changed (content identical). Pre-rebase → post-rebase:
+
+| Pre-rebase | Post-rebase | Message |
+|---|---|---|
+| `40ef027` | (rebase base) | `feat(solve): add solve plan starts and hints types` (Task 1) |
+| `286c6c7` | (rebase base) | `feat(solve): route solve façades through one plan executor` (Task 2) |
+| `cd46ebb` | (rebase base) | `feat(highs): qualify mip start support and reject absent hints` (Task 3) |
+| `f15fe61` | (rebase base) | `docs(solve): record P28 evidence and HiGHS start/hint audit` |
+| `838e577` | `c6b0029` | `fix(solve): gate multiple starts and harden warm-start failure paths` |
+| `14e2e72` | `e0cd741` | `fix(solve): restore D27 plain-solve compatibility and compose start capabilities` |
+| (new) | `7a25c57` | `docs(28): record pass-1 re-review verdict for the D27 and composition fixes` |
+
+Branch head: `7a25c57` on `main@53d5615`. Review dispositions referenced pre-rebase heads (`838e577`, `14e2e72`); their content is preserved verbatim in the rebased commits above.
