@@ -495,9 +495,9 @@ use std::rc::Rc;
 
 use roml::advanced::{
     BackendCapabilitySet, BackendOp, BackendSnapshot, CompilationId, CompiledObjectiveId,
-    CompiledOverlay, CompiledVariableId, EntityOrigin, FeatureSupport, OriginMap,
-    OverlayApplyReceipt, OverlayOp, OverlayRollbackOutcome, OverlaySession, SolveRequest,
-    SolveResult, SolveSolution, SupportLevel, Synchronization,
+    CompiledOverlay, CompiledVariableId, EntityOrigin, FeatureLimitations, FeatureSupport,
+    OriginMap, OverlayApplyReceipt, OverlayOp, OverlayRollbackOutcome, OverlaySession,
+    SolveRequest, SolveResult, SolveSolution, SupportLevel, Synchronization,
 };
 use roml::model::objective::Sense;
 use roml::revision::ModelRevision;
@@ -1679,4 +1679,313 @@ fn objective_override_is_recorded_in_effective_plan() {
         "the applied objective override must be recorded, got {:?}",
         solution.metadata().effective_plan.adjustments
     );
+}
+
+// ── 7. D27 regression: plain solve without OverlaySession (review P1) ───────
+
+/// A backend implementing EXACTLY the pre-P28 traits
+/// (`BackendSession + SessionHealth + BackendMetadata`), with NO
+/// `OverlaySession` impl — the legacy M2 backend shape.
+struct PreP28Backend(PlanTestBackend);
+
+impl BackendSession for PreP28Backend {
+    fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
+        self.0.synchronize(sync)
+    }
+    fn solve(&mut self, request: &SolveRequest) -> Result<SolveResult, BackendError> {
+        self.0.solve(request)
+    }
+    fn close(self) -> Result<(), BackendError> {
+        self.0.close()
+    }
+}
+
+impl SessionHealth for PreP28Backend {
+    fn health(&self) -> AdapterHealth {
+        self.0.health()
+    }
+    fn revision(&self) -> ModelRevision {
+        self.0.revision()
+    }
+}
+
+impl BackendMetadata for PreP28Backend {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn capabilities(&self) -> BackendCapabilities {
+        self.0.capabilities()
+    }
+    fn typed_capabilities(&self) -> &BackendCapabilitySet {
+        self.0.typed_capabilities()
+    }
+}
+
+/// COMPILE-TIME regression (review P1, disposition 5180307378): `solve` and
+/// `solve_with` must remain callable on a session whose backend implements
+/// exactly the pre-P28 traits. If the facade ever moves the plain paths back
+/// into a `+ OverlaySession` impl block, this function FAILS TO COMPILE
+/// (E0599) — the D27 source-compatibility contract is enforced by the
+/// compiler, not by convention.
+#[test]
+fn d27_plain_solve_callable_without_overlay_session() {
+    fn assert_plain_solve_callable<B>(session: &mut SolverSession<B>, model: &mut Model)
+    where
+        B: BackendSession + SessionHealth + BackendMetadata,
+    {
+        // Both calls only resolve if solve/solve_with exist under the
+        // pre-P28 bound.
+        let _ = session.solve(model);
+        let _ = session.solve_with(model, SolveOptions::default());
+    }
+
+    // Runtime leg: an end-to-end plain solve through the legacy-shaped
+    // backend (no OverlaySession anywhere in its trait set).
+    let (backend, _state) = PlanTestBackend::new();
+    let mut session = SolverSession::new(PreP28Backend(backend));
+    let (mut model, _x, _y, _obj) = mip_fixture();
+    assert_plain_solve_callable(&mut session, &mut model);
+    let solution = session.solve(&mut model).unwrap();
+    assert_eq!(
+        solution.status(),
+        SolveStatus::Optimal,
+        "the legacy-backend plain solve must work end-to-end"
+    );
+}
+
+// ── 8. Capability cross-product: primitive AND multiple gates (review P1) ───
+
+/// A capability set with exactly the listed features (native).
+fn caps_with(features: &[BackendFeature]) -> BackendCapabilitySet {
+    let mut set = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        set.set(feature, FeatureSupport::native(Default::default()));
+    }
+    for feature in features {
+        set.set(
+            *feature,
+            FeatureSupport::native(FeatureLimitations {
+                minimum_version: Some("1.15.0".to_string()),
+                ..FeatureLimitations::default()
+            }),
+        );
+    }
+    set
+}
+
+/// The composed gate (review P1): a start qualifies only when its PRIMITIVE
+/// capability (`MipStart`/`PartialMipStart`) is declared AND (for the second+
+/// start) `MultipleMipStarts` is declared. `MultipleMipStarts` alone never
+/// qualifies any start; a second start never bypasses its primitive.
+#[test]
+fn second_start_requires_primitive_and_multiple_composed() {
+    // MultipleMipStarts WITHOUT MipStart: even a FULL second start rejects on
+    // the primitive (and a full first start too).
+    let (mut model, x, y, _obj) = mip_fixture();
+    let (backend, _state) = PlanTestBackend::new_with_caps(caps_with(&[
+        BackendFeature::PartialMipStart,
+        BackendFeature::MultipleMipStarts,
+    ]));
+    let mut session = SolverSession::new(backend);
+    // Full first start (covers x AND y — a start missing y is partial and
+    // would qualify under PartialMipStart): MipStart missing → reject naming
+    // the primitive.
+    let plan = SolvePlan {
+        mip_starts: vec![MipStart::new(
+            assignment_for(&model, BTreeMap::from([(x, 3.0), (y, 2.0)])),
+            RepairPolicy::BackendDefault,
+        )],
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let err = session.solve_plan(&mut model, plan).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SolveError::Plan(PlanError::UnsupportedFeature {
+                feature: "MipStart",
+                ..
+            })
+        ),
+        "MultipleMipStarts without MipStart must reject a full start naming the \
+         primitive, got {err:?}"
+    );
+    // Partial first and second starts: PartialMipStart + MultipleMipStarts →
+    // both qualify.
+    let plan = SolvePlan {
+        mip_starts: vec![
+            MipStart::new(
+                assignment_for(&model, BTreeMap::from([(x, 3.0)])),
+                RepairPolicy::BackendDefault,
+            ),
+            MipStart::new(
+                assignment_for(&model, BTreeMap::from([(y, 5.0)])),
+                RepairPolicy::BackendDefault,
+            ),
+        ],
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+    assert_eq!(
+        solution.metadata().effective_plan.applied_features.len(),
+        2,
+        "both partial starts must qualify under PartialMipStart + MultipleMipStarts"
+    );
+}
+
+/// Full starts compose MipStart with the multiple gate: on a continuous-only
+/// model every start is FULL (nothing to miss), so two disjoint full starts
+/// under `MipStart + MultipleMipStarts` both qualify; and a partial start
+/// still needs `PartialMipStart` even when MipStart and MultipleMipStarts are
+/// declared (the primitive is never bypassed by the multiple gate).
+#[test]
+fn full_starts_compose_mip_start_with_multiple_gate() {
+    // Continuous-only model: every start is full (no integer/binary vars).
+    let mut model = Model::new();
+    let a = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let b = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.add_constraint((a + b).le(10.0)).unwrap();
+    model.maximize(3.0 * a + b).unwrap();
+    let (backend, _state) = PlanTestBackend::new_with_caps(caps_with(&[
+        BackendFeature::MipStart,
+        BackendFeature::MultipleMipStarts,
+    ]));
+    let mut session = SolverSession::new(backend);
+
+    // Two FULL starts over disjoint variables: MipStart && MultipleMipStarts
+    // → both qualify.
+    let plan = SolvePlan {
+        mip_starts: vec![
+            MipStart::new(
+                assignment_for(&model, BTreeMap::from([(a, 3.0)])),
+                RepairPolicy::BackendDefault,
+            ),
+            MipStart::new(
+                assignment_for(&model, BTreeMap::from([(b, 5.0)])),
+                RepairPolicy::BackendDefault,
+            ),
+        ],
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+    assert_eq!(
+        solution.metadata().effective_plan.applied_features.len(),
+        2,
+        "two full starts qualify under MipStart + MultipleMipStarts"
+    );
+
+    // A PARTIAL start needs PartialMipStart even when MipStart and
+    // MultipleMipStarts are declared: the primitive is never bypassed.
+    let (mut model, x, _y, _obj) = mip_fixture();
+    let (backend, _state) = PlanTestBackend::new_with_caps(caps_with(&[
+        BackendFeature::MipStart,
+        BackendFeature::MultipleMipStarts,
+    ]));
+    let mut session = SolverSession::new(backend);
+    let plan = SolvePlan {
+        mip_starts: vec![MipStart::new(
+            assignment_for(&model, BTreeMap::from([(x, 3.0)])),
+            RepairPolicy::BackendDefault,
+        )],
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let err = session.solve_plan(&mut model, plan).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SolveError::Plan(PlanError::UnsupportedFeature {
+                feature: "PartialMipStart",
+                ..
+            })
+        ),
+        "a partial start must reject naming PartialMipStart even with \
+         MipStart + MultipleMipStarts declared, got {err:?}"
+    );
+}
+
+/// `ConvertHintToStart` classifies the generated assignment full/partial and
+/// applies the SAME composed gates (review P1): a partial converted start
+/// needs PartialMipStart even when MipStart and MultipleMipStarts are
+/// qualified.
+#[test]
+fn hint_conversion_applies_composed_gates_with_classification() {
+    let (mut model, x, y, _obj) = mip_fixture();
+    let (backend, _state) = PlanTestBackend::new_with_caps(caps_with(&[
+        BackendFeature::MipStart,
+        BackendFeature::MultipleMipStarts,
+    ]));
+    let mut session = SolverSession::new(backend);
+
+    // Partial hints (covers only x) with an explicit full start: the converted
+    // start is PARTIAL → PartialMipStart missing → recorded rejection.
+    let mut hints = VariableHints::default();
+    hints.insert(
+        x,
+        VariableHint {
+            value: 7.0,
+            priority: HintPriority(10),
+        },
+    );
+    let plan = SolvePlan {
+        mip_starts: vec![MipStart::new(
+            assignment_for(&model, BTreeMap::from([(x, 3.0), (y, 2.0)])),
+            RepairPolicy::BackendDefault,
+        )],
+        hints,
+        unsupported: UnsupportedFeaturePolicy::ConvertHintToStart,
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+    assert!(
+        solution
+            .metadata()
+            .effective_plan
+            .rejections
+            .iter()
+            .any(|r| r.reason.contains("PartialMipStart")),
+        "a partial converted start must be a recorded rejection naming \
+         PartialMipStart, got {:?}",
+        solution.metadata().effective_plan.rejections
+    );
+
+    // FULL hints (covers x and y) with no explicit start: the converted start
+    // is full → MipStart && (first || MultipleMipStarts) → applies.
+    let mut hints = VariableHints::default();
+    hints.insert(
+        x,
+        VariableHint {
+            value: 7.0,
+            priority: HintPriority(10),
+        },
+    );
+    hints.insert(
+        y,
+        VariableHint {
+            value: 2.0,
+            priority: HintPriority(5),
+        },
+    );
+    let plan = SolvePlan {
+        mip_starts: vec![],
+        hints,
+        unsupported: UnsupportedFeaturePolicy::ConvertHintToStart,
+        ..SolvePlan::new(SolveOptions::default()).unwrap()
+    };
+    let solution = session.solve_plan(&mut model, plan).unwrap();
+    assert!(
+        solution
+            .metadata()
+            .effective_plan
+            .adjustments
+            .iter()
+            .any(|a| a.key == "hints" && a.applied == "mip_start"),
+        "a full converted start must apply under MipStart, got {:?}",
+        solution.metadata().effective_plan.adjustments
+    );
+    let _ = y;
 }

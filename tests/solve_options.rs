@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use roml::advanced::{CompilationId, CompiledOverlay, OverlayApplyReceipt, OverlayRollbackOutcome};
+use roml::advanced::CompilationId;
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureSupport, SupportLevel,
 };
@@ -17,7 +17,7 @@ use roml::revision::ModelRevision;
 use roml::solver::backend::{BackendCapabilities, BackendError, TerminationStatus};
 use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult, SolveSolution};
 use roml::solver::session::{
-    BackendMetadata, BackendSession, OverlaySession, SessionHealth, SyncReceipt, Synchronization,
+    BackendMetadata, BackendSession, SessionHealth, SyncReceipt, Synchronization,
 };
 use roml::sync::AdapterHealth;
 use roml::SolverSession;
@@ -101,33 +101,6 @@ impl SessionHealth for RecordingBackend {
     }
     fn revision(&self) -> ModelRevision {
         self.revision
-    }
-}
-
-/// `RecordingBackend` does not implement solve overlays or warm starts
-/// (P28): the default-reject `OverlaySession` methods keep an unsupported
-/// request a typed error rather than a silent no-op (SM-08.4).
-impl OverlaySession for RecordingBackend {
-    fn apply_overlay(
-        &mut self,
-        _overlay: &CompiledOverlay,
-    ) -> Result<OverlayApplyReceipt, BackendError> {
-        Err(BackendError::unsupported(
-            "RecordingBackend does not support solve overlays",
-        ))
-    }
-    fn rollback_overlay(
-        &mut self,
-        _receipt: &OverlayApplyReceipt,
-    ) -> Result<OverlayRollbackOutcome, BackendError> {
-        Err(BackendError::unsupported(
-            "RecordingBackend does not support solve overlays",
-        ))
-    }
-    fn verify_overlay_clean(&mut self) -> Result<(), BackendError> {
-        Err(BackendError::unsupported(
-            "RecordingBackend does not support solve overlays",
-        ))
     }
 }
 
