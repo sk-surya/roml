@@ -16,7 +16,7 @@ use crate::solver::SolveError;
 /// Ergonomically-built solve options for one solve attempt.
 ///
 /// Defaults to an empty request (solver defaults apply).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SolveOptions {
     pub(crate) request: SolveRequest,
 }
