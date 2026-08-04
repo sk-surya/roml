@@ -25,6 +25,7 @@ use crate::compiler::backend_ir::CompilationId;
 use crate::model::ModelError;
 use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect, TerminationStatus};
 use crate::solver::overlay::OverlayError;
+use crate::solver::plan::PlanError;
 
 /// Error returned by the user-facing solve façade.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +65,11 @@ pub enum SolveError {
     /// backend is marked `RequiresRebuild` so a partially overlaid state is
     /// never silently reused (SM-07.4, D7).
     Rollback(BackendError),
+    /// The solve plan failed validation or requested a feature the backend
+    /// does not qualify under the plan's default-reject policy (P28; SM-08.4).
+    /// Rejected BEFORE any synchronization or backend mutation (design §12
+    /// "validate plan" step).
+    Plan(PlanError),
 }
 
 impl SolveError {
@@ -118,7 +124,8 @@ impl SolveError {
             | SolveError::InvalidOptions(_)
             | SolveError::NoActiveObjective
             | SolveError::CompilationMismatch { .. }
-            | SolveError::Overlay(_) => Some(ErrorCategory::InvalidInput),
+            | SolveError::Overlay(_)
+            | SolveError::Plan(_) => Some(ErrorCategory::InvalidInput),
             SolveError::Status(_) => Some(ErrorCategory::Unknown),
         }
     }
@@ -150,6 +157,7 @@ impl SolveError {
             ),
             SolveError::Overlay(e) => format!("solve overlay failed: {e:?}"),
             SolveError::Rollback(e) => format!("overlay rollback failed: {e}"),
+            SolveError::Plan(e) => format!("solve plan rejected: {e}"),
         }
     }
 }

@@ -11,6 +11,7 @@
 pub mod backend;
 pub mod callback;
 pub mod conformance;
+pub mod effective_plan;
 pub mod error;
 pub mod facade;
 pub mod options;

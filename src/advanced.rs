@@ -109,6 +109,13 @@ pub use crate::solver::plan::{
     UnsupportedFeaturePolicy, VariableHint, VariableHints,
 };
 
+/// Effective solve plan and feature recording (P28 Task 2; SM-04.5, SM-07.7).
+/// Backend authors consume these when contributing applied/converted/rejected
+/// records to the `EffectiveSolvePlan` the façade returns.
+pub use crate::solver::effective_plan::{
+    AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
+};
+
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
 
