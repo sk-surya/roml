@@ -62,7 +62,7 @@ use roml::solver::session::{
     Synchronization,
 };
 use roml::sync::AdapterHealth;
-use roml::LpAlgorithm;
+use roml::{LpAlgorithm, MipStart, VariableHints};
 
 // ── BackendSession ──────────────────────────────────────────────────────────────
 
@@ -545,16 +545,26 @@ const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 7] = [
     BackendFeature::BinaryProduct,
 ];
 
-/// Every M3 feature that P26/P32 does **not** qualify as native or bridge for
-/// HiGHS.
+/// The M3 warm-start features P28 qualifies as native for HiGHS (SM-08.7).
+///
+/// Derived from the pinned official header audit
+/// (`docs/knowledge/highs_mip_start_api.md`): `Highs_setSparseSolution` is the
+/// native partial-MIP-start primitive and supports both FULL (all columns) and
+/// PARTIAL (a subset) starts. The declaration holds for the bundled
+/// `highs-sys 1.15.0` and the CI system floor 1.9.0.
+const QUALIFIED_MIP_START_FEATURES: [BackendFeature; 2] =
+    [BackendFeature::MipStart, BackendFeature::PartialMipStart];
+
+/// Every M3 feature that P26/P32/P28 does **not** qualify as native or bridge
+/// for HiGHS.
 ///
 /// These are declared `Unsupported` (SM-04.4): request/compilation paths gate
-/// on them and reject or rebuild rather than silently proceeding. The list
-/// matches the plan Task 6 bullet verbatim minus the P32 bridge-supported
-/// logical-construct features.
-const UNQUALIFIED_M3_FEATURES: [BackendFeature; 11] = [
-    BackendFeature::MipStart,
-    BackendFeature::PartialMipStart,
+/// on them and reject or rebuild rather than silently proceeding. The warm
+/// start features among them carry audit-citing notes (SM-08.7): `VariableHints`
+/// and `MultipleMipStarts` have no API in the pinned bundled version;
+/// `InitialBasis` has an API (`Highs_setBasis`) but is a separate future
+/// artifact in P28 (SM-08.6).
+const UNQUALIFIED_M3_FEATURES: [BackendFeature; 9] = [
     BackendFeature::MultipleMipStarts,
     BackendFeature::VariableHints,
     BackendFeature::InitialBasis,
@@ -604,11 +614,44 @@ pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabi
         );
     }
 
+    // P28 (SM-08.7): the pinned-header audit qualifies the native MIP start
+    // primitive for MIP model classes.
+    for feature in QUALIFIED_MIP_START_FEATURES {
+        set.set(
+            feature,
+            FeatureSupport::native(FeatureLimitations {
+                minimum_version: Some(version.clone()),
+                model_classes: vec!["mip".to_string()],
+                notes: vec![
+                    "qualified via Highs_setSparseSolution (pinned header audit; \
+                     docs/knowledge/highs_mip_start_api.md); a start is a search hint and \
+                     cannot change a proven optimum"
+                        .to_string(),
+                ],
+                ..FeatureLimitations::default()
+            }),
+        );
+    }
+
     for feature in UNQUALIFIED_M3_FEATURES {
+        // P28 warm-start features carry audit-citing notes (SM-08.7, D19).
+        let note = if matches!(
+            feature,
+            BackendFeature::MultipleMipStarts
+                | BackendFeature::VariableHints
+                | BackendFeature::InitialBasis
+        ) {
+            "P28 pinned-header audit: no qualified (VariableHints/MultipleMipStarts) or \
+             out-of-scope (InitialBasis — SM-08.6) API in the bundled version \
+             (docs/knowledge/highs_mip_start_api.md); reject by default (SM-08.4, SM-08.7)"
+                .to_string()
+        } else {
+            "P26 does not qualify native support for this M3 feature".to_string()
+        };
         set.set(
             feature,
             FeatureSupport::unsupported(FeatureLimitations {
-                notes: vec!["P26 does not qualify native support for this M3 feature".to_string()],
+                notes: vec![note],
                 ..FeatureLimitations::default()
             }),
         );
@@ -1020,6 +1063,34 @@ impl OverlaySession for HighsSession {
             ));
         }
         Ok(())
+    }
+
+    /// Apply qualified MIP starts through the native partial-solution API
+    /// (P28 Task 3; SM-08.1, SM-08.7).
+    ///
+    /// Qualified per the pinned header audit: `Highs_setSparseSolution` is the
+    /// native partial-MIP-start primitive. Each start's user-`Variable` values
+    /// are mapped through the compiled-keyed origin maps to native column
+    /// indices; every native return code is checked (T-28-01).
+    fn apply_mip_starts(&mut self, starts: &[MipStart]) -> Result<(), BackendError> {
+        crate::start::apply_mip_starts(
+            self.raw,
+            starts,
+            &self.col_map,
+            &self.compiled_to_user_variable,
+        )
+    }
+
+    /// Apply qualified variable hints.
+    ///
+    /// The pinned bundled version has NO hint API
+    /// (`docs/knowledge/highs_mip_start_api.md`). This stays a typed
+    /// `Unsupported` error — the executor rejects hints by default (SM-08.4)
+    /// and never simulates them (D19). A hint request never reaches this method
+    /// through the qualified path because the capability set declares
+    /// `VariableHints` unsupported.
+    fn apply_variable_hints(&mut self, _hints: &VariableHints) -> Result<(), BackendError> {
+        Err(crate::start::unsupported_hint_error())
     }
 }
 

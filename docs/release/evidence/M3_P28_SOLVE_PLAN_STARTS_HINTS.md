@@ -44,7 +44,8 @@ or warm-start capability declarations exist in the baseline surface.
 ## Commit trail
 
 - `40ef027` — `feat(solve): add solve plan starts and hints types` (Task 1)
-- (Task 2 commit pending; Task 3 pending)
+- `286c6c7` — `feat(solve): route solve façades through one plan executor` (Task 2)
+- (Task 3 commit pending — after the phase-level verification matrix)
 
 ## Public interfaces
 
@@ -125,13 +126,96 @@ executor. Backends that do not implement `OverlaySession` were given default
 `SolverSession::solve`/`solve_with` remain available to them while still
 routing through the executor.
 
+### Task 3 — RED (expected failures)
+
+`roml-highs/tests/solve_plan.rs` added before the backend implementation. 6 of
+8 tests failed as expected:
+
+- `highs_capability_set_declares_start_hint_features_per_audit` — `MipStart`/
+  `PartialMipStart` still declared `Unsupported` (P26-era capability set);
+- the qualified-start tests (`...applies_natively...`,
+  `...leaves_feasible_region_signature_unchanged`,
+  `highs_no_stale_start_leakage...`) — `SolveError::Plan(UnsupportedFeature)`:
+  starts reject by default because the backend capability set did not yet
+  qualify `MipStart`;
+- `highs_convert_hint_to_start_is_recorded` — the conversion adjustment
+  appeared but the applied feature was not yet recorded;
+- `highs_failed_sparse_solution_maps_to_typed_backend_error` — the start was
+  rejected at capability time, not at the native call.
+
+`highs_solve_solve_with_and_empty_solve_plan_are_equivalent` and
+`highs_variable_hints_reject_by_default` already passed (empty-plan equivalence
+needs no backend start support; hints were already unqualified).
+
+### Task 3 — GREEN
+
+- `cargo test -p roml-highs --test solve_plan`: 8 passed (capability matrix,
+  equivalence, default rejection, native qualified path, hint->start
+  conversion, feasibility signature, checked return code, no-stale-start).
+- `cargo test -p roml-highs --all-targets`: pass (36+ across suites).
+- `cargo test -p roml --all-targets`: pass.
+- `cargo clippy -p roml-highs --all-targets -- -D warnings`: pass.
+- `RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps`: pass.
+- `cargo public-api -p roml-highs`: exit 0 (adds `HighsSession::apply_mip_starts`
+  and `apply_variable_hints` — the two `OverlaySession` trait methods).
+- `cargo fmt --all -- --check`: pass.
+
+**Implementation notes (Task 3):**
+
+- `roml-highs/src/start.rs` — `apply_mip_starts` maps each start's user
+  `Variable` values through the compiled-keyed origin maps
+  (`compiled_to_user_variable` → `col_map`) to native column indices and
+  applies via `Highs_setSparseSolution` with every return code checked through
+  `check_highs_status` (T-28-01). Hints are never simulated:
+  `unsupported_hint_error()` is a typed `Unsupported` `BackendError`.
+- `roml-highs/src/session.rs` — `highs_capability_set` now declares
+  `MipStart`/`PartialMipStart` `Native` (audit-cited, `mip` model class) and
+  keeps `MultipleMipStarts`/`VariableHints`/`InitialBasis` `Unsupported` with
+  audit-citing notes. `HighsSession` implements the two `OverlaySession`
+  warm-start methods.
+- `roml-highs/tests/conformance.rs` — the P26-era capability test updated:
+  `MipStart`/`PartialMipStart` are now asserted `Native` per SM-08.7.
+
 ## Full verification
 
 (Phase-level verification matrix recorded after Task 3.)
 
 ## Native/backend evidence
 
-(HiGHS start/hint API audit — see `docs/knowledge/highs_mip_start_api.md`.)
+Full audit record: `docs/knowledge/highs_mip_start_api.md` (pinned bundled
+`highs-sys 1.15.0` header `highs_c_api.h`, its C API implementation, and the
+`Highs::setSolution` C++ implementation; CI floor 1.9.0).
+
+Summary:
+
+- **`Highs_setSparseSolution`** (`highs_c_api.h:1305`) — qualified native
+  partial-MIP-start primitive; rejects an out-of-range index or an
+  out-of-bounds value with `kHighsStatusError`; warns (last value wins) on
+  duplicate indices; `kHighsStatusError=-1`, `kHighsStatusOk=0`,
+  `kHighsStatusWarning=1` (`:28-30`).
+- **`Highs_setSolution`** (`:1291`) — full primal+dual solution setter;
+  available but not used in P28.
+- **`Highs_setBasis`** (`:1264`) / **`Highs_setLogicalBasis`** (`:1274`) —
+  present, but `InitialBasis` stays `Unsupported` in P28 (SM-08.6 separate
+  artifact).
+- **Absent:** `Highs_setMipStart`, `Highs_clearMipStart`,
+  `Highs_clearSolution`, and any variable-hint symbol.
+- **Lifecycle:** a set solution persists on the instance as the incumbent
+  until invalidated (model change / next `setSolution`) or replaced by a
+  solve; there is no clear API. Bounded structurally: the executor applies
+  starts immediately before solve (one batch per `solve_plan`), a compiled
+  rebuild clears the incumbent, and a start is a search hint that cannot
+  change a proven optimum.
+
+Capability declarations (all audit-cited in `FeatureLimitations.notes`):
+
+| BackendFeature | Level | Evidence |
+|----------------|-------|----------|
+| `MipStart` | Native | `Highs_setSparseSolution` (full assignment) |
+| `PartialMipStart` | Native | `Highs_setSparseSolution` (subset assignment) |
+| `MultipleMipStarts` | Unsupported | single incumbent slot; no multi-start API |
+| `VariableHints` | Unsupported | no hint API; reject by default |
+| `InitialBasis` | Unsupported | API present but out of scope (SM-08.6) |
 
 ## Failure/recovery evidence
 
