@@ -15,8 +15,8 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 | SM-09 IIS/conflicts | P29 | P34 docs/fresh consumers | Planned |
 | SM-10 Soft constraints | P30 | P34 examples/equivalence | Planned |
 | SM-11 Objective policies | P31 | P34 native/portable corpus | Planned |
-| SM-12 Common constructs | P32 | P34 public qualification | Planned |
-| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Planned |
+| SM-12 Common constructs | P32 | P34 public qualification | Partially closed: SM-12.3/12.4/12.6/12.7 closed in P32; remaining clauses P33/P34 |
+| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Partially closed: SM-13.1-13.6 (compiler foundations) closed in P32; full closure P33 |
 | SM-14 PWL | P33 | P34 solver/version matrix | Planned |
 | SM-15 Qualification/NLP readiness | P34 | all phase evidence | Planned |
 

@@ -16,11 +16,12 @@
 pub mod advanced;
 pub mod assignment;
 pub mod compiler;
-// P25 (F3): the construct arena and its fixture scaffolding are crate-private.
-// `Construct`/`ConstructId` and `FormulationPreference` are re-exported
-// publicly below; `ConstructKind`/`ConstructEntry` and the fixture payload
-// become public exports in P32 when the real per-construct variants land.
-pub(crate) mod construct;
+// A30 (P32): the real per-construct variants land in P32 Task 16, so the
+// construct module and `ConstructKind`/`ConstructEntry` become PUBLIC exports.
+// The `Fixture` variant, `FixturePayload`, and `add_construct_fixture` are
+// `#[cfg(test)]`-gated test-only scaffolding (absent from the public API
+// surface in non-test builds); the `#[non_exhaustive]` boundary stays.
+pub mod construct;
 pub mod delta;
 pub mod expr;
 pub mod function;
@@ -41,7 +42,12 @@ pub mod value_expr;
 pub use assignment::{
     AssignmentError, ContinuousLock, LockSelector, PrimalAssignment, SolutionLock,
 };
-pub use construct::{Construct, FormulationPreference};
+pub use construct::{
+    AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
+    BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
+    FormulationPreference, IndicatorConstraint, IndicatorDirection, MinMaxConstraint,
+    MinMaxRelation, MinMaxSense, ProductOperand, ReificationConstraint,
+};
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
 pub use function::{

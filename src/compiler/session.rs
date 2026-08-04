@@ -34,16 +34,25 @@ use crate::compiler::backend_ir::{
     CompiledConstraintId, CompiledLinearRow, CompiledObjective, CompiledObjectiveId,
     CompiledObjectivePolicy, CompiledVariable, CompiledVariableId, RecipeFingerprint,
 };
+use crate::compiler::bridge::{BridgeContext, BridgeDependency, BridgeOutput};
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::{EntityOrigin, OriginMap};
+use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
+use crate::construct::{
+    derive_parameter_dependencies, derive_variable_dependencies, Construct, ConstructKind,
+    FormulationPreference, ProductOperand,
+};
 use crate::delta::{DeltaBatch, ModelOp};
-use crate::id::{ConId, ObjId, VarId};
+use crate::expr::{LinExpr, TermCoeff};
+use crate::function::{ScalarFunction, ScalarSet};
+use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::identity::ModelInstanceId;
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::{Bounds, ConstraintBounds, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
+use crate::value_expr::ValueExpr;
 
 /// Per-family checked atomic counter state for one compiled state.
 #[derive(Clone)]
@@ -88,6 +97,15 @@ struct CurrentCompilation {
     /// can emit the `SetObjectivePolicy(None)` transition at the compile
     /// boundary — the batch must be self-contained (A31, CR-02).
     objective_policy: CompiledObjectivePolicy,
+    /// The bridge dependency graph of the active constructs (F1).
+    ///
+    /// Every active construct's generated bridge artifact depends on a set of
+    /// user variables and parameters (recorded by the bridges as
+    /// [`BridgeDependency`] and completed centrally here). A dependency-
+    /// affecting delta (`SetParameter`, `SetVariableBounds`,
+    /// `RemoveVariable`, variable type/activity changes) forces a
+    /// `RebuildRequired` — the construct artifact can go stale otherwise.
+    construct_dependencies: Vec<BridgeDependency>,
 }
 
 /// The identity compiler for one solver/backend (design §8).
@@ -135,6 +153,28 @@ fn require_feature(
         ),
     };
     Err(CompileError::UnsupportedFeature(message))
+}
+
+/// The effective compilation policy for one construct: the global policy
+/// narrowed by the per-construct [`FormulationPreference`] (A29 single
+/// authority).
+///
+/// A stricter global policy (Portable/NativeRequired) is never weakened by a
+/// per-construct preference (design §8.1: preferences may narrow, never weaken
+/// exactness). Under a global `Auto` the per-construct preference governs.
+fn effective_policy(
+    global: &CompilationPolicy,
+    preference: FormulationPreference,
+) -> CompilationPolicy {
+    match global {
+        CompilationPolicy::Auto => match preference {
+            FormulationPreference::Auto => CompilationPolicy::Auto,
+            FormulationPreference::Portable => CompilationPolicy::Portable,
+            FormulationPreference::NativeRequired => CompilationPolicy::NativeRequired,
+        },
+        CompilationPolicy::Portable => CompilationPolicy::Portable,
+        CompilationPolicy::NativeRequired => CompilationPolicy::NativeRequired,
+    }
 }
 
 impl CompilationSession {
@@ -406,9 +446,155 @@ impl CompilationSession {
             .map(CompiledObjectivePolicy::Single)
             .unwrap_or(CompiledObjectivePolicy::None);
 
+        // ── Semantic constructs (P32 Task 16) ──────────────────────────────
+        // Active constructs compile in the snapshot's deterministic
+        // construct-id order, each through the Task 15 bridge framework
+        // (native-or-bridge selection per the effective policy, exact rows,
+        // mandatory construct origins, and bound/Big-M evidence report
+        // entries). A construct whose exact representation is unavailable
+        // surfaces a typed CompileError (UnboundedBigM / UnsupportedFeature /
+        // MissingConstructReference) — never a silent relaxation.
+        let parameter_values: HashMap<ParamId, f64> = snapshot
+            .parameters
+            .iter()
+            .map(|p| (p.id, p.value))
+            .collect();
+
+        // F5: preflight every ACTIVE construct's variable and parameter
+        // references against the snapshot BEFORE any bridge generates rows — a
+        // missing reference is a typed error (a variable absent from the
+        // compiled snapshot, or a parameter absent from the evaluated map, is
+        // NEVER silently defaulted to zero), and evaluated construct
+        // coefficients/thresholds are validated finite in the same pass.
+        preflight_constructs(snapshot, &variable_ids, &parameter_values)?;
+
+        let mut next_variable_index = variables.len() as u32;
+        let mut next_row_index = rows.len() as u32;
+        let mut construct_variables: Vec<CompiledVariable> = Vec::new();
+        let mut construct_rows: Vec<CompiledLinearRow> = Vec::new();
+        let mut construct_origins = OriginMap::new();
+        let mut construct_decisions: Vec<FormulationDecision> = Vec::new();
+        let mut construct_dependencies: Vec<BridgeDependency> = Vec::new();
+
+        for entry in &snapshot.constructs {
+            if !entry.active {
+                continue;
+            }
+            let effective = effective_policy(policy, entry.preference);
+            let ctx = BridgeContext {
+                construct: entry.id,
+                snapshot,
+                variable_ids: &variable_ids,
+                parameter_values: &parameter_values,
+                policy: &effective,
+                capabilities,
+            };
+            let output: BridgeOutput = match &entry.kind {
+                ConstructKind::Indicator(payload) => crate::compiler::bridge::indicator::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
+                ConstructKind::Reification(payload) => {
+                    crate::compiler::bridge::reification::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
+                ConstructKind::Boolean(payload) => crate::compiler::bridge::boolean::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
+                ConstructKind::Cardinality(payload) => {
+                    crate::compiler::bridge::cardinality::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
+                ConstructKind::MinMax(payload) => crate::compiler::bridge::minmax::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
+                ConstructKind::AbsoluteValue(payload) => {
+                    crate::compiler::bridge::absolute::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
+                ConstructKind::BinaryProduct(payload) => crate::compiler::bridge::product::compile(
+                    payload,
+                    &ctx,
+                    next_variable_index,
+                    next_row_index,
+                )?,
+                // Test-only crate-private P32 fixture scaffolding is never
+                // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
+                // builds).
+                #[cfg(test)]
+                ConstructKind::Fixture(_) => continue,
+            };
+            next_variable_index += output.variables.len() as u32;
+            next_row_index += output.rows.len() as u32;
+            // F1: persist the bridge dependency graph — never drop the
+            // captured `BridgeDependency`s. Completed centrally so every
+            // variable/parameter the formulation references is attributed
+            // (a dependency-affecting delta then forces a rebuild).
+            construct_dependencies.extend(output.dependencies);
+            for var in derive_variable_dependencies(&entry.kind) {
+                let dep = BridgeDependency::Variable(var);
+                if !construct_dependencies.contains(&dep) {
+                    construct_dependencies.push(dep);
+                }
+            }
+            for param in derive_parameter_dependencies(&entry.kind) {
+                let dep = BridgeDependency::Parameter(param);
+                if !construct_dependencies.contains(&dep) {
+                    construct_dependencies.push(dep);
+                }
+            }
+            construct_variables.extend(output.variables);
+            construct_rows.extend(output.rows);
+            construct_origins.merge(output.origin_map);
+            construct_decisions.extend(output.decisions);
+        }
+
+        // WR-02: construct-generated binaries (exact minmax/abs/clamp selector
+        // variables) also gate on `BackendFeature::Mip`. A backend declaring
+        // only `Lp` would otherwise compile a snapshot carrying binary columns
+        // and solve a wrong continuous relaxation silently (SM-04.4 — an
+        // unqualified feature is rejected, never silently ignored).
+        let generated_has_integer = construct_variables
+            .iter()
+            .any(|v| !matches!(v.var_type, VarType::Continuous));
+        if generated_has_integer {
+            require_feature(
+                capabilities,
+                policy,
+                BackendFeature::Mip,
+                "construct-generated binary variables",
+            )?;
+        }
+
+        // The session's origin map must include the construct-generated
+        // entities so builder finalization validates their origins (D5,
+        // SM-02.5).
+        origin_map.merge(construct_origins);
+
         let mut builder = BackendSnapshotBuilder::new(source_instance, snapshot.revision)
             .origin_map(origin_map)
-            .objective_policy(objective_policy.clone());
+            .objective_policy(objective_policy.clone())
+            .add_formulation_decisions(construct_decisions);
         for v in variables {
             builder = builder.add_variable(v);
         }
@@ -417,6 +603,12 @@ impl CompilationSession {
         }
         for o in objectives {
             builder = builder.add_objective(o);
+        }
+        for v in construct_variables {
+            builder = builder.add_variable(v);
+        }
+        for r in construct_rows {
+            builder = builder.add_linear_row(r);
         }
         let compiled = builder.finalize()?;
 
@@ -437,6 +629,7 @@ impl CompilationSession {
             next_row_index: compiled.linear_rows.len() as u32,
             next_objective_index: compiled.objectives.len() as u32,
             objective_policy,
+            construct_dependencies,
         });
 
         Ok(compiled)
@@ -537,6 +730,16 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveVariable { var } => {
+                    // F1: a construct whose bridge artifact references the
+                    // removed variable would hold a dangling compiled
+                    // reference — force a deterministic rebuild instead of an
+                    // incremental removal.
+                    if Self::construct_depends_on_variable(&current.construct_dependencies, *var) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "RemoveVariable for {var:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
                     let id = *w.variable_ids.get(var).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "RemoveVariable for unknown compiled variable ({var:?})"
@@ -548,6 +751,18 @@ impl CompilationSession {
                 }
 
                 ModelOp::SetVariableBounds { var, bounds } => {
+                    // F1: a construct's Big-M / selector M values are derived
+                    // from the referenced variables' declared bounds — a bound
+                    // change on a construct dependency would leave the
+                    // generated bridge artifact stale. Force a deterministic
+                    // rebuild (the compiler cannot prove the incrementally
+                    // emitted row bounds equal a fresh derivation).
+                    if Self::construct_depends_on_variable(&current.construct_dependencies, *var) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableBounds for {var:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
                     // SM-04.4 (WR-3): an unqualified feature is rejected, never
                     // silently compiled.
                     require_feature(
@@ -590,6 +805,19 @@ impl CompilationSession {
                     fixing: _,
                     effective_bounds,
                 } => {
+                    // F1 (P27×P32): a fixing/unfixing on a construct dependency
+                    // changes the variable's EFFECTIVE bounds — the exact
+                    // bridge artifact (Big-M / selector M values, product
+                    // L/U endpoints) derives from those effective bounds, so a
+                    // compiled delta would leave the generated rows stale. Force
+                    // a deterministic rebuild BEFORE any compiled delta is
+                    // emitted; the rejection never advances the CompilationId.
+                    if Self::construct_depends_on_variable(&current.construct_dependencies, *var) {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetVariableFixing for {var:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
                     require_feature(
                         capabilities,
                         policy,
@@ -933,7 +1161,21 @@ impl CompilationSession {
                 // the parameter op preserves the M2 incremental parameter
                 // behavior through the compiled path (the F-B1 conservative
                 // rebuild list is narrowed here by this provable equivalence).
-                ModelOp::SetParameter { .. } => {}
+                //
+                // EXCEPTION (F1): a construct's bridge artifact EVALUATES
+                // parameters directly (function coefficients, set thresholds,
+                // Big-M values). A parameter change on a construct dependency
+                // would leave the generated rows stale — force a deterministic
+                // rebuild, never silently drop the update.
+                ModelOp::SetParameter { param, .. } => {
+                    if Self::construct_depends_on_parameter(&current.construct_dependencies, *param)
+                    {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetParameter for {param:?} touches a construct dependency; the \
+                             generated bridge artifact would go stale (F1)"
+                        )));
+                    }
+                }
                 ModelOp::SetSemiContinuousBound { .. } => {
                     return Err(CompileError::RebuildRequired(
                         "SetSemiContinuousBound is not incrementally compilable".into(),
@@ -980,8 +1222,191 @@ impl CompilationSession {
             next_row_index: w.next_row_index,
             next_objective_index: w.next_objective_index,
             objective_policy: w.objective_policy,
+            // Constructs cannot be added/removed incrementally (those ops
+            // rebuild), so the dependency graph is unchanged by a delta.
+            construct_dependencies: current.construct_dependencies.clone(),
         });
 
         Ok(batch)
     }
+
+    /// Whether any active construct's bridge artifact depends on `var` (F1).
+    fn construct_depends_on_variable(dependencies: &[BridgeDependency], var: VarId) -> bool {
+        dependencies
+            .iter()
+            .any(|d| matches!(d, BridgeDependency::Variable(v) if *v == var))
+    }
+
+    /// Whether any active construct's bridge artifact depends on `param` (F1).
+    fn construct_depends_on_parameter(dependencies: &[BridgeDependency], param: ParamId) -> bool {
+        dependencies
+            .iter()
+            .any(|d| matches!(d, BridgeDependency::Parameter(p) if *p == param))
+    }
+}
+
+// ===========================================================================
+// F5: construct reference preflight
+// ===========================================================================
+
+/// Evaluate one `ValueExpr` coefficient/threshold against the snapshot's
+/// parameter map, surfacing a missing parameter or a non-finite result as a
+/// typed error (F5) — never a silent default of zero.
+fn eval_value_expr_checked(
+    value: &ValueExpr,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<f64, CompileError> {
+    let evaluated = value
+        .eval_checked(|p| parameter_values.get(&p).copied().ok_or(p))
+        .map_err(|parameter| CompileError::MissingConstructParameter {
+            construct,
+            parameter,
+        })?;
+    if !evaluated.is_finite() {
+        return Err(CompileError::InvalidBigM {
+            construct,
+            expression: format!("evaluated coefficient/threshold {value:?}"),
+            reason: format!("non-finite evaluated value {evaluated}"),
+        });
+    }
+    Ok(evaluated)
+}
+
+/// Validate every parameterized coefficient (and the constant) of a linear
+/// expression is finite when evaluated against the snapshot (F5).
+fn validate_lin_expr_finiteness(
+    expr: &LinExpr,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    if !expr.constant.is_finite() {
+        return Err(CompileError::InvalidBigM {
+            construct,
+            expression: "constant term".to_string(),
+            reason: format!("non-finite constant {}", expr.constant),
+        });
+    }
+    for term in &expr.terms {
+        if let TermCoeff::Expr(value) = &term.coeff {
+            eval_value_expr_checked(value, construct, parameter_values)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate every parameterized coefficient of a scalar function is finite
+/// when evaluated against the snapshot (F5).
+fn validate_scalar_function_finiteness(
+    function: &ScalarFunction,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    match function {
+        ScalarFunction::Linear(expr) => {
+            validate_lin_expr_finiteness(expr, construct, parameter_values)
+        }
+    }
+}
+
+/// Validate every set threshold is finite when evaluated against the snapshot
+/// (F5).
+fn validate_scalar_set_finiteness(
+    set: &ScalarSet,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    match set {
+        ScalarSet::LessEqual(upper) => {
+            eval_value_expr_checked(upper, construct, parameter_values)?;
+        }
+        ScalarSet::GreaterEqual(lower) => {
+            eval_value_expr_checked(lower, construct, parameter_values)?;
+        }
+        ScalarSet::EqualTo(value) => {
+            eval_value_expr_checked(value, construct, parameter_values)?;
+        }
+        ScalarSet::Interval { lower, upper } => {
+            eval_value_expr_checked(lower, construct, parameter_values)?;
+            eval_value_expr_checked(upper, construct, parameter_values)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate every parameterized coefficient/threshold of one construct is
+/// finite when evaluated against the snapshot (F5).
+fn validate_construct_finiteness(
+    kind: &ConstructKind,
+    construct: Construct,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    match kind {
+        ConstructKind::Indicator(payload) => {
+            validate_scalar_function_finiteness(&payload.function, construct, parameter_values)?;
+            validate_scalar_set_finiteness(&payload.set, construct, parameter_values)
+        }
+        ConstructKind::Reification(payload) => {
+            validate_scalar_function_finiteness(&payload.function, construct, parameter_values)?;
+            validate_scalar_set_finiteness(&payload.set, construct, parameter_values)
+        }
+        ConstructKind::Boolean(_) | ConstructKind::Cardinality(_) => Ok(()),
+        ConstructKind::MinMax(payload) => {
+            for op in &payload.operands {
+                validate_lin_expr_finiteness(op, construct, parameter_values)?;
+            }
+            Ok(())
+        }
+        ConstructKind::AbsoluteValue(payload) => {
+            validate_lin_expr_finiteness(&payload.expression, construct, parameter_values)
+        }
+        ConstructKind::BinaryProduct(payload) => {
+            for op in [&payload.left, &payload.right] {
+                if let ProductOperand::Linear(expr) = op {
+                    validate_lin_expr_finiteness(expr, construct, parameter_values)?;
+                }
+            }
+            Ok(())
+        }
+        #[cfg(test)]
+        ConstructKind::Fixture(_) => Ok(()),
+    }
+}
+
+/// F5: preflight every ACTIVE construct's variable and parameter references
+/// against the compiled snapshot BEFORE any bridge generates rows.
+///
+/// A variable referenced by a construct but absent from the compiled snapshot
+/// is a typed [`CompileError::MissingConstructReference`]; a parameter absent
+/// from the evaluated map is a typed [`CompileError::MissingConstructParameter`]
+/// — a missing parameter is NEVER defaulted to zero. Evaluated construct
+/// coefficients/thresholds are validated finite in the same pass.
+fn preflight_constructs(
+    snapshot: &ModelSnapshot,
+    variable_ids: &HashMap<VarId, CompiledVariableId>,
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    for entry in &snapshot.constructs {
+        if !entry.active {
+            continue;
+        }
+        for var in derive_variable_dependencies(&entry.kind) {
+            if !variable_ids.contains_key(&var) {
+                return Err(CompileError::MissingConstructReference {
+                    construct: entry.id,
+                    variable: var,
+                });
+            }
+        }
+        for param in derive_parameter_dependencies(&entry.kind) {
+            if !parameter_values.contains_key(&param) {
+                return Err(CompileError::MissingConstructParameter {
+                    construct: entry.id,
+                    parameter: param,
+                });
+            }
+        }
+        validate_construct_finiteness(&entry.kind, entry.id, parameter_values)?;
+    }
+    Ok(())
 }
