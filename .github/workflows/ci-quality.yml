@@ -1,0 +1,105 @@
+name: CI - Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI cache generation. ALL cache keys (apt lists/debs, cargo registry,
+  # highs-sys/target builds) compose from this one value — the same tag the
+  # other CI workflows use, so this workflow restores their caches instead of
+  # rebuilding (notably the bundled highs-sys cmake build under the coverage
+  # gate). Bump it and commit to force a full refresh of every cache (see
+  # ci-highs.yml for the full rationale).
+  CI_CACHE_VERSION: "2026-08"
+
+jobs:
+  coverage-and-policy:
+    name: Coverage and policy
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Test quality-policy guard
+        shell: bash
+        run: bash scripts/test-quality-policy.sh
+
+      - name: Enforce quality-policy guard
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}"
+            bash scripts/check-quality-policy.sh "origin/${{ github.base_ref }}"
+          else
+            bash scripts/check-quality-policy.sh HEAD^
+          fi
+
+      - name: Coverage gate
+        run: cargo llvm-cov -p roml -p roml-highs --features roml-highs/bundled --lcov --output-path lcov.info --fail-under-lines 75
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: roml-lcov
+          path: lcov.info
+
+  mutation:
+    name: Mutation score
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+
+      - name: Run core mutation tests
+        run: cargo mutants --package roml --output mutants.out
+
+      - name: Enforce mutation score
+        run: python3 scripts/check-mutation-score.py mutants.out/outcomes.json 80
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roml-mutation-report
+          path: mutants.out
