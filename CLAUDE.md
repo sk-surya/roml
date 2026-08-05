@@ -13,6 +13,8 @@ Produce research- and production-grade optimization software through executable 
 5. Run the narrow test, then the affected crate suite, then the repository quality gauntlet.
 6. Report exact commands, counts, failures, exclusions, and unresolved risks.
 
+The quality gauntlet is scoped to the buildable crates: `roml` and `roml-highs` (bundled HiGHS). `roml-mosek` and `roml-xpress` require proprietary SDKs and do not yet build; workspace-wide (`--workspace`, `--all-features`) cargo commands fail in their build scripts and must not be used.
+
 Use `.claude/skills/roml-quality/SKILL.md` for test selection and evidence requirements. Use `/quality-gauntlet` before requesting review.
 
 ## Test selection

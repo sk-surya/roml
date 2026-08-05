@@ -32,15 +32,22 @@ Reject any unapproved change that weakens assertions, removes tests, adds ignore
 
 ## 5. Run verification
 
+Scope: the workspace also contains `roml-mosek` and `roml-xpress`, whose
+build scripts require the proprietary MOSEK/Xpress SDKs and do not yet
+build locally or on CI. Verification is scoped to the buildable crates
+(`roml`, `roml-highs` with the bundled HiGHS), matching the CI matrix.
+Do not run `--workspace` / `--all-features` variants — they fail in
+`roml-mosek`'s build script.
+
 ```bash
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace --all-targets
-cargo test --workspace --doc
-cargo doc --workspace --no-deps
+cargo check -p roml -p roml-highs --all-targets --features roml-highs/bundled
+cargo clippy -p roml -p roml-highs --all-targets --features roml-highs/bundled -- -D warnings
+cargo nextest run -p roml -p roml-highs --all-targets --features roml-highs/bundled
+cargo test -p roml -p roml-highs --features roml-highs/bundled --doc
+cargo doc -p roml -p roml-highs --no-deps --features roml-highs/bundled
 bash scripts/check-quality-policy.sh "${QUALITY_BASE_REF:-origin/main}"
-cargo llvm-cov --workspace --all-features --all-targets --fail-under-lines 75
+cargo llvm-cov -p roml -p roml-highs --features roml-highs/bundled --lcov --output-path lcov.info --fail-under-lines 75
 ```
 
 Set `RUSTDOCFLAGS='-D warnings'` for documentation verification.

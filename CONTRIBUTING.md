@@ -38,11 +38,11 @@ cargo build
 # Build just the core crate
 cargo build -p roml
 
-# Run all workspace tests
-cargo test --workspace
+# Run tests for the buildable crates (roml-mosek/roml-xpress do not build yet)
+cargo test -p roml -p roml-highs --features roml-highs/bundled
 
-# Check compilation without running tests
-cargo check --workspace
+# Check compilation of the buildable crates without running tests
+cargo check -p roml -p roml-highs --features roml-highs/bundled
 ```
 
 ## Solver-Free Development
@@ -118,8 +118,8 @@ This convention is not yet enforced; it is a recommended practice for contributo
 
 - **One change per PR**: Keep pull requests focused on a single concern.
 - **Tests included**: New features should include tests; bug fixes should include a regression test.
-- **All tests pass**: Run `cargo test --workspace` before submitting.
-- **Lint clean**: `cargo clippy --workspace` should produce no warnings for new code.
+- **All tests pass**: Run `cargo test -p roml -p roml-highs --features roml-highs/bundled` before submitting (see the note on workspace tests below).
+- **Lint clean**: `cargo clippy -p roml -p roml-highs --all-targets --features roml-highs/bundled` should produce no warnings for new code.
 - **Formatted**: Code must be formatted with `cargo fmt` before committing.
 - **Changelog entry**: Notable changes should include a corresponding entry in `CHANGELOG.md` under the `Unreleased` section.
 - **Review process**: PRs require at least one review from a maintainer before merging.
@@ -138,10 +138,7 @@ CI runs tests with [`cargo-nextest`](https://nexte.st) (faster parallel executio
 > (the buildable crates) until they land.
 
 ```bash
-# Run all tests across the workspace (requires every crate to build)
-cargo test --workspace
-
-# Run tests for a buildable package (recommended on main today)
+# Run tests for the buildable crates (recommended on main today)
 cargo test -p roml
 cargo test -p roml-highs
 
