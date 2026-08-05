@@ -44,8 +44,9 @@ fn characterize_highs_flat_capabilities() {
     assert!(!caps.semiinteger, "HiGHS should NOT support semi-integer");
 }
 
-/// The HiGHS typed capability set declares the M2-native features `Native` and
-/// every unqualified M3 feature `Unsupported` (P26 Task 6, SM-04.2/SM-04.4).
+/// The HiGHS typed capability set declares the M2-native features `Native`,
+/// the P28-qualified MIP start features `Native` (SM-08.7), and every
+/// remaining unqualified M3 feature `Unsupported` (SM-04.2/SM-04.4).
 #[test]
 fn highs_typed_capability_set_native_and_unsupported() {
     let set = highs_capability_set(1, 15, 0);
@@ -65,9 +66,17 @@ fn highs_typed_capability_set_native_and_unsupported() {
         );
     }
 
+    // P28 (SM-08.7): the pinned-header audit qualifies Highs_setSparseSolution
+    // as the native MIP start primitive.
+    for feature in [BackendFeature::MipStart, BackendFeature::PartialMipStart] {
+        assert!(
+            set.supports(feature),
+            "P28-qualified MIP start feature {:?} must be Native (SM-08.7)",
+            feature
+        );
+    }
+
     let unqualified_m3 = [
-        BackendFeature::MipStart,
-        BackendFeature::PartialMipStart,
         BackendFeature::MultipleMipStarts,
         BackendFeature::VariableHints,
         BackendFeature::InitialBasis,
@@ -82,7 +91,7 @@ fn highs_typed_capability_set_native_and_unsupported() {
     for feature in unqualified_m3 {
         assert!(
             !set.supports(feature),
-            "M3 feature {:?} must be Unsupported in P26",
+            "M3 feature {:?} must be Unsupported",
             feature
         );
     }

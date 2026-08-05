@@ -91,6 +91,14 @@ Must include:
 
 Closes: SM-07.1–SM-07.2, SM-07.7, SM-08.
 
+**P28 status (executor):** evidence file recorded (baseline, per-task RED/GREEN,
+HiGHS audit summary, full verification matrix, public API diff) and the HiGHS
+audit record (`docs/knowledge/highs_mip_start_api.md`) landed on branch
+`phase-roml-P28-solve-plan-warm-starts` (commits `40ef027`, `286c6c7`,
+`cd46ebb`). Requirement closure is pending the independent review gates (the
+orchestrator marks SM-07.1–07.2, SM-07.7, SM-08 complete after no-P0/P1
+resolution).
+
 ### P29 evidence
 
 Expected file: `docs/release/evidence/M3_P29_IIS_CONFLICTS.md`

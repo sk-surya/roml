@@ -11,10 +11,12 @@
 pub mod backend;
 pub mod callback;
 pub mod conformance;
+pub mod effective_plan;
 pub mod error;
 pub mod facade;
 pub mod options;
 pub mod overlay;
+pub mod plan;
 pub mod reference;
 pub mod request;
 pub mod session;
@@ -22,6 +24,10 @@ pub mod session;
 pub use error::SolveError;
 pub use facade::SolverSession;
 pub use options::SolveOptions;
+pub use plan::{
+    HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
+    UnsupportedFeaturePolicy, VariableHint, VariableHints,
+};
 
 /// Error type for solver operations.
 ///

@@ -8,6 +8,7 @@ use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::origin::OverlayId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::revision::ModelRevision;
+use crate::solver::effective_plan::EffectiveSolvePlan;
 use crate::solver::request::EffectiveConfig;
 
 /// How the model was synchronized into the backend for this solve.
@@ -57,6 +58,11 @@ pub struct SolveMetadata {
     /// solve's result agrees with the overlay's exact `CompilationId` and
     /// `OverlayId`.
     pub overlay_id: Option<OverlayId>,
+    /// The effective solve plan recorded for this solve (SM-04.5, SM-07.7):
+    /// applied features, adjustments/conversions, rejections, and (from P31)
+    /// per-stage objective results. `EffectiveSolvePlan::default()` for a
+    /// synthetic solution / plain solve with no plan features.
+    pub effective_plan: EffectiveSolvePlan,
 }
 
 impl Default for SolveMetadata {
@@ -74,6 +80,8 @@ impl Default for SolveMetadata {
             compilation_id: None,
             // A default is a plain solve / synthetic solution: no overlay.
             overlay_id: None,
+            // A default has no recorded plan features (SM-04.5).
+            effective_plan: EffectiveSolvePlan::default(),
         }
     }
 }

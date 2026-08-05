@@ -71,6 +71,7 @@ mod index_map;
 mod lifecycle;
 mod session;
 mod solution;
+mod start;
 
 pub use error::HighsError;
 pub use facade::Highs;
