@@ -135,8 +135,11 @@ What ROML can express and solve today, and where each capability lives:
 | Soft constraints | 🚧 M3 P30 (in progress) | — |
 | Lexicographic / weighted objectives | 🚧 M3 P31 (in progress) | — |
 
-Every capability is exercised end-to-end by an example under
+The solve, overlay, warm-start, construct, and piecewise-linear capabilities
+above are each exercised end-to-end by an example under
 [`roml-highs/examples/`](roml-highs/examples/), all compiled and run by CI.
+(Parameters, boolean/cardinality constructs, and variable hints are covered by
+the test suites instead; variable hints are unsupported on HiGHS by design.)
 
 ## How synchronization works
 

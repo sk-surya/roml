@@ -61,6 +61,7 @@ jobs:
       - name: Run doctests
         run: cargo test -p roml-highs --features bundled --doc
       - name: Run showcase examples
+        shell: bash # the loop is bash syntax; the default pwsh on Windows cannot parse it
         run: |
           for ex in pwl_production_planning warm_start_mip overlay_solve constructs; do
             cargo run -q -p roml-highs --features bundled --example "$ex"

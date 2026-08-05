@@ -320,8 +320,10 @@ exact identity of the compiled state that was solved.
 
 The full program is compiled and run as
 [`roml-highs/examples/warm_start_mip.rs`](roml-highs/examples/warm_start_mip.rs):
-`solve` cold, re-solve with a `MipStart` seeded from the cold solution, and
-read the applied features and compilation identity from the metadata.
+`solve` cold, re-solve with a `MipStart` carrying a feasible but SUBOPTIMAL
+assignment (so the hint is genuine — it must not fix the model to its
+values), and read the applied features and compilation identity from the
+metadata while the solver recovers the proven optimum.
 
 ## 12. Reversible solve overlays
 

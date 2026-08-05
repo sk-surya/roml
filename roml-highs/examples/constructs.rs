@@ -57,8 +57,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Objective: reward taking x when it is on; the |x| and max(x,0)
     // epigraphs bind exactly at the optimum (penalized lightly so they stay
     // tight rather than slack). With the indicator capping x at 3, the optimum
-    // is on = 1, x = 3: switching on pays 3 - 0.2 - 0.2, switching off (or a
-    // lower x) pays strictly less.
+    // is on = 1, x = 3: switching on pays 3 - 0.3 - 0.3 = 2.4, switching off
+    // (or a lower x) pays strictly less.
     model.maximize(take - 0.1 * w - 0.1 * m)?;
 
     let mut highs = Highs::new()?;

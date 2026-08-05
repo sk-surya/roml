@@ -1,10 +1,11 @@
 //! MIP warm starts and effective-plan reporting (P28).
 //!
 //! A small scheduling MIP is solved cold, then re-solved with a [`SolvePlan`]
-//! carrying a [`MipStart`] seeded from the cold solution. A warm start is a
-//! search hint — it can never change the proven optimum (SM-08.3) — and the
-//! returned metadata records which features were applied and the exact
-//! compilation identity of the solve (SM-04.5, SM-07.7).
+//! carrying a [`MipStart`] seeded with a FEASIBLE BUT SUBOPTIMAL assignment —
+//! a genuine hint must not fix the model to its values. The solver must still
+//! recover the proven optimum (a warm start is a search hint and can never
+//! change it, SM-08.3), and the returned metadata records which features were
+//! applied and the exact compilation identity of the solve (SM-04.5, SM-07.7).
 //!
 //! Run with: `cargo run -p roml-highs --example warm_start_mip`
 

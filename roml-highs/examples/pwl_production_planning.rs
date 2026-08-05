@@ -52,10 +52,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     model.add_constraint((LinExpr::from(q) - cap).le(0.0))?;
 
     // Net reward: push output up against capacity while paying the PWL cost.
-    // The reward rate (4.0/unit) exceeds ALL three marginal tiers (2, 3, 5),
-    // so the objective is strictly increasing in q: the optimum is UNIQUE at
-    // the capacity bound q = cap = 50, inside the second tier. The epigraph
-    // rows bind exactly and the min/max capacity construct is active.
+    // The reward rate (4.0/unit) exceeds the two REACHABLE marginal tiers (2
+    // and 3) — the third tier (5) is unreachable because the capacity bound
+    // caps q at 50 — so the objective is strictly increasing in q over its
+    // whole domain: the optimum is UNIQUE at q = cap = 50, inside the second
+    // tier. The epigraph rows bind exactly and the min/max capacity construct
+    // is active.
     model.maximize(4.0 * q - cost)?;
 
     let mut highs = Highs::new()?;
