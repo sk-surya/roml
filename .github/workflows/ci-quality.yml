@@ -16,6 +16,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # CI cache generation. ALL cache keys (apt lists/debs, cargo registry,
+  # highs-sys/target builds) compose from this one value — the same tag the
+  # other CI workflows use, so this workflow restores their caches instead of
+  # rebuilding (notably the bundled highs-sys cmake build under the coverage
+  # gate). Bump it and commit to force a full refresh of every cache (see
+  # ci-highs.yml for the full rationale).
+  CI_CACHE_VERSION: "2026-08"
+
 jobs:
   coverage-and-policy:
     name: Coverage and policy
@@ -27,16 +36,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install nextest and llvm-cov
-        uses: taiki-e/install-action@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          tool: nextest,cargo-llvm-cov
+          toolchain: stable
+
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Test quality-policy guard
         shell: bash
@@ -56,7 +66,7 @@ jobs:
         run: cargo llvm-cov -p roml -p roml-highs --features roml-highs/bundled --lcov --output-path lcov.info --fail-under-lines 75
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: roml-lcov
           path: lcov.info
@@ -67,19 +77,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
 
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: CI caches (apt + cargo/highs-sys)
+        uses: ./.github/actions/ci-cache
+        with:
+          cache-version: ${{ env.CI_CACHE_VERSION }}
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
 
       - name: Run core mutation tests
         run: cargo mutants --package roml --output mutants.out
@@ -89,7 +99,7 @@ jobs:
 
       - name: Upload mutation report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: roml-mutation-report
           path: mutants.out
