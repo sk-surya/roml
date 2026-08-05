@@ -3,11 +3,11 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P25-P27 and P32 accepted; P28 and P33 unblocked  
-**Current phase:** P26 — compiler boundary, backend IR, capabilities, origins, compilation identity  
+**Status:** P25–P28, P32, P33 accepted; P29–P31 unblocked  
+**Current phase:** P29 — IIS/conflicts (next coding phase per the WIP policy)  
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
-**Implementation branch:** `phase-roml-P25-semantic-ir-foundation` (from `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`)  
-**Authoritative baseline:** `main@4d111cceafce17aea44a6e396a838d1cc9ef255d`  
+**Implementation branches:** `phase-roml-P25-semantic-ir-foundation` … `phase-roml-P33-piecewise-linear-bounds` (all merged via PRs #27–#32)  
+**Authoritative baseline:** `main@2fa0596` (P28 merge; P33 merge `4caf03c` on top)  
 **Design:** `docs/superpowers/specs/2026-08-02-semantic-modeling-and-solve-workflows-design.md`
 
 ## Approved owner direction
@@ -20,13 +20,13 @@
 
 ## Immediate next gate
 
-The planning branch review is complete (PR #25 merged to `main@4d111cc`); the design/requirements/roadmap are internally consistent. P25 implementation is ready from the reviewed `main`.
+P25–P28, P32, P33 are accepted and merged (`main@2fa0596`). P29, P30, and P31 are unblocked (prerequisite P28 accepted). Per the WIP policy (default: one coding phase active; P29/P30/P31 parallelism only with separate owners and an integration reviewer), the next coding phase is **P29 — IIS/conflicts**, whose blocking decision (pinned/system HiGHS IIS capability per D19) is resolved during execution via the Native API research protocol.
 
-Before P25 code:
+Before P29 code:
 
-1. fetch current refs and record exact base SHA;
+1. fetch current refs and record exact base SHA (`main@2fa0596`);
 2. read `AGENTS.md`, the M3 packet, and the approved design;
-3. create an isolated worktree/branch `phase-roml-P25-semantic-ir-foundation`;
+3. create an isolated worktree/branch `phase-roml-P29-iis-conflicts`;
 4. capture untouched baseline commands and public API;
 5. write characterization/failing tests first.
 
@@ -37,12 +37,12 @@ Before P25 code:
 | P25 Semantic IR/identity | Accepted | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (merged PR #27, `9c2a9df`) | none |
 | P26 Compiler/backend IR | Accepted | P25 accepted (PR #27, `9c2a9df`) | `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md` (merged PR #28, `192cd00`) | backend contract amendment review (passed, Task 0 acceptance record) |
 | P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
-| P28 Starts/hints/SolvePlan | Ready to execute | P27 accepted (PR #29, `4f86791`) | `.planning/phases/28-solve-plan-warm-starts/28-PLAN.md` | pinned HiGHS start API audit |
-| P29 IIS/conflicts | Blocked | P28 accepted | none | pinned/system HiGHS IIS capability |
-| P30 Soft constraints | Blocked | P28 accepted | none | none |
-| P31 Lexicographic objectives | Blocked | P28 accepted | none | native HiGHS semantics audit |
-| P32 Common constructs | Blocked | P26 accepted | none | none |
-| P33 PWL/bounds | Ready to execute | P32 accepted (PR #30, `538336d`) | `.planning/phases/33-pwl-bounds/33-PLAN.md` | none |
+| P28 Starts/hints/SolvePlan | Accepted | P27 accepted (PR #29, `4f86791`) | `docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md` (merged PR #32, `2fa0596`) | none |
+| P29 IIS/conflicts | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | pinned/system HiGHS IIS capability |
+| P30 Soft constraints | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | none |
+| P31 Lexicographic objectives | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | native HiGHS semantics audit |
+| P32 Common constructs | Accepted | P26 accepted | `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md` (merged PR #30, `538336d`) | none |
+| P33 PWL/bounds | Accepted | P32 accepted (PR #30, `538336d`) | `docs/release/evidence/M3_P33_PIECEWISE_LINEAR_BOUNDS.md` (merged PR #31, `4caf03c`) | none |
 | P34 Qualification | Blocked | P29–P33 accepted | none | no publication in M3 |
 
 ## Bounded technical decisions to resolve during execution

@@ -7,17 +7,17 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 | SM-01 Canonical semantic IR | P25 | P34 public API/NLP audit | Partially closed: SM-01.1–01.3, 01.5, 01.6 closed in P25; SM-01.4 partial (semantic constructs in P25, objective policies P31); P34 audit pending |
 | SM-02 Identity/metadata/provenance | P25 | P26 compilation/origin IDs; P29 reports | Partially closed: SM-02.1, 02.3, 02.7 closed in P25; SM-02.4/02.5 closed in P26; SM-02.2 foundations only (validation mechanism P27); SM-02.6 foundations in P26, full in P29 |
 | SM-03 Compiler/backend IR | P26 | P34 equivalence and stale-state evidence | Partially closed: SM-03.1–03.8 closed in P26; SM-03.9 partial (results and metadata carry exact `CompilationId` with façade mismatch rejection in P26; overlay artifacts P27, analysis artifacts P29); P34 evidence pending |
-| SM-04 Typed capabilities | P26 | P28/P29/P31/P33 backend features | Partially closed: SM-04.1, 04.3, 04.4 closed in P26; SM-04.2 partial (typed set reports Native/Bridge separately; bridge features land P32); SM-04.5 deferred to P28; P28+/P33 features pending |
+| SM-04 Typed capabilities | P26 | P29/P31 backend features | Closed: SM-04.1, 04.3, 04.4 closed in P26; SM-04.2 partial (typed set reports Native/Bridge separately; bridge features landed P32); SM-04.5 closed in P28 (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`); P28/P33 backend features declared (MipStart/PartialMipStart qualified; VariableHints/MultipleMipStarts/InitialBasis/Sos2/NativePiecewiseLinear typed Unsupported; PiecewiseLinear Bridge) |
 | SM-05 Persistent fixing | P27 | P34 regression/performance | Closed in P27 (`M3_P27_FIXING_LOCKS_OVERLAYS.md`); P34 regression/performance pending |
-| SM-06 Assignments/solution reuse | P27 | P28 starts/hints | Closed in P27 (`M3_P27_FIXING_LOCKS_OVERLAYS.md`); P28 starts/hints pending |
-| SM-07 SolvePlan/overlays | P27–P28 | P31 objective locks; P34 failure matrix | Partially closed: SM-07.3–07.6 closed in P27; SM-07.1–07.2/07.7 → P28; P31 objective locks (stage optimum `z`), P34 failure matrix pending |
-| SM-08 Starts/hints | P28 | P34 support matrix | Planned |
+| SM-06 Assignments/solution reuse | P27 | P28 starts/hints | Closed in P27 (`M3_P27_FIXING_LOCKS_OVERLAYS.md`); P28 starts/hints closed (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`) |
+| SM-07 SolvePlan/overlays | P27–P28 | P31 objective locks; P34 failure matrix | Closed: SM-07.3–07.6 closed in P27; SM-07.1–07.2/07.7 closed in P28 (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`); P31 objective locks (stage optimum `z`), P34 failure matrix pending |
+| SM-08 Starts/hints | P28 | P34 support matrix | Closed in P28 (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`); P34 support matrix pending |
 | SM-09 IIS/conflicts | P29 | P34 docs/fresh consumers | Planned |
 | SM-10 Soft constraints | P30 | P34 examples/equivalence | Planned |
 | SM-11 Objective policies | P31 | P34 native/portable corpus | Planned |
-| SM-12 Common constructs | P32 | P33 SM-12.8; P34 public qualification | Closed: SM-12.1/12.2/12.5 closed in P32 Task 16; SM-12.3/12.4/12.6/12.7 closed in P32 Task 17; SM-12.8 advanced by P33 Task 1 (stable handles + formulation diagnostics) |
-| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Closed in P33 (implementation; independent review pending per P33 gate): SM-13.1-13.6 foundations closed in P32; P33 extends interval analysis to the PWL argument and records bound-source traces — `M3_P33_PIECEWISE_LINEAR_BOUNDS.md` |
-| SM-14 PWL | P33 | P34 solver/version matrix | Closed in P33 (implementation; independent review pending per P33 gate): SM-14.1-14.7 — `M3_P33_PIECEWISE_LINEAR_BOUNDS.md` |
+| SM-12 Common constructs | P32 | P33 SM-12.8; P34 public qualification | Closed: SM-12.1/12.2/12.5 closed in P32 Task 16; SM-12.3/12.4/12.6/12.7 closed in P32 Task 17; SM-12.8 advanced by P33 Task 1 (stable handles + formulation diagnostics, `M3_P33_PIECEWISE_LINEAR_BOUNDS.md`, PR #31 `4caf03c`); P34 public qualification pending |
+| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Closed in P33 (PR #31 `4caf03c`): SM-13.1-13.6 foundations closed in P32; P33 extends interval analysis to the PWL argument and records bound-source traces — `M3_P33_PIECEWISE_LINEAR_BOUNDS.md` |
+| SM-14 PWL | P33 | P34 solver/version matrix | Closed in P33 (PR #31 `4caf03c`): SM-14.1-14.7 — `M3_P33_PIECEWISE_LINEAR_BOUNDS.md`; P34 solver/version matrix pending |
 | SM-15 Qualification/NLP readiness | P34 | all phase evidence | Planned |
 
 ## Detailed evidence map
