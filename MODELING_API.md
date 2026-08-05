@@ -319,7 +319,7 @@ and `objective_stages` (empty until P31). `metadata().compilation_id` is the
 exact identity of the compiled state that was solved.
 
 The full program is compiled and run as
-[`roml-highs/examples/warm_start_mip.rs`](../roml-highs/examples/warm_start_mip.rs):
+[`roml-highs/examples/warm_start_mip.rs`](roml-highs/examples/warm_start_mip.rs):
 `solve` cold, re-solve with a `MipStart` seeded from the cold solution, and
 read the applied features and compilation identity from the metadata.
 
@@ -347,7 +347,7 @@ result's `metadata().overlay_id` identifies the applied overlay, and a
 subsequent plain solve is provably unaffected.
 
 The full program is compiled and run as
-[`roml-highs/examples/overlay_solve.rs`](../roml-highs/examples/overlay_solve.rs):
+[`roml-highs/examples/overlay_solve.rs`](roml-highs/examples/overlay_solve.rs):
 solve a production mix, re-solve with `y` temporarily fixed and `x` locked to
 its baseline, then verify the overlay is fully rolled back.
 
@@ -373,7 +373,7 @@ min/max to a bounded selector formulation with binaries. Exactness is always
 the user's explicit choice — it is never inferred from objective context.
 
 The full program is compiled and run as
-[`roml-highs/examples/constructs.rs`](../roml-highs/examples/constructs.rs):
+[`roml-highs/examples/constructs.rs`](roml-highs/examples/constructs.rs):
 an indicator coupling a binary to a constraint, a binary-times-linear product,
 an absolute-value epigraph, and a min/max epigraph, all binding exactly at the
 optimum.
@@ -407,7 +407,7 @@ resolver variants: `evaluate_with`, `classify_curvature_with`,
 `segment_slopes_with`).
 
 The full program is compiled and run as
-[`roml-highs/examples/pwl_production_planning.rs`](../roml-highs/examples/pwl_production_planning.rs):
+[`roml-highs/examples/pwl_production_planning.rs`](roml-highs/examples/pwl_production_planning.rs):
 a convex tiered cost modeled as an epigraph PWL (zero binaries) plus a
 min/max capacity construct, with the reported cost asserted equal to the exact
 PWL function.

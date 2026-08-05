@@ -21,11 +21,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let x = model.add_variable(continuous().bounds(-10.0, 10.0).named("x"))?;
     let on = model.add_variable(binary().named("on"))?;
 
-    // Indicator: when `on` is 1, x must be >= 2.
+    // Indicator: when `on` is 1, x must be <= 3. The reward grows with x, so
+    // the optimum drives x against this bound — the indicator BINDS at the
+    // optimum instead of guarding a slack constraint.
     let _indicator = model.add_indicator(
         on,
         IndicatorDirection::WhenOne,
-        (x).ge(2.0),
+        (x).le(3.0),
         Some(FormulationPreference::Portable),
     )?;
 
@@ -54,7 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Objective: reward taking x when it is on; the |x| and max(x,0)
     // epigraphs bind exactly at the optimum (penalized lightly so they stay
-    // tight rather than slack).
+    // tight rather than slack). With the indicator capping x at 3, the optimum
+    // is on = 1, x = 3: switching on pays 3 - 0.2 - 0.2, switching off (or a
+    // lower x) pays strictly less.
     model.maximize(take - 0.1 * w - 0.1 * m)?;
 
     let mut highs = Highs::new()?;
@@ -68,11 +72,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         solution.value(w).unwrap_or(f64::NAN),
         solution.value(m).unwrap_or(f64::NAN),
     );
-    let xv = solution.value(x).unwrap_or(0.0);
-    let onv = solution.value(on).unwrap_or(0.0);
+    let xv = solution.value(x).unwrap_or(f64::NAN);
+    let onv = solution.value(on).unwrap_or(f64::NAN);
+    // All five relations are asserted at the optimum (review closure).
     assert!(
-        onv < 0.5 || xv >= 2.0 - 1e-6,
-        "the indicator must enforce x >= 2 when on = 1"
+        (onv - 1.0).abs() < 1e-6,
+        "the optimum must switch the indicator on"
+    );
+    assert!(
+        (xv - 3.0).abs() < 1e-6,
+        "the indicator bound x <= 3 must bind at the optimum"
     );
     assert!(
         (solution.value(take).unwrap_or(f64::NAN) - onv * xv).abs() < 1e-6,
@@ -81,6 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         (solution.value(w).unwrap_or(f64::NAN) - xv.abs()).abs() < 1e-6,
         "the absolute-value epigraph must bind exactly"
+    );
+    assert!(
+        (solution.value(m).unwrap_or(f64::NAN) - xv.max(0.0)).abs() < 1e-6,
+        "the min/max epigraph must equal max(x, 0) exactly"
     );
     assert_eq!(solution.status(), SolveStatus::Optimal);
     Ok(())

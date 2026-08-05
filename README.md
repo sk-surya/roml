@@ -126,7 +126,8 @@ What ROML can express and solve today, and where each capability lives:
 | Mutable parameters + incremental re-solves | ✅ | `Model::add_parameter`, `Model::set_parameter` |
 | Reversible solve overlays (temporary fixings, solution locks, objective-lock rows, cutoffs) | ✅ | `SolveOverlay`, `Highs::solve_with_overlay` — [example](roml-highs/examples/overlay_solve.rs) |
 | Solve plans — one explicit solve-attempt contract (options + overlay + starts + hints + policy) | ✅ | `SolvePlan`, `Highs::solve_plan` — [example](roml-highs/examples/warm_start_mip.rs) |
-| MIP warm starts and variable hints (reject-by-default; explicit recorded conversions) | ✅ | `MipStart`, `VariableHints`, `UnsupportedFeaturePolicy` |
+| MIP warm starts — full and partial primal assignments (reject-by-default; explicit recorded conversions) | ✅ | `MipStart`, `RepairPolicy`, `UnsupportedFeaturePolicy` |
+| Variable hints (independent value/priority records) | ✅ typed contract — **unsupported on HiGHS**: no native hint API exists, so hint requests reject by default (never simulated) | `VariableHints`, `HintPriority`, `UnsupportedFeaturePolicy` |
 | Effective-plan reporting (applied features, conversions, rejections, exact compilation identity) | ✅ | `Solution::metadata().effective_plan`, `metadata().compilation_id` |
 | Semantic constructs: indicator, boolean, cardinality, min/max, absolute value, binary products | ✅ | `Model::add_indicator` / `add_boolean` / `add_cardinality` / `add_minmax` / `add_absolute_value` / `add_binary_times_linear` — [example](roml-highs/examples/constructs.rs) |
 | Piecewise-linear functions (exact graphs; zero-binary convex epigraph / concave hypograph) | ✅ | `Model::add_piecewise_linear` — [example](roml-highs/examples/pwl_production_planning.rs) |

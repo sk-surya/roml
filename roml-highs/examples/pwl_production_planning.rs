@@ -52,10 +52,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     model.add_constraint((LinExpr::from(q) - cap).le(0.0))?;
 
     // Net reward: push output up against capacity while paying the PWL cost.
-    // The reward rate (3.0/unit) exceeds the first two marginal tiers but not
-    // the third, so the optimum lands inside the PWL curve and the epigraph
-    // rows bind exactly.
-    model.maximize(3.0 * q - cost)?;
+    // The reward rate (4.0/unit) exceeds ALL three marginal tiers (2, 3, 5),
+    // so the objective is strictly increasing in q: the optimum is UNIQUE at
+    // the capacity bound q = cap = 50, inside the second tier. The epigraph
+    // rows bind exactly and the min/max capacity construct is active.
+    model.maximize(4.0 * q - cost)?;
 
     let mut highs = Highs::new()?;
     let solution = highs.solve(&mut model)?;
@@ -64,13 +65,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cost = {:.2}", solution.value(cost).unwrap_or(f64::NAN));
     println!("cap  = {:.2}", solution.value(cap).unwrap_or(f64::NAN));
     println!(
-        "objective (q - cost) = {:.2}",
+        "objective (4q - cost) = {:.2}",
         solution.objective_value().unwrap_or(f64::NAN)
     );
 
     // The convex epigraph is exact: the reported cost equals the PWL function
-    // evaluated at the reported output (checking two interior breakpoints).
-    let qv = solution.value(q).unwrap_or(0.0);
+    // evaluated at the reported output.
+    let qv = solution.value(q).unwrap_or(f64::NAN);
     let f = |x: f64| {
         if x <= 40.0 {
             2.0 * x
@@ -83,6 +84,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         (solution.value(cost).unwrap_or(f64::NAN) - f(qv)).abs() < 1e-6,
         "the PWL epigraph must reproduce the exact cost function"
+    );
+    // Deterministic optimum (review P1-2): the reward strictly dominates every
+    // marginal tier, so q is pushed to the capacity bound.
+    assert!(
+        (qv - 50.0).abs() < 1e-6,
+        "q must reach the capacity bound 50, got {qv}"
+    );
+    assert!(
+        (solution.value(cap).unwrap_or(f64::NAN) - 50.0).abs() < 1e-6,
+        "the min/max capacity construct must bind at 50"
+    );
+    assert!(
+        (qv - solution.value(cap).unwrap_or(f64::NAN)).abs() < 1e-6,
+        "q must equal the capacity bound exactly"
+    );
+    assert!(
+        (solution.value(cost).unwrap_or(f64::NAN) - 110.0).abs() < 1e-6,
+        "cost must equal f(50) = 110"
     );
     assert_eq!(solution.status(), SolveStatus::Optimal);
     Ok(())

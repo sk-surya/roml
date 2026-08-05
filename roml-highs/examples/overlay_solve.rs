@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .expect("overlay identity allocation cannot overflow");
 
+    let expected_id = overlay.id;
     let fixed = highs.solve_with_overlay(&mut model, SolveOptions::default(), &overlay, None)?;
     assert_eq!(fixed.value(y), Some(4.0), "the temporary fixing binds y");
     assert_eq!(
@@ -65,7 +66,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fixed.value(x).unwrap_or(f64::NAN),
         fixed.objective_value().unwrap_or(f64::NAN)
     );
-    println!("overlay id: {:?}", fixed.metadata().overlay_id);
+    // The metadata reports EXACTLY the overlay that was applied (review
+    // closure: assert the identity, don't just print it).
+    assert_eq!(
+        fixed.metadata().overlay_id,
+        Some(expected_id),
+        "the solve must report the exact applied overlay identity"
+    );
 
     // A plain re-solve is unaffected: the overlay was fully rolled back and
     // the canonical model was never changed.

@@ -32,17 +32,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cold.value(x).unwrap_or(f64::NAN)
     );
 
-    // Seed a warm start from the cold solution. The assignment carries the
-    // model's lineage/instance/revision as provenance (D4) and is validated
-    // against the model before any backend call.
+    // Seed a warm start that is FEASIBLE but SUBOPTIMAL (review closure):
+    // (x, y) = (0, 0) satisfies the capacity row but is far from the optimum
+    // (x = 10, y = 2). A genuine hint must not fix the model to its values —
+    // the solver must still recover the proven optimum.
     let assignment = PrimalAssignment {
         lineage: model.lineage(),
         source_instance: Some(model.instance()),
         source_revision: Some(model.current_revision()),
-        values: BTreeMap::from([
-            (x, cold.value(x).unwrap_or(0.0)),
-            (y, cold.value(y).unwrap_or(0.0)),
-        ]),
+        values: BTreeMap::from([(x, 0.0), (y, 0.0)]),
     };
     let plan = SolvePlan {
         mip_starts: vec![MipStart::new(assignment, RepairPolicy::BackendDefault)],
@@ -52,12 +50,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let warm = highs.solve_plan(&mut model, plan)?;
 
-    // A warm start is a hint: the proven optimum is unchanged, and the
-    // metadata records what was applied and under which compilation identity.
+    // A warm start is a hint: the proven optimum is RECOVERED from the
+    // suboptimal seed, never changed by it (SM-08.3).
     assert_eq!(
         warm.objective_value(),
         cold.objective_value(),
         "a warm start can never change the proven optimum (SM-08.3)"
+    );
+    assert!(
+        (warm.value(x).unwrap_or(f64::NAN) - cold.value(x).unwrap_or(f64::NAN)).abs() < 1e-6,
+        "the optimum must be recovered, not fixed to the seed values"
+    );
+    // The applied MIP start is RECORDED, and the exact compilation identity of
+    // the solved state is present (SM-04.5, SM-07.7).
+    assert!(
+        warm.metadata()
+            .effective_plan
+            .applied_features
+            .iter()
+            .any(|f| f.feature == "mip_start"),
+        "the applied warm start must be recorded in the effective plan"
+    );
+    assert!(
+        warm.metadata().compilation_id.is_some(),
+        "the solve must report its exact compilation identity"
     );
     println!(
         "warm start applied: {:?}",
