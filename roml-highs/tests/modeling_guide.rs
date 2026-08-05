@@ -201,7 +201,7 @@ fn guide_sparse_cells() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Chapter 11 — validation and common errors.
+/// Chapter 15 — validation and common errors.
 #[test]
 fn guide_validation_and_errors() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::new();

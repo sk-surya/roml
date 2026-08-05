@@ -32,10 +32,13 @@
 //! synchronization is automatic (parameter updates apply as deltas, and
 //! unsupported changes recover via one snapshot rebuild).
 
+use roml::id::ObjId;
 use roml::model::Model;
 use roml::solution::Solution;
 use roml::solver::facade::SolverSession;
 use roml::solver::options::SolveOptions;
+use roml::solver::overlay::SolveOverlay;
+use roml::solver::plan::SolvePlan;
 use roml::solver::SolveError;
 
 use crate::error::HighsError;
@@ -98,5 +101,51 @@ impl Highs {
         options: SolveOptions,
     ) -> Result<Solution, SolveError> {
         self.inner.solve_with(model, options)
+    }
+
+    /// Execute a [`SolvePlan`] through the single plan executor (P28;
+    /// design §12, SM-07.1).
+    ///
+    /// The full solve-attempt contract: plan validation, unsupported-feature
+    /// policy, reversible overlays, warm starts/hints, and effective-plan
+    /// recording — see [`SolverSession::solve_plan`]. An empty plan is
+    /// exactly `solve`/`solve_with`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError::Plan`] when the plan fails validation or
+    /// requests a feature the backend does not qualify under the plan's
+    /// default-reject policy, plus the ordinary
+    /// [`solve_with`](Highs::solve_with) failure classes.
+    pub fn solve_plan(
+        &mut self,
+        model: &mut Model,
+        plan: SolvePlan,
+    ) -> Result<Solution, SolveError> {
+        self.inner.solve_plan(model, plan)
+    }
+
+    /// Solve under a reversible [`SolveOverlay`] (P27; design §12, SM-07.3).
+    ///
+    /// Temporary fixings, solution locks, objective-lock rows, and cutoffs
+    /// apply for this solve attempt only and are rolled back (and verified)
+    /// afterward — the canonical model is never mutated by the overlay, and
+    /// the returned metadata reports the overlay identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError::Overlay`] when the overlay fails to compile
+    /// (before any backend mutation), [`SolveError::Rollback`] on an
+    /// uncertain rollback, plus the ordinary
+    /// [`solve_with`](Highs::solve_with) failure classes.
+    pub fn solve_with_overlay(
+        &mut self,
+        model: &mut Model,
+        options: SolveOptions,
+        overlay: &SolveOverlay,
+        objective_override: Option<ObjId>,
+    ) -> Result<Solution, SolveError> {
+        self.inner
+            .solve_with_overlay(model, options, overlay, objective_override)
     }
 }
