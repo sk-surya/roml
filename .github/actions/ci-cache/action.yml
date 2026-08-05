@@ -7,7 +7,13 @@ description: |
   All cache keys compose from the caller's `cache-version` (workflow-level
   `env.CI_CACHE_VERSION`) — bump that one value to force a full refresh of
   every cache. The apt key additionally hashes this action file, so adding
-  or removing packages here refreshes the apt caches automatically.
+  or removing packages here refreshes the apt caches automatically. The
+  cargo key additionally includes the resolved `rustc` version and the
+  Cargo.lock hash, so a toolchain upgrade or dependency-set change
+  invalidates compiled artifacts without a manual version bump (a rustc
+  change silently invalidates every fingerprint — if the key did not
+  change too, hits would keep serving stale artifacts forever, since
+  exact hits never re-save).
 
 inputs:
   cache-version:
@@ -104,9 +110,24 @@ runs:
     # ─────────────────────── cargo (registry + target) ───────────────────────
     # Caches the dependency downloads AND the compiled artifacts — including
     # the bundled highs-sys build (cmake HiGHS), which is the expensive part.
-    # The exact key includes Cargo.lock (dependency-set changes invalidate);
-    # the restore-keys fallback reuses the previous generation for partial
-    # staleness, which cargo repairs by rebuilding only what changed.
+    # The exact key includes the RESOLVED rustc version (a toolchain upgrade
+    # silently invalidates every fingerprint, so the key must change too —
+    # otherwise exact hits keep serving stale artifacts forever) and
+    # Cargo.lock (dependency-set changes invalidate). The first restore-key
+    # falls back to the same-rustc previous generation for partial staleness,
+    # which cargo repairs by rebuilding only what changed; the second spans
+    # a rustc bump, keeping the registry/git downloads (the compiled half is
+    # stale and cargo rebuilds it) until the new-rustc generation is saved.
+    - name: Get rustc version
+      id: rustc-version
+      shell: bash
+      run: |
+        rustc_ver="$(rustc --version 2>/dev/null || true)"
+        rustc_ver="${rustc_ver#rustc }"
+        rustc_ver="${rustc_ver%% *}"
+        [ -n "$rustc_ver" ] || rustc_ver="unknown"
+        echo "rustc=${rustc_ver}" >> "$GITHUB_OUTPUT"
+
     - name: Restore cargo cache
       id: cargo-restore
       uses: actions/cache/restore@v6
@@ -115,8 +136,9 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-
           ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-
 
     - name: Save cargo cache
@@ -130,4 +152,4 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}
