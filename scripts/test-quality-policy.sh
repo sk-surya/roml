@@ -22,7 +22,7 @@ new_repo() {
 
 expect_fail() {
   local dir="$1"
-  if git -C "$dir" bash scripts/check-quality-policy.sh main >/dev/null 2>&1; then
+  if (cd "$dir" && bash scripts/check-quality-policy.sh main) >/dev/null 2>&1; then
     echo "expected policy failure in $dir" >&2
     exit 1
   fi
@@ -30,7 +30,7 @@ expect_fail() {
 
 expect_pass() {
   local dir="$1"
-  git -C "$dir" bash scripts/check-quality-policy.sh main >/dev/null
+  (cd "$dir" && bash scripts/check-quality-policy.sh main) >/dev/null
 }
 
 case1="$tmp/unmarked-ignore"
