@@ -22,7 +22,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
-    runs-on: ${{ matrix.os }}
+    # macOS runs on the repo's self-hosted runner (forge, Apple Silicon) to
+    # avoid GitHub-hosted macOS billing; Linux/Windows stay on GitHub-hosted.
+    # Only the owner's own PRs/branches may use the self-hosted runner —
+    # fork PRs can edit this file, so the guard below (plus repo setting
+    # "Require approval for all outside collaborators") keeps fork PRs off it.
+    runs-on: ${{ matrix.os == 'macos-latest' && fromJSON('["self-hosted","macOS","ARM64"]') || matrix.os }}
+    if: ${{ matrix.os != 'macos-latest' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'sk-surya/roml' }}
 
     steps:
       - name: Checkout repository
