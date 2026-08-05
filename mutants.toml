@@ -1,0 +1,10 @@
+# Keep mutation testing focused on authored core semantics.
+exclude_globs = [
+  "roml-highs/**",
+  "roml-mosek/**",
+  "roml-xpress/**",
+  "examples/**",
+  "tests/**",
+]
+timeout_multiplier = 4.0
+minimum_test_timeout = 20
