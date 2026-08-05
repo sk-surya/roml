@@ -28,6 +28,7 @@ pub mod boolean;
 pub mod cardinality;
 pub mod indicator;
 pub mod minmax;
+pub mod piecewise_linear;
 pub mod product;
 pub mod reification;
 
@@ -43,6 +44,11 @@ pub use boolean::{BooleanConstraint, BooleanKind};
 pub use cardinality::{CardinalityConstraint, CardinalityKind};
 pub use indicator::{IndicatorConstraint, IndicatorDirection};
 pub use minmax::{MinMaxConstraint, MinMaxRelation, MinMaxSense};
+pub(crate) use piecewise_linear::classify_curvature_from_slopes;
+pub use piecewise_linear::{
+    ExtrapolationPolicy, PiecewiseLinearConstraint, PwlCurvature, PwlEvalError, PwlPoint,
+    PwlRelation,
+};
 pub use product::{BinaryProductConstraint, ProductOperand};
 pub use reification::ReificationConstraint;
 
@@ -77,6 +83,9 @@ pub enum ConstructKind {
     /// Binary product: binary-binary or binary-times-bounded-linear (design
     /// §16.5, P32 Task 17c).
     BinaryProduct(BinaryProductConstraint),
+    /// Piecewise-linear: epigraph/hypograph/exact-graph over finite strictly
+    /// increasing breakpoints (design §17, P33 Task 1).
+    PiecewiseLinear(PiecewiseLinearConstraint),
     /// Test-only crate-private fixture payload used by the in-crate construct
     /// lifecycle tests (A30 — `#[cfg(test)]`-gated, so the variant is ABSENT
     /// from the public API surface in non-test builds).
@@ -314,6 +323,11 @@ pub(crate) fn derive_variable_dependencies(kind: &ConstructKind) -> Vec<VarId> {
             }
             v
         }
+        ConstructKind::PiecewiseLinear(payload) => {
+            let mut v = vec![payload.output];
+            v.extend(lin_expr_variables(&payload.argument));
+            v
+        }
         #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
     };
@@ -336,6 +350,7 @@ pub(crate) fn derive_parameter_dependencies(kind: &ConstructKind) -> Vec<ParamId
         ConstructKind::MinMax(payload) => payload.parameter_dependencies(),
         ConstructKind::AbsoluteValue(payload) => payload.parameter_dependencies(),
         ConstructKind::BinaryProduct(payload) => payload.parameter_dependencies(),
+        ConstructKind::PiecewiseLinear(payload) => payload.parameter_dependencies(),
         #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
     }

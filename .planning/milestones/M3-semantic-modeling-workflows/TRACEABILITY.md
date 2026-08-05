@@ -15,9 +15,9 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 | SM-09 IIS/conflicts | P29 | P34 docs/fresh consumers | Planned |
 | SM-10 Soft constraints | P30 | P34 examples/equivalence | Planned |
 | SM-11 Objective policies | P31 | P34 native/portable corpus | Planned |
-| SM-12 Common constructs | P32 | P34 public qualification | Partially closed: SM-12.3/12.4/12.6/12.7 closed in P32; remaining clauses P33/P34 |
-| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Partially closed: SM-13.1-13.6 (compiler foundations) closed in P32; full closure P33 |
-| SM-14 PWL | P33 | P34 solver/version matrix | Planned |
+| SM-12 Common constructs | P32 | P33 SM-12.8; P34 public qualification | Closed: SM-12.1/12.2/12.5 closed in P32 Task 16; SM-12.3/12.4/12.6/12.7 closed in P32 Task 17; SM-12.8 advanced by P33 Task 1 (stable handles + formulation diagnostics) |
+| SM-13 Big-M/bound analysis | P33 | P32 indicator/product bridges | Closed in P33 (implementation; independent review pending per P33 gate): SM-13.1-13.6 foundations closed in P32; P33 extends interval analysis to the PWL argument and records bound-source traces — `M3_P33_PIECEWISE_LINEAR_BOUNDS.md` |
+| SM-14 PWL | P33 | P34 solver/version matrix | Closed in P33 (implementation; independent review pending per P33 gate): SM-14.1-14.7 — `M3_P33_PIECEWISE_LINEAR_BOUNDS.md` |
 | SM-15 Qualification/NLP readiness | P34 | all phase evidence | Planned |
 
 ## Detailed evidence map
@@ -159,7 +159,7 @@ Closes: SM-12 and selected SM-13 requirements.
 
 ### P33 evidence
 
-Expected file: `docs/release/evidence/M3_P33_PWL_BOUNDS.md`
+Expected file: `docs/release/evidence/M3_P33_PIECEWISE_LINEAR_BOUNDS.md`
 
 Must include:
 
@@ -167,12 +167,12 @@ Must include:
 - bound-source traces;
 - convexity/concavity classification;
 - zero-binary convex epigraph/concave hypograph proof;
-- exact graph native/SOS2/binary equivalence;
+- exact graph deterministic exact segment-binary equivalence (native/SOS2 unqualified — honesty decision);
 - nonconvex exactness tests;
 - scaling diagnostics;
 - representation report examples.
 
-Closes: SM-13, SM-14.
+Closes: SM-13, SM-14 (implementation; independent review pending per the P33 gate).
 
 ### P34 evidence
 

@@ -64,6 +64,9 @@ pub enum BackendFeature {
     /// Binary product (binary-binary / binary-times-bounded-linear) — P32
     /// Task 17c bridge-supported.
     BinaryProduct,
+    /// Piecewise-linear (epigraph / hypograph / exact graph) — P33
+    /// bridge-supported (exact segment binaries; no native PWL/SOS2 claim).
+    PiecewiseLinear,
     /// Special ordered set of type 1.
     Sos1,
     /// Special ordered set of type 2.

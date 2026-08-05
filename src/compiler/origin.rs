@@ -116,6 +116,21 @@ pub enum GeneratedRole {
     ClampOuterSelectorRow,
     /// A clamp outer min-selector binary (P32 Task 17b).
     ClampOuterSelectorBinary,
+    /// A PWL convex-epigraph supporting-inequality row
+    /// (`output >= v_i + s_i*(argument - x_i)`, zero binaries — P33 Task 2).
+    PwlEpigraphRow,
+    /// A PWL concave-hypograph supporting-inequality row
+    /// (`output <= v_i + s_i*(argument - x_i)`, zero binaries — P33 Task 2).
+    PwlHypographRow,
+    /// A PWL exact-graph row (adjacency / convex-combination / selector rows —
+    /// P33 Task 3).
+    PwlExactGraphRow,
+    /// A PWL exact-graph segment-adjacency binary (`z_k`, one per segment,
+    /// `sum z = 1` — P33 Task 3).
+    PwlSegmentBinary,
+    /// A PWL exact-graph weight (convex-combination) variable (`lambda_i >= 0`,
+    /// `sum lambda = 1` — P33 Task 3).
+    PwlWeightVariable,
     /// A binary-binary product row (P32 Task 17c).
     BinaryProductRow,
     /// A binary-times-bounded-linear product row (P32 Task 17c).
