@@ -48,8 +48,9 @@ use crate::construct::FixturePayload;
 use crate::construct::{
     derive_parameter_dependencies, AbsoluteValueConstraint, AbsoluteValueVariant,
     BinaryProductConstraint, BooleanKind, CardinalityKind, Construct, ConstructEntry,
-    ConstructKind, ConstructStore, FormulationPreference, IndicatorConstraint, IndicatorDirection,
-    MinMaxConstraint, MinMaxRelation, MinMaxSense, ProductOperand, ReificationConstraint,
+    ConstructKind, ConstructStore, ExtrapolationPolicy, FormulationPreference, IndicatorConstraint,
+    IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense, PiecewiseLinearConstraint,
+    ProductOperand, PwlPoint, PwlRelation, ReificationConstraint,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -175,6 +176,26 @@ pub enum ModelError {
     },
     /// The integrality tolerance must be finite and non-negative.
     InvalidIntegralityTolerance(f64),
+    /// A piecewise-linear construct requires at least two points (SM-14.1).
+    PwlTooFewPoints,
+    /// A piecewise-linear breakpoint must be finite (SM-14.1).
+    PwlNonFiniteBreakpoint(f64),
+    /// A piecewise-linear point value must be finite (SM-14.1).
+    PwlNonFinitePointValue,
+    /// A piecewise-linear breakpoint must be strictly increasing; this
+    /// breakpoint duplicates the previous one (SM-14.1).
+    PwlDuplicateBreakpoint {
+        /// The duplicated breakpoint value.
+        value: f64,
+    },
+    /// A piecewise-linear breakpoint must be strictly increasing; this
+    /// breakpoint is out of order (SM-14.1).
+    PwlOutOfOrderBreakpoint {
+        /// The offending breakpoint value.
+        value: f64,
+        /// The previous breakpoint it must exceed.
+        previous: f64,
+    },
     /// Revision counter overflow.
     RevisionOverflow,
     /// An opaque identity counter was exhausted (ids never wrap).
@@ -288,6 +309,23 @@ impl std::fmt::Display for ModelError {
             Self::InvalidIntegralityTolerance(tolerance) => {
                 write!(f, "integrality tolerance must be >= 0 and finite, got {tolerance}")
             }
+            Self::PwlTooFewPoints => {
+                write!(f, "a piecewise-linear construct requires at least two points (SM-14.1)")
+            }
+            Self::PwlNonFiniteBreakpoint(value) => {
+                write!(f, "a piecewise-linear breakpoint must be finite, got {value} (SM-14.1)")
+            }
+            Self::PwlNonFinitePointValue => {
+                write!(f, "a piecewise-linear point value must be finite (SM-14.1)")
+            }
+            Self::PwlDuplicateBreakpoint { value } => write!(
+                f,
+                "piecewise-linear breakpoints must be strictly increasing: duplicate breakpoint {value} (SM-14.1)"
+            ),
+            Self::PwlOutOfOrderBreakpoint { value, previous } => write!(
+                f,
+                "piecewise-linear breakpoints must be strictly increasing: breakpoint {value} is not > previous {previous} (SM-14.1)"
+            ),
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -1048,6 +1086,83 @@ impl Model {
             ProductOperand::Linear(expression),
             preference,
         )
+    }
+
+    /// Add a piecewise-linear construct (design §17, packet Task 18; SM-14.1,
+    /// SM-14.2, SM-12.8).
+    ///
+    /// `points` must contain at least two finite breakpoints with strictly
+    /// increasing `x` values and finite point values (SM-14.1); `relation`
+    /// selects the epigraph / hypograph / exact-graph semantics (D24); the
+    /// explicit `extrapolation` policy defines the behavior outside the
+    /// breakpoint range. The builder creates the output variable (the
+    /// construct's canonical result, preserved as a top-level construct origin)
+    /// and returns it alongside the stable [`Construct`] handle (SM-12.8).
+    pub fn add_piecewise_linear(
+        &mut self,
+        argument: LinExpr,
+        points: Vec<PwlPoint>,
+        relation: PwlRelation,
+        extrapolation: ExtrapolationPolicy,
+        preference: Option<FormulationPreference>,
+    ) -> Result<(Construct, VarId), ModelError> {
+        // SM-14.1: at least two finite strictly increasing breakpoints.
+        if points.len() < 2 {
+            return Err(ModelError::PwlTooFewPoints);
+        }
+        for point in &points {
+            if !point.x.is_finite() {
+                return Err(ModelError::PwlNonFiniteBreakpoint(point.x));
+            }
+        }
+        for i in 1..points.len() {
+            let previous = points[i - 1].x;
+            let current = points[i].x;
+            if current == previous {
+                return Err(ModelError::PwlDuplicateBreakpoint { value: current });
+            }
+            if current < previous {
+                return Err(ModelError::PwlOutOfOrderBreakpoint {
+                    value: current,
+                    previous,
+                });
+            }
+        }
+        // Validate the argument expression (stale entities + finite interval).
+        self.validate_expression_entities(&argument)?;
+        self.expression_interval(&argument)?;
+        // Validate every point value is finite when evaluated (F5: a missing
+        // parameter is a typed error, never a silent default of zero).
+        for point in &points {
+            let value = point
+                .value
+                .eval_checked(|p| self.parameters.get_value(p).ok_or(p))
+                .map_err(ModelError::ParameterNotFound)?;
+            if !value.is_finite() {
+                return Err(ModelError::PwlNonFinitePointValue);
+            }
+        }
+        // F2: the output variable's declared bounds are a conservative static
+        // domain — never the build-time argument interval (which is mutable).
+        // The exact/one-sided bridge rows enforce the relation from the CURRENT
+        // interval at compile time.
+        let output_bounds = Bounds::UNBOUNDED;
+        // IN-03 atomicity: reserve the construct id BEFORE creating the output
+        // variable so a construct-id failure cannot leave an orphaned variable
+        // in the arena/changelog.
+        let id =
+            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
+        let output = self.add_variable_internal(output_bounds, VarType::Continuous, None);
+        let payload = PiecewiseLinearConstraint {
+            points,
+            relation,
+            extrapolation,
+            argument,
+            output,
+        };
+        let construct =
+            self.add_construct_allocated(id, ConstructKind::PiecewiseLinear(payload), preference)?;
+        Ok((construct, output))
     }
 
     /// Validate the two product operands: exactly one binary operand, and any

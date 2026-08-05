@@ -156,6 +156,31 @@ pub enum CompileError {
         reason: String,
     },
 
+    /// A PWL construct's argument can leave its breakpoint range in a way the
+    /// selected formulation cannot represent exactly (SM-14.1, extrapolation
+    /// policy; P33 Pass-1 review P1-01).
+    ///
+    /// The supporting-inequality rows are exact only for the linearly-
+    /// extrapolated function (a convex PL function is the max of its
+    /// supporting lines); under `ExtrapolationPolicy::Constant` the clamped
+    /// function diverges from those rows outside the range, and the exact
+    /// segment-binary formulation pins the argument to the breakpoint range
+    /// (`argument = sum x_i * lambda_i`) under either policy. Both would
+    /// silently change the feasible set — rejecting is the only honest
+    /// behavior (design §19; never a silent relaxation, D13).
+    ExtrapolationConflict {
+        /// The PWL construct whose argument interval leaves the range.
+        construct: Construct,
+        /// The PWL argument expression.
+        expression: String,
+        /// The bound-derived argument interval `[lo, hi]`.
+        interval: String,
+        /// The breakpoint range `[x_min, x_max]`.
+        range: String,
+        /// The declared extrapolation policy.
+        policy: String,
+    },
+
     /// A construct references an entity absent from the compiled snapshot
     /// (design §19 — errors identify the construct).
     ///
@@ -278,6 +303,19 @@ impl std::fmt::Display for CompileError {
                 "reification construct {construct:?} has non-integral inferred-unit-gap \
                  threshold {threshold} at compile time (D14 — the unit gap is exact only for \
                  integral thresholds)"
+            ),
+            Self::ExtrapolationConflict {
+                construct,
+                expression,
+                interval,
+                range,
+                policy,
+            } => write!(
+                f,
+                "PWL construct {construct:?} ({expression:?}) has argument interval {interval} \
+                 leaving its breakpoint range {range} under extrapolation policy {policy} — \
+                 the formulation cannot represent the declared function exactly (SM-14.1); \
+                 tighten the argument bounds or use linear extrapolation"
             ),
         }
     }

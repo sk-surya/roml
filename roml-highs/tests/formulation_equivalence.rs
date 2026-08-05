@@ -10,8 +10,8 @@
 use roml::compiler::capability::CompilationPolicy;
 use roml::compiler::session::CompilationSession;
 use roml::construct::{
-    AbsoluteValueVariant, BooleanKind, CardinalityKind, IndicatorDirection, MinMaxRelation,
-    MinMaxSense, ProductOperand,
+    AbsoluteValueVariant, BooleanKind, CardinalityKind, ExtrapolationPolicy, IndicatorDirection,
+    MinMaxRelation, MinMaxSense, ProductOperand, PwlRelation,
 };
 use roml::id::VarId;
 use roml::prelude::*;
@@ -422,4 +422,98 @@ fn binary_product_highs_feasible_sets_match_semantic() {
         mismatches.is_empty(),
         "binary-times-linear HiGHS feasible set differs from semantic: {mismatches:?}"
     );
+}
+
+// ===========================================================================
+// P33 Task 3 — PWL exact-graph reference-vs-portable equivalence on HiGHS
+// ===========================================================================
+
+fn pwl_points(values: &[(f64, f64)]) -> Vec<roml::construct::PwlPoint> {
+    values
+        .iter()
+        .map(|&(x, v)| roml::construct::PwlPoint {
+            x,
+            value: roml::value_expr::ValueExpr::constant(v),
+        })
+        .collect()
+}
+
+/// Reference PWL evaluation by linear interpolation over the point list.
+fn evaluate_pwl(pts: &[(f64, f64)], x: f64) -> f64 {
+    for i in 0..pts.len() - 1 {
+        if pts[i].0 <= x && x <= pts[i + 1].0 {
+            let t = (x - pts[i].0) / (pts[i + 1].0 - pts[i].0);
+            return pts[i].1 + t * (pts[i + 1].1 - pts[i].1);
+        }
+    }
+    unreachable!("x lies within the breakpoint range")
+}
+
+/// Whether HiGHS finds `(argument = x, output = y)` feasible in the compiled
+/// exact-graph formulation under `policy`.
+fn pwl_highs_graph_feasible(
+    model: &Model,
+    argument: VarId,
+    output: VarId,
+    x: f64,
+    y: f64,
+    policy: CompilationPolicy,
+) -> bool {
+    highs_feasible_for_fixes(model, &[(argument, x), (output, y)], policy)
+}
+
+/// Reference-vs-portable feasible-set equality on HiGHS for the PWL exact
+/// graph: for sampled argument values, the on-graph output is feasible and
+/// `y ± delta` is infeasible, under both `Auto` (→ bridge) and `Portable`
+/// (SM-14.4/SM-14.7).
+#[test]
+fn pwl_highs_exact_graph_matches_reference_for_all_curvatures() {
+    let curves: [(&str, Vec<(f64, f64)>); 3] = [
+        ("convex", vec![(0.0, 0.0), (1.0, 1.0), (2.0, 4.0)]),
+        ("concave", vec![(0.0, 0.0), (1.0, 3.0), (2.0, 4.0)]),
+        (
+            "nonconvex",
+            vec![(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, 1.0)],
+        ),
+    ];
+    for (name, pts) in curves {
+        let x0 = pts[0].0;
+        let xn = pts[pts.len() - 1].0;
+        let mut model = Model::new();
+        let argument = model.add_variable(continuous().bounds(x0, xn)).unwrap();
+        let (_, output) = model
+            .add_piecewise_linear(
+                LinExpr::from(argument),
+                pwl_points(&pts),
+                PwlRelation::ExactGraph,
+                ExtrapolationPolicy::Constant,
+                None,
+            )
+            .unwrap();
+
+        let mut samples = Vec::new();
+        for p in &pts {
+            samples.push(p.0);
+        }
+        for w in pts.windows(2) {
+            samples.push(0.5 * (w[0].0 + w[1].0));
+        }
+        for xv in samples {
+            let yv = evaluate_pwl(&pts, xv);
+            for policy in [CompilationPolicy::Auto, CompilationPolicy::Portable] {
+                assert!(
+                    pwl_highs_graph_feasible(&model, argument, output, xv, yv, policy),
+                    "{name}: HiGHS ({policy:?}) must find the on-graph point ({xv}, {yv}) feasible"
+                );
+                assert!(
+                    !pwl_highs_graph_feasible(&model, argument, output, xv, yv + 0.1, policy),
+                    "{name}: HiGHS ({policy:?}) must find y+delta infeasible (exact graph, SM-14.4)"
+                );
+                assert!(
+                    !pwl_highs_graph_feasible(&model, argument, output, xv, yv - 0.1, policy),
+                    "{name}: HiGHS ({policy:?}) must find y-delta infeasible (exact graph)"
+                );
+            }
+        }
+    }
 }
