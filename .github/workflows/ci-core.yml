@@ -20,9 +20,59 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
 
     runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Compile check (all targets)
+        run: cargo check -p roml --all-targets
+
+      - name: Clippy lint check
+        run: cargo clippy -p roml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo nextest run -p roml --all-targets
+
+      - name: Run doctests
+        run: cargo test -p roml --doc
+
+      - name: Documentation check (no-deps)
+        run: cargo doc -p roml --no-deps
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+
+  # macOS runs on the repo's self-hosted runner (forge, Apple Silicon M5) to
+  # avoid GitHub-hosted macOS billing; Linux/Windows stay on GitHub-hosted.
+  # Fallback: when forge is down, set the repo variable MACOS_RUNNER_FALLBACK
+  # to "true" (Settings → Variables) to route macOS to GitHub-hosted
+  # macos-latest instead. Jobs already queued are not re-routed — cancel and
+  # re-run after flipping.
+  # Fork PRs can edit this file, so the owner-only guard below (plus repo
+  # setting "Require approval for all outside collaborators") keeps fork PRs
+  # off the self-hosted runner. Job-level `if:` cannot see the `matrix`
+  # context, hence the dedicated job instead of a matrix lane.
+  test-macos:
+    name: Test (macOS, ${{ vars.MACOS_RUNNER_FALLBACK == 'true' && 'hosted-fallback' || 'self-hosted' }})
+    runs-on: ${{ vars.MACOS_RUNNER_FALLBACK == 'true' && 'macos-latest' || fromJSON('["self-hosted","macOS","ARM64"]') }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'sk-surya/roml' }}
 
     steps:
       - name: Checkout repository
