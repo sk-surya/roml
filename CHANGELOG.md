@@ -77,6 +77,44 @@ before/after migration is in `MIGRATION.md`.
 - `examples/simple_lp.rs` — solver-free model construction demonstration.
 - `examples/parameter_update.rs` — parameter propagation and canonical cell combining.
 
+#### M3 semantic modeling and solve workflows (P25–P33)
+- **Semantic IR and four-identity provenance** (P25) — `ModelLineageId`,
+  `ModelInstanceId`, `ModelRevision`, exact `CompilationId` identity on every
+  solution; canonical semantic constructs preserved in model state.
+- **Compiler/backend IR boundary** (P26) — `BackendSnapshot`,
+  `BackendDeltaBatch` with exact from/to identity envelopes, typed
+  `BackendFeature` capabilities, `EntityOrigin` on every generated entity,
+  and the `Highs` session synchronized through compiled IR only.
+- **Persistent fixing, assignments, locks, reversible overlays** (P27) —
+  `Model::fix_variable` / `release_variable`, `PrimalAssignment` with
+  lineage/instance/revision provenance, `SolutionLock`, and
+  `SolveOverlay` with temporary fixings/locks/objective-locks/cutoffs
+  applied and rolled back per solve attempt (`Highs::solve_with_overlay`).
+- **Solve plans, warm starts, hints, effective-plan reporting** (P28) —
+  `SolvePlan` (options + overlay + starts + hints + objective override +
+  unsupported-feature policy), `MipStart`/`RepairPolicy`,
+  `VariableHints`/`HintPriority`, default-reject `UnsupportedFeaturePolicy`
+  with explicit recorded conversions, `Highs::solve_plan` as the single
+  plan executor, and `Solution::metadata().effective_plan` carrying applied
+  features, adjustments, rejections, and the exact compilation identity.
+  HiGHS start support is qualified from the pinned official header audit.
+- **Common construct library** (P32) — indicator, boolean, cardinality,
+  min/max, absolute value, and binary-product constructs
+  (`Model::add_indicator` / `add_boolean` / `add_cardinality` /
+  `add_minmax` / `add_absolute_value` / `add_binary_times_linear`), each
+  returning a stable `Construct` handle and compiling through the portable
+  bridge with origin-complete generated entities.
+- **Piecewise-linear functions and bound analysis** (P33) —
+  `Model::add_piecewise_linear` with explicit relation
+  (epigraph/hypograph/exact graph) and extrapolation policy; deterministic
+  curvature classification; zero-binary convex epigraph / concave hypograph;
+  exact segment-binary representation for exact/nonconvex graphs (never a
+  convex relaxation); no unproven Big-M; typed `PwlEvalError` with
+  parameter-resolver variants for parameterized point values.
+- **Showcase examples** — `pwl_production_planning`, `warm_start_mip`,
+  `overlay_solve`, `constructs` under `roml-highs/examples/`, exercising the
+  M3 capabilities end-to-end with HiGHS.
+
 ### Changed
 
 #### Documentation and consumer qualification (P24)
