@@ -276,7 +276,143 @@ IDs. Ordinary models never need these. The `Highs` façade owns all
 synchronization; if you are implementing a new solver backend, the
 `ReferenceBackend` and the conformance suite are the executable specification.
 
-## 11. Migration notes and common errors
+## 11. Solve plans and warm starts
+
+The solve-attempt contract (P28): instead of composing a solve from scattered
+options, one [`SolvePlan`] declares the entire attempt — options, a reversible
+overlay, MIP warm starts, variable hints, an optional objective override, and
+the unsupported-feature policy:
+
+```text
+SolvePlan {
+    options: SolveOptions,
+    overlay: SolveOverlay,
+    mip_starts: Vec<MipStart>,
+    hints: VariableHints,
+    objective_override: Option<ObjectivePolicy>,
+    lex_stage_policy: LexStagePolicy,
+    unsupported: UnsupportedFeaturePolicy,
+}
+```
+
+`SolvePlan::new(options)` builds the empty plan; executing it is exactly
+`solve`/`solve_with` (the equivalence is one code path, not a coincidence).
+`Highs::solve_plan(model, plan)` runs the full lifecycle: validate the plan
+(lineages, entities, finite values, conflicts, duplicates) → resolve
+starts/hints against the backend's typed capabilities and the policy →
+synchronize → apply the overlay → apply qualified starts/hints → solve →
+enforce the exact `CompilationId` gate → roll back the overlay → record the
+effective plan.
+
+**Warm starts.** A [`MipStart`] is a full or partial primal assignment with an
+explicit [`RepairPolicy`]; its [`PrimalAssignment`] carries the model's
+lineage/instance/revision as provenance. A start is a search hint: it can
+never change the proven optimum. A backend that does not qualify starts
+**rejects by default** — nothing is silently ignored; an explicit conversion
+policy (`ConvertStartToTemporaryFixing`, `ConvertHintToStart`) applies the
+conversion and records it.
+
+**Effective-plan reporting.** Every real solve's metadata carries the
+`EffectiveSolvePlan`: `applied_features` (what the backend executed),
+`adjustments` (explicit conversions), `rejections` (unconvertible requests),
+and `objective_stages` (empty until P31). `metadata().compilation_id` is the
+exact identity of the compiled state that was solved.
+
+The full program is compiled and run as
+[`roml-highs/examples/warm_start_mip.rs`](../roml-highs/examples/warm_start_mip.rs):
+`solve` cold, re-solve with a `MipStart` seeded from the cold solution, and
+read the applied features and compilation identity from the metadata.
+
+## 12. Reversible solve overlays
+
+Overlays (P27) express *solve-scoped* restrictions without touching the
+canonical model: temporary fixings, solution locks, objective-lock rows, and
+cutoffs apply for one solve attempt and are rolled back (and verified) after
+it. The canonical model is never mutated by an overlay.
+
+```text
+SolveOverlay::new(
+    temporary_fixings: BTreeMap<Variable, f64>,  // y := 4.0 for this solve
+    locks: Vec<SolutionLock>,                    // lock an assignment's values
+    objective_locks: Vec<ObjectiveLock>,         // stage-optimum degradation rows (P31)
+    cutoffs: Vec<ObjectiveCutoff>,               // bound the objective for this solve
+)
+```
+
+A [`SolutionLock`] pins selected variables of a [`PrimalAssignment`]
+(`LockSelector::AllAssigned` / `IntegerAssigned` / `BinaryAssigned`, with
+`ContinuousLock::Exact` or an absolute band). Solve with
+`Highs::solve_with_overlay(model, options, &overlay, objective_override)`; the
+result's `metadata().overlay_id` identifies the applied overlay, and a
+subsequent plain solve is provably unaffected.
+
+The full program is compiled and run as
+[`roml-highs/examples/overlay_solve.rs`](../roml-highs/examples/overlay_solve.rs):
+solve a production mix, re-solve with `y` temporarily fixed and `x` locked to
+its baseline, then verify the overlay is fully rolled back.
+
+## 13. Semantic constructs
+
+The construct library (P32) captures high-level semantics exactly and compiles
+them through the portable bridge — every generated row and auxiliary carries a
+construct origin, and each builder returns a stable [`Construct`] handle (and,
+where applicable, the result-variable handle):
+
+| Builder | Semantics |
+| --- | --- |
+| `Model::add_indicator(activator, direction, relation, preference)` | the relation holds when the binary activator is 1 (`WhenOne`) or 0 (`WhenZero`) |
+| `Model::add_boolean(…)` | Boolean combinations of binary conditions |
+| `Model::add_cardinality(…)` | at-most/at-least/exact counts over a variable set |
+| `Model::add_minmax(operands, sense, relation, preference)` | exact `output = min/max(…)`, or the one-sided epigraph/hypograph (zero binaries) |
+| `Model::add_absolute_value(expression, variant, preference)` | exact absolute value, positive part, or clamp |
+| `Model::add_binary_times_linear(binary, expression, preference)` | exact `output = binary × expression` |
+
+The relation determines the formulation (D24): a `Max`+`Epigraph` or
+`Min`+`Hypograph` compiles to zero-binary one-sided rows, an `Exact`
+min/max to a bounded selector formulation with binaries. Exactness is always
+the user's explicit choice — it is never inferred from objective context.
+
+The full program is compiled and run as
+[`roml-highs/examples/constructs.rs`](../roml-highs/examples/constructs.rs):
+an indicator coupling a binary to a constraint, a binary-times-linear product,
+an absolute-value epigraph, and a min/max epigraph, all binding exactly at the
+optimum.
+
+## 14. Piecewise-linear functions
+
+`Model::add_piecewise_linear(argument, points, relation, extrapolation,
+preference)` models `output` against a piecewise-linear function of a scalar
+linear argument (P33):
+
+- `points` are finite, strictly increasing breakpoints with `ValueExpr` values
+  (parameter-dependent values are allowed);
+- `relation` is `Epigraph` (`output >= f(argument)`), `Hypograph`
+  (`output <= f(argument)`), or `ExactGraph` (`output = f(argument)`);
+- `extrapolation` is `Constant` (clamp) or `Linear` (continue the end segment
+  slope).
+
+Curvature is classified deterministically from segment slopes. A convex
+epigraph / concave hypograph compiles to supporting-inequality rows with
+**zero binaries**; an exact or nonconvex graph compiles to the deterministic
+exact segment-binary representation — never a convex relaxation. No Big-M is
+introduced anywhere; the compilation report records the argument interval,
+bound sources, curvature, representation, and binary-avoidance reasons.
+
+Two typed guards keep the compiled model honest: `CompileError::
+ExtrapolationConflict` rejects a declaration whose bound-derived argument
+interval can leave the breakpoint range (Constant one-sided relations; the
+exact graph under either policy), and `PwlEvalError` replaces panics on the
+payload's semantic operations for parameterized point values (use the `_with`
+resolver variants: `evaluate_with`, `classify_curvature_with`,
+`segment_slopes_with`).
+
+The full program is compiled and run as
+[`roml-highs/examples/pwl_production_planning.rs`](../roml-highs/examples/pwl_production_planning.rs):
+a convex tiered cost modeled as an epigraph PWL (zero binaries) plus a
+min/max capacity construct, with the reported cost asserted equal to the exact
+PWL function.
+
+## 15. Migration notes and common errors
 
 The P21–P23 redesign replaced the legacy adapter/macro surface. Migration
 notes, including the pre-1.0 breaking changes and the deprecated-surface
