@@ -61,13 +61,17 @@ jobs:
 
   # macOS runs on the repo's self-hosted runner (forge, Apple Silicon M5) to
   # avoid GitHub-hosted macOS billing; Linux/Windows stay on GitHub-hosted.
+  # Fallback: when forge is down, set the repo variable MACOS_RUNNER_FALLBACK
+  # to "true" (Settings → Variables) to route macOS to GitHub-hosted
+  # macos-latest instead. Jobs already queued are not re-routed — cancel and
+  # re-run after flipping.
   # Fork PRs can edit this file, so the owner-only guard below (plus repo
   # setting "Require approval for all outside collaborators") keeps fork PRs
   # off the self-hosted runner. Job-level `if:` cannot see the `matrix`
   # context, hence the dedicated job instead of a matrix lane.
   test-macos:
-    name: Test (macOS, self-hosted)
-    runs-on: [self-hosted, macOS, ARM64]
+    name: Test (macOS, ${{ vars.MACOS_RUNNER_FALLBACK == 'true' && 'hosted-fallback' || 'self-hosted' }})
+    runs-on: ${{ vars.MACOS_RUNNER_FALLBACK == 'true' && 'macos-latest' || fromJSON('["self-hosted","macOS","ARM64"]') }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'sk-surya/roml' }}
 
     steps:
