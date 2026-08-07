@@ -367,6 +367,8 @@ pub enum ConflictGuarantee {
     /// The backend reported a native conflict that was not semantically
     /// reduced to an irreducibility claim.
     NativeReported,
+    /// A proven infeasible subsystem without enough proof for irreducibility.
+    InfeasibleSubsystem,
 }
 
 /// Whether the analysis finished all required verification work.
@@ -696,6 +698,16 @@ impl<O: FeasibilityOracle> AnalysisSession<O> {
         self.oracle_calls += 1;
         self.cache.insert(key, outcome.clone());
         Ok(outcome)
+    }
+
+    /// Run a check against the backend without reusing a cached outcome.
+    pub fn check_fresh(
+        &mut self,
+        selection: &RestrictionSelection,
+        budget: &OracleBudget,
+    ) -> Result<FeasibilityOutcome, InfeasibilityError> {
+        self.cache.clear();
+        self.check(selection, budget)
     }
 }
 

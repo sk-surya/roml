@@ -130,6 +130,9 @@ pub use crate::solver::infeasibility::{
     SemanticConflictUniverse, SemanticRestrictionAtom, TextInfeasibilityReport, UnknownReason,
 };
 
+/// Portable conflict-reducer result types.
+pub use crate::solver::reducer::{ReducedConflict, ReductionOutcome, ReductionStatistics};
+
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
 

@@ -18,6 +18,7 @@ pub mod infeasibility;
 pub mod options;
 pub mod overlay;
 pub mod plan;
+pub mod reducer;
 pub mod reference;
 pub mod request;
 pub mod session;
