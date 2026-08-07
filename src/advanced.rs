@@ -125,10 +125,11 @@ pub use crate::solver::infeasibility::{
     ConflictMember, ConflictMemberSnapshot, ConflictOrigin, FeasibilityEvidence, FeasibilityOracle,
     FeasibilityOutcome, FeasibilityProofStrength, InfeasibilityError, InfeasibilityEvidence,
     InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan, InfeasibilityReport,
-    InfeasibilityScope, InfeasibilityStatistics, MarkdownInfeasibilityReport, NativeConflict,
-    NativeConflictEvidence, NativeConflictRequest, OracleBudget, ReductionPolicy,
-    RestrictionSelection, RestrictionToggleAction, RestrictionTogglePlan, SeedPolicy,
-    SemanticConflictUniverse, SemanticRestrictionAtom, TextInfeasibilityReport, UnknownReason,
+    InfeasibilityScope, InfeasibilityStatistics, MarkdownInfeasibilityReport, NativeBoundStatus,
+    NativeConflict, NativeConflictEvidence, NativeConflictMember, NativeConflictRequest,
+    NativeMembership, OracleBudget, ReductionPolicy, RestrictionSelection, RestrictionToggleAction,
+    RestrictionTogglePlan, SeedPolicy, SemanticConflictUniverse, SemanticRestrictionAtom,
+    TextInfeasibilityReport, UnknownReason,
 };
 
 /// Portable conflict-reducer result types.

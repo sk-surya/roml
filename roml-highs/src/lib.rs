@@ -67,6 +67,8 @@ mod callback;
 mod compiler;
 mod error;
 mod facade;
+#[cfg(feature = "bundled")]
+mod iis;
 mod index_map;
 mod lifecycle;
 mod session;

@@ -80,7 +80,8 @@ pub use solver::infeasibility::{
     AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord, AnalysisWarning,
     CandidateUniverseSummary, CompiledRestrictionEvidence, ConflictDeclarationSnapshot,
     ConflictMember, FeasibilityProofStrength, InfeasibilityOutcome, InfeasibilityReport,
-    MarkdownInfeasibilityReport, NativeConflictEvidence, TextInfeasibilityReport,
+    MarkdownInfeasibilityReport, NativeBoundStatus, NativeConflictEvidence, NativeConflictMember,
+    NativeMembership, TextInfeasibilityReport,
 };
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,

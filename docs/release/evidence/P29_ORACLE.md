@@ -4,8 +4,9 @@
 
 - Slice: isolated LP feasibility-oracle contract and cache/recovery seam
 - Base: `c489e04`
-- Provider implementation: solver-agnostic orchestration only; native backend
-  factory and real LP solve qualification remain later work
+- Provider implementation: bundled HiGHS 1.15.0 isolated LP oracle with
+  incremental restriction toggles; system-discovered native providers remain
+  typed unsupported pending their version matrix
 
 ## RED characterization
 
@@ -28,6 +29,9 @@ behavior before backend integration.
   analysis session to `RequiresRebuild`; the persistent solve session is not
   reused by this seam.
 - A cache hit does not invoke the oracle again.
+- The bundled HiGHS oracle builds one fresh analysis session from the exact
+  `BackendSnapshot`, changes row/column bounds incrementally between checks,
+  and reports only the three tri-state outcomes.
 
 ## Verification
 
@@ -37,10 +41,9 @@ cargo clippy -p roml --test infeasibility_oracle -- -D warnings PASS
 cargo test -p roml --test infeasibility_oracle              PASS (3 tests)
 ```
 
-## Remaining gate
+## Qualification boundary
 
-The next oracle implementation task must connect this seam to an isolated
-backend factory that builds once from the exact `BackendSnapshot`, applies
-transactional restriction masks, and proves rollback/rebuild behavior. The
-solver-free `ReferenceBackend` remains a projection backend and is not being
-misrepresented as an LP optimizer.
+The solver-free core still does not pretend to be an LP optimizer. Real LP
+oracle qualification is attached to the bundled HiGHS evidence; backend
+authors must provide the same isolated factory contract before another native
+provider can participate.

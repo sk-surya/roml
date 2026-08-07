@@ -289,6 +289,23 @@ impl BackendSession for HighsSession {
         })
     }
 
+    #[cfg(feature = "bundled")]
+    fn spawn_infeasibility_oracle(
+        &self,
+        snapshot: &roml::advanced::BackendSnapshot,
+        universe: &roml::advanced::SemanticConflictUniverse,
+    ) -> Result<Box<dyn roml::advanced::FeasibilityOracle>, BackendError> {
+        crate::iis::spawn_oracle(self, snapshot, universe)
+    }
+
+    #[cfg(feature = "bundled")]
+    fn native_conflict(
+        &self,
+        request: &roml::advanced::NativeConflictRequest,
+    ) -> Result<roml::advanced::NativeConflict, BackendError> {
+        crate::iis::native_conflict(self, request)
+    }
+
     /// Solve the current model with the given [`SolveRequest`].
     ///
     /// Flow:

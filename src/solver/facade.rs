@@ -173,6 +173,38 @@ where
         }
     }
 
+    /// Borrow the persistent backend for additive analysis orchestration.
+    pub(crate) fn analysis_backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Compile an analysis snapshot with an independent identity compiler.
+    /// IIS probing must not advance or replace the compiler state associated
+    /// with the persistent solve session.
+    pub(crate) fn compile_analysis_snapshot(
+        &self,
+        model: &Model,
+        snapshot: &ModelSnapshot,
+    ) -> Result<
+        crate::compiler::backend_ir::BackendSnapshot,
+        crate::solver::infeasibility::InfeasibilityError,
+    > {
+        let capabilities = self.compilation_capabilities();
+        let mut compiler = CompilationSession::new();
+        compiler
+            .compile_snapshot(
+                model.instance(),
+                snapshot,
+                &CompilationPolicy::Auto,
+                &capabilities,
+            )
+            .map_err(
+                |error| crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
+                    reason: format!("analysis snapshot compilation failed: {error}"),
+                },
+            )
+    }
+
     /// Synchronize the backend to the model's committed canonical state,
     /// establishing the exact base `CompilationId` (`C_base`).
     ///

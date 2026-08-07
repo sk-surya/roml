@@ -22,6 +22,9 @@ use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solver::backend::{BackendCapabilities, BackendError, ErrorCategory, HealthEffect};
 use crate::solver::callback::CallbackHandler;
+use crate::solver::infeasibility::{
+    FeasibilityOracle, NativeConflict, NativeConflictRequest, SemanticConflictUniverse,
+};
 use crate::solver::overlay::{CompiledOverlay, OverlayApplyReceipt, OverlayRollbackOutcome};
 use crate::solver::plan::{MipStart, VariableHints};
 use crate::solver::request::{SolveRequest, SolveResult};
@@ -78,6 +81,38 @@ pub trait BackendSession {
 
     /// Close the session, releasing native resources.
     fn close(self) -> Result<(), BackendError>;
+
+    /// Spawn an isolated feasibility oracle from one exact compiled snapshot.
+    ///
+    /// The default is typed unsupported so existing backends remain valid while
+    /// the Phase 29 capability is adopted. Implementations must not borrow or
+    /// mutate the persistent solve session through the returned oracle.
+    fn spawn_infeasibility_oracle(
+        &self,
+        _snapshot: &BackendSnapshot,
+        _universe: &SemanticConflictUniverse,
+    ) -> Result<Box<dyn FeasibilityOracle>, BackendError> {
+        Err(BackendError::new(
+            "this backend does not qualify an isolated LP feasibility oracle",
+            ErrorCategory::Unsupported,
+            HealthEffect::Recoverable,
+        ))
+    }
+
+    /// Request native compiled-membership IIS evidence on an isolated session.
+    ///
+    /// The default is typed unsupported. Native evidence never carries a
+    /// semantic irreducibility guarantee by itself.
+    fn native_conflict(
+        &self,
+        _request: &NativeConflictRequest,
+    ) -> Result<NativeConflict, BackendError> {
+        Err(BackendError::new(
+            "this backend does not qualify a native LP IIS provider",
+            ErrorCategory::Unsupported,
+            HealthEffect::Recoverable,
+        ))
+    }
 }
 
 /// Optional trait — exposes adapter health and cursor position.
