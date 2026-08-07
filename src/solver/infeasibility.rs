@@ -3,6 +3,7 @@
 //! The first Phase 29 slice freezes the public vocabulary and the typed
 //! tri-state feasibility rule. Execution machinery is added in later slices.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::compiler::backend_ir::{
@@ -43,7 +44,7 @@ pub enum InfeasibilityScope {
 
 /// Selects how semantic restrictions are grouped into candidate atoms.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConflictGrouping {
     /// Keep each independently toggleable semantic restriction separate.
     Individual,
@@ -549,6 +550,16 @@ pub struct RestrictionSelection {
     pub atom_ids: Vec<ConflictAtomId>,
 }
 
+impl RestrictionSelection {
+    /// Select every atom in an exact universe.
+    pub fn all(universe: &SemanticConflictUniverse) -> Self {
+        Self {
+            compilation_id: universe.compilation_id,
+            atom_ids: universe.atoms.iter().map(|atom| atom.id).collect(),
+        }
+    }
+}
+
 /// Oracle budget for one feasibility check.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OracleBudget {
@@ -567,6 +578,125 @@ pub trait FeasibilityOracle {
         selection: &RestrictionSelection,
         budget: &OracleBudget,
     ) -> Result<FeasibilityOutcome, BackendError>;
+}
+
+/// Health of an isolated analysis session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisSessionHealth {
+    /// Candidate checks may proceed.
+    Ready,
+    /// A failed transition requires a fresh snapshot rebuild.
+    RequiresRebuild,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct OracleCacheKey {
+    compilation_id: CompilationId,
+    universe_atoms: Vec<ConflictAtomId>,
+    grouping: ConflictGrouping,
+    atom_ids: Vec<ConflictAtomId>,
+    tolerance_bits: u64,
+}
+
+/// Isolated, cache-aware orchestration around one feasibility oracle.
+pub struct AnalysisSession<O> {
+    oracle: O,
+    compilation_id: CompilationId,
+    atom_ids: Vec<ConflictAtomId>,
+    grouping: ConflictGrouping,
+    numerical_policy: AnalysisNumericalPolicy,
+    cache: HashMap<OracleCacheKey, FeasibilityOutcome>,
+    health: AnalysisSessionHealth,
+    oracle_calls: u64,
+}
+
+impl<O: FeasibilityOracle> AnalysisSession<O> {
+    /// Create an isolated analysis session for one exact universe.
+    pub fn new(
+        oracle: O,
+        universe: &SemanticConflictUniverse,
+        numerical_policy: AnalysisNumericalPolicy,
+    ) -> Result<Self, InfeasibilityError> {
+        if oracle.compilation_id() != universe.compilation_id {
+            return Err(InfeasibilityError::CompilationMismatch {
+                expected: universe.compilation_id,
+                actual: oracle.compilation_id(),
+            });
+        }
+        Ok(Self {
+            compilation_id: universe.compilation_id,
+            atom_ids: universe.atoms.iter().map(|atom| atom.id).collect(),
+            grouping: universe.grouping,
+            numerical_policy,
+            cache: HashMap::new(),
+            health: AnalysisSessionHealth::Ready,
+            oracle,
+            oracle_calls: 0,
+        })
+    }
+
+    /// Current isolated-session health.
+    pub fn health(&self) -> AnalysisSessionHealth {
+        self.health
+    }
+
+    /// Number of backend oracle calls, excluding cache hits.
+    pub fn oracle_calls(&self) -> u64 {
+        self.oracle_calls
+    }
+
+    /// Mark the analysis session as requiring a fresh snapshot rebuild.
+    pub fn mark_requires_rebuild(&mut self) {
+        self.health = AnalysisSessionHealth::RequiresRebuild;
+        self.cache.clear();
+    }
+
+    /// Check one selection, validating exact identity before consulting the
+    /// isolated oracle and caching only exact-key results.
+    pub fn check(
+        &mut self,
+        selection: &RestrictionSelection,
+        budget: &OracleBudget,
+    ) -> Result<FeasibilityOutcome, InfeasibilityError> {
+        if self.health != AnalysisSessionHealth::Ready {
+            return Err(InfeasibilityError::Unsupported {
+                operation: "analysis session requires snapshot rebuild".to_string(),
+            });
+        }
+        if selection.compilation_id != self.compilation_id {
+            return Err(InfeasibilityError::CompilationMismatch {
+                expected: self.compilation_id,
+                actual: selection.compilation_id,
+            });
+        }
+        if selection
+            .atom_ids
+            .iter()
+            .any(|id| !self.atom_ids.contains(id))
+        {
+            return Err(InfeasibilityError::InvalidUniverse {
+                reason: "selection contains an atom outside the exact universe".to_string(),
+            });
+        }
+        let key = OracleCacheKey {
+            compilation_id: self.compilation_id,
+            universe_atoms: self.atom_ids.clone(),
+            grouping: self.grouping,
+            atom_ids: selection.atom_ids.clone(),
+            tolerance_bits: self.numerical_policy.feasibility_tolerance.to_bits(),
+        };
+        if let Some(cached) = self.cache.get(&key) {
+            return Ok(cached.clone());
+        }
+        let outcome = self.oracle.check(selection, budget).map_err(|error| {
+            self.health = AnalysisSessionHealth::RequiresRebuild;
+            self.cache.clear();
+            InfeasibilityError::Backend(error)
+        })?;
+        self.oracle_calls += 1;
+        self.cache.insert(key, outcome.clone());
+        Ok(outcome)
+    }
 }
 
 /// Native conflict request passed through a qualified backend boundary.

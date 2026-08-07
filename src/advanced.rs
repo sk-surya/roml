@@ -119,15 +119,15 @@ pub use crate::solver::effective_plan::{
 /// LP infeasibility analysis contracts for backend authors.
 pub use crate::solver::infeasibility::{
     classify_feasibility, AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy,
-    AnalysisProviderRecord, AnalysisWarning, BoundSide, CandidateUniverseSummary,
-    CompiledRestrictionRef, ConflictAtomId, ConflictAtomKind, ConflictGrouping, ConflictGuarantee,
-    ConflictMember, ConflictMemberSnapshot, ConflictOrigin, FeasibilityEvidence, FeasibilityOracle,
-    FeasibilityOutcome, FeasibilityProofStrength, InfeasibilityError, InfeasibilityMode,
-    InfeasibilityPlan, InfeasibilityReport, InfeasibilityScope, InfeasibilityStatistics,
-    MarkdownInfeasibilityReport, NativeConflict, NativeConflictEvidence, NativeConflictRequest,
-    OracleBudget, ReductionPolicy, RestrictionSelection, RestrictionToggleAction,
-    RestrictionTogglePlan, SeedPolicy, SemanticConflictUniverse, SemanticRestrictionAtom,
-    TextInfeasibilityReport, UnknownReason,
+    AnalysisProviderRecord, AnalysisSession, AnalysisSessionHealth, AnalysisWarning, BoundSide,
+    CandidateUniverseSummary, CompiledRestrictionRef, ConflictAtomId, ConflictAtomKind,
+    ConflictGrouping, ConflictGuarantee, ConflictMember, ConflictMemberSnapshot, ConflictOrigin,
+    FeasibilityEvidence, FeasibilityOracle, FeasibilityOutcome, FeasibilityProofStrength,
+    InfeasibilityError, InfeasibilityEvidence, InfeasibilityMode, InfeasibilityPlan,
+    InfeasibilityReport, InfeasibilityScope, InfeasibilityStatistics, MarkdownInfeasibilityReport,
+    NativeConflict, NativeConflictEvidence, NativeConflictRequest, OracleBudget, ReductionPolicy,
+    RestrictionSelection, RestrictionToggleAction, RestrictionTogglePlan, SeedPolicy,
+    SemanticConflictUniverse, SemanticRestrictionAtom, TextInfeasibilityReport, UnknownReason,
 };
 
 /// Raw opaque entity IDs and the generation counter.
