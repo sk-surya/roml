@@ -12,7 +12,7 @@ Status values: `Planned`, `In progress`, `Closed`, `Blocked`, `Deferred`.
 | SM-06 Assignments/solution reuse | P27 | P28 starts/hints | Closed in P27 (`M3_P27_FIXING_LOCKS_OVERLAYS.md`); P28 starts/hints closed (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`) |
 | SM-07 SolvePlan/overlays | P27–P28 | P31 objective locks; P34 failure matrix | Closed: SM-07.3–07.6 closed in P27; SM-07.1–07.2/07.7 closed in P28 (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`); P31 objective locks (stage optimum `z`), P34 failure matrix pending |
 | SM-08 Starts/hints | P28 | P34 support matrix | Closed in P28 (`M3_P28_SOLVE_PLAN_STARTS_HINTS.md`, PR #32 `2fa0596`); P34 support matrix pending |
-| SM-09 IIS/conflicts | P29 | P34 docs/fresh consumers | Planned |
+| SM-09 IIS/conflicts | P29 | `docs/release/evidence/P29_IIS_QUALIFICATION.md`; P34 docs/fresh consumers | Closed: merged PR #39 (`19c8c70`), expert review `4884735350` CLEAR |
 | SM-10 Soft constraints | P30 | P34 examples/equivalence | Planned |
 | SM-11 Objective policies | P31 | P34 native/portable corpus | Planned |
 | SM-12 Common constructs | P32 | P33 SM-12.8; P34 public qualification | Closed: SM-12.1/12.2/12.5 closed in P32 Task 16; SM-12.3/12.4/12.6/12.7 closed in P32 Task 17; SM-12.8 advanced by P33 Task 1 (stable handles + formulation diagnostics, `M3_P33_PIECEWISE_LINEAR_BOUNDS.md`, PR #31 `4caf03c`); P34 public qualification pending |
@@ -101,7 +101,7 @@ resolution).
 
 ### P29 evidence
 
-Expected file: `docs/release/evidence/M3_P29_IIS_CONFLICTS.md`
+Evidence file: `docs/release/evidence/P29_IIS_QUALIFICATION.md`
 
 Must include:
 
@@ -114,6 +114,8 @@ Must include:
 - unsupported behavior tests.
 
 Closes: SM-09 and IIS-related SM-02.6/SM-04.3.
+
+**P29 closure:** all required PR and local verification gates passed; system-native IIS qualification and release-grade performance benchmarking are explicitly deferred to subsequent qualification/release work.
 
 ### P30 evidence
 

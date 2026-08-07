@@ -1,6 +1,6 @@
 ---
 phase: 29-iis-conflict-analysis
-status: implementation-slices-complete-with-review-blockers
+status: complete
 branch: phase-roml-P29-iis-conflicts
 base: d26728e
 ---
@@ -65,15 +65,17 @@ the cached `pkg-config` crate and could not resolve crates.io. This is an
 environment limitation, not a code qualification result. The actual system
 CI lane remains the required 1.9.x portable-oracle qualification.
 
-## Unresolved blockers
+## Deferred follow-up
 
 1. System HiGHS native IIS remains typed `Unsupported` pending a supported
-   header/library/version qualification matrix.
-2. Independent code review and release-level machine metadata/baseline
-   performance comparison remain required gates.
+   header/library/version qualification matrix; this does not block Phase 29.
+2. Release-level machine metadata and baseline performance comparison remain
+   subsequent qualification/release work; the deterministic planted-IIS
+   comparison harness is complete.
 
-## Next review gate
+## Completion gate
 
-Review this branch against the packet and `29-PLAN.md`, with system-native
-qualification and independent review gates explicitly recorded. Resolve all
-P0/P1 findings and rerun the system/MSRV CI lanes before integration.
+All required CI lanes are green, expert review `4884735350` is CLEAR TO MERGE,
+and PR #39 was merged by squash as
+`19c8c70e3f463fc96b2b723537deb71759b825f5`. Phase 29 is closed; the next
+active phase is P30 soft constraints.
