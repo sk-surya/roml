@@ -3,11 +3,11 @@
 ## Current state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P25–P28, P32, P33 accepted; P29–P31 unblocked  
-**Current phase:** P29 — IIS/conflicts (next coding phase per the WIP policy)  
+**Status:** P25–P29, P32, P33 accepted; P30–P31 unblocked
+**Current phase:** P30 — Soft constraints (next coding phase per the WIP policy)
 **Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
 **Implementation branches:** `phase-roml-P25-semantic-ir-foundation` … `phase-roml-P33-piecewise-linear-bounds` (all merged via PRs #27–#32)  
-**Authoritative baseline:** `main@2fa0596` (P28 merge; P33 merge `4caf03c` on top)  
+**Authoritative baseline:** `main@19c8c70` (P29 merge; P33 and P29 evidence retained)
 **Design:** `docs/superpowers/specs/2026-08-02-semantic-modeling-and-solve-workflows-design.md`
 
 ## Approved owner direction
@@ -20,7 +20,7 @@
 
 ## Immediate next gate
 
-P25–P28, P32, P33 are accepted and merged (`main@2fa0596`). P29, P30, and P31 are unblocked (prerequisite P28 accepted). Per the WIP policy (default: one coding phase active; P29/P30/P31 parallelism only with separate owners and an integration reviewer), the next coding phase is **P29 — IIS/conflicts**, whose blocking decision (pinned/system HiGHS IIS capability per D19) is resolved during execution via the Native API research protocol.
+P25–P29, P32, P33 are accepted and merged; P29 merged via PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`. The next coding phase is **P30 — Soft constraints**. System-native IIS qualification and release-grade performance benchmarking remain follow-up qualification work, not P29 merge gates.
 
 Before P29 code:
 
@@ -38,7 +38,7 @@ Before P29 code:
 | P26 Compiler/backend IR | Accepted | P25 accepted (PR #27, `9c2a9df`) | `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md` (merged PR #28, `192cd00`) | backend contract amendment review (passed, Task 0 acceptance record) |
 | P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
 | P28 Starts/hints/SolvePlan | Accepted | P27 accepted (PR #29, `4f86791`) | `docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md` (merged PR #32, `2fa0596`) | none |
-| P29 IIS/conflicts | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | pinned/system HiGHS IIS capability |
+| P29 IIS/conflicts | Accepted | P28 accepted (PR #32, `2fa0596`) | `docs/release/evidence/P29_IIS_QUALIFICATION.md`, merged PR #39 (`19c8c70`) | system-native IIS qualification deferred; portable system lane passed |
 | P30 Soft constraints | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | none |
 | P31 Lexicographic objectives | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | native HiGHS semantics audit |
 | P32 Common constructs | Accepted | P26 accepted | `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md` (merged PR #30, `538336d`) | none |
@@ -49,7 +49,7 @@ Before P29 code:
 
 These are not open architecture questions; each has a prescribed evidence gate.
 
-1. **HiGHS IIS support:** inspect pinned bundled and minimum system official headers. Implement official API where present; otherwise qualify version-gated unsupported behavior or upgrade through a separate reviewed dependency change.
+1. **HiGHS IIS support:** bundled 1.15.0 is audited and qualified; system-native IIS remains version-gated `Unsupported` until a separate official-header/library matrix is reviewed.
 2. **HiGHS native multiobjective:** compare official priority/tolerance semantics to ROML's policy. Use native execution only on an exact match; otherwise use sequential overlay execution.
 3. **HiGHS variable hints:** if no official hint capability exists, report unsupported. Do not simulate hints silently.
 4. **Backend IR native PWL:** expose the normalized primitive only after at least one backend implementation and a portable fallback exist.
