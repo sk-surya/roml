@@ -35,6 +35,7 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: coverage
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage report

@@ -80,7 +80,6 @@ fn highs_typed_capability_set_native_and_unsupported() {
         BackendFeature::MultipleMipStarts,
         BackendFeature::VariableHints,
         BackendFeature::InitialBasis,
-        BackendFeature::Iis,
         BackendFeature::FeasibilityRelaxation,
         BackendFeature::Indicator,
         BackendFeature::Sos1,
@@ -95,4 +94,5 @@ fn highs_typed_capability_set_native_and_unsupported() {
             feature
         );
     }
+    assert_eq!(set.supports(BackendFeature::Iis), cfg!(feature = "bundled"));
 }

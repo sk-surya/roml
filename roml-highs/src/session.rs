@@ -289,6 +289,22 @@ impl BackendSession for HighsSession {
         })
     }
 
+    fn spawn_infeasibility_oracle(
+        &self,
+        snapshot: &roml::advanced::BackendSnapshot,
+        universe: &roml::advanced::SemanticConflictUniverse,
+    ) -> Result<Box<dyn roml::advanced::FeasibilityOracle>, BackendError> {
+        crate::iis::spawn_oracle(self, snapshot, universe)
+    }
+
+    #[cfg(feature = "bundled")]
+    fn native_conflict(
+        &self,
+        request: &roml::advanced::NativeConflictRequest,
+    ) -> Result<roml::advanced::NativeConflict, BackendError> {
+        crate::native_iis::native_conflict(self, request)
+    }
+
     /// Solve the current model with the given [`SolveRequest`].
     ///
     /// Flow:
@@ -476,6 +492,14 @@ impl BackendMetadata for HighsSession {
         &self.version_string
     }
 
+    fn backend_name(&self) -> &str {
+        "HiGHS"
+    }
+
+    fn version(&self) -> &str {
+        &self.version_string
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         // D27 source-compatible compat view derived from the AUTHORITATIVE
         // typed capability set (SM-04.2, F3). This flat view is deliberately
@@ -567,11 +591,10 @@ const QUALIFIED_MIP_START_FEATURES: [BackendFeature; 2] =
 /// and `MultipleMipStarts` have no API in the pinned bundled version;
 /// `InitialBasis` has an API (`Highs_setBasis`) but is a separate future
 /// artifact in P28 (SM-08.6).
-const UNQUALIFIED_M3_FEATURES: [BackendFeature; 9] = [
+const UNQUALIFIED_M3_FEATURES: [BackendFeature; 8] = [
     BackendFeature::MultipleMipStarts,
     BackendFeature::VariableHints,
     BackendFeature::InitialBasis,
-    BackendFeature::Iis,
     BackendFeature::FeasibilityRelaxation,
     BackendFeature::Sos1,
     BackendFeature::Sos2,
@@ -638,6 +661,27 @@ pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabi
             }),
         );
     }
+
+    let iis_support = if cfg!(feature = "bundled") && (major, minor, patch) == (1, 15, 0) {
+        FeatureSupport::native(FeatureLimitations {
+            minimum_version: Some(version.clone()),
+            model_classes: vec!["lp".to_string()],
+            notes: vec![
+                "qualified Highs_getIis provider in roml-highs/src/native_iis.rs; bundled highs-sys 1.15.0 only"
+                    .to_string(),
+            ],
+            ..FeatureLimitations::default()
+        })
+    } else {
+        FeatureSupport::unsupported(FeatureLimitations {
+            notes: vec![
+                "native IIS is unavailable for this system/unqualified HiGHS version; ROML portable analysis remains available"
+                    .to_string(),
+            ],
+            ..FeatureLimitations::default()
+        })
+    };
+    set.set(BackendFeature::Iis, iis_support);
 
     for feature in UNQUALIFIED_M3_FEATURES {
         // P28 warm-start features carry audit-citing notes (SM-08.7, D19).
@@ -1511,6 +1555,7 @@ mod tests {
                 feature
             );
         }
+        assert_eq!(set.supports(BackendFeature::Iis), cfg!(feature = "bundled"));
     }
 
     #[test]

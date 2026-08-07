@@ -44,6 +44,7 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: quality-coverage
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -87,6 +88,7 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: quality-mutation
 
       - name: Install cargo-mutants
         uses: taiki-e/install-action@cargo-mutants

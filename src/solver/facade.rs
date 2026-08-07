@@ -173,6 +173,77 @@ where
         }
     }
 
+    /// Borrow the persistent backend for additive analysis orchestration.
+    pub(crate) fn analysis_backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Compile an analysis snapshot with an independent identity compiler.
+    /// IIS probing must not advance or replace the compiler state associated
+    /// with the persistent solve session.
+    pub(crate) fn compile_analysis_snapshot(
+        &self,
+        model: &Model,
+        snapshot: &ModelSnapshot,
+        overlay: Option<&SolveOverlay>,
+    ) -> Result<
+        crate::compiler::backend_ir::BackendSnapshot,
+        crate::solver::infeasibility::InfeasibilityError,
+    > {
+        let capabilities = self.compilation_capabilities();
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(
+                model.instance(),
+                snapshot,
+                &CompilationPolicy::Auto,
+                &capabilities,
+            )
+            .map_err(
+                |error| crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
+                    reason: format!("analysis snapshot compilation failed: {error}"),
+                },
+            )?;
+        let Some(overlay) = overlay else {
+            return Ok(base);
+        };
+        let compiled = compile_overlay(model, &compiler, overlay, None).map_err(|error| {
+            crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
+                reason: format!("analysis overlay compilation failed: {error:?}"),
+            }
+        })?;
+        let mut analysis = base;
+        for operation in compiled.operations {
+            match operation {
+                crate::solver::overlay::OverlayOp::SetTemporaryVariableBounds {
+                    variable,
+                    bounds,
+                } => {
+                    let target = analysis
+                        .variables
+                        .iter_mut()
+                        .find(|entry| entry.id == variable)
+                        .ok_or_else(|| {
+                            crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
+                                reason: format!(
+                                    "analysis overlay references missing variable {variable:?}"
+                                ),
+                            }
+                        })?;
+                    target.bounds = bounds;
+                }
+                crate::solver::overlay::OverlayOp::AddTemporaryRow { row } => {
+                    analysis.linear_rows.push(row);
+                }
+                crate::solver::overlay::OverlayOp::RemoveTemporaryRow { .. }
+                | crate::solver::overlay::OverlayOp::SetObjectivePolicy(_) => {}
+            }
+        }
+        analysis.origin_map.merge(compiled.origin_additions);
+        analysis.compilation_id = compiled.compilation_id;
+        Ok(analysis)
+    }
+
     /// Synchronize the backend to the model's committed canonical state,
     /// establishing the exact base `CompilationId` (`C_base`).
     ///

@@ -19,6 +19,7 @@ pub mod bridge;
 pub mod capability;
 pub mod origin;
 pub mod report;
+pub mod restriction;
 pub mod session;
 
 use crate::construct::Construct;

@@ -44,6 +44,7 @@ use roml::solver::session::{
 use roml::sync::AdapterHealth;
 use roml::SolverSession;
 use roml::SynchronizationMode;
+use roml::{InfeasibilityError, InfeasibilityPlan};
 
 // ── Reference + fault-injecting backend ──────────────────────────────────────
 
@@ -987,6 +988,38 @@ fn prior_solution_never_reported_after_mutation() {
         model.current_revision(),
         "returned solution is from the new revision, never the stale one"
     );
+}
+
+/// Phase 29 characterization: an unsupported analysis request is a typed
+/// no-op for both the persistent backend session and the canonical model.
+#[test]
+fn unsupported_infeasibility_analysis_preserves_persistent_session() {
+    let (mut model, _x, _y) = build_constant_model();
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
+    session.solve(&mut model).expect("baseline solve");
+
+    let before = state.borrow();
+    let before_revision = before.revision;
+    let before_compilation = before.current_compilation;
+    let before_solves = before.solves;
+    drop(before);
+    let model_revision = model.current_revision();
+
+    let result = session.analyze_infeasibility(&model, &InfeasibilityPlan::portable_lp());
+    assert!(matches!(
+        result,
+        Err(InfeasibilityError::Unsupported { .. })
+    ));
+    assert_eq!(model.current_revision(), model_revision);
+
+    let after = state.borrow();
+    assert_eq!(after.revision, before_revision);
+    assert_eq!(after.current_compilation, before_compilation);
+    assert_eq!(after.solves, before_solves);
+    drop(after);
+
+    session.solve(&mut model).expect("session remains usable");
 }
 
 /// A failed solve after mutation returns an error — the error path never

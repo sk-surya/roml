@@ -1,4 +1,52 @@
-# ROML Mega Roadmap — Production-Grade Public Release
+# ROML Active Roadmap — M3 Semantic Modeling and Solve Workflows
+
+## 🚧 M3 — Semantic Modeling and Solve Workflows
+
+The active execution milestone is M3. Its accepted design and state ledger remain in
+`.planning/milestones/M3-semantic-modeling-workflows/`; this root section is the GSD
+routing projection so phase discovery and autonomous execution use the same milestone.
+
+### Phase 25: Semantic IR, lineage, identity, and metadata
+
+**Goal:** establish canonical semantic state before adding workflows. **Status:** accepted.
+
+### Phase 26: Compiler boundary, backend IR, capabilities, origins, and compilation identity
+
+**Goal:** establish deterministic semantic compilation and exact compiled-state identity. **Status:** accepted.
+
+### Phase 27: Persistent fixing, assignments, locks, and overlays
+
+**Goal:** support hard solution reuse while protecting canonical history and backend state. **Status:** accepted with prior evidence retained.
+
+### Phase 28: SolvePlan, starts, hints, and effective-plan reporting
+
+**Goal:** expose one explicit solve-attempt contract. **Status:** accepted.
+
+### Phase 29: IIS/conflict analysis and origin-aware reports
+
+**Goal:** diagnose LP infeasibility accurately in original ROML terms. **Requirements:** SM-09 and IIS-related SM-02.6/SM-04.3. **Status:** ready to execute; owner-approved IIS design packet and detailed plans are in `.planning/phases/29-iis-conflict-analysis/`.
+
+### Phase 30: Soft constraints, slacks, penalties, and feasibility relaxation
+
+**Goal:** make controlled violation an ordinary modeling operation. **Status:** unplanned.
+
+### Phase 31: Lexicographic objectives and objective policies
+
+**Goal:** make objective policy explicit, deterministic, and backend-qualified. **Status:** unplanned.
+
+### Phase 32: Common semantic constructs
+
+**Goal:** provide reusable semantic constructs over the frozen compiler contract. **Status:** accepted.
+
+### Phase 33: Piecewise-linear and bound analysis
+
+**Goal:** provide deterministic piecewise-linear and bound-analysis support. **Status:** accepted.
+
+### Phase 34: Qualification, migration, documentation, and NLP readiness
+
+**Goal:** integrate and qualify the M3 workflows without silently expanding scope. **Status:** blocked until P29–P33 are accepted.
+
+## ✅ Archived v0.1 — Production-Grade Public Release Roadmap
 
 **Authoritative program base:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
 **Historical audit base:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  

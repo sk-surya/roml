@@ -1,4 +1,24 @@
-# ROML Release-Hardening State
+---
+gsd_state_version: 1.0
+milestone: M3
+milestone_name: Semantic Modeling and Solve Workflows
+current_phase: 29
+current_phase_name: IIS/conflict analysis and origin-aware reports
+status: in_progress
+---
+
+# ROML Active State — M3 Semantic Modeling and Solve Workflows
+
+The detailed M3 ledger is retained at
+`.planning/milestones/M3-semantic-modeling-workflows/STATE.md`. This root state
+frontmatter is the active GSD routing authority.
+
+**Current phase:** P29 — IIS/conflict analysis and origin-aware reports
+**Accepted prerequisites:** P25–P28, P32, and P33
+**Next review gate:** execute the owner-approved P29 plan on an isolated branch/worktree,
+then record evidence and independent review before advancing to P30.
+
+## Archived v0.1 Release-Hardening State
 
 ## Current milestone
 

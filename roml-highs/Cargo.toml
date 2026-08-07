@@ -13,6 +13,7 @@ include = [
     "src/**",
     "tests/**",
     "examples/**",
+    "benches/**",
 ]
 
 [dependencies]
@@ -24,3 +25,7 @@ roml = { version = "0.1.0", path = ".." }
 default = ["bundled"]
 bundled = ["highs-sys/build", "highs-sys/highs_release"]
 system = ["highs-sys/discover"]
+
+[[bench]]
+name = "iis"
+harness = false
