@@ -6,7 +6,7 @@ use roml::advanced::{
     ConflictGuarantee, ConflictMember, ConflictMemberSnapshot, ConflictOrigin,
     FeasibilityProofStrength, InfeasibilityOutcome, InfeasibilityReport, InfeasibilityScope,
     InfeasibilityStatistics, MarkdownInfeasibilityReport, NativeConflictEvidence,
-    TextInfeasibilityReport,
+    NativeConflictMember, NativeMembership, TextInfeasibilityReport,
 };
 use roml::{ConflictAtomId, Model, ModelRevision};
 
@@ -53,11 +53,19 @@ fn report() -> InfeasibilityReport {
                 reference: CompiledRestrictionRef::VariableLower(
                     roml::advanced::CompiledVariableId(0),
                 ),
-                native_member: false,
+                native_membership: None,
+                native_bound: None,
             }],
         }],
         native_evidence: Some(NativeConflictEvidence {
-            provider: "none".to_string(),
+            provider: "test-native".to_string(),
+            evidence: vec![NativeConflictMember {
+                restriction: CompiledRestrictionRef::VariableLower(
+                    roml::advanced::CompiledVariableId(0),
+                ),
+                membership: NativeMembership::Possible,
+                bound: Some(roml::advanced::NativeBoundStatus::Lower),
+            }],
         }),
         statistics: InfeasibilityStatistics {
             oracle_calls: 4,
@@ -80,8 +88,10 @@ fn text_and_markdown_renderers_are_deterministic_and_separate() {
     );
     assert_ne!(text, markdown);
     assert!(report.to_string().len() < text.len());
-    assert!(!text.contains("minimum-cardinality"));
-    assert!(!markdown.contains("minimum-cardinality"));
+    assert!(text.contains("not minimum-cardinality"));
+    assert!(markdown.contains("not minimum-cardinality"));
+    assert!(text.contains("Possible"));
+    assert!(markdown.contains("Possible"));
 }
 
 #[test]

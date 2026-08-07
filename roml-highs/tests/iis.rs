@@ -3,7 +3,7 @@
 use roml::prelude::*;
 use roml::{
     ConflictGuarantee, InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan,
-    InfeasibilityScope, SolveStatus, SolverSession,
+    InfeasibilityScope, MinMaxRelation, MinMaxSense, SolveStatus, SolverSession,
 };
 use roml_highs::HighsSession;
 
@@ -60,6 +60,24 @@ fn auto_records_native_seed_and_semantic_reduction() {
 }
 
 #[test]
+fn full_universe_seed_policy_does_not_invoke_native_seeding() {
+    let model = contradictory_lp();
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.mode = InfeasibilityMode::Auto;
+    plan.seed_policy = roml::advanced::SeedPolicy::FullUniverse;
+    let report = session
+        .analyze_infeasibility(&model, &plan)
+        .expect("full-universe analysis");
+
+    assert_eq!(report.outcome, InfeasibilityOutcome::Conflict);
+    assert!(!report
+        .provider_chain
+        .iter()
+        .any(|provider| provider.name.contains("native IIS")));
+}
+
+#[test]
 fn persistent_fixing_is_a_semantic_layer_that_can_be_reduced() {
     let mut model = Model::new();
     let x = model
@@ -98,4 +116,46 @@ fn explicit_mip_relaxation_is_an_lp_analysis_scope() {
 
     assert_eq!(report.scope, InfeasibilityScope::LpRelaxation);
     assert_eq!(report.outcome, InfeasibilityOutcome::Conflict);
+}
+
+#[test]
+fn original_lp_rejects_generated_integer_columns() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("first operand");
+    let y = model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("second operand");
+    model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            MinMaxSense::Max,
+            MinMaxRelation::Exact,
+            None,
+        )
+        .expect("exact min/max construct");
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let error = session
+        .analyze_infeasibility(&model, &InfeasibilityPlan::portable_lp())
+        .expect_err("OriginalLp must inspect compiled variable types");
+    assert!(matches!(
+        error,
+        roml::advanced::InfeasibilityError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn portable_oracle_neutralizes_an_unbounded_objective() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("variable");
+    model.maximize(x).expect("objective");
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let report = session
+        .analyze_infeasibility(&model, &InfeasibilityPlan::portable_lp())
+        .expect("feasibility analysis");
+
+    assert_eq!(report.outcome, InfeasibilityOutcome::NoConflict);
 }

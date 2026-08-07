@@ -448,8 +448,10 @@ pub type ConflictDeclarationSnapshot = ConflictMemberSnapshot;
 pub struct CompiledRestrictionEvidence {
     /// Compiled restriction reference.
     pub reference: CompiledRestrictionRef,
-    /// Whether native evidence included this reference.
-    pub native_member: bool,
+    /// Native membership classification, if a native provider supplied it.
+    pub native_membership: Option<NativeMembership>,
+    /// Native bound-side classification, if supplied.
+    pub native_bound: Option<NativeBoundStatus>,
 }
 
 /// Native membership evidence retained without promoting its guarantee.
@@ -457,6 +459,8 @@ pub struct CompiledRestrictionEvidence {
 pub struct NativeConflictEvidence {
     /// Provider label.
     pub provider: String,
+    /// Full native row/column/bound-side evidence.
+    pub evidence: Vec<NativeConflictMember>,
 }
 
 /// Counters collected during analysis.
@@ -559,6 +563,9 @@ pub struct SemanticRestrictionAtom {
     pub origin: ConflictOrigin,
     /// Compiled restrictions covered by this atom.
     pub compiled_restrictions: Vec<CompiledRestrictionRef>,
+    /// Bound contribution for each compiled restriction. A grouped atom can
+    /// cover several rows/columns with different values.
+    pub restriction_values: Vec<(CompiledRestrictionRef, Option<f64>)>,
     /// Disable operation.
     pub disable: RestrictionTogglePlan,
     /// Restore operation.
@@ -587,10 +594,12 @@ impl RestrictionSelection {
 }
 
 /// Oracle budget for one feasibility check.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct OracleBudget {
     /// Optional backend time limit in milliseconds.
     pub time_limit_ms: Option<u64>,
+    /// Feasibility tolerance to apply to the isolated backend session.
+    pub feasibility_tolerance: Option<f64>,
 }
 
 /// Feasibility oracle used by the portable reducer.
@@ -878,6 +887,21 @@ where
             for variable in &mut snapshot.variables {
                 variable.var_type = crate::model::VarType::Continuous;
             }
+        } else if snapshot
+            .variables
+            .iter()
+            .any(|variable| !matches!(variable.var_type, crate::model::VarType::Continuous))
+        {
+            return Err(InfeasibilityError::Unsupported {
+                operation: "OriginalLp analysis compiled a non-continuous variable; request LpRelaxation explicitly".to_string(),
+            });
+        }
+        if !plan.numerical_policy.feasibility_tolerance.is_finite()
+            || plan.numerical_policy.feasibility_tolerance < 0.0
+        {
+            return Err(InfeasibilityError::Unsupported {
+                operation: "feasibility_tolerance must be finite and non-negative".to_string(),
+            });
         }
         let universe = SemanticConflictUniverse::from_model_snapshot(
             &snapshot,
@@ -891,7 +915,41 @@ where
         let mut native_result: Option<NativeConflict> = None;
         let mut seed = RestrictionSelection::all(&universe);
 
-        let native_requested = !matches!(plan.mode, InfeasibilityMode::RomlPortable);
+        if matches!(plan.mode, InfeasibilityMode::NativeOnly)
+            && matches!(plan.seed_policy, SeedPolicy::FullUniverse)
+        {
+            return Err(InfeasibilityError::Unsupported {
+                operation: "NativeOnly requires Adaptive seed policy".to_string(),
+            });
+        }
+
+        let oracle = self
+            .analysis_backend()
+            .spawn_infeasibility_oracle(&snapshot, &universe)
+            .map_err(|error| {
+                if error.category == crate::solver::backend::ErrorCategory::Unsupported {
+                    InfeasibilityError::Unsupported {
+                        operation: error.message,
+                    }
+                } else {
+                    InfeasibilityError::Backend(error)
+                }
+            })?;
+        let mut analysis = AnalysisSession::new(oracle, &universe, plan.numerical_policy)?;
+        let oracle_budget = OracleBudget {
+            time_limit_ms: plan.budget.time_limit_ms,
+            feasibility_tolerance: Some(plan.numerical_policy.feasibility_tolerance),
+        };
+
+        // The full semantic universe is authoritative. Native evidence is
+        // only a seed after this check proves the complete model infeasible;
+        // a feasible or unknown native subset can never overturn that fact.
+        let full_outcome = analysis.check(&seed, &oracle_budget)?;
+        let full_is_infeasible = matches!(full_outcome, FeasibilityOutcome::ProvenInfeasible(_));
+
+        let native_requested = full_is_infeasible
+            && !matches!(plan.mode, InfeasibilityMode::RomlPortable)
+            && matches!(plan.seed_policy, SeedPolicy::Adaptive);
         if native_requested {
             let request = NativeConflictRequest {
                 compilation_id: snapshot.compilation_id,
@@ -927,13 +985,26 @@ where
                             message: "native IIS returned no mappable members; portable full-universe seed used".to_string(),
                         });
                     } else {
-                        seed.atom_ids = native_ids;
+                        let native_seed = RestrictionSelection {
+                            compilation_id: snapshot.compilation_id,
+                            atom_ids: native_ids,
+                        };
+                        match analysis.check(&native_seed, &oracle_budget)? {
+                            FeasibilityOutcome::ProvenInfeasible(_) => seed = native_seed,
+                            FeasibilityOutcome::ProvenFeasible(_) => warnings.push(AnalysisWarning {
+                                message: "native seed was feasible; discarded in favor of the proven-infeasible full universe".to_string(),
+                            }),
+                            FeasibilityOutcome::Unknown(_) => warnings.push(AnalysisWarning {
+                                message: "native seed was not proven infeasible; discarded in favor of the proven-infeasible full universe".to_string(),
+                            }),
+                        }
                     }
                     provider_chain.push(AnalysisProviderRecord {
                         name: "HiGHS native IIS seed".to_string(),
                     });
                     native = Some(NativeConflictEvidence {
                         provider: "HiGHS native IIS".to_string(),
+                        evidence: evidence.evidence.clone(),
                     });
 
                     if matches!(plan.mode, InfeasibilityMode::NativeOnly) {
@@ -944,8 +1015,8 @@ where
                             model_revision: canonical.revision,
                             compilation_id: snapshot.compilation_id,
                             backend: BackendIdentity {
-                                name: self.analysis_backend().name().to_string(),
-                                version: self.analysis_backend().name().to_string(),
+                                name: self.analysis_backend().backend_name().to_string(),
+                                version: self.analysis_backend().version().to_string(),
                             },
                             provider_chain,
                             scope: plan.scope,
@@ -960,7 +1031,10 @@ where
                             numerical_policy: plan.numerical_policy,
                             members,
                             native_evidence: native,
-                            statistics: InfeasibilityStatistics::default(),
+                            statistics: InfeasibilityStatistics {
+                                oracle_calls: analysis.oracle_calls(),
+                                ..InfeasibilityStatistics::default()
+                            },
                             warnings,
                         });
                     }
@@ -993,28 +1067,14 @@ where
         provider_chain.push(AnalysisProviderRecord {
             name: "fresh semantic verifier".to_string(),
         });
-        let oracle = self
-            .analysis_backend()
-            .spawn_infeasibility_oracle(&snapshot, &universe)
-            .map_err(|error| {
-                if error.category == crate::solver::backend::ErrorCategory::Unsupported {
-                    InfeasibilityError::Unsupported {
-                        operation: error.message,
-                    }
-                } else {
-                    InfeasibilityError::Backend(error)
-                }
-            })?;
-        let mut analysis = AnalysisSession::new(oracle, &universe, plan.numerical_policy)?;
-        let reduced = crate::solver::reducer::reduce_with_limits(
+        let reduced = crate::solver::reducer::reduce_with_limits_and_policy(
             &mut analysis,
             &universe,
             seed,
-            OracleBudget {
-                time_limit_ms: plan.budget.time_limit_ms,
-            },
+            oracle_budget,
             plan.budget.max_oracle_calls,
             plan.budget.max_iterations,
+            plan.reduction,
         )?;
         let (outcome, guarantee, oracle_strength, members, completion, statistics) = match reduced {
             crate::solver::reducer::ReductionOutcome::NoConflict => (
@@ -1079,8 +1139,8 @@ where
             model_revision: canonical.revision,
             compilation_id: snapshot.compilation_id,
             backend: BackendIdentity {
-                name: self.analysis_backend().name().to_string(),
-                version: self.analysis_backend().name().to_string(),
+                name: self.analysis_backend().backend_name().to_string(),
+                version: self.analysis_backend().version().to_string(),
             },
             provider_chain,
             scope: plan.scope,
@@ -1118,7 +1178,16 @@ fn report_members(
                 .iter()
                 .map(|reference| CompiledRestrictionEvidence {
                     reference: *reference,
-                    native_member: native.members.contains(reference),
+                    native_membership: native
+                        .evidence
+                        .iter()
+                        .find(|evidence| evidence.restriction == *reference)
+                        .map(|evidence| evidence.membership),
+                    native_bound: native
+                        .evidence
+                        .iter()
+                        .find(|evidence| evidence.restriction == *reference)
+                        .and_then(|evidence| evidence.bound),
                 })
                 .collect(),
         })

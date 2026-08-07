@@ -67,10 +67,11 @@ mod callback;
 mod compiler;
 mod error;
 mod facade;
-#[cfg(feature = "bundled")]
 mod iis;
 mod index_map;
 mod lifecycle;
+#[cfg(feature = "bundled")]
+mod native_iis;
 mod session;
 mod solution;
 mod start;

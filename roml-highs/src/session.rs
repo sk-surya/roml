@@ -289,7 +289,6 @@ impl BackendSession for HighsSession {
         })
     }
 
-    #[cfg(feature = "bundled")]
     fn spawn_infeasibility_oracle(
         &self,
         snapshot: &roml::advanced::BackendSnapshot,
@@ -303,7 +302,7 @@ impl BackendSession for HighsSession {
         &self,
         request: &roml::advanced::NativeConflictRequest,
     ) -> Result<roml::advanced::NativeConflict, BackendError> {
-        crate::iis::native_conflict(self, request)
+        crate::native_iis::native_conflict(self, request)
     }
 
     /// Solve the current model with the given [`SolveRequest`].
@@ -490,6 +489,14 @@ impl SolutionView for HighsSession {
 
 impl BackendMetadata for HighsSession {
     fn name(&self) -> &str {
+        &self.version_string
+    }
+
+    fn backend_name(&self) -> &str {
+        "HiGHS"
+    }
+
+    fn version(&self) -> &str {
         &self.version_string
     }
 

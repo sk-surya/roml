@@ -2,7 +2,7 @@
 
 use crate::solver::infeasibility::{
     AnalysisSession, ConflictAtomId, ConflictGuarantee, FeasibilityOutcome, InfeasibilityError,
-    OracleBudget, RestrictionSelection, SemanticConflictUniverse,
+    OracleBudget, ReductionPolicy, RestrictionSelection, SemanticConflictUniverse,
 };
 
 /// Reduction counters retained for evidence and performance qualification.
@@ -60,6 +60,27 @@ pub fn reduce_with_limits<O: crate::solver::infeasibility::FeasibilityOracle>(
     max_oracle_calls: Option<u64>,
     max_iterations: Option<u64>,
 ) -> Result<ReductionOutcome, InfeasibilityError> {
+    reduce_with_limits_and_policy(
+        session,
+        universe,
+        seed,
+        budget,
+        max_oracle_calls,
+        max_iterations,
+        ReductionPolicy::Adaptive,
+    )
+}
+
+/// Reduce one selection with explicit policy and work limits.
+pub fn reduce_with_limits_and_policy<O: crate::solver::infeasibility::FeasibilityOracle>(
+    session: &mut AnalysisSession<O>,
+    universe: &SemanticConflictUniverse,
+    seed: RestrictionSelection,
+    budget: OracleBudget,
+    max_oracle_calls: Option<u64>,
+    max_iterations: Option<u64>,
+    reduction: ReductionPolicy,
+) -> Result<ReductionOutcome, InfeasibilityError> {
     if max_oracle_calls == Some(0) {
         return Ok(ReductionOutcome::NoConflictProof);
     }
@@ -84,7 +105,7 @@ pub fn reduce_with_limits<O: crate::solver::infeasibility::FeasibilityOracle>(
     let mut selected = seed.atom_ids;
     let mut chunk_size = (selected.len() / 2).max(1);
 
-    while chunk_size > 0 && selected.len() > 1 {
+    while reduction == ReductionPolicy::Adaptive && chunk_size > 0 && selected.len() > 1 {
         if max_iterations.is_some_and(|limit| stats.iterations >= limit) {
             exhausted = true;
             break;

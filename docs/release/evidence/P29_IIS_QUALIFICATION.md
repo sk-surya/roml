@@ -9,7 +9,7 @@
 | semantic row-side and variable-bound atoms | PASS |
 | persistent-fixing layer restoration | PASS |
 | solve-lock and temporary-fixing atom execution | DEFERRED: overlay input is not yet part of the public analysis plan |
-| grouped multi-restriction construct execution | DEFERRED: identity compiler currently exposes individual generated origins |
+| grouped multi-restriction construct execution | PASS: `ByConstruct` aggregates generated row sides and variable bounds into one toggle |
 | isolated oracle cache/recovery semantics | PASS |
 | adaptive reduction and mandatory fresh verifier | PASS |
 | deterministic Text/Markdown renderers | PASS |
@@ -25,7 +25,7 @@ cargo test -p roml --test iis_contract --test restriction_universe \
   --test infeasibility_oracle --test iis_reducer --test iis_report \
   --test iis_qualification --test iis_differential --test iis_mutation \
   --test iis_planted                                           PASS
-cargo test -p roml-highs --test iis -- --nocapture             PASS (3 tests)
+cargo test -p roml-highs --test iis -- --nocapture             PASS (7 tests)
 cargo bench --bench iis                                       PASS (harness builds)
 ```
 
@@ -34,14 +34,10 @@ count. Full performance qualification still requires machine metadata and
 comparison against a naive one-at-a-time baseline before release claims are
 made.
 
-The two deferred rows are deliberate scope gates, not silent fallbacks. The
+The solve-lock and temporary-fixing row remains a deliberate scope gate: the
 public `analyze_infeasibility` plan currently analyzes the canonical model and
-does not accept a `SolveOverlay`; therefore solve locks and temporary fixings
-have contract-level atom/origin types and bound-stack support, but are not
-claimed as executable Phase 29 members. Likewise, `ByConstruct` preserves
-individual identity-compiler origins until a multi-row construct bridge is
-available. These gaps must close before the phase can be called fully
-complete against the packet's entire atom-inventory requirement.
+does not accept a `SolveOverlay`. Their atom/origin types and bound-stack
+support remain contract groundwork for the overlay-aware follow-up.
 
 ## Guarantee discipline
 
@@ -55,5 +51,6 @@ irreducibility. Unknown checks downgrade the result.
 Phase 29 stops at qualified LP and explicitly requested LP-relaxation
 analysis. It does not diagnose integrality-only MIP infeasibility, add
 feasibility relaxation, enumerate all IISs, optimize cardinality, or label
-local nonlinear restoration failure as an IIS. System HiGHS native support
-stays unsupported until its exact version matrix is qualified.
+local nonlinear restoration failure as an IIS. System HiGHS portable analysis
+is supported by the system feature; system native IIS remains unsupported
+until its exact header/library version matrix is qualified.

@@ -26,7 +26,13 @@ impl fmt::Display for TextInfeasibilityReport<'_> {
         writeln!(f, "scope: {:?}", report.scope)?;
         writeln!(f, "completion: {:?}", report.completion)?;
         writeln!(f, "guarantee: {:?}", report.guarantee)?;
+        writeln!(f, "minimality: not minimum-cardinality; semantic only")?;
         writeln!(f, "oracle_strength: {:?}", report.oracle_strength)?;
+        writeln!(
+            f,
+            "feasibility_tolerance: {}",
+            report.numerical_policy.feasibility_tolerance
+        )?;
         writeln!(f, "model_lineage: {:?}", report.model_lineage)?;
         writeln!(f, "model_instance: {:?}", report.model_instance)?;
         writeln!(f, "model_revision: {:?}", report.model_revision)?;
@@ -59,6 +65,14 @@ impl fmt::Display for TextInfeasibilityReport<'_> {
         writeln!(f, "  oracle_calls: {}", report.statistics.oracle_calls)?;
         if let Some(native) = &report.native_evidence {
             writeln!(f, "  native_provider: {}", native.provider)?;
+            writeln!(f, "  native_evidence_records: {}", native.evidence.len())?;
+            for member in &native.evidence {
+                writeln!(
+                    f,
+                    "  native: {:?} membership={:?} bound={:?}",
+                    member.restriction, member.membership, member.bound
+                )?;
+            }
         }
         for warning in &report.warnings {
             writeln!(f, "warning: {}", warning.message)?;
@@ -75,6 +89,12 @@ impl fmt::Display for MarkdownInfeasibilityReport<'_> {
         writeln!(f, "- Scope: `{:?}`", report.scope)?;
         writeln!(f, "- Completion: `{:?}`", report.completion)?;
         writeln!(f, "- Guarantee: `{:?}`", report.guarantee)?;
+        writeln!(f, "- Minimality: not minimum-cardinality; semantic only")?;
+        writeln!(
+            f,
+            "- Feasibility tolerance: `{}`",
+            report.numerical_policy.feasibility_tolerance
+        )?;
         writeln!(
             f,
             "- Backend: `{}` `{}`",
@@ -105,6 +125,14 @@ impl fmt::Display for MarkdownInfeasibilityReport<'_> {
         writeln!(f, "- Oracle calls: `{}`", report.statistics.oracle_calls)?;
         if let Some(native) = &report.native_evidence {
             writeln!(f, "- Native provider: `{}`", escape(&native.provider))?;
+            writeln!(f, "- Native evidence records: `{}`", native.evidence.len())?;
+            for member in &native.evidence {
+                writeln!(
+                    f,
+                    "- Native `{:?}`: membership `{:?}`, bound `{:?}`",
+                    member.restriction, member.membership, member.bound
+                )?;
+            }
         }
         if !report.warnings.is_empty() {
             writeln!(f, "\n## Warnings")?;

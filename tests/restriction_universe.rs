@@ -1,9 +1,10 @@
 //! RED characterization for the semantic restriction universe.
 
 use roml::advanced::{
-    BackendSnapshotBuilder, BoundContributionStack, BoundLayerSource, CompiledConstraintId,
-    CompiledLinearRow, CompiledVariable, CompiledVariableId, ConflictGrouping, EntityOrigin,
-    OriginMap, RestrictionOriginMap, SemanticConflictUniverse,
+    BackendCapabilitySet, BackendFeature, BackendSnapshotBuilder, BoundContributionStack,
+    BoundLayerSource, CompilationPolicy, CompilationSession, CompiledConstraintId,
+    CompiledLinearRow, CompiledVariable, CompiledVariableId, ConflictAtomKind, ConflictGrouping,
+    EntityOrigin, FeatureSupport, OriginMap, RestrictionOriginMap, SemanticConflictUniverse,
 };
 use roml::{Bounds, ConstraintBounds, InfeasibilityScope, Model, VarId, VarType};
 
@@ -72,6 +73,88 @@ fn stale_compilation_identity_is_rejected_before_mapping() {
     let map = RestrictionOriginMap::new(&universe).unwrap();
     let member = universe.compiled_restrictions[0];
     assert!(map.map_compiled(other.compilation_id, member).is_err());
+}
+
+#[test]
+fn one_compiled_bound_can_map_to_multiple_layer_contributions() {
+    let snapshot = ranged_snapshot();
+    let mut universe = SemanticConflictUniverse::from_snapshot(
+        &snapshot,
+        InfeasibilityScope::OriginalLp,
+        ConflictGrouping::Individual,
+    )
+    .unwrap();
+
+    // A persistent fixing is a later contribution to an existing compiled
+    // lower/upper bound. The map must retain both semantic owners instead of
+    // overwriting the declared bound atom with the fixing atom.
+    let mut fixing = universe.atoms[0].clone();
+    fixing.id = roml::ConflictAtomId(99);
+    universe.atoms.push(fixing);
+
+    let map = RestrictionOriginMap::new(&universe).unwrap();
+    let mapped = map
+        .map_compiled(snapshot.compilation_id, universe.compiled_restrictions[0])
+        .unwrap();
+    assert_eq!(mapped, vec![universe.atoms[0].id, roml::ConflictAtomId(99)]);
+}
+
+#[test]
+fn construct_grouping_toggles_all_generated_restrictions_together() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 1.0))
+        .unwrap();
+    let y = model
+        .add_variable(roml::continuous().bounds(0.0, 1.0))
+        .unwrap();
+    model
+        .add_minmax(
+            vec![x.into(), y.into()],
+            roml::MinMaxSense::Max,
+            roml::MinMaxRelation::Exact,
+            None,
+        )
+        .unwrap();
+
+    let mut capabilities = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        capabilities.set(feature, FeatureSupport::native(Default::default()));
+    }
+    capabilities.set(
+        BackendFeature::MinMax,
+        FeatureSupport::bridge(Default::default()),
+    );
+    let canonical = model.take_snapshot().unwrap();
+    let mut compiler = CompilationSession::new();
+    let snapshot = compiler
+        .compile_snapshot(
+            model.instance(),
+            &canonical,
+            &CompilationPolicy::Portable,
+            &capabilities,
+        )
+        .unwrap();
+    let universe = SemanticConflictUniverse::from_snapshot(
+        &snapshot,
+        InfeasibilityScope::LpRelaxation,
+        ConflictGrouping::ByConstruct,
+    )
+    .unwrap();
+
+    let grouped: Vec<_> = universe
+        .atoms
+        .iter()
+        .filter(|atom| atom.kind == ConflictAtomKind::GroupedConstruct)
+        .collect();
+    assert_eq!(grouped.len(), 1);
+    assert!(grouped[0].compiled_restrictions.len() > 1);
 }
 
 #[test]

@@ -1,7 +1,10 @@
 # HiGHS IIS API audit for Phase 29
 
 This is the binding gate for the Phase 29 native provider. No IIS ABI detail
-is copied from the existing handwritten `roml-highs/src/ffi.rs` module.
+is copied from the existing handwritten `roml-highs/src/ffi.rs` module. The
+portable feasibility oracle is intentionally separate from the native
+provider, so system HiGHS can run ROML semantic analysis without claiming
+native IIS support.
 
 ## Audited artifacts
 
@@ -104,15 +107,16 @@ IIS claim.
 
 The bundled feature is compiled against the pinned `highs-sys 1.15.0`
 submodule, where the generated `Highs_getIis` declaration is present. The
-native module is therefore compiled only for the bundled, pinned provider and
-also checks the runtime version is exactly `1.15.0` before use.
+native provider in `roml-highs/src/native_iis.rs` is therefore compiled only
+for the bundled, pinned provider and also checks the runtime version is
+exactly `1.15.0` before use. The portable oracle in `roml-highs/src/iis.rs`
+is compiled for both bundled and system features.
 
 The `system` feature uses `pkg-config` discovery and currently accepts a broad
 `highs >= 1.5.0` build-time range; the repository's CI documentation calls
 out a 1.9.0 system floor but does not provide a version-by-version header and
-library qualification matrix. No HiGHS system installation is present on the
-audit host (`pkg-config --modversion highs` fails). System builds therefore
-remain typed `Unsupported` for native IIS until each supported header/library
+library qualification matrix. System builds can run the portable oracle;
+native IIS remains typed `Unsupported` until each supported header/library
 pair is separately compile-, link-, load-, and IIS-qualified. A runtime symbol
 probe is not used as a substitute for this compile gate.
 

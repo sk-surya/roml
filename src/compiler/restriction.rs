@@ -1,7 +1,8 @@
 //! Semantic restriction atoms and exact compiled-state conflict universes.
 
 use crate::compiler::backend_ir::BackendSnapshot;
-use crate::compiler::origin::EntityOrigin;
+use crate::compiler::origin::{EntityOrigin, GeneratedRole};
+use crate::construct::Construct;
 use crate::snapshot::ModelSnapshot;
 use crate::solver::infeasibility::{
     BoundSide, CompiledRestrictionRef, ConflictAtomId, ConflictAtomKind, ConflictGrouping,
@@ -9,6 +10,12 @@ use crate::solver::infeasibility::{
     RestrictionToggleAction, RestrictionTogglePlan, SemanticConflictUniverse,
     SemanticRestrictionAtom,
 };
+
+type GroupedRestrictions = Vec<(
+    Construct,
+    GeneratedRole,
+    Vec<(CompiledRestrictionRef, Option<f64>)>,
+)>;
 
 impl SemanticConflictUniverse {
     /// Build a deterministic side-level universe from one exact snapshot.
@@ -21,11 +28,6 @@ impl SemanticConflictUniverse {
     }
 
     /// Build a universe with canonical persistent-fixing layers retained.
-    ///
-    /// The compiled variable bounds contain the effective fixing, while the
-    /// canonical snapshot retains the declared lower layer. Keeping both here
-    /// lets an isolated oracle disable a fixing and restore the declared bound
-    /// rather than relaxing the variable to infinity.
     pub fn from_model_snapshot(
         snapshot: &BackendSnapshot,
         canonical: &ModelSnapshot,
@@ -43,6 +45,7 @@ impl SemanticConflictUniverse {
     ) -> Result<Self, InfeasibilityError> {
         let mut atoms = Vec::new();
         let mut compiled_restrictions = Vec::new();
+        let mut grouped: GroupedRestrictions = Vec::new();
 
         for row in &snapshot.linear_rows {
             let origin = snapshot
@@ -52,26 +55,30 @@ impl SemanticConflictUniverse {
                     reason: format!("compiled row {:?} has no semantic origin", row.id),
                 })?;
             if row.bounds.lower.is_finite() {
-                push_atom(
+                push_restriction(
                     &mut atoms,
                     &mut compiled_restrictions,
+                    &mut grouped,
+                    grouping,
                     ConflictAtomKind::ConstraintSide(BoundSide::Lower),
-                    constraint_origin(origin, BoundSide::Lower)?,
+                    origin,
                     CompiledRestrictionRef::ConstraintLower(row.id),
                     row.name.clone(),
                     Some(row.bounds.lower),
-                );
+                )?;
             }
             if row.bounds.upper.is_finite() {
-                push_atom(
+                push_restriction(
                     &mut atoms,
                     &mut compiled_restrictions,
+                    &mut grouped,
+                    grouping,
                     ConflictAtomKind::ConstraintSide(BoundSide::Upper),
-                    constraint_origin(origin, BoundSide::Upper)?,
+                    origin,
                     CompiledRestrictionRef::ConstraintUpper(row.id),
                     row.name.clone(),
                     Some(row.bounds.upper),
-                );
+                )?;
             }
         }
 
@@ -83,34 +90,64 @@ impl SemanticConflictUniverse {
                     reason: format!("compiled variable {:?} has no semantic origin", variable.id),
                 })?;
             if variable.bounds.lower.is_finite() {
-                push_atom(
+                push_restriction(
                     &mut atoms,
                     &mut compiled_restrictions,
+                    &mut grouped,
+                    grouping,
                     ConflictAtomKind::VariableBound(BoundSide::Lower),
-                    variable_origin(origin, BoundSide::Lower)?,
+                    origin,
                     CompiledRestrictionRef::VariableLower(variable.id),
                     variable.name.clone(),
                     Some(variable.bounds.lower),
-                );
+                )?;
             }
             if variable.bounds.upper.is_finite() {
-                push_atom(
+                push_restriction(
                     &mut atoms,
                     &mut compiled_restrictions,
+                    &mut grouped,
+                    grouping,
                     ConflictAtomKind::VariableBound(BoundSide::Upper),
-                    variable_origin(origin, BoundSide::Upper)?,
+                    origin,
                     CompiledRestrictionRef::VariableUpper(variable.id),
                     variable.name.clone(),
                     Some(variable.bounds.upper),
-                );
+                )?;
             }
         }
 
-        if grouping == ConflictGrouping::ByConstruct {
-            // P32/P33 generated rows are represented as grouped origins. The
-            // current identity compiler emits no native construct atoms, so
-            // preserving individual rows is lossless until generated roles
-            // become a multi-row bridge input.
+        // A construct atom owns every finite row side and generated-variable
+        // bound belonging to that construct. Disabling it therefore removes
+        // the complete formulation artifact, not one arbitrary bridge row.
+        for (construct, role, restrictions) in grouped {
+            let id = ConflictAtomId(atoms.len() as u64);
+            let refs: Vec<_> = restrictions
+                .iter()
+                .map(|(reference, _)| *reference)
+                .collect();
+            compiled_restrictions.extend(refs.iter().copied());
+            let origin = ConflictOrigin::GroupedConstruct { construct, role };
+            atoms.push(SemanticRestrictionAtom {
+                id,
+                kind: ConflictAtomKind::GroupedConstruct,
+                origin: origin.clone(),
+                compiled_restrictions: refs,
+                restriction_values: restrictions,
+                disable: RestrictionTogglePlan {
+                    atom_id: id,
+                    action: RestrictionToggleAction::Disable,
+                },
+                restore: RestrictionTogglePlan {
+                    atom_id: id,
+                    action: RestrictionToggleAction::Restore,
+                },
+                snapshot: ConflictMemberSnapshot {
+                    origin,
+                    name: None,
+                    value: None,
+                },
+            });
         }
 
         let mut universe = Self {
@@ -135,14 +172,14 @@ impl SemanticConflictUniverse {
                     })?;
                 let fixing = variable.fixing.as_ref().expect("filtered fixing");
 
-                // The regular variable-bound atoms represent the declared
-                // layer when a fixing exists; the fixing atom is the later
-                // contribution that overrides both sides.
+                // The ordinary bound atoms represent the declared lower layer
+                // when a fixing exists. Their values are changed per side,
+                // while the fixing atom contributes the later equal bounds.
                 for atom in &mut universe.atoms {
                     if matches!(atom.kind, ConflictAtomKind::VariableBound(_))
                         && matches!(atom.origin, ConflictOrigin::VariableBound { variable: v, .. } if v == variable.id)
                     {
-                        atom.snapshot.value = match atom.kind {
+                        let value = match atom.kind {
                             ConflictAtomKind::VariableBound(BoundSide::Lower) => {
                                 Some(variable.bounds.lower)
                             }
@@ -151,6 +188,10 @@ impl SemanticConflictUniverse {
                             }
                             _ => atom.snapshot.value,
                         };
+                        atom.snapshot.value = value;
+                        for (_, restriction_value) in &mut atom.restriction_values {
+                            *restriction_value = value;
+                        }
                     }
                 }
 
@@ -158,13 +199,18 @@ impl SemanticConflictUniverse {
                 let lower = CompiledRestrictionRef::VariableLower(compiled);
                 let upper = CompiledRestrictionRef::VariableUpper(compiled);
                 universe.compiled_restrictions.extend([lower, upper]);
+                let origin = ConflictOrigin::PersistentFixing {
+                    variable: variable.id,
+                };
                 universe.atoms.push(SemanticRestrictionAtom {
                     id,
                     kind: ConflictAtomKind::PersistentFixing,
-                    origin: ConflictOrigin::PersistentFixing {
-                        variable: variable.id,
-                    },
+                    origin: origin.clone(),
                     compiled_restrictions: vec![lower, upper],
+                    restriction_values: vec![
+                        (lower, Some(fixing.value)),
+                        (upper, Some(fixing.value)),
+                    ],
                     disable: RestrictionTogglePlan {
                         atom_id: id,
                         action: RestrictionToggleAction::Disable,
@@ -174,9 +220,7 @@ impl SemanticConflictUniverse {
                         action: RestrictionToggleAction::Restore,
                     },
                     snapshot: ConflictMemberSnapshot {
-                        origin: ConflictOrigin::PersistentFixing {
-                            variable: variable.id,
-                        },
+                        origin,
                         name: None,
                         value: Some(fixing.value),
                     },
@@ -188,15 +232,41 @@ impl SemanticConflictUniverse {
     }
 }
 
-fn push_atom(
+#[allow(clippy::too_many_arguments)]
+fn push_restriction(
     atoms: &mut Vec<SemanticRestrictionAtom>,
     compiled_restrictions: &mut Vec<CompiledRestrictionRef>,
+    grouped: &mut GroupedRestrictions,
+    grouping: ConflictGrouping,
     kind: ConflictAtomKind,
-    origin: ConflictOrigin,
+    entity_origin: &EntityOrigin,
     compiled: CompiledRestrictionRef,
     name: Option<String>,
     value: Option<f64>,
-) {
+) -> Result<(), InfeasibilityError> {
+    if grouping == ConflictGrouping::ByConstruct {
+        if let EntityOrigin::Construct { construct, role } = entity_origin {
+            if let Some((_, _, restrictions)) = grouped
+                .iter_mut()
+                .find(|(existing, _, _)| existing == construct)
+            {
+                restrictions.push((compiled, value));
+            } else {
+                grouped.push((*construct, *role, vec![(compiled, value)]));
+            }
+            return Ok(());
+        }
+    }
+
+    let origin = match kind {
+        ConflictAtomKind::ConstraintSide(side) => constraint_origin(entity_origin, side)?,
+        ConflictAtomKind::VariableBound(side) => variable_origin(entity_origin, side)?,
+        _ => {
+            return Err(InfeasibilityError::InvalidUniverse {
+                reason: "side atom has unsupported origin kind".to_string(),
+            })
+        }
+    };
     let id = ConflictAtomId(atoms.len() as u64);
     compiled_restrictions.push(compiled);
     let snapshot = ConflictMemberSnapshot {
@@ -209,6 +279,7 @@ fn push_atom(
         kind,
         origin,
         compiled_restrictions: vec![compiled],
+        restriction_values: vec![(compiled, value)],
         disable: RestrictionTogglePlan {
             atom_id: id,
             action: RestrictionToggleAction::Disable,
@@ -219,6 +290,7 @@ fn push_atom(
         },
         snapshot,
     });
+    Ok(())
 }
 
 fn constraint_origin(

@@ -77,11 +77,13 @@ pub use solver::effective_plan::{
 };
 pub use solver::infeasibility::ConflictAtomId;
 pub use solver::infeasibility::{
-    AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord, AnalysisWarning,
-    CandidateUniverseSummary, CompiledRestrictionEvidence, ConflictDeclarationSnapshot,
-    ConflictMember, FeasibilityProofStrength, InfeasibilityOutcome, InfeasibilityReport,
-    MarkdownInfeasibilityReport, NativeBoundStatus, NativeConflictEvidence, NativeConflictMember,
-    NativeMembership, TextInfeasibilityReport,
+    AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord,
+    AnalysisWarning, CandidateUniverseSummary, CompiledRestrictionEvidence,
+    ConflictDeclarationSnapshot, ConflictGrouping, ConflictGuarantee, ConflictMember,
+    FeasibilityProofStrength, InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan,
+    InfeasibilityReport, InfeasibilityScope, MarkdownInfeasibilityReport, NativeBoundStatus,
+    NativeConflictEvidence, NativeConflictMember, NativeMembership, ReductionPolicy, SeedPolicy,
+    TextInfeasibilityReport,
 };
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
@@ -98,8 +100,7 @@ pub use solver::session::{
     Synchronization,
 };
 pub use solver::{
-    classify_feasibility, ConflictGuarantee, FeasibilityOutcome, InfeasibilityError,
-    InfeasibilityMode, InfeasibilityPlan, InfeasibilityScope, LpAlgorithm, SolveError,
+    classify_feasibility, FeasibilityOutcome, InfeasibilityError, LpAlgorithm, SolveError,
     SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
 };
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};

@@ -359,14 +359,14 @@ impl OriginMap {
 pub struct RestrictionOriginMap {
     compilation_id: crate::compiler::backend_ir::CompilationId,
     atoms: HashMap<ConflictAtomId, SemanticRestrictionAtom>,
-    compiled: HashMap<CompiledRestrictionRef, ConflictAtomId>,
+    compiled: HashMap<CompiledRestrictionRef, Vec<ConflictAtomId>>,
 }
 
 impl RestrictionOriginMap {
     /// Build a restriction map from a complete semantic universe.
     pub fn new(universe: &SemanticConflictUniverse) -> Result<Self, InfeasibilityError> {
         let mut atoms = HashMap::new();
-        let mut compiled = HashMap::new();
+        let mut compiled: HashMap<CompiledRestrictionRef, Vec<ConflictAtomId>> = HashMap::new();
         for atom in &universe.atoms {
             if atoms.insert(atom.id, atom.clone()).is_some() {
                 return Err(InfeasibilityError::InvalidUniverse {
@@ -374,11 +374,7 @@ impl RestrictionOriginMap {
                 });
             }
             for member in &atom.compiled_restrictions {
-                if compiled.insert(*member, atom.id).is_some() {
-                    return Err(InfeasibilityError::InvalidUniverse {
-                        reason: format!("compiled restriction {:?} mapped twice", member),
-                    });
-                }
+                compiled.entry(*member).or_default().push(atom.id);
             }
         }
         Ok(Self {
@@ -393,16 +389,19 @@ impl RestrictionOriginMap {
         self.compilation_id
     }
 
-    /// Map compiled membership to its semantic atom after an exact identity check.
+    /// Map compiled membership to all semantic contribution atoms after an
+    /// exact identity check. Multiple atoms are valid when a later bound layer
+    /// (for example a persistent fixing) contributes to the same compiled
+    /// lower/upper bound as its declared predecessor.
     pub fn map_compiled(
         &self,
         compilation_id: crate::compiler::backend_ir::CompilationId,
         member: CompiledRestrictionRef,
-    ) -> Result<ConflictAtomId, InfeasibilityError> {
+    ) -> Result<Vec<ConflictAtomId>, InfeasibilityError> {
         self.require_compilation(compilation_id)?;
         self.compiled
             .get(&member)
-            .copied()
+            .cloned()
             .ok_or_else(|| InfeasibilityError::InvalidUniverse {
                 reason: format!("compiled restriction {:?} is not mapped", member),
             })

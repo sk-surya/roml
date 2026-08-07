@@ -313,6 +313,17 @@ pub trait BackendMetadata {
     /// Human-readable backend name (e.g., "HiGHS 1.9.0").
     fn name(&self) -> &str;
 
+    /// Stable backend family name, separate from the version-bearing display
+    /// name used by the legacy solve metadata surface.
+    fn backend_name(&self) -> &str {
+        self.name()
+    }
+
+    /// Backend version used in provenance reports.
+    fn version(&self) -> &str {
+        self.name()
+    }
+
     /// Declared capabilities of this backend.
     ///
     /// The legacy flat record (D27) — a source-compatible **derived compat

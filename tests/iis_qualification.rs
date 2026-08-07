@@ -6,8 +6,8 @@ use roml::advanced::{
     AnalysisNumericalPolicy, AnalysisSession, BackendError, BackendSnapshotBuilder,
     CompiledConstraintId, CompiledLinearRow, CompiledVariable, CompiledVariableId,
     ConflictGrouping, EntityOrigin, FeasibilityEvidence, FeasibilityOracle, FeasibilityOutcome,
-    InfeasibilityEvidence, InfeasibilityScope, OracleBudget, OriginMap, RestrictionSelection,
-    SemanticConflictUniverse, TerminationStatus,
+    InfeasibilityEvidence, InfeasibilityScope, OracleBudget, OriginMap, ReductionPolicy,
+    RestrictionSelection, SemanticConflictUniverse, TerminationStatus,
 };
 use roml::{Bounds, ConstraintBounds, Model, VarId, VarType};
 
@@ -102,4 +102,38 @@ fn bounded_reduction_is_explicitly_limited_and_not_irreducible() {
     };
     assert!(conflict.statistics.budget_exhausted);
     assert_ne!(conflict.guarantee, roml::ConflictGuarantee::Irreducible);
+}
+
+#[test]
+fn single_atom_policy_skips_chunk_deletion() {
+    let snapshot = fixture();
+    let universe = SemanticConflictUniverse::from_snapshot(
+        &snapshot,
+        InfeasibilityScope::OriginalLp,
+        ConflictGrouping::Individual,
+    )
+    .unwrap();
+    let mut session = AnalysisSession::new(
+        Oracle {
+            compilation_id: snapshot.compilation_id,
+            calls: Cell::new(0),
+        },
+        &universe,
+        AnalysisNumericalPolicy::default(),
+    )
+    .unwrap();
+    let result = roml::solver::reducer::reduce_with_limits_and_policy(
+        &mut session,
+        &universe,
+        RestrictionSelection::all(&universe),
+        OracleBudget::default(),
+        None,
+        None,
+        ReductionPolicy::SingleAtom,
+    )
+    .unwrap();
+    let roml::advanced::ReductionOutcome::Conflict(conflict) = result else {
+        panic!("the initial selection is proven infeasible");
+    };
+    assert_eq!(conflict.statistics.chunk_deletions, 0);
 }

@@ -21,7 +21,8 @@ base: d26728e
 - Explicit `OriginalLp` and `LpRelaxation` scope handling; relaxation columns
   are converted to continuous only in the isolated analysis snapshot.
 - Audited bundled HiGHS 1.15.0 native IIS seed provider in
-  `roml-highs/src/iis.rs`, using generated `highs-sys` bindings only.
+  `roml-highs/src/native_iis.rs`, using generated `highs-sys` bindings only;
+  the portable oracle is shared by bundled and system HiGHS.
 - Correctness, mutation, differential, planted-IIS, persistent-fixing,
   native-seed, isolation, and LP-relaxation regression tests.
 - HiGHS API audit and release evidence documents.
@@ -43,7 +44,7 @@ this phase; and the persistent solve session is not used for probing.
 - `cargo test -p roml --all-targets`: passed (243 library tests plus all
   integration targets).
 - `cargo test -p roml-highs --all-targets`: passed (bundled HiGHS 1.15.0).
-- `cargo test -p roml-highs --test iis`: passed (4 tests).
+- `cargo test -p roml-highs --test iis`: passed (7 tests).
 - `cargo bench -p roml --bench iis`: harness passed.
 - `cargo doc -p roml --no-deps` and `cargo doc -p roml-highs --no-deps`:
   passed.
@@ -52,27 +53,24 @@ this phase; and the persistent solve session is not used for probing.
 - Exact HiGHS v1.15.0 and `highs-sys` v1.15.0 source/header/generated-binding
   audit recorded in `docs/knowledge/highs_iis_api.md`.
 
-The no-feature `roml-highs` check is not a qualification result: with neither
-`bundled` nor `system`, `highs-sys` intentionally has no discovery provider;
-the audit host also has no system HiGHS installation.
+The temporary system HiGHS 1.15.1 source build and install completed, but the
+system-feature Rust check could not run because this audit environment lacked
+the cached `pkg-config` crate and could not resolve crates.io. This is an
+environment limitation, not a code qualification result. The actual system
+CI lane remains the required 1.9.x portable-oracle qualification.
 
 ## Unresolved blockers
 
 1. `InfeasibilityPlan` has no `SolveOverlay` input, so solve-lock and
    temporary-fixing atoms are represented in the contract but not executable
    through the public analysis entry point.
-2. `ConflictGrouping::ByConstruct` does not yet collapse multi-row generated
-   constructs into one atom because the current identity compiler does not
-   emit a multi-row construct bridge inventory.
-3. System HiGHS native IIS remains typed `Unsupported` pending a supported
+2. System HiGHS native IIS remains typed `Unsupported` pending a supported
    header/library/version qualification matrix.
-4. Independent code review and release-level machine metadata/baseline
+3. Independent code review and release-level machine metadata/baseline
    performance comparison remain required gates.
 
 ## Next review gate
 
-Review this branch against the packet and `29-PLAN.md`. The reviewer must
-either approve the two explicit semantic-scope deferrals for a follow-up
-phase or require overlay/grouped-construct completion before Phase 29 can be
-marked complete. After that decision, run the repository's independent review
-workflow and resolve all P0/P1 findings before integration.
+Review this branch against the packet and `29-PLAN.md`, with the remaining
+overlay-input and system-native qualification gates explicitly recorded.
+Resolve all P0/P1 findings and rerun the system CI lane before integration.
