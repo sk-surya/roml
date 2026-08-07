@@ -133,3 +133,63 @@ fn unknown_initial_check_never_becomes_a_conflict_claim() {
     .unwrap();
     assert_eq!(result, ReductionOutcome::NoConflictProof);
 }
+
+struct ContradictoryFinalVerificationOracle {
+    compilation_id: roml::advanced::CompilationId,
+    calls: Cell<u64>,
+}
+
+impl FeasibilityOracle for ContradictoryFinalVerificationOracle {
+    fn compilation_id(&self) -> roml::advanced::CompilationId {
+        self.compilation_id
+    }
+
+    fn check(
+        &mut self,
+        selection: &RestrictionSelection,
+        _budget: &OracleBudget,
+    ) -> Result<FeasibilityOutcome, BackendError> {
+        let call = self.calls.get();
+        self.calls.set(call + 1);
+        if call == 0 || (call == 1 && selection.atom_ids.len() == 2) {
+            Ok(FeasibilityOutcome::ProvenInfeasible(
+                InfeasibilityEvidence {
+                    termination: TerminationStatus::Infeasible,
+                },
+            ))
+        } else {
+            Ok(FeasibilityOutcome::ProvenFeasible(FeasibilityEvidence {
+                termination: TerminationStatus::Optimal,
+            }))
+        }
+    }
+}
+
+#[test]
+fn contradictory_fresh_final_verification_is_a_typed_failure() {
+    let source = snapshot();
+    let universe = SemanticConflictUniverse::from_snapshot(
+        &source,
+        InfeasibilityScope::OriginalLp,
+        ConflictGrouping::Individual,
+    )
+    .unwrap();
+    let mut session = AnalysisSession::new(
+        ContradictoryFinalVerificationOracle {
+            compilation_id: source.compilation_id,
+            calls: Cell::new(0),
+        },
+        &universe,
+        AnalysisNumericalPolicy::default(),
+    )
+    .unwrap();
+    let result = roml::solver::reducer::reduce(
+        &mut session,
+        &universe,
+        RestrictionSelection::all(&universe),
+    );
+    assert!(matches!(
+        result,
+        Err(roml::advanced::InfeasibilityError::VerificationFailure { .. })
+    ));
+}

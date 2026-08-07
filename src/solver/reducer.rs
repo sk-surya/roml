@@ -86,7 +86,7 @@ pub fn reduce_with_limits_and_policy<O: crate::solver::infeasibility::Feasibilit
     }
     let mut stats = ReductionStatistics::default();
     let mut exhausted = false;
-    let initial = limited_check(
+    let Some(initial) = limited_check(
         session,
         &seed,
         &budget,
@@ -94,7 +94,9 @@ pub fn reduce_with_limits_and_policy<O: crate::solver::infeasibility::Feasibilit
         max_oracle_calls,
         &mut exhausted,
     )?
-    .expect("call budget checked above");
+    else {
+        return Ok(ReductionOutcome::NoConflictProof);
+    };
     if matches!(initial, FeasibilityOutcome::ProvenFeasible(_)) {
         return Ok(ReductionOutcome::NoConflict);
     }
@@ -192,7 +194,11 @@ pub fn reduce_with_limits_and_policy<O: crate::solver::infeasibility::Feasibilit
     if let Some(final_outcome) = final_outcome {
         stats.fresh_verification_checks += 1;
         if !matches!(final_outcome, FeasibilityOutcome::ProvenInfeasible(_)) {
-            guarantee = ConflictGuarantee::InfeasibleSubsystem;
+            return Err(InfeasibilityError::VerificationFailure {
+                reason: format!(
+                    "fresh final verification returned {final_outcome:?} for a candidate previously proven infeasible"
+                ),
+            });
         }
     }
 
@@ -240,7 +246,10 @@ fn limited_check<O: crate::solver::infeasibility::FeasibilityOracle>(
     max_oracle_calls: Option<u64>,
     exhausted: &mut bool,
 ) -> Result<Option<FeasibilityOutcome>, InfeasibilityError> {
-    if !max_oracle_calls.is_none_or(|limit| session.oracle_calls() < limit) {
+    if !max_oracle_calls
+        .map(|limit| session.oracle_calls() < limit)
+        .unwrap_or(true)
+    {
         *exhausted = true;
         return Ok(None);
     }

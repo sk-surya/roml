@@ -8,8 +8,8 @@
 | exact CompilationId and stale-map rejection | PASS |
 | semantic row-side and variable-bound atoms | PASS |
 | persistent-fixing layer restoration | PASS |
-| solve-lock and temporary-fixing atom execution | DEFERRED: overlay input is not yet part of the public analysis plan |
-| grouped multi-restriction construct execution | PASS: `ByConstruct` aggregates generated row sides and variable bounds into one toggle |
+| solve-overlay temporary fixing/lock execution | PASS: overlay is compiled into an isolated analysis snapshot and represented as semantic layers |
+| grouped multi-restriction construct execution | PASS: semantic default and `ByConstruct` aggregate generated row sides and variable bounds into one toggle |
 | isolated oracle cache/recovery semantics | PASS |
 | adaptive reduction and mandatory fresh verifier | PASS |
 | deterministic Text/Markdown renderers | PASS |
@@ -25,8 +25,8 @@ cargo test -p roml --test iis_contract --test restriction_universe \
   --test infeasibility_oracle --test iis_reducer --test iis_report \
   --test iis_qualification --test iis_differential --test iis_mutation \
   --test iis_planted                                           PASS
-cargo test -p roml-highs --test iis -- --nocapture             PASS (7 tests)
-cargo bench --bench iis                                       PASS (harness builds)
+cargo test -p roml-highs --test iis -- --nocapture             PASS (12 tests)
+cargo bench -p roml-highs --bench iis -- --nocapture           PASS (32/128/512 planted corpus)
 ```
 
 The planted corpus is deterministic and records oracle calls and final member
@@ -34,10 +34,11 @@ count. Full performance qualification still requires machine metadata and
 comparison against a naive one-at-a-time baseline before release claims are
 made.
 
-The solve-lock and temporary-fixing row remains a deliberate scope gate: the
-public `analyze_infeasibility` plan currently analyzes the canonical model and
-does not accept a `SolveOverlay`. Their atom/origin types and bound-stack
-support remain contract groundwork for the overlay-aware follow-up.
+The public plan now accepts an optional `SolveOverlay`; temporary fixings and
+locks are compiled into the isolated snapshot and retained as layered
+semantic atoms. Objective-lock/cutoff rows are represented through their
+solve-overlay origins; further overlay combinations remain part of the
+qualification corpus.
 
 ## Guarantee discipline
 

@@ -3,6 +3,7 @@
 use crate::compiler::backend_ir::BackendSnapshot;
 use crate::compiler::origin::{EntityOrigin, GeneratedRole};
 use crate::construct::Construct;
+use crate::model::Model;
 use crate::snapshot::ModelSnapshot;
 use crate::solver::infeasibility::{
     BoundSide, CompiledRestrictionRef, ConflictAtomId, ConflictAtomKind, ConflictGrouping,
@@ -10,6 +11,7 @@ use crate::solver::infeasibility::{
     RestrictionToggleAction, RestrictionTogglePlan, SemanticConflictUniverse,
     SemanticRestrictionAtom,
 };
+use crate::solver::overlay::SolveOverlay;
 
 type GroupedRestrictions = Vec<(
     Construct,
@@ -37,6 +39,93 @@ impl SemanticConflictUniverse {
         Self::from_snapshot_with_fixings(snapshot, Some(canonical), scope, grouping)
     }
 
+    /// Build a universe over a canonical compiled state plus one exact
+    /// solve-scoped overlay. Base restrictions remain separate lower layers;
+    /// overlay bounds and rows are appended as semantic contributions.
+    pub fn from_model_snapshot_with_overlay(
+        base: &BackendSnapshot,
+        overlay_snapshot: &BackendSnapshot,
+        model: &Model,
+        canonical: &ModelSnapshot,
+        overlay: &SolveOverlay,
+        scope: InfeasibilityScope,
+        grouping: ConflictGrouping,
+    ) -> Result<Self, InfeasibilityError> {
+        let mut universe = Self::from_model_snapshot(base, canonical, scope, grouping)?;
+        universe.compilation_id = overlay_snapshot.compilation_id;
+
+        for row in overlay_snapshot.linear_rows.iter().filter(|row| {
+            !base
+                .linear_rows
+                .iter()
+                .any(|base_row| base_row.id == row.id)
+        }) {
+            let origin = overlay_snapshot
+                .origin_map
+                .constraint_origin(row.id)
+                .ok_or_else(|| InfeasibilityError::InvalidUniverse {
+                    reason: format!("overlay row {:?} has no semantic origin", row.id),
+                })?;
+            if row.bounds.lower.is_finite() {
+                push_restriction(
+                    &mut universe.atoms,
+                    &mut universe.compiled_restrictions,
+                    &mut Vec::new(),
+                    grouping,
+                    ConflictAtomKind::SolveOverlay,
+                    origin,
+                    CompiledRestrictionRef::ConstraintLower(row.id),
+                    row.name.clone(),
+                    Some(row.bounds.lower),
+                )?;
+            }
+            if row.bounds.upper.is_finite() {
+                push_restriction(
+                    &mut universe.atoms,
+                    &mut universe.compiled_restrictions,
+                    &mut Vec::new(),
+                    grouping,
+                    ConflictAtomKind::SolveOverlay,
+                    origin,
+                    CompiledRestrictionRef::ConstraintUpper(row.id),
+                    row.name.clone(),
+                    Some(row.bounds.upper),
+                )?;
+            }
+        }
+
+        for (variable, value) in &overlay.temporary_fixings {
+            append_overlay_variable_atom(
+                &mut universe,
+                overlay_snapshot,
+                *variable,
+                *value,
+                ConflictAtomKind::TemporaryFixing,
+                ConflictOrigin::TemporaryFixing {
+                    variable: *variable,
+                },
+            )?;
+        }
+        for lock in &overlay.locks {
+            for (variable, value) in
+                lock.resolve(model)
+                    .map_err(|error| InfeasibilityError::InvalidUniverse {
+                        reason: format!("overlay lock resolution failed: {error:?}"),
+                    })?
+            {
+                append_overlay_variable_atom(
+                    &mut universe,
+                    overlay_snapshot,
+                    variable,
+                    value,
+                    ConflictAtomKind::SolveLock,
+                    ConflictOrigin::SolveLock { variable },
+                )?;
+            }
+        }
+        Ok(universe)
+    }
+
     fn from_snapshot_with_fixings(
         snapshot: &BackendSnapshot,
         canonical: Option<&ModelSnapshot>,
@@ -54,6 +143,23 @@ impl SemanticConflictUniverse {
                 .ok_or_else(|| InfeasibilityError::InvalidUniverse {
                     reason: format!("compiled row {:?} has no semantic origin", row.id),
                 })?;
+            if grouping == ConflictGrouping::Semantic
+                && row.bounds.lower.is_finite()
+                && row.bounds.upper.is_finite()
+                && row.bounds.lower == row.bounds.upper
+                && matches!(origin, EntityOrigin::UserConstraint(_))
+            {
+                push_constraint_equality(
+                    &mut atoms,
+                    &mut compiled_restrictions,
+                    origin,
+                    CompiledRestrictionRef::ConstraintLower(row.id),
+                    CompiledRestrictionRef::ConstraintUpper(row.id),
+                    row.name.clone(),
+                    row.bounds.lower,
+                )?;
+                continue;
+            }
             if row.bounds.lower.is_finite() {
                 push_restriction(
                     &mut atoms,
@@ -89,6 +195,23 @@ impl SemanticConflictUniverse {
                 .ok_or_else(|| InfeasibilityError::InvalidUniverse {
                     reason: format!("compiled variable {:?} has no semantic origin", variable.id),
                 })?;
+            if grouping == ConflictGrouping::Semantic
+                && variable.bounds.lower.is_finite()
+                && variable.bounds.upper.is_finite()
+                && variable.bounds.lower == variable.bounds.upper
+                && matches!(origin, EntityOrigin::UserVariable(_))
+            {
+                push_variable_equality(
+                    &mut atoms,
+                    &mut compiled_restrictions,
+                    origin,
+                    CompiledRestrictionRef::VariableLower(variable.id),
+                    CompiledRestrictionRef::VariableUpper(variable.id),
+                    variable.name.clone(),
+                    variable.bounds.lower,
+                )?;
+                continue;
+            }
             if variable.bounds.lower.is_finite() {
                 push_restriction(
                     &mut atoms,
@@ -244,7 +367,10 @@ fn push_restriction(
     name: Option<String>,
     value: Option<f64>,
 ) -> Result<(), InfeasibilityError> {
-    if grouping == ConflictGrouping::ByConstruct {
+    if matches!(
+        grouping,
+        ConflictGrouping::Semantic | ConflictGrouping::ByConstruct
+    ) {
         if let EntityOrigin::Construct { construct, role } = entity_origin {
             if let Some((_, _, restrictions)) = grouped
                 .iter_mut()
@@ -261,6 +387,17 @@ fn push_restriction(
     let origin = match kind {
         ConflictAtomKind::ConstraintSide(side) => constraint_origin(entity_origin, side)?,
         ConflictAtomKind::VariableBound(side) => variable_origin(entity_origin, side)?,
+        ConflictAtomKind::SolveOverlay => match entity_origin {
+            EntityOrigin::SolveOverlay { overlay, role } => ConflictOrigin::SolveOverlay {
+                overlay: *overlay,
+                role: *role,
+            },
+            _ => {
+                return Err(InfeasibilityError::InvalidUniverse {
+                    reason: "overlay restriction has a non-overlay origin".to_string(),
+                })
+            }
+        },
         _ => {
             return Err(InfeasibilityError::InvalidUniverse {
                 reason: "side atom has unsupported origin kind".to_string(),
@@ -293,6 +430,143 @@ fn push_restriction(
     Ok(())
 }
 
+fn append_overlay_variable_atom(
+    universe: &mut SemanticConflictUniverse,
+    snapshot: &BackendSnapshot,
+    variable: crate::Variable,
+    value: f64,
+    kind: ConflictAtomKind,
+    origin: ConflictOrigin,
+) -> Result<(), InfeasibilityError> {
+    let compiled = snapshot
+        .origin_map
+        .variables_for_origin(&EntityOrigin::UserVariable(variable))
+        .into_iter()
+        .next()
+        .ok_or_else(|| InfeasibilityError::InvalidUniverse {
+            reason: format!("overlay variable {variable:?} has no compiled id"),
+        })?;
+    let id = ConflictAtomId(universe.atoms.len() as u64);
+    let lower = CompiledRestrictionRef::VariableLower(compiled);
+    let upper = CompiledRestrictionRef::VariableUpper(compiled);
+    universe.compiled_restrictions.extend([lower, upper]);
+    universe.atoms.push(SemanticRestrictionAtom {
+        id,
+        kind,
+        origin: origin.clone(),
+        compiled_restrictions: vec![lower, upper],
+        restriction_values: vec![(lower, Some(value)), (upper, Some(value))],
+        disable: RestrictionTogglePlan {
+            atom_id: id,
+            action: RestrictionToggleAction::Disable,
+        },
+        restore: RestrictionTogglePlan {
+            atom_id: id,
+            action: RestrictionToggleAction::Restore,
+        },
+        snapshot: ConflictMemberSnapshot {
+            origin,
+            name: None,
+            value: Some(value),
+        },
+    });
+    Ok(())
+}
+
+fn push_constraint_equality(
+    atoms: &mut Vec<SemanticRestrictionAtom>,
+    compiled_restrictions: &mut Vec<CompiledRestrictionRef>,
+    entity_origin: &EntityOrigin,
+    lower: CompiledRestrictionRef,
+    upper: CompiledRestrictionRef,
+    name: Option<String>,
+    value: f64,
+) -> Result<(), InfeasibilityError> {
+    let constraint = match entity_origin {
+        EntityOrigin::UserConstraint(constraint) => *constraint,
+        _ => {
+            return Err(InfeasibilityError::InvalidUniverse {
+                reason: "exact constraint equality has a non-user origin".to_string(),
+            })
+        }
+    };
+    let id = ConflictAtomId(atoms.len() as u64);
+    let refs = vec![lower, upper];
+    compiled_restrictions.extend(refs.iter().copied());
+    let origin = ConflictOrigin::ConstraintEquality { constraint };
+    atoms.push(SemanticRestrictionAtom {
+        id,
+        kind: ConflictAtomKind::ConstraintEquality,
+        origin: origin.clone(),
+        compiled_restrictions: refs.clone(),
+        restriction_values: refs
+            .iter()
+            .map(|reference| (*reference, Some(value)))
+            .collect(),
+        disable: RestrictionTogglePlan {
+            atom_id: id,
+            action: RestrictionToggleAction::Disable,
+        },
+        restore: RestrictionTogglePlan {
+            atom_id: id,
+            action: RestrictionToggleAction::Restore,
+        },
+        snapshot: ConflictMemberSnapshot {
+            origin,
+            name,
+            value: Some(value),
+        },
+    });
+    Ok(())
+}
+
+fn push_variable_equality(
+    atoms: &mut Vec<SemanticRestrictionAtom>,
+    compiled_restrictions: &mut Vec<CompiledRestrictionRef>,
+    entity_origin: &EntityOrigin,
+    lower: CompiledRestrictionRef,
+    upper: CompiledRestrictionRef,
+    name: Option<String>,
+    value: f64,
+) -> Result<(), InfeasibilityError> {
+    let variable = match entity_origin {
+        EntityOrigin::UserVariable(variable) => *variable,
+        _ => {
+            return Err(InfeasibilityError::InvalidUniverse {
+                reason: "exact variable equality has a non-user origin".to_string(),
+            })
+        }
+    };
+    let id = ConflictAtomId(atoms.len() as u64);
+    let refs = vec![lower, upper];
+    compiled_restrictions.extend(refs.iter().copied());
+    let origin = ConflictOrigin::VariableEquality { variable };
+    atoms.push(SemanticRestrictionAtom {
+        id,
+        kind: ConflictAtomKind::VariableEquality,
+        origin: origin.clone(),
+        compiled_restrictions: refs.clone(),
+        restriction_values: refs
+            .iter()
+            .map(|reference| (*reference, Some(value)))
+            .collect(),
+        disable: RestrictionTogglePlan {
+            atom_id: id,
+            action: RestrictionToggleAction::Disable,
+        },
+        restore: RestrictionTogglePlan {
+            atom_id: id,
+            action: RestrictionToggleAction::Restore,
+        },
+        snapshot: ConflictMemberSnapshot {
+            origin,
+            name,
+            value: Some(value),
+        },
+    });
+    Ok(())
+}
+
 fn constraint_origin(
     origin: &EntityOrigin,
     side: BoundSide,
@@ -306,11 +580,9 @@ fn constraint_origin(
             construct: *construct,
             role: *role,
         }),
-        EntityOrigin::SolveOverlay { overlay, role } => Err(InfeasibilityError::InvalidUniverse {
-            reason: format!(
-                "solve overlay origin {:?}/{:?} requires an overlay scope",
-                overlay, role
-            ),
+        EntityOrigin::SolveOverlay { overlay, role } => Ok(ConflictOrigin::SolveOverlay {
+            overlay: *overlay,
+            role: *role,
         }),
         _ => Err(InfeasibilityError::InvalidUniverse {
             reason: "compiled row has a non-constraint origin".to_string(),
@@ -331,11 +603,9 @@ fn variable_origin(
             construct: *construct,
             role: *role,
         }),
-        EntityOrigin::SolveOverlay { overlay, role } => Err(InfeasibilityError::InvalidUniverse {
-            reason: format!(
-                "solve overlay origin {:?}/{:?} requires an overlay scope",
-                overlay, role
-            ),
+        EntityOrigin::SolveOverlay { overlay, role } => Ok(ConflictOrigin::SolveOverlay {
+            overlay: *overlay,
+            role: *role,
         }),
         _ => Err(InfeasibilityError::InvalidUniverse {
             reason: "compiled variable has a non-variable origin".to_string(),

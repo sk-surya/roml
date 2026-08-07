@@ -1,9 +1,12 @@
 //! Phase 29 bundled HiGHS IIS qualification smoke tests.
 
+use std::collections::BTreeMap;
+
 use roml::prelude::*;
 use roml::{
-    ConflictGuarantee, InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan,
-    InfeasibilityScope, MinMaxRelation, MinMaxSense, SolveStatus, SolverSession,
+    ConflictGuarantee, ContinuousLock, InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan,
+    InfeasibilityScope, LockSelector, MinMaxRelation, MinMaxSense, PrimalAssignment, SolutionLock,
+    SolveStatus, SolverSession,
 };
 use roml_highs::HighsSession;
 
@@ -36,6 +39,30 @@ fn portable_reducer_reports_verified_semantic_conflict() {
     // usable after the report is produced.
     let solution = session.solve(&mut model).expect("persistent solve");
     assert!(matches!(solution.status(), SolveStatus::Infeasible));
+}
+
+#[test]
+fn default_plan_keeps_an_exact_constraint_as_one_semantic_atom() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).expect("variable");
+    model.add_constraint(x.eq(5.0)).expect("equality");
+    model.add_constraint(x.le(4.0)).expect("contradiction");
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let report = session
+        .analyze_infeasibility(&model, &InfeasibilityPlan::portable_lp())
+        .expect("semantic IIS analysis");
+    assert_eq!(
+        report.candidate_universe.grouping,
+        roml::ConflictGrouping::Semantic
+    );
+    assert_eq!(report.members.len(), 2);
+    assert!(report.members.iter().any(|member| {
+        matches!(
+            member.declaration.origin,
+            roml::advanced::ConflictOrigin::ConstraintEquality { .. }
+        )
+    }));
 }
 
 #[test]
@@ -75,6 +102,27 @@ fn full_universe_seed_policy_does_not_invoke_native_seeding() {
         .provider_chain
         .iter()
         .any(|provider| provider.name.contains("native IIS")));
+}
+
+#[test]
+fn native_then_roml_honors_native_mode_with_a_full_universe_seed_policy() {
+    let model = contradictory_lp();
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.mode = InfeasibilityMode::NativeThenRoml;
+    plan.seed_policy = roml::advanced::SeedPolicy::FullUniverse;
+    let report = session
+        .analyze_infeasibility(&model, &plan)
+        .expect("NativeThenRoml must attempt native seeding");
+    assert_eq!(report.outcome, InfeasibilityOutcome::Conflict);
+    assert!(report
+        .provider_chain
+        .iter()
+        .any(|provider| provider.name.contains("native IIS")));
+    assert!(report
+        .provider_chain
+        .iter()
+        .any(|provider| provider.name == "ROML semantic reducer"));
 }
 
 #[test]
@@ -158,4 +206,82 @@ fn portable_oracle_neutralizes_an_unbounded_objective() {
         .expect("feasibility analysis");
 
     assert_eq!(report.outcome, InfeasibilityOutcome::NoConflict);
+}
+
+#[test]
+fn oracle_call_budget_includes_the_authoritative_full_universe_check() {
+    for limit in [0, 1, 2] {
+        let model = contradictory_lp();
+        let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+        let mut plan = InfeasibilityPlan::portable_lp();
+        plan.budget.max_oracle_calls = Some(limit);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.analyze_infeasibility(&model, &plan)
+        }));
+        let analysis = result
+            .expect("oracle-call budgeting must never panic")
+            .expect("budgeted analysis should return a typed report");
+        assert!(analysis.statistics.oracle_calls <= limit);
+    }
+}
+
+#[test]
+fn solve_overlay_fixing_is_an_analyzable_semantic_layer() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 10.0))
+        .expect("variable");
+    model.add_constraint(x.le(0.0)).expect("constraint");
+    let mut fixings = BTreeMap::new();
+    fixings.insert(x, 1.0);
+    let overlay =
+        roml::SolveOverlay::new(fixings, Vec::new(), Vec::new(), Vec::new()).expect("overlay");
+
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.overlay = Some(overlay);
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let report = session
+        .analyze_infeasibility(&model, &plan)
+        .expect("overlay IIS analysis");
+    assert!(report.members.iter().any(|member| {
+        matches!(
+            member.declaration.origin,
+            roml::advanced::ConflictOrigin::TemporaryFixing { .. }
+        )
+    }));
+}
+
+#[test]
+fn solve_overlay_lock_is_an_analyzable_semantic_layer() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 10.0))
+        .expect("variable");
+    model.add_constraint(x.le(0.0)).expect("constraint");
+    let assignment = PrimalAssignment {
+        lineage: model.lineage(),
+        source_instance: Some(model.instance()),
+        source_revision: Some(model.current_revision()),
+        values: BTreeMap::from([(x, 1.0)]),
+    };
+    let lock = SolutionLock {
+        assignment,
+        selector: LockSelector::AllAssigned,
+        continuous: ContinuousLock::Exact,
+    };
+    let overlay = roml::SolveOverlay::new(BTreeMap::new(), vec![lock], Vec::new(), Vec::new())
+        .expect("overlay");
+
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.overlay = Some(overlay);
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let report = session
+        .analyze_infeasibility(&model, &plan)
+        .expect("overlay lock IIS analysis");
+    assert!(report.members.iter().any(|member| {
+        matches!(
+            member.declaration.origin,
+            roml::advanced::ConflictOrigin::SolveLock { .. }
+        )
+    }));
 }

@@ -252,8 +252,11 @@ impl FeasibilityOracle for HighsAnalysisOracle {
             bindings::kHighsModelStatusUnbounded => {
                 FeasibilityOutcome::Unknown(UnknownReason::Unbounded)
             }
-            bindings::kHighsModelStatusTimeLimit | bindings::kHighsModelStatusIterationLimit => {
-                FeasibilityOutcome::Unknown(UnknownReason::Limit)
+            bindings::kHighsModelStatusTimeLimit => {
+                FeasibilityOutcome::Unknown(UnknownReason::TimeLimit)
+            }
+            bindings::kHighsModelStatusIterationLimit => {
+                FeasibilityOutcome::Unknown(UnknownReason::IterationLimit)
             }
             _ => FeasibilityOutcome::Unknown(UnknownReason::Unclassified),
         })

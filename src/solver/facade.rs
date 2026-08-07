@@ -185,13 +185,14 @@ where
         &self,
         model: &Model,
         snapshot: &ModelSnapshot,
+        overlay: Option<&SolveOverlay>,
     ) -> Result<
         crate::compiler::backend_ir::BackendSnapshot,
         crate::solver::infeasibility::InfeasibilityError,
     > {
         let capabilities = self.compilation_capabilities();
         let mut compiler = CompilationSession::new();
-        compiler
+        let base = compiler
             .compile_snapshot(
                 model.instance(),
                 snapshot,
@@ -202,7 +203,45 @@ where
                 |error| crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
                     reason: format!("analysis snapshot compilation failed: {error}"),
                 },
-            )
+            )?;
+        let Some(overlay) = overlay else {
+            return Ok(base);
+        };
+        let compiled = compile_overlay(model, &compiler, overlay, None).map_err(|error| {
+            crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
+                reason: format!("analysis overlay compilation failed: {error:?}"),
+            }
+        })?;
+        let mut analysis = base;
+        for operation in compiled.operations {
+            match operation {
+                crate::solver::overlay::OverlayOp::SetTemporaryVariableBounds {
+                    variable,
+                    bounds,
+                } => {
+                    let target = analysis
+                        .variables
+                        .iter_mut()
+                        .find(|entry| entry.id == variable)
+                        .ok_or_else(|| {
+                            crate::solver::infeasibility::InfeasibilityError::InvalidUniverse {
+                                reason: format!(
+                                    "analysis overlay references missing variable {variable:?}"
+                                ),
+                            }
+                        })?;
+                    target.bounds = bounds;
+                }
+                crate::solver::overlay::OverlayOp::AddTemporaryRow { row } => {
+                    analysis.linear_rows.push(row);
+                }
+                crate::solver::overlay::OverlayOp::RemoveTemporaryRow { .. }
+                | crate::solver::overlay::OverlayOp::SetObjectivePolicy(_) => {}
+            }
+        }
+        analysis.origin_map.merge(compiled.origin_additions);
+        analysis.compilation_id = compiled.compilation_id;
+        Ok(analysis)
     }
 
     /// Synchronize the backend to the model's committed canonical state,

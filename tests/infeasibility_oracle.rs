@@ -3,11 +3,11 @@
 use std::cell::Cell;
 
 use roml::advanced::{
-    AnalysisNumericalPolicy, AnalysisSession, BackendError, BackendSnapshotBuilder,
-    CompiledConstraintId, CompiledLinearRow, CompiledVariable, CompiledVariableId,
-    ConflictGrouping, EntityOrigin, FeasibilityEvidence, FeasibilityOracle, FeasibilityOutcome,
-    InfeasibilityEvidence, InfeasibilityScope, OracleBudget, OriginMap, RestrictionSelection,
-    SemanticConflictUniverse, TerminationStatus,
+    classify_feasibility, AnalysisNumericalPolicy, AnalysisSession, BackendError,
+    BackendSnapshotBuilder, CompiledConstraintId, CompiledLinearRow, CompiledVariable,
+    CompiledVariableId, ConflictGrouping, EntityOrigin, FeasibilityEvidence, FeasibilityOracle,
+    FeasibilityOutcome, InfeasibilityEvidence, InfeasibilityScope, OracleBudget, OriginMap,
+    RestrictionSelection, SemanticConflictUniverse, TerminationStatus,
 };
 use roml::{Bounds, ConstraintBounds, Model, VarId, VarType};
 
@@ -156,4 +156,24 @@ fn failed_oracle_check_requires_isolated_session_rebuild() {
         roml::advanced::AnalysisSessionHealth::RequiresRebuild
     );
     assert!(session.check(&selection, &OracleBudget::default()).is_err());
+}
+
+#[test]
+fn limit_and_uncertainty_statuses_remain_distinct_unknown_reasons() {
+    assert!(matches!(
+        classify_feasibility(TerminationStatus::TimeLimit),
+        FeasibilityOutcome::Unknown(roml::advanced::UnknownReason::TimeLimit)
+    ));
+    assert!(matches!(
+        classify_feasibility(TerminationStatus::IterationLimit),
+        FeasibilityOutcome::Unknown(roml::advanced::UnknownReason::IterationLimit)
+    ));
+    assert!(matches!(
+        classify_feasibility(TerminationStatus::NumericalIssue),
+        FeasibilityOutcome::Unknown(roml::advanced::UnknownReason::Numerical)
+    ));
+    assert!(!matches!(
+        classify_feasibility(TerminationStatus::TimeLimit),
+        FeasibilityOutcome::ProvenInfeasible(_)
+    ));
 }
