@@ -90,7 +90,9 @@ pub use solver::session::{
     Synchronization,
 };
 pub use solver::{
-    LpAlgorithm, SolveError, SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
+    classify_feasibility, ConflictGuarantee, FeasibilityOutcome, InfeasibilityError,
+    InfeasibilityMode, InfeasibilityPlan, InfeasibilityScope, LpAlgorithm, SolveError,
+    SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
 };
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;

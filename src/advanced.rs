@@ -116,6 +116,18 @@ pub use crate::solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
 };
 
+/// LP infeasibility analysis contracts for backend authors.
+pub use crate::solver::infeasibility::{
+    classify_feasibility, AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy,
+    AnalysisProviderRecord, AnalysisWarning, CandidateUniverseSummary, CompiledRestrictionRef,
+    ConflictAtomId, ConflictGrouping, ConflictGuarantee, ConflictMember, FeasibilityEvidence,
+    FeasibilityOracle, FeasibilityOutcome, FeasibilityProofStrength, InfeasibilityError,
+    InfeasibilityMode, InfeasibilityPlan, InfeasibilityReport, InfeasibilityScope,
+    InfeasibilityStatistics, MarkdownInfeasibilityReport, NativeConflict, NativeConflictEvidence,
+    NativeConflictRequest, ReductionPolicy, RestrictionSelection, SeedPolicy,
+    SemanticConflictUniverse, SemanticRestrictionAtom, TextInfeasibilityReport, UnknownReason,
+};
+
 /// Raw opaque entity IDs and the generation counter.
 pub use crate::id::{CoeffId, ConId, Generation, ObjId, ParamId, VarId};
 
