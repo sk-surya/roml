@@ -24,7 +24,9 @@ routing projection so phase discovery and autonomous execution use the same mile
 
 ### Phase 29: IIS/conflict analysis and origin-aware reports
 
-**Goal:** diagnose LP infeasibility accurately in original ROML terms. **Requirements:** SM-09 and IIS-related SM-02.6/SM-04.3. **Status:** ready to execute; owner-approved IIS design packet and detailed plans are in `.planning/phases/29-iis-conflict-analysis/`.
+**Goal:** diagnose LP infeasibility accurately in original ROML terms. **Requirements:** SM-09 and IIS-related SM-02.6/SM-04.3. **Status:** accepted and complete; owner-approved packet, detailed plans, and evidence are in `.planning/phases/29-iis-conflict-analysis/` and `docs/release/evidence/P29_IIS_QUALIFICATION.md`.
+
+**Completion:** merged via PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`; independent expert review `4884735350` is CLEAR TO MERGE.
 
 ### Phase 30: Soft constraints, slacks, penalties, and feasibility relaxation
 

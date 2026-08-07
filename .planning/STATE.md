@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
-current_phase: 29
-current_phase_name: IIS/conflict analysis and origin-aware reports
-status: in_progress
+current_phase: 30
+current_phase_name: Soft constraints, slacks, penalties, and feasibility relaxation
+status: ready_for_next_phase
 ---
 
 # ROML Active State — M3 Semantic Modeling and Solve Workflows
@@ -13,10 +13,10 @@ The detailed M3 ledger is retained at
 `.planning/milestones/M3-semantic-modeling-workflows/STATE.md`. This root state
 frontmatter is the active GSD routing authority.
 
-**Current phase:** P29 — IIS/conflict analysis and origin-aware reports
+**Completed phase:** P29 — IIS/conflict analysis and origin-aware reports
 **Accepted prerequisites:** P25–P28, P32, and P33
-**Next review gate:** execute the owner-approved P29 plan on an isolated branch/worktree,
-then record evidence and independent review before advancing to P30.
+**Completion:** merged PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`; expert review `4884735350` CLEAR TO MERGE.
+**Next review gate:** plan P30 soft constraints; keep system-native IIS qualification and release-grade performance benchmarking in subsequent qualification/release scope.
 
 ## Archived v0.1 Release-Hardening State
 
@@ -98,6 +98,7 @@ These are explicit gates, not requests for immediate clarification:
 | P5 | Complete | examples, CHANGELOG, RELEASE_CHECKLIST, SUPPORT_MATRIX, PACKAGING.md (HEAD: c1fe456) | public support labels documented |
 | P6 | Complete | release evidence, foundry verification passed, steward audit passed (HEAD: 3ffd94b) | explicit publish authorization (external gate) |
 | P7 | Deferred | none | post-v0.1 |
+| P29 | Complete | `docs/release/evidence/P29_IIS_QUALIFICATION.md`, merged PR #39 (`19c8c70`) | system-native IIS qualification and release-grade performance remain follow-up work |
 
 ### Completed requirement IDs
 

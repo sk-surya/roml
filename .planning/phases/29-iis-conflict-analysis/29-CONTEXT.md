@@ -1,6 +1,6 @@
 # Phase 29 Context — IIS/Conflict Analysis
 
-**Status:** owner-directed discussion resolved; executable plan ready for review
+**Status:** owner-directed discussion resolved; implementation complete and accepted
 **Binding input:** the packet fetched with `git fetch origin docs/p29-iis-design-packet` and read from `FETCH_HEAD:.planning/phases/29-iis-conflict-analysis/29-DESIGN-PACKET.md` (PR #38, dated 2026-08-06).
 **Repository baseline for implementation:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`, as required by repository instructions. The packet header also names `b04f0f516b159548327b868b5011fe2c24fe420a`; that is retained as packet provenance, not substituted for the authoritative repository baseline.
 **Scope:** LP infeasibility only; this discussion/planning pass makes no production implementation changes.
@@ -106,4 +106,4 @@ project the active M3 milestone, `.planning/phases/29-iis-conflict-analysis/` is
 canonical phase directory, and the confirmed-empty duplicate directory was removed.
 The GSD phase resolver now identifies Phase 29 without ambiguity.
 
-The implementation gate is independent: no production task may begin until the exact `highs-sys` 1.15.0 generated surface, matching official HiGHS header/source, and every supported system version are audited. If the official surface or version matrix cannot support compile-time-safe IIS qualification, portable ROML IIS remains usable and native work stops as `Unsupported`.
+The implementation gate was satisfied for bundled HiGHS 1.15.0 by the generated-binding/header/source audit and compile-gated native provider. System HiGHS 1.9 portable qualification passed; system-native IIS remains explicitly `Unsupported` pending a separate exact header/library matrix. Phase 29 was independently reviewed CLEAR and merged in PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`.
