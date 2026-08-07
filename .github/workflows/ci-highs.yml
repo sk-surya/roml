@@ -35,6 +35,10 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          # ./.github/actions/ci-cache owns Cargo/target caching for this
+          # workflow, including the bundled highs-sys CMake build. Avoid a
+          # second overlapping rust-cache restore/save.
+          cache: false
       - name: CI caches (apt + cargo/highs-sys)
         uses: ./.github/actions/ci-cache
         with:
@@ -44,18 +48,12 @@ jobs:
       - name: Install native deps (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config
-      - name: Install cmake (Windows)
-        if: runner.os == 'Windows'
-        uses: jwlawson/actions-setup-cmake@v2
-      - name: Install ninja (Windows, if missing)
+      - name: Verify native build tools (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
-            choco install ninja --no-progress
-          } else {
-            Write-Output "ninja already present: $(ninja --version)"
-          }
+          cmake --version
+          ninja --version
       - name: Test roml-highs (bundled)
         run: cargo nextest run -p roml-highs --features bundled
       - name: Run doctests
@@ -75,6 +73,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache: false
       - name: CI caches (apt + cargo/highs-sys)
         uses: ./.github/actions/ci-cache
         with:
@@ -91,6 +90,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.85"
+          cache: false
       - name: CI caches (apt + cargo/highs-sys)
         uses: ./.github/actions/ci-cache
         with:
@@ -106,6 +106,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache: false
       - name: CI caches (apt + cargo/highs-sys)
         uses: ./.github/actions/ci-cache
         with:
@@ -120,6 +121,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache: false
       - name: CI caches (apt + cargo/highs-sys)
         uses: ./.github/actions/ci-cache
         with:
@@ -158,6 +160,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache: false
       - name: CI caches (apt + cargo/highs-sys)
         uses: ./.github/actions/ci-cache
         with:
