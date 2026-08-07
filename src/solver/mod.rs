@@ -14,15 +14,22 @@ pub mod conformance;
 pub mod effective_plan;
 pub mod error;
 pub mod facade;
+pub mod infeasibility;
 pub mod options;
 pub mod overlay;
 pub mod plan;
+pub mod reducer;
 pub mod reference;
+pub mod render;
 pub mod request;
 pub mod session;
 
 pub use error::SolveError;
 pub use facade::SolverSession;
+pub use infeasibility::{
+    classify_feasibility, ConflictGuarantee, FeasibilityOutcome, InfeasibilityError,
+    InfeasibilityMode, InfeasibilityPlan, InfeasibilityScope,
+};
 pub use options::SolveOptions;
 pub use plan::{
     HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,

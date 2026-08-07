@@ -5,15 +5,14 @@ description: |
   (including the bundled highs-sys build).
 
   All cache keys compose from the caller's `cache-version` (workflow-level
-  `env.CI_CACHE_VERSION`) — bump that one value to force a full refresh of
-  every cache. The apt key additionally hashes this action file, so adding
-  or removing packages here refreshes the apt caches automatically. The
-  cargo key additionally includes the resolved `rustc` version and the
-  Cargo.lock hash, so a toolchain upgrade or dependency-set change
-  invalidates compiled artifacts without a manual version bump (a rustc
-  change silently invalidates every fingerprint — if the key did not
-  change too, hits would keep serving stale artifacts forever, since
-  exact hits never re-save).
+  `env.CI_CACHE_VERSION`) and cargo `cache-scope`. Bump the version to force
+  a full refresh of every cache; use a distinct scope for jobs with different
+  target/profile/feature outputs so one job cannot freeze an incomplete target
+  snapshot for another. The apt key additionally hashes this action file, so
+  package-set changes refresh the apt caches automatically. The cargo key
+  includes the resolved `rustc` version and Cargo.lock hash, so toolchain or
+  dependency changes invalidate compiled artifacts without serving stale exact
+  hits.
 
 inputs:
   cache-version:
@@ -25,6 +24,14 @@ inputs:
     description: Rust toolchain in use (included in the cargo cache key).
     required: false
     default: stable
+  cache-scope:
+    description: Job/build scope; prevents incomplete target-cache snapshots from colliding.
+    required: false
+    default: shared
+  install-apt:
+    description: Whether to restore/install Linux native packages.
+    required: false
+    default: "true"
   apt-packages:
     description: Space-separated apt packages to install (Linux only).
     required: false
@@ -41,7 +48,7 @@ runs:
     # fallback still runs update — stale lists must never be trusted).
     - name: Restore apt cache
       id: apt-restore
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.install-apt == 'true'
       uses: actions/cache/restore@v6
       with:
         path: /tmp/ci-apt-cache
@@ -50,12 +57,12 @@ runs:
           ${{ runner.os }}-${{ runner.arch }}-apt-${{ inputs.cache-version }}-
 
     - name: Prepare apt cache staging
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.install-apt == 'true'
       shell: bash
       run: mkdir -p /tmp/ci-apt-cache/archives /tmp/ci-apt-cache/lists
 
     - name: Seed apt caches
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.install-apt == 'true'
       shell: bash
       run: |
         sudo mkdir -p /var/cache/apt/archives/partial /var/lib/apt/lists/partial
@@ -69,7 +76,7 @@ runs:
         fi
 
     - name: Install native deps
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.install-apt == 'true'
       shell: bash
       run: |
         if [ "${{ steps.apt-restore.outputs.cache-hit }}" = "true" ] \
@@ -81,12 +88,12 @@ runs:
         sudo apt-get install -y ${{ inputs.apt-packages }}
 
     - name: Collect apt debs
-      if: always() && runner.os == 'Linux'
+      if: always() && runner.os == 'Linux' && inputs.install-apt == 'true'
       shell: bash
       run: sudo cp -n /var/cache/apt/archives/*.deb /tmp/ci-apt-cache/archives/ 2>/dev/null || true
 
     - name: Collect apt lists (only after a clean install)
-      if: ${{ !cancelled() && !failure() && runner.os == 'Linux' }}
+      if: ${{ !cancelled() && !failure() && runner.os == 'Linux' && inputs.install-apt == 'true' }}
       shell: bash
       run: |
         # The root-owned mode-600 `lock` file is EXCLUDED: the cache-save tar
@@ -101,7 +108,7 @@ runs:
       # key collide ("Unable to reserve cache ... another job may be creating
       # this cache"). The winner's cache serves every job on the next run;
       # after a version bump all jobs miss and one of them saves.
-      if: ${{ always() && steps.apt-restore.outputs.cache-hit != 'true' && runner.os == 'Linux' }}
+      if: ${{ always() && steps.apt-restore.outputs.cache-hit != 'true' && runner.os == 'Linux' && inputs.install-apt == 'true' }}
       uses: actions/cache/save@v6
       with:
         path: /tmp/ci-apt-cache
@@ -110,7 +117,7 @@ runs:
     # ─────────────────────── cargo (registry + target) ───────────────────────
     # Caches the dependency downloads AND the compiled artifacts — including
     # the bundled highs-sys build (cmake HiGHS), which is the expensive part.
-    # The exact key includes the RESOLVED rustc version (a toolchain upgrade
+    # The exact key includes the job scope and RESOLVED rustc version (a toolchain upgrade
     # silently invalidates every fingerprint, so the key must change too —
     # otherwise exact hits keep serving stale artifacts forever) and
     # Cargo.lock (dependency-set changes invalidate). The first restore-key
@@ -136,10 +143,10 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.cache-scope }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-
-          ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-
+          ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.cache-scope }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-
+          ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.cache-scope }}-${{ inputs.toolchain }}-
 
     - name: Save cargo cache
       # Only the job that did NOT restore saves (same key-collision rationale
@@ -152,4 +159,4 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ inputs.cache-version }}-${{ inputs.cache-scope }}-${{ inputs.toolchain }}-${{ steps.rustc-version.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}

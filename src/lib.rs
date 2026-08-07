@@ -75,6 +75,16 @@ pub use solver::backend::{
 pub use solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
 };
+pub use solver::infeasibility::ConflictAtomId;
+pub use solver::infeasibility::{
+    AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord,
+    AnalysisWarning, CandidateUniverseSummary, CompiledRestrictionEvidence,
+    ConflictDeclarationSnapshot, ConflictGrouping, ConflictGuarantee, ConflictMember,
+    FeasibilityProofStrength, InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan,
+    InfeasibilityReport, InfeasibilityScope, MarkdownInfeasibilityReport, NativeBoundStatus,
+    NativeConflictEvidence, NativeConflictMember, NativeMembership, ReductionPolicy, SeedPolicy,
+    TextInfeasibilityReport,
+};
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };
@@ -90,7 +100,8 @@ pub use solver::session::{
     Synchronization,
 };
 pub use solver::{
-    LpAlgorithm, SolveError, SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
+    classify_feasibility, FeasibilityOutcome, InfeasibilityError, LpAlgorithm, SolveError,
+    SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
 };
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;

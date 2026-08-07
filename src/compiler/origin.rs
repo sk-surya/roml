@@ -12,6 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::construct::Construct;
 use crate::identity::IdentityOverflow;
 use crate::model::{Constraint, Objective, Variable};
+use crate::solver::infeasibility::{
+    CompiledRestrictionRef, ConflictAtomId, InfeasibilityError, SemanticConflictUniverse,
+    SemanticRestrictionAtom,
+};
 
 use super::backend_ir::{
     CompiledConstraintId, CompiledEntityRef, CompiledLinearRow, CompiledObjective,
@@ -347,5 +351,86 @@ impl OriginMap {
             }
         }
         missing
+    }
+}
+
+/// Restriction-level origin map keyed by one exact compiled state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestrictionOriginMap {
+    compilation_id: crate::compiler::backend_ir::CompilationId,
+    atoms: HashMap<ConflictAtomId, SemanticRestrictionAtom>,
+    compiled: HashMap<CompiledRestrictionRef, Vec<ConflictAtomId>>,
+}
+
+impl RestrictionOriginMap {
+    /// Build a restriction map from a complete semantic universe.
+    pub fn new(universe: &SemanticConflictUniverse) -> Result<Self, InfeasibilityError> {
+        let mut atoms = HashMap::new();
+        let mut compiled: HashMap<CompiledRestrictionRef, Vec<ConflictAtomId>> = HashMap::new();
+        for atom in &universe.atoms {
+            if atoms.insert(atom.id, atom.clone()).is_some() {
+                return Err(InfeasibilityError::InvalidUniverse {
+                    reason: format!("duplicate conflict atom {:?}", atom.id),
+                });
+            }
+            for member in &atom.compiled_restrictions {
+                compiled.entry(*member).or_default().push(atom.id);
+            }
+        }
+        Ok(Self {
+            compilation_id: universe.compilation_id,
+            atoms,
+            compiled,
+        })
+    }
+
+    /// Exact compilation identity guarded by this map.
+    pub fn compilation_id(&self) -> crate::compiler::backend_ir::CompilationId {
+        self.compilation_id
+    }
+
+    /// Map compiled membership to all semantic contribution atoms after an
+    /// exact identity check. Multiple atoms are valid when a later bound layer
+    /// (for example a persistent fixing) contributes to the same compiled
+    /// lower/upper bound as its declared predecessor.
+    pub fn map_compiled(
+        &self,
+        compilation_id: crate::compiler::backend_ir::CompilationId,
+        member: CompiledRestrictionRef,
+    ) -> Result<Vec<ConflictAtomId>, InfeasibilityError> {
+        self.require_compilation(compilation_id)?;
+        self.compiled
+            .get(&member)
+            .cloned()
+            .ok_or_else(|| InfeasibilityError::InvalidUniverse {
+                reason: format!("compiled restriction {:?} is not mapped", member),
+            })
+    }
+
+    /// Resolve a semantic atom after an exact identity check.
+    pub fn atom(
+        &self,
+        compilation_id: crate::compiler::backend_ir::CompilationId,
+        id: ConflictAtomId,
+    ) -> Result<&SemanticRestrictionAtom, InfeasibilityError> {
+        self.require_compilation(compilation_id)?;
+        self.atoms
+            .get(&id)
+            .ok_or_else(|| InfeasibilityError::InvalidUniverse {
+                reason: format!("unknown conflict atom {:?}", id),
+            })
+    }
+
+    fn require_compilation(
+        &self,
+        actual: crate::compiler::backend_ir::CompilationId,
+    ) -> Result<(), InfeasibilityError> {
+        if actual != self.compilation_id {
+            return Err(InfeasibilityError::CompilationMismatch {
+                expected: self.compilation_id,
+                actual,
+            });
+        }
+        Ok(())
     }
 }
