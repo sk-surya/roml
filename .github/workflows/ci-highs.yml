@@ -43,8 +43,12 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: bundled-test
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+          fallback: none
       - name: Install native deps (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config
@@ -55,14 +59,14 @@ jobs:
           cmake --version
           ninja --version
       - name: Test roml-highs (bundled)
-        run: cargo nextest run -p roml-highs --features bundled
+        run: cargo nextest run -p roml-highs --features bundled --locked
       - name: Run doctests
-        run: cargo test -p roml-highs --features bundled --doc
+        run: cargo test -p roml-highs --features bundled --doc --locked
       - name: Run showcase examples
         shell: bash # the loop is bash syntax; the default pwsh on Windows cannot parse it
         run: |
           for ex in pwl_production_planning warm_start_mip overlay_solve constructs; do
-            cargo run -q -p roml-highs --features bundled --example "$ex"
+            cargo run -q -p roml-highs --features bundled --example "$ex" --locked
           done
 
   lint:
@@ -78,9 +82,10 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: lint
       - run: cargo fmt --all -- --check
-      - run: cargo clippy -p roml-highs --all-targets --features bundled -- -D warnings
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc -p roml-highs --no-deps --features bundled
+      - run: cargo clippy -p roml-highs --all-targets --features bundled --locked -- -D warnings
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc -p roml-highs --no-deps --features bundled --locked
 
   msrv:
     name: MSRV (HiGHS, 1.85)
@@ -96,7 +101,8 @@ jobs:
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
           toolchain: "1.85"
-      - run: cargo check -p roml-highs --features bundled
+          cache-scope: msrv
+      - run: cargo check -p roml-highs --features bundled --locked
 
   feature-exclusivity:
     name: Feature exclusivity
@@ -111,7 +117,21 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
-      - run: "! cargo check -p roml-highs --features bundled,system 2>&1"
+          cache-scope: feature-exclusivity
+          install-apt: "false"
+      - name: Reject mutually exclusive features
+        shell: bash
+        run: |
+          log_file="${RUNNER_TEMP}/roml-highs-feature-exclusivity.log"
+          set +e
+          cargo check -p roml-highs --no-default-features --features bundled,system --locked >"${log_file}" 2>&1
+          status=$?
+          set -e
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::bundled and system features unexpectedly compiled together"
+            exit 1
+          fi
+          grep -F 'features `bundled` and `system` are mutually exclusive' "${log_file}"
 
   system:
     name: Test (system, ubuntu)
@@ -126,8 +146,12 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: system
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+          fallback: none
       - name: Set HiGHS install prefix
         run: echo "HIGHS_PREFIX=$HOME/highs-install" >> "$GITHUB_ENV"
       - name: Cache HiGHS 1.9.0 install
@@ -150,7 +174,7 @@ jobs:
         env:
           PKG_CONFIG_PATH: ${{ env.HIGHS_PREFIX }}/lib/pkgconfig
           LD_LIBRARY_PATH: ${{ env.HIGHS_PREFIX }}/lib
-        run: cargo nextest run -p roml-highs --no-default-features --features system
+        run: cargo nextest run -p roml-highs --no-default-features --features system --locked
 
   package:
     name: Package verification
@@ -165,6 +189,7 @@ jobs:
         uses: ./.github/actions/ci-cache
         with:
           cache-version: ${{ env.CI_CACHE_VERSION }}
+          cache-scope: package
       - run: cargo package -p roml --locked
       - name: Packed consumer test (roml)
         run: |
@@ -172,5 +197,5 @@ jobs:
           mkdir -p /tmp/packed-test && cd /tmp/packed-test
           tar xzf "$GITHUB_WORKSPACE/target/package/roml-${VERSION}.crate"
           cd "roml-${VERSION}"
-          cargo check
-      - run: cargo check -p roml-highs --features bundled
+          cargo check --locked
+      - run: cargo check -p roml-highs --features bundled --locked

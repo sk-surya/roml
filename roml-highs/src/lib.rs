@@ -58,7 +58,8 @@
 //! - `bundled` (default): Builds HiGHS from source via `highs-sys`'s cmake.
 //! - `system`: Discovers a system-installed HiGHS library.
 
-/// Ensure bundled and system features are mutually exclusive.
+// Ensure bundled and system features are mutually exclusive if the build
+// script cannot reject the combination before dependency compilation.
 #[cfg(all(feature = "bundled", feature = "system"))]
 compile_error!("features `bundled` and `system` are mutually exclusive; activate at most one");
 

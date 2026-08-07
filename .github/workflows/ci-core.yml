@@ -35,27 +35,32 @@ jobs:
 
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-${{ matrix.os }}-test-v2
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+          fallback: none
 
       - name: Formatting check
         run: cargo fmt --all -- --check
 
       - name: Compile check (all targets)
-        run: cargo check -p roml --all-targets
+        run: cargo check -p roml --all-targets --locked
 
       - name: Clippy lint check
-        run: cargo clippy -p roml --all-targets -- -D warnings
+        run: cargo clippy -p roml --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo nextest run -p roml --all-targets
+        run: cargo nextest run -p roml --all-targets --locked
 
       - name: Run doctests
-        run: cargo test -p roml --doc
+        run: cargo test -p roml --doc --locked
 
       - name: Documentation check (no-deps)
-        run: cargo doc -p roml --no-deps
+        run: cargo doc -p roml --no-deps --locked
         env:
           RUSTDOCFLAGS: '-D warnings'
 
@@ -76,26 +81,31 @@ jobs:
 
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-msrv-v2
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+          fallback: none
 
       - name: Formatting check
         run: cargo fmt --all -- --check
 
       - name: Compile check
-        run: cargo check -p roml --all-targets
+        run: cargo check -p roml --all-targets --locked
 
       - name: Clippy
-        run: cargo clippy -p roml --all-targets -- -D warnings
+        run: cargo clippy -p roml --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo nextest run -p roml --all-targets
+        run: cargo nextest run -p roml --all-targets --locked
 
       - name: Run doctests
-        run: cargo test -p roml --doc
+        run: cargo test -p roml --doc --locked
 
       - name: Documentation
-        run: cargo doc -p roml --no-deps
+        run: cargo doc -p roml --no-deps --locked
         env:
           RUSTDOCFLAGS: '-D warnings'
