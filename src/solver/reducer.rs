@@ -246,6 +246,11 @@ fn limited_check<O: crate::solver::infeasibility::FeasibilityOracle>(
     max_oracle_calls: Option<u64>,
     exhausted: &mut bool,
 ) -> Result<Option<FeasibilityOutcome>, InfeasibilityError> {
+    if !fresh {
+        if let Some(cached) = session.cached_check(selection)? {
+            return Ok(Some(cached));
+        }
+    }
     if !max_oracle_calls
         .map(|limit| session.oracle_calls() < limit)
         .unwrap_or(true)

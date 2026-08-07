@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use roml::prelude::*;
 use roml::{
-    ConflictGuarantee, ContinuousLock, InfeasibilityMode, InfeasibilityOutcome, InfeasibilityPlan,
-    InfeasibilityScope, LockSelector, MinMaxRelation, MinMaxSense, PrimalAssignment, SolutionLock,
-    SolveStatus, SolverSession,
+    AnalysisCompletion, ConflictGuarantee, ContinuousLock, InfeasibilityMode, InfeasibilityOutcome,
+    InfeasibilityPlan, InfeasibilityScope, LockSelector, MinMaxRelation, MinMaxSense,
+    PrimalAssignment, SolutionLock, SolveStatus, SolverSession,
 };
 use roml_highs::HighsSession;
 
@@ -104,6 +104,7 @@ fn full_universe_seed_policy_does_not_invoke_native_seeding() {
         .any(|provider| provider.name.contains("native IIS")));
 }
 
+#[cfg(feature = "bundled")]
 #[test]
 fn native_then_roml_honors_native_mode_with_a_full_universe_seed_policy() {
     let model = contradictory_lp();
@@ -123,6 +124,22 @@ fn native_then_roml_honors_native_mode_with_a_full_universe_seed_policy() {
         .provider_chain
         .iter()
         .any(|provider| provider.name == "ROML semantic reducer"));
+}
+
+#[cfg(feature = "system")]
+#[test]
+fn system_native_iis_remains_explicitly_unsupported() {
+    let model = contradictory_lp();
+    let mut session = SolverSession::new(HighsSession::try_new().expect("system HiGHS"));
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.mode = InfeasibilityMode::NativeOnly;
+    let error = session
+        .analyze_infeasibility(&model, &plan)
+        .expect_err("unqualified system native IIS must be rejected");
+    assert!(matches!(
+        error,
+        roml::advanced::InfeasibilityError::Unsupported { .. }
+    ));
 }
 
 #[test]
@@ -222,6 +239,11 @@ fn oracle_call_budget_includes_the_authoritative_full_universe_check() {
             .expect("oracle-call budgeting must never panic")
             .expect("budgeted analysis should return a typed report");
         assert!(analysis.statistics.oracle_calls <= limit);
+        if limit == 1 {
+            assert_eq!(analysis.outcome, InfeasibilityOutcome::Conflict);
+            assert_eq!(analysis.guarantee, ConflictGuarantee::InfeasibleSubsystem);
+            assert_eq!(analysis.completion, AnalysisCompletion::OracleCallLimit);
+        }
     }
 }
 

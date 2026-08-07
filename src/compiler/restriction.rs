@@ -195,11 +195,23 @@ impl SemanticConflictUniverse {
                 .ok_or_else(|| InfeasibilityError::InvalidUniverse {
                     reason: format!("compiled variable {:?} has no semantic origin", variable.id),
                 })?;
+            let user_variable = match &origin {
+                EntityOrigin::UserVariable(variable) => Some(*variable),
+                _ => None,
+            };
             if grouping == ConflictGrouping::Semantic
                 && variable.bounds.lower.is_finite()
                 && variable.bounds.upper.is_finite()
                 && variable.bounds.lower == variable.bounds.upper
                 && matches!(origin, EntityOrigin::UserVariable(_))
+                && !user_variable.is_some_and(|variable| {
+                    canonical.is_some_and(|snapshot| {
+                        snapshot
+                            .variables
+                            .iter()
+                            .any(|candidate| candidate.id == variable && candidate.fixing.is_some())
+                    })
+                })
             {
                 push_variable_equality(
                     &mut atoms,

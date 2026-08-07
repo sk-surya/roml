@@ -4,7 +4,8 @@ use roml::advanced::{
     BackendCapabilitySet, BackendFeature, BackendSnapshotBuilder, BoundContributionStack,
     BoundLayerSource, CompilationPolicy, CompilationSession, CompiledConstraintId,
     CompiledLinearRow, CompiledVariable, CompiledVariableId, ConflictAtomKind, ConflictGrouping,
-    EntityOrigin, FeatureSupport, OriginMap, RestrictionOriginMap, SemanticConflictUniverse,
+    ConflictOrigin, EntityOrigin, FeatureSupport, OriginMap, RestrictionOriginMap,
+    SemanticConflictUniverse,
 };
 use roml::{Bounds, ConstraintBounds, InfeasibilityScope, Model, VarId, VarType};
 
@@ -179,4 +180,85 @@ fn disabling_a_bound_layer_restores_its_predecessor() {
     assert_eq!(stack.current(), Bounds::new(2.0, 8.0));
     stack.disable(roml::ConflictAtomId(1)).unwrap();
     assert_eq!(stack.current(), Bounds::new(0.0, 10.0));
+}
+
+#[test]
+fn semantic_default_keeps_declared_bounds_below_persistent_fixing() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    model.fix(x, 1.0).unwrap();
+    let canonical = model.take_snapshot().unwrap();
+
+    let mut capabilities = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        capabilities.set(feature, FeatureSupport::native(Default::default()));
+    }
+    let mut compiler = CompilationSession::new();
+    let snapshot = compiler
+        .compile_snapshot(
+            model.instance(),
+            &canonical,
+            &CompilationPolicy::Auto,
+            &capabilities,
+        )
+        .unwrap();
+    let universe = SemanticConflictUniverse::from_model_snapshot(
+        &snapshot,
+        &canonical,
+        InfeasibilityScope::OriginalLp,
+        ConflictGrouping::Semantic,
+    )
+    .unwrap();
+
+    let base_bounds: Vec<_> = universe
+        .atoms
+        .iter()
+        .filter_map(|atom| match atom.origin {
+            ConflictOrigin::VariableBound { variable, .. } if variable == x => {
+                Some(atom.snapshot.value)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(base_bounds, vec![Some(0.0), Some(10.0)]);
+    assert!(!universe.atoms.iter().any(|atom| {
+        matches!(
+            atom.origin,
+            ConflictOrigin::VariableEquality { variable } if variable == x
+        )
+    }));
+    let fixing = universe
+        .atoms
+        .iter()
+        .find(|atom| {
+            matches!(
+                atom.origin,
+                ConflictOrigin::PersistentFixing { variable } if variable == x
+            )
+        })
+        .expect("persistent fixing atom");
+    let selected_without_fixing: Vec<_> = universe
+        .atoms
+        .iter()
+        .filter(|atom| atom.id != fixing.id)
+        .map(|atom| atom.id)
+        .collect();
+    let selected_values: Vec<_> = universe
+        .atoms
+        .iter()
+        .filter(|atom| selected_without_fixing.contains(&atom.id))
+        .flat_map(|atom| atom.restriction_values.iter().copied())
+        .collect();
+    assert!(selected_values.iter().any(|(_, value)| *value == Some(0.0)));
+    assert!(selected_values
+        .iter()
+        .any(|(_, value)| *value == Some(10.0)));
 }

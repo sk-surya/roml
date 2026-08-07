@@ -763,6 +763,33 @@ impl<O: FeasibilityOracle> AnalysisSession<O> {
         selection: &RestrictionSelection,
         budget: &OracleBudget,
     ) -> Result<FeasibilityOutcome, InfeasibilityError> {
+        let key = self.cache_key(selection)?;
+        if let Some(cached) = self.cache.get(&key) {
+            return Ok(cached.clone());
+        }
+        let outcome = self.oracle.check(selection, budget).map_err(|error| {
+            self.health = AnalysisSessionHealth::RequiresRebuild;
+            self.cache.clear();
+            InfeasibilityError::Backend(error)
+        })?;
+        self.oracle_calls += 1;
+        self.cache.insert(key, outcome.clone());
+        Ok(outcome)
+    }
+
+    /// Return an exact cached result without consuming an oracle-call budget.
+    pub(crate) fn cached_check(
+        &self,
+        selection: &RestrictionSelection,
+    ) -> Result<Option<FeasibilityOutcome>, InfeasibilityError> {
+        let key = self.cache_key(selection)?;
+        Ok(self.cache.get(&key).cloned())
+    }
+
+    fn cache_key(
+        &self,
+        selection: &RestrictionSelection,
+    ) -> Result<OracleCacheKey, InfeasibilityError> {
         if self.health != AnalysisSessionHealth::Ready {
             return Err(InfeasibilityError::Unsupported {
                 operation: "analysis session requires snapshot rebuild".to_string(),
@@ -783,24 +810,13 @@ impl<O: FeasibilityOracle> AnalysisSession<O> {
                 reason: "selection contains an atom outside the exact universe".to_string(),
             });
         }
-        let key = OracleCacheKey {
+        Ok(OracleCacheKey {
             compilation_id: self.compilation_id,
             universe_atoms: self.atom_ids.clone(),
             grouping: self.grouping,
             atom_ids: selection.atom_ids.clone(),
             tolerance_bits: self.numerical_policy.feasibility_tolerance.to_bits(),
-        };
-        if let Some(cached) = self.cache.get(&key) {
-            return Ok(cached.clone());
-        }
-        let outcome = self.oracle.check(selection, budget).map_err(|error| {
-            self.health = AnalysisSessionHealth::RequiresRebuild;
-            self.cache.clear();
-            InfeasibilityError::Backend(error)
-        })?;
-        self.oracle_calls += 1;
-        self.cache.insert(key, outcome.clone());
-        Ok(outcome)
+        })
     }
 
     /// Run a check against the backend without reusing a cached outcome.
@@ -1304,9 +1320,6 @@ fn completion_for_analysis(
     oracle_calls: u64,
     max_oracle_calls: Option<u64>,
 ) -> AnalysisCompletion {
-    if max_oracle_calls.is_some_and(|limit| oracle_calls >= limit) {
-        return AnalysisCompletion::OracleCallLimit;
-    }
     match full_outcome {
         Some(FeasibilityOutcome::Unknown(UnknownReason::TimeLimit)) => {
             AnalysisCompletion::TimeLimit
@@ -1327,6 +1340,9 @@ fn completion_for_analysis(
             AnalysisCompletion::BackendFailure
         }
         Some(FeasibilityOutcome::Unknown(_)) => AnalysisCompletion::BackendFailure,
+        _ if max_oracle_calls.is_some_and(|limit| oracle_calls >= limit) => {
+            AnalysisCompletion::OracleCallLimit
+        }
         _ => AnalysisCompletion::Complete,
     }
 }
@@ -1364,4 +1380,26 @@ fn report_members(
         .collect();
     members.sort_by_key(|member| member.atom_id);
     members
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_preserves_backend_unknown_reason_over_budget_exhaustion() {
+        let time_limited = FeasibilityOutcome::Unknown(UnknownReason::TimeLimit);
+        assert_eq!(
+            completion_for_analysis(Some(&time_limited), 1, Some(1)),
+            AnalysisCompletion::TimeLimit
+        );
+
+        let proven_infeasible = FeasibilityOutcome::ProvenInfeasible(InfeasibilityEvidence {
+            termination: TerminationStatus::Infeasible,
+        });
+        assert_eq!(
+            completion_for_analysis(Some(&proven_infeasible), 1, Some(1)),
+            AnalysisCompletion::OracleCallLimit
+        );
+    }
 }
