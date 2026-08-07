@@ -199,19 +199,63 @@ impl SemanticConflictUniverse {
                 EntityOrigin::UserVariable(variable) => Some(*variable),
                 _ => None,
             };
+            let canonical_fixing = user_variable.and_then(|user_variable| {
+                canonical.and_then(|snapshot| {
+                    snapshot.variables.iter().find(|candidate| {
+                        candidate.id == user_variable && candidate.fixing.is_some()
+                    })
+                })
+            });
+            if let Some(declared) = canonical_fixing {
+                if grouping == ConflictGrouping::Semantic
+                    && declared.bounds.lower.is_finite()
+                    && declared.bounds.upper.is_finite()
+                    && declared.bounds.lower == declared.bounds.upper
+                {
+                    push_variable_equality(
+                        &mut atoms,
+                        &mut compiled_restrictions,
+                        origin,
+                        CompiledRestrictionRef::VariableLower(variable.id),
+                        CompiledRestrictionRef::VariableUpper(variable.id),
+                        variable.name.clone(),
+                        declared.bounds.lower,
+                    )?;
+                } else {
+                    if declared.bounds.lower.is_finite() {
+                        push_restriction(
+                            &mut atoms,
+                            &mut compiled_restrictions,
+                            &mut grouped,
+                            grouping,
+                            ConflictAtomKind::VariableBound(BoundSide::Lower),
+                            origin,
+                            CompiledRestrictionRef::VariableLower(variable.id),
+                            variable.name.clone(),
+                            Some(declared.bounds.lower),
+                        )?;
+                    }
+                    if declared.bounds.upper.is_finite() {
+                        push_restriction(
+                            &mut atoms,
+                            &mut compiled_restrictions,
+                            &mut grouped,
+                            grouping,
+                            ConflictAtomKind::VariableBound(BoundSide::Upper),
+                            origin,
+                            CompiledRestrictionRef::VariableUpper(variable.id),
+                            variable.name.clone(),
+                            Some(declared.bounds.upper),
+                        )?;
+                    }
+                }
+                continue;
+            }
             if grouping == ConflictGrouping::Semantic
                 && variable.bounds.lower.is_finite()
                 && variable.bounds.upper.is_finite()
                 && variable.bounds.lower == variable.bounds.upper
                 && matches!(origin, EntityOrigin::UserVariable(_))
-                && !user_variable.is_some_and(|variable| {
-                    canonical.is_some_and(|snapshot| {
-                        snapshot
-                            .variables
-                            .iter()
-                            .any(|candidate| candidate.id == variable && candidate.fixing.is_some())
-                    })
-                })
             {
                 push_variable_equality(
                     &mut atoms,

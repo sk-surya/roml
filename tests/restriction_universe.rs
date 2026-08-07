@@ -262,3 +262,93 @@ fn semantic_default_keeps_declared_bounds_below_persistent_fixing() {
         .iter()
         .any(|(_, value)| *value == Some(10.0)));
 }
+
+fn persistent_fixing_universe(declared: Bounds, fixing: f64) -> (SemanticConflictUniverse, VarId) {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(declared.lower, declared.upper))
+        .unwrap();
+    model.fix(x, fixing).unwrap();
+    let canonical = model.take_snapshot().unwrap();
+
+    let mut capabilities = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::Mip,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        capabilities.set(feature, FeatureSupport::native(Default::default()));
+    }
+    let mut compiler = CompilationSession::new();
+    let snapshot = compiler
+        .compile_snapshot(
+            model.instance(),
+            &canonical,
+            &CompilationPolicy::Auto,
+            &capabilities,
+        )
+        .unwrap();
+    (
+        SemanticConflictUniverse::from_model_snapshot(
+            &snapshot,
+            &canonical,
+            InfeasibilityScope::OriginalLp,
+            ConflictGrouping::Semantic,
+        )
+        .unwrap(),
+        x,
+    )
+}
+
+#[test]
+fn declared_equality_plus_fixing_keeps_one_equality_base_atom() {
+    let (universe, x) = persistent_fixing_universe(Bounds::new(3.0, 3.0), 3.0);
+    let variable_atoms: Vec<_> = universe
+        .atoms
+        .iter()
+        .filter(|atom| {
+            matches!(
+                atom.origin,
+                ConflictOrigin::VariableEquality { variable }
+                    | ConflictOrigin::VariableBound { variable, .. }
+                    | ConflictOrigin::PersistentFixing { variable }
+                    if variable == x
+            )
+        })
+        .collect();
+    assert_eq!(variable_atoms.len(), 2);
+    assert!(matches!(
+        variable_atoms[0].origin,
+        ConflictOrigin::VariableEquality { variable } if variable == x
+    ));
+    assert!(matches!(
+        variable_atoms[1].origin,
+        ConflictOrigin::PersistentFixing { variable } if variable == x
+    ));
+}
+
+#[test]
+fn unbounded_declaration_plus_fixing_has_no_phantom_bound_atoms() {
+    let (universe, x) =
+        persistent_fixing_universe(Bounds::new(f64::NEG_INFINITY, f64::INFINITY), 1.0);
+    let variable_atoms: Vec<_> = universe
+        .atoms
+        .iter()
+        .filter(|atom| {
+            matches!(
+                atom.origin,
+                ConflictOrigin::VariableEquality { variable }
+                    | ConflictOrigin::VariableBound { variable, .. }
+                    | ConflictOrigin::PersistentFixing { variable }
+                    if variable == x
+            )
+        })
+        .collect();
+    assert_eq!(variable_atoms.len(), 1);
+    assert!(matches!(
+        variable_atoms[0].origin,
+        ConflictOrigin::PersistentFixing { variable } if variable == x
+    ));
+}
