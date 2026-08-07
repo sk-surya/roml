@@ -76,6 +76,12 @@ pub use solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
 };
 pub use solver::infeasibility::ConflictAtomId;
+pub use solver::infeasibility::{
+    AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord, AnalysisWarning,
+    CandidateUniverseSummary, CompiledRestrictionEvidence, ConflictDeclarationSnapshot,
+    ConflictMember, FeasibilityProofStrength, InfeasibilityOutcome, InfeasibilityReport,
+    MarkdownInfeasibilityReport, NativeConflictEvidence, TextInfeasibilityReport,
+};
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };

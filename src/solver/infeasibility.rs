@@ -423,13 +423,31 @@ pub struct AnalysisProviderRecord {
 pub struct CandidateUniverseSummary {
     /// Number of semantic candidate atoms.
     pub atom_count: usize,
+    /// Grouping used to form candidate atoms.
+    pub grouping: ConflictGrouping,
 }
 
 /// One semantic conflict member.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConflictMember {
     /// Stable semantic atom identifier.
     pub atom_id: ConflictAtomId,
+    /// Historical semantic declaration snapshot.
+    pub declaration: ConflictDeclarationSnapshot,
+    /// Compiled references retained as technical evidence.
+    pub compiled_evidence: Vec<CompiledRestrictionEvidence>,
+}
+
+/// Historical semantic declaration retained by a report.
+pub type ConflictDeclarationSnapshot = ConflictMemberSnapshot;
+
+/// One compiled restriction reference retained as report evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledRestrictionEvidence {
+    /// Compiled restriction reference.
+    pub reference: CompiledRestrictionRef,
+    /// Whether native evidence included this reference.
+    pub native_member: bool,
 }
 
 /// Native membership evidence retained without promoting its guarantee.
@@ -444,6 +462,10 @@ pub struct NativeConflictEvidence {
 pub struct InfeasibilityStatistics {
     /// Number of oracle calls.
     pub oracle_calls: u64,
+    /// Number of reducer iterations.
+    pub iterations: u64,
+    /// Number of fresh verifier checks.
+    pub fresh_verification_checks: u64,
 }
 
 /// Warning retained in a report.
