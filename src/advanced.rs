@@ -119,13 +119,15 @@ pub use crate::solver::effective_plan::{
 /// LP infeasibility analysis contracts for backend authors.
 pub use crate::solver::infeasibility::{
     classify_feasibility, AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy,
-    AnalysisProviderRecord, AnalysisWarning, CandidateUniverseSummary, CompiledRestrictionRef,
-    ConflictAtomId, ConflictGrouping, ConflictGuarantee, ConflictMember, FeasibilityEvidence,
-    FeasibilityOracle, FeasibilityOutcome, FeasibilityProofStrength, InfeasibilityError,
-    InfeasibilityMode, InfeasibilityPlan, InfeasibilityReport, InfeasibilityScope,
-    InfeasibilityStatistics, MarkdownInfeasibilityReport, NativeConflict, NativeConflictEvidence,
-    NativeConflictRequest, ReductionPolicy, RestrictionSelection, SeedPolicy,
-    SemanticConflictUniverse, SemanticRestrictionAtom, TextInfeasibilityReport, UnknownReason,
+    AnalysisProviderRecord, AnalysisWarning, BoundSide, CandidateUniverseSummary,
+    CompiledRestrictionRef, ConflictAtomId, ConflictAtomKind, ConflictGrouping, ConflictGuarantee,
+    ConflictMember, ConflictMemberSnapshot, ConflictOrigin, FeasibilityEvidence, FeasibilityOracle,
+    FeasibilityOutcome, FeasibilityProofStrength, InfeasibilityError, InfeasibilityMode,
+    InfeasibilityPlan, InfeasibilityReport, InfeasibilityScope, InfeasibilityStatistics,
+    MarkdownInfeasibilityReport, NativeConflict, NativeConflictEvidence, NativeConflictRequest,
+    OracleBudget, ReductionPolicy, RestrictionSelection, RestrictionToggleAction,
+    RestrictionTogglePlan, SeedPolicy, SemanticConflictUniverse, SemanticRestrictionAtom,
+    TextInfeasibilityReport, UnknownReason,
 };
 
 /// Raw opaque entity IDs and the generation counter.
@@ -158,8 +160,9 @@ pub use crate::compiler::{
         BackendCapabilitySet, BackendFeature, CompilationPolicy, FeatureLimitations,
         FeatureSupport, SupportLevel,
     },
-    origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId},
+    origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId, RestrictionOriginMap},
     report::{BackendIdentity, CompilationReport, FormulationDecision},
+    restriction,
     session::CompilationSession,
     CompileError,
 };
@@ -168,7 +171,8 @@ pub use crate::compiler::{
 /// Task 15; design §9, SM-13). The construct-aware `UnboundedBigM` marker is
 /// crate-private — bridges surface it as `CompileError::UnboundedBigM`.
 pub use crate::compiler::bounds::{
-    BigMImplication, BigMRequest, BoundAnalyzer, BoundError, BoundSource, BoundTrace, Interval,
+    BigMImplication, BigMRequest, BoundAnalyzer, BoundContribution, BoundContributionStack,
+    BoundError, BoundLayerSource, BoundSource, BoundStackError, BoundTrace, Interval,
 };
 
 /// Bridge contract and finalizer (P32 Task 15; design §8.5, SM-13.5).

@@ -5,10 +5,14 @@
 
 use std::fmt;
 
-use crate::compiler::backend_ir::{BackendSnapshot, CompilationId};
+use crate::compiler::backend_ir::{
+    BackendSnapshot, CompilationId, CompiledConstraintId, CompiledEntityRef, CompiledVariableId,
+};
+use crate::compiler::origin::{EntityOrigin, GeneratedRole};
 use crate::compiler::report::BackendIdentity;
+use crate::construct::Construct;
 use crate::identity::{ModelInstanceId, ModelLineageId};
-use crate::model::Model;
+use crate::model::{Constraint, Model, Variable};
 use crate::revision::ModelRevision;
 use crate::solver::backend::{BackendError, TerminationStatus};
 
@@ -161,6 +165,110 @@ pub enum UnknownReason {
     Unclassified,
 }
 
+/// Which side of a two-sided semantic restriction is represented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BoundSide {
+    /// Lower side.
+    Lower,
+    /// Upper side.
+    Upper,
+}
+
+/// Semantic class of one conflict atom.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConflictAtomKind {
+    /// One side of a user constraint.
+    ConstraintSide(BoundSide),
+    /// One variable bound side.
+    VariableBound(BoundSide),
+    /// A persistent fixing contribution.
+    PersistentFixing,
+    /// A solve-scoped lock contribution.
+    SolveLock,
+    /// A temporary fixing contribution.
+    TemporaryFixing,
+    /// A grouped generated semantic construct.
+    GroupedConstruct,
+    /// Reserved function-in-set semantic member for later nonlinear work.
+    FunctionInSet,
+}
+
+/// Original semantic origin of one restriction atom.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConflictOrigin {
+    /// A user constraint side.
+    ConstraintSide {
+        /// User constraint.
+        constraint: Constraint,
+        /// Side represented.
+        side: BoundSide,
+    },
+    /// A user variable bound side.
+    VariableBound {
+        /// User variable.
+        variable: Variable,
+        /// Side represented.
+        side: BoundSide,
+    },
+    /// A persistent fixing on a variable.
+    PersistentFixing {
+        /// User variable.
+        variable: Variable,
+    },
+    /// A solve lock on a variable.
+    SolveLock {
+        /// User variable.
+        variable: Variable,
+    },
+    /// A temporary fixing on a variable.
+    TemporaryFixing {
+        /// User variable.
+        variable: Variable,
+    },
+    /// A generated restriction grouped under one semantic construct.
+    GroupedConstruct {
+        /// Semantic construct.
+        construct: Construct,
+        /// Generated role.
+        role: GeneratedRole,
+    },
+    /// A future function-in-set member.
+    FunctionInSet {
+        /// Function-in-set origin.
+        origin: EntityOrigin,
+    },
+}
+
+/// Immutable historical values retained for one conflict member.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConflictMemberSnapshot {
+    /// Semantic origin.
+    pub origin: ConflictOrigin,
+    /// Optional source name.
+    pub name: Option<String>,
+    /// Bound value represented by this member, when applicable.
+    pub value: Option<f64>,
+}
+
+/// Action used to toggle one semantic restriction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestrictionToggleAction {
+    /// Disable the atom from the isolated analysis session.
+    Disable,
+    /// Restore the atom and its lower bound contribution layer.
+    Restore,
+}
+
+/// Exact toggle operation for one semantic atom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestrictionTogglePlan {
+    /// Atom affected by the operation.
+    pub atom_id: ConflictAtomId,
+    /// Operation to apply.
+    pub action: RestrictionToggleAction,
+}
+
 /// The only outcomes an isolated feasibility oracle may return.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
@@ -217,6 +325,11 @@ pub enum InfeasibilityError {
     },
     /// A backend operation failed.
     Backend(BackendError),
+    /// The compiled snapshot cannot produce a complete semantic universe.
+    InvalidUniverse {
+        /// Why the universe is invalid.
+        reason: String,
+    },
 }
 
 impl fmt::Display for InfeasibilityError {
@@ -232,6 +345,9 @@ impl fmt::Display for InfeasibilityError {
                 )
             }
             Self::Backend(error) => error.fmt(f),
+            Self::InvalidUniverse { reason } => {
+                write!(f, "invalid semantic conflict universe: {reason}")
+            }
         }
     }
 }
@@ -379,10 +495,21 @@ pub struct ConflictAtomId(pub u64);
 
 /// Reference to one compiled restriction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CompiledRestrictionRef(pub u64);
+pub enum CompiledRestrictionRef {
+    /// Lower side of a compiled row.
+    ConstraintLower(CompiledConstraintId),
+    /// Upper side of a compiled row.
+    ConstraintUpper(CompiledConstraintId),
+    /// Lower bound side of a compiled variable.
+    VariableLower(CompiledVariableId),
+    /// Upper bound side of a compiled variable.
+    VariableUpper(CompiledVariableId),
+    /// A compiled entity generated by a grouped semantic construct.
+    Entity(CompiledEntityRef),
+}
 
 /// Semantic restriction universe used by a reducer and oracle.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SemanticConflictUniverse {
     /// Exact compiled state this universe belongs to.
     pub compilation_id: CompilationId,
@@ -395,12 +522,22 @@ pub struct SemanticConflictUniverse {
 }
 
 /// One semantically toggleable restriction atom.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SemanticRestrictionAtom {
     /// Stable atom identifier.
     pub id: ConflictAtomId,
+    /// Semantic class.
+    pub kind: ConflictAtomKind,
+    /// Original semantic origin.
+    pub origin: ConflictOrigin,
     /// Compiled restrictions covered by this atom.
     pub compiled_restrictions: Vec<CompiledRestrictionRef>,
+    /// Disable operation.
+    pub disable: RestrictionTogglePlan,
+    /// Restore operation.
+    pub restore: RestrictionTogglePlan,
+    /// Historical member data.
+    pub snapshot: ConflictMemberSnapshot,
 }
 
 /// Selection of atoms to retain for one oracle check.

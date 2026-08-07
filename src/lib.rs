@@ -75,6 +75,7 @@ pub use solver::backend::{
 pub use solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
 };
+pub use solver::infeasibility::ConflictAtomId;
 pub use solver::overlay::{
     CutoffDirection, ObjectiveCutoff, ObjectiveLock, OverlayError, SolveOverlay,
 };

@@ -25,6 +25,109 @@ use crate::value_expr::ValueExpr;
 
 use super::CompileError;
 
+/// Source layer for one reversible bound contribution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundLayerSource {
+    /// Declared model bound.
+    Declared,
+    /// Persistent fixing layer.
+    PersistentFixing,
+    /// Solve-scoped lock layer.
+    SolveLock,
+    /// Temporary fixing layer.
+    TemporaryFixing,
+}
+
+/// One bound contribution in the restoration stack.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoundContribution {
+    /// Semantic atom that owns the contribution, if any.
+    pub atom_id: crate::solver::infeasibility::ConflictAtomId,
+    /// Contribution source.
+    pub source: BoundLayerSource,
+    /// Effective bounds at this layer.
+    pub bounds: Bounds,
+    active: bool,
+}
+
+/// Typed failures while changing a bound contribution stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundStackError {
+    /// The atom is not present or is already disabled.
+    UnknownAtom(crate::solver::infeasibility::ConflictAtomId),
+    /// An active atom id was pushed twice.
+    DuplicateAtom(crate::solver::infeasibility::ConflictAtomId),
+}
+
+/// Reversible bound layers that restore the next lower contribution.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundContributionStack {
+    layers: Vec<BoundContribution>,
+}
+
+impl BoundContributionStack {
+    /// Create a stack with the declared bounds as its immutable base layer.
+    pub fn new(declared: Bounds) -> Self {
+        Self {
+            layers: vec![BoundContribution {
+                atom_id: crate::solver::infeasibility::ConflictAtomId(u64::MAX),
+                source: BoundLayerSource::Declared,
+                bounds: declared,
+                active: true,
+            }],
+        }
+    }
+
+    /// Add a higher contribution layer.
+    pub fn push(
+        &mut self,
+        atom_id: crate::solver::infeasibility::ConflictAtomId,
+        source: BoundLayerSource,
+        bounds: Bounds,
+    ) -> Result<(), BoundStackError> {
+        if self
+            .layers
+            .iter()
+            .any(|layer| layer.atom_id == atom_id && layer.active)
+        {
+            return Err(BoundStackError::DuplicateAtom(atom_id));
+        }
+        self.layers.push(BoundContribution {
+            atom_id,
+            source,
+            bounds,
+            active: true,
+        });
+        Ok(())
+    }
+
+    /// Return the highest active contribution.
+    pub fn current(&self) -> Bounds {
+        self.layers
+            .iter()
+            .rev()
+            .find(|layer| layer.active)
+            .map(|layer| layer.bounds)
+            .expect("declared bound layer is always present")
+    }
+
+    /// Disable one layer while retaining every lower layer for restoration.
+    pub fn disable(
+        &mut self,
+        atom_id: crate::solver::infeasibility::ConflictAtomId,
+    ) -> Result<(), BoundStackError> {
+        let Some(layer) = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.atom_id == atom_id && layer.active)
+        else {
+            return Err(BoundStackError::UnknownAtom(atom_id));
+        };
+        layer.active = false;
+        Ok(())
+    }
+}
+
 /// A bounded numeric interval `[lower, upper]` (design §9).
 ///
 /// Either endpoint may be infinite for unbounded intervals; a NaN endpoint
