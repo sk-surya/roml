@@ -67,10 +67,38 @@ fn imported_implicit_bound_conflict_has_exact_synthetic_provenance() {
         .analyze_infeasibility(&import.model, &InfeasibilityPlan::portable_lp())
         .expect("P29 must analyze the implicit-bound conflict");
     assert_eq!(report.guarantee, roml::ConflictGuarantee::Irreducible);
-    assert!(report.members.iter().any(|member| {
-        matches!(
-            member.declaration.origin,
-            roml::advanced::ConflictOrigin::VariableBound { .. }
-        )
-    }));
+    let (variable, side) = report
+        .members
+        .iter()
+        .find_map(|member| match member.declaration.origin {
+            roml::advanced::ConflictOrigin::VariableBound { variable, side } => {
+                Some((variable, side))
+            }
+            _ => None,
+        })
+        .expect("the exact reported IIS must contain a variable-bound member");
+    let variable_name = import
+        .model
+        .variable_name(variable)
+        .expect("reported variable must remain live")
+        .expect("imported variable must be named");
+    let mps_side = match side {
+        roml::advanced::BoundSide::Lower => roml::io::mps::MpsBoundSide::Lower,
+        roml::advanced::BoundSide::Upper => roml::io::mps::MpsBoundSide::Upper,
+    };
+    let matching_origins: Vec<_> = import
+        .source_map
+        .variable_bound_origins()
+        .iter()
+        .filter(|origin| origin.variable == variable_name && origin.side == mps_side)
+        .collect();
+    assert_eq!(
+        matching_origins.len(),
+        1,
+        "the exact reported variable and side must resolve to one MPS origin"
+    );
+    assert!(matches!(
+        matching_origins[0].origin,
+        roml::io::mps::MpsBoundOrigin::ImplicitContinuousDefault { .. }
+    ));
 }
