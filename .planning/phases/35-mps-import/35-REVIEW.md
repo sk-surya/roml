@@ -9,24 +9,39 @@ files_reviewed_list:
   - src/lib.rs
   - tests/mps_module_seam.rs
 findings:
-  critical: 1
-  warning: 2
+  critical: 0
+  warning: 0
   info: 0
   total: 3
-status: issues_found
+status: pass_after_resolution
 ---
 
 # Phase 35: Code Review Report
 
-**Reviewed:** 2026-08-08T05:51:12Z  
-**Depth:** deep  
-**Files Reviewed:** 4  
-**Status:** issues_found  
+**Reviewed:** 2026-08-08T05:51:12Z
+**Depth:** deep
+**Files Reviewed:** 4
+**Status:** pass after resolution
 **Scope:** Task 35-00 only, `origin/main@3bd0319518c27127a30bc53878f776e82f1ad822..62c3358`
 
 ## Summary
 
-The new module is solver-free and correctly keeps file-format entry points outside `Model`. However, the public seam freezes an error/diagnostic representation that cannot satisfy the approved source-context contract, and the required malformed-input test is a self-fulfilling closure test rather than an importer regression harness. This task is **BLOCKED** until the P1 is fixed.
+The original findings below were resolved in subsequent P35 slices and
+rechecked against the public reader seam. The module remains solver-free and
+keeps file-format entry points outside `Model`.
+
+## Resolution
+
+- CR-01: diagnostics now retain input source, validated spans, sections, raw
+  fields/entities, and I/O/model causes; `read_path` and malformed-reader
+  tests exercise the real public reader and preserve rendered context.
+- WR-01: source spans use validated one-based display columns and half-open
+  ranges through `MpsSourceSpan::try_new`.
+- WR-02: the malformed-input test invokes `MpsReader::read` and asserts a
+  typed error without unwinding; arbitrary-byte and reader integration tests
+  extend that harness.
+
+The resolved findings are retained below as review history.
 
 ## Narrative Findings (AI reviewer)
 
@@ -80,6 +95,6 @@ Add contract tests for a path-backed I/O error and a malformed field/entity erro
 
 ---
 
-_Reviewed: 2026-08-08T05:51:12Z_  
-_Reviewer: the agent (gsd-code-reviewer)_  
+_Reviewed: 2026-08-08T05:51:12Z_
+_Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
