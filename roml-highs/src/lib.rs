@@ -71,6 +71,7 @@ mod facade;
 mod iis;
 mod index_map;
 mod lifecycle;
+mod mps_oracle;
 #[cfg(feature = "bundled")]
 mod native_iis;
 mod session;
@@ -80,6 +81,10 @@ mod start;
 pub use error::HighsError;
 pub use facade::Highs;
 pub use lifecycle::HighsSession;
+pub use mps_oracle::{
+    observe_mps_differential, HighsMpsSummary, MpsDifferentialDisposition,
+    MpsDifferentialObservation, RomlMpsSummary,
+};
 pub use session::highs_capability_set;
 
 /// Re-export key types from `highs-sys` for caller convenience.
