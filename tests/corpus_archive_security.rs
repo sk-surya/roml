@@ -4,6 +4,7 @@
 //! require an initialized external corpus or an archive program/library.
 
 #[path = "support/corpus.rs"]
+#[allow(dead_code)]
 mod corpus;
 
 use std::{
