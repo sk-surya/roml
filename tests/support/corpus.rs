@@ -20,9 +20,14 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fmt,
-    fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Read},
     path::{Path, PathBuf},
+};
+
+#[cfg(target_os = "linux")]
+use std::{
+    fs::{self, File},
+    io::Write,
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -571,7 +576,7 @@ fn validate_entry_kind(entry: &ArchiveEntry) -> Result<(), MaterializationError>
 }
 
 fn validate_logical_path(path: &str) -> Result<Vec<&str>, MaterializationError> {
-    if path.is_empty() || path.contains('\0') || path.starts_with(['/', '\\']) {
+    if path.is_empty() || path.contains(['\0', '\\']) || path.starts_with('/') {
         return Err(unsafe_path(
             path,
             "path is empty, contains NUL, or is rooted",
@@ -701,12 +706,19 @@ mod linux {
         let root = SecureDirectory::open_or_create(cache_root)?;
         let mut lock = CacheLock::acquire(&root, cache_key)?;
 
-        if let Some(cache) = root.open_existing_dir(cache_key.directory_name())? {
+        let existing = match root.open_existing_dir(cache_key.directory_name()) {
+            Ok(existing) => existing,
+            Err(primary) => return Err(with_cleanup(primary, Vec::new(), &mut lock)),
+        };
+        if let Some(cache) = existing {
             let result = validate_cache(&cache, expected).map(|()| cache.path.clone());
             return finish_without_staging(result, &mut lock);
         }
 
-        let mut staging = FreshStaging::create(&root, cache_key)?;
+        let mut staging = match FreshStaging::create(&root, cache_key) {
+            Ok(staging) => staging,
+            Err(primary) => return Err(with_cleanup(primary, Vec::new(), &mut lock)),
+        };
         let result = extract(&mut staging, entries, expected)
             .and_then(|()| root.promote_noreplace(&staging.name, cache_key.directory_name()))
             .map(|()| {
