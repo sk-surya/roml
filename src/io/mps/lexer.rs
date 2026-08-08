@@ -147,6 +147,50 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_fixed_integer_markers_in_value_fields() {
+        let intorg = format!(
+            "    {:<8}  {:<8}  {:<12}   {:<8}  {:<12}\n",
+            "MARK0000", "", "'MARKER'", "", "'INTORG'"
+        );
+        let column = format!("    {:<8}  {:<8}  {:<12}\n", "X1", "COST", "1");
+        let intend = format!(
+            "    {:<8}  {:<8}  {:<12}   {:<8}  {:<12}\n",
+            "MARK0001", "", "'MARKER'", "", "'INTEND'"
+        );
+        let input = [
+            "ROWS\n",
+            " N  COST\n",
+            "COLUMNS\n",
+            &intorg,
+            &column,
+            &intend,
+            "ENDATA\n",
+        ]
+        .concat();
+
+        let records = lex(&input, MpsFormat::Fixed)
+            .expect("fixed INTORG/INTEND markers belong in the value fields");
+        assert!(matches!(
+            records.get(1),
+            Some(MpsRecord::Marker {
+                marker: IntegerMarker::Start,
+                ..
+            })
+        ));
+        assert!(matches!(
+            records.get(2),
+            Some(MpsRecord::Column { integer: true, .. })
+        ));
+        assert!(matches!(
+            records.get(3),
+            Some(MpsRecord::Marker {
+                marker: IntegerMarker::End,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn reports_deterministic_errors_for_malformed_structure_and_limits() {
         let invalid_number = lex(
             "ROWS\n N OBJ\nCOLUMNS\n X OBJ NaN\nENDATA\n",
@@ -368,6 +412,18 @@ mod tests {
         )
         .expect_err("distinct fixed and free records are ambiguous");
         assert_eq!(ambiguity.kind(), &MpsErrorKind::AmbiguousFormat);
+        let rendered = ambiguity.to_string();
+        for expected in [
+            "fixed interpretation:",
+            "free interpretation:",
+            "variable: \"X R 2\"",
+            "variable: \"X\"",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} from {rendered:?}"
+            );
+        }
 
         let fixed_column = format!("    {:<8}  {:<8}  {:<12}\n", "X Y", "OBJ", "1");
         let mixed = [
@@ -642,13 +698,18 @@ pub(crate) fn lex_records<R: BufRead>(
                 );
                 match (fixed, free) {
                     (Ok(fixed), Ok(free)) if fixed == free => fixed,
-                    (Ok(_), Ok(_)) => {
-                        return Err(error(
+                    (Ok(fixed), Ok(free)) => {
+                        return Err(MpsError::new(
                             MpsErrorKind::AmbiguousFormat,
-                            Some((line_number, 0, line.len())),
-                            Some(section),
-                            None,
-                            "fixed and free interpretations produce different records",
+                            diagnostic(
+                                Some((line_number, 0, line.len())),
+                                Some(section),
+                                None,
+                                "fixed and free interpretations produce different records",
+                            )
+                            .with_message(format!(
+                                "fixed interpretation: {fixed:?}; free interpretation: {free:?}"
+                            )),
                         ));
                     }
                     (Ok(record), Err(_)) => {
@@ -940,16 +1001,17 @@ fn parse_fixed_record(
             let value = fixed_field(line, 24, 36);
             let second = fixed_field(line, 39, 47);
             let second_value = fixed_field(line, 49, 61);
-            if first
+            if value
                 .as_ref()
                 .is_some_and(|field| marker_token(&field.text))
             {
-                let control = required(second, line_number, section, "integer marker control")?;
-                if value.is_some() || second_value.is_some() {
+                let control =
+                    required(second_value, line_number, section, "integer marker control")?;
+                if first.is_some() || second.is_some() {
                     return Err(invalid_record(
                         line_number,
                         section,
-                        "integer marker has unexpected numeric fields",
+                        "integer marker has unexpected row fields",
                     ));
                 }
                 return marker(&control, line_number, section)

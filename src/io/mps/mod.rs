@@ -147,12 +147,16 @@ pub struct MpsSourceSpan {
 impl MpsSourceSpan {
     /// Creates a validated source span.
     ///
-    /// Lines are one-based. Offsets are zero-based byte offsets within that
-    /// line, expressed as a half-open range `[start, end)`. Empty spans are
-    /// valid when `start == end`.
+    /// Lines and display columns are one-based. Columns use a half-open range
+    /// `[start, end)`: a one-byte field at the first display column is
+    /// `MpsSourceSpan::try_new(1, 1, 2)`. Empty spans are valid when
+    /// `start == end` at a display column of one or greater.
     pub fn try_new(line: usize, start: usize, end: usize) -> Result<Self, MpsSourceSpanError> {
         if line == 0 {
             return Err(MpsSourceSpanError::ZeroLine);
+        }
+        if start == 0 || end == 0 {
+            return Err(MpsSourceSpanError::ZeroColumn);
         }
         if end < start {
             return Err(MpsSourceSpanError::ReversedOffsets { start, end });
@@ -165,12 +169,12 @@ impl MpsSourceSpan {
         self.line
     }
 
-    /// Returns the parser-provided span start offset.
+    /// Returns the one-based display column at which this span starts.
     pub fn start(&self) -> usize {
         self.start
     }
 
-    /// Returns the parser-provided span end offset.
+    /// Returns the exclusive one-based display column at which this span ends.
     pub fn end(&self) -> usize {
         self.end
     }
@@ -181,6 +185,8 @@ impl MpsSourceSpan {
 pub enum MpsSourceSpanError {
     /// Source lines are one-based and cannot be zero.
     ZeroLine,
+    /// Source display columns are one-based and cannot be zero.
+    ZeroColumn,
     /// A half-open span has an end before its start.
     ReversedOffsets {
         /// The supplied start offset.
@@ -194,6 +200,7 @@ impl std::fmt::Display for MpsSourceSpanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ZeroLine => write!(f, "MPS source lines are one-based"),
+            Self::ZeroColumn => write!(f, "MPS source display columns are one-based"),
             Self::ReversedOffsets { start, end } => {
                 write!(
                     f,
