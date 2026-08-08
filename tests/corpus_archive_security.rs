@@ -607,7 +607,6 @@ fn replace_with_fifo(path: &Path) {
 }
 
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 #[test]
 fn a15_rejects_a_fifo_completion_marker_without_blocking_on_cache_reuse() {
     let sandbox = Sandbox::new();
@@ -632,7 +631,6 @@ fn a15_rejects_a_fifo_completion_marker_without_blocking_on_cache_reuse() {
     ));
 }
 
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 #[test]
 fn a16_rejects_a_fifo_data_file_without_blocking_on_cache_reuse() {
