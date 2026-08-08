@@ -33,6 +33,7 @@ pub(crate) enum MpsRecord {
         variable: String,
         entries: Vec<RowValue>,
         integer: bool,
+        integer_marker_span: Option<MpsSourceSpan>,
         span: MpsSourceSpan,
     },
     Marker {

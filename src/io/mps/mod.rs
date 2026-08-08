@@ -19,6 +19,8 @@ mod lexer;
 #[allow(dead_code)]
 mod record;
 #[allow(dead_code)]
+mod semantic;
+#[allow(dead_code)]
 mod state;
 
 /// Selects the lexical layout used to interpret an MPS input.
@@ -568,23 +570,93 @@ impl std::fmt::Display for MpsErrorKind {
 }
 
 /// Non-semantic details recorded for a completed MPS import.
-///
-/// Later P35 tasks populate this type with deterministic import metadata.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MpsMetadata {
-    _private: (),
+    /// Layout selected by the lexer.
+    pub format: MpsFormat,
+    /// Optional `NAME` payload.
+    pub problem_name: Option<String>,
+    /// Objective row selected by `OBJNAME` or row order.
+    pub objective_row: Option<String>,
+    /// Selected objective sense.
+    pub objective_sense: Option<crate::model::Sense>,
+    /// Selected RHS vector, if any.
+    pub rhs_vector: Option<String>,
+    /// Selected RANGES vector, if any.
+    pub ranges_vector: Option<String>,
+    /// Selected BOUNDS vector, if any.
+    pub bounds_vector: Option<String>,
 }
 
-/// Maps imported ROML entities and restrictions back to MPS source origins.
-///
-/// The map remains outside canonical [`Model`] state. Later P35 tasks add
-/// explicit and synthetic provenance entries after semantic resolution.
+/// The side of an imported variable domain carrying a finite restriction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MpsBoundSide {
+    /// Lower bound.
+    Lower,
+    /// Upper bound.
+    Upper,
+}
+
+/// MPS source origin for an imported finite variable-bound restriction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MpsBoundOrigin {
+    /// A selected explicit BOUNDS record.
+    Explicit {
+        /// Source span of the selected BOUNDS record.
+        span: MpsSourceSpan,
+    },
+    /// The default lower bound for an unmarked continuous variable.
+    ImplicitContinuousDefault {
+        /// Source span of the variable's first COLUMNS record.
+        columns_span: MpsSourceSpan,
+    },
+    /// A finite default derived from an INTORG region.
+    ImplicitIntegerMarkerDefault {
+        /// Source span of the controlling INTORG marker.
+        marker_span: MpsSourceSpan,
+        /// Source span of the first marked COLUMNS record.
+        columns_span: MpsSourceSpan,
+    },
+}
+
+/// One source-map entry for a finite imported variable-bound restriction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MpsVariableBoundOrigin {
+    /// Imported variable name.
+    pub variable: String,
+    /// Restricted side.
+    pub side: MpsBoundSide,
+    /// Exact or synthetic MPS origin.
+    pub origin: MpsBoundOrigin,
+}
+
+/// Maps imported semantic entities and restrictions back to MPS origins.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MpsSourceMap {
-    _private: (),
+    pub(crate) row_spans: std::collections::BTreeMap<String, MpsSourceSpan>,
+    pub(crate) column_spans: std::collections::BTreeMap<String, MpsSourceSpan>,
+    pub(crate) variable_bound_origins: Vec<MpsVariableBoundOrigin>,
+}
+
+impl MpsSourceMap {
+    /// Returns the declaration origin for a row.
+    pub fn row_span(&self, name: &str) -> Option<&MpsSourceSpan> {
+        self.row_spans.get(name)
+    }
+
+    /// Returns the first COLUMNS origin for a variable.
+    pub fn column_span(&self, name: &str) -> Option<&MpsSourceSpan> {
+        self.column_spans.get(name)
+    }
+
+    /// Returns all finite bound origins in deterministic variable/side order.
+    pub fn variable_bound_origins(&self) -> &[MpsVariableBoundOrigin] {
+        &self.variable_bound_origins
+    }
 }
 
 /// The result of successfully importing one MPS document into a fresh model.
+#[derive(Debug)]
 pub struct MpsImport {
     /// The freshly constructed canonical ROML model.
     pub model: Model,
