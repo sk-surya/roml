@@ -10,6 +10,7 @@ pub(crate) struct LexerState {
     columns_seen: bool,
     endata_seen: bool,
     marker_active: bool,
+    active_marker_span: Option<MpsSourceSpan>,
     pending_payload: Option<MpsSection>,
 }
 
@@ -20,6 +21,10 @@ impl LexerState {
 
     pub(crate) fn marker_active(&self) -> bool {
         self.marker_active
+    }
+
+    pub(crate) fn marker_span(&self) -> Option<&MpsSourceSpan> {
+        self.active_marker_span.as_ref()
     }
 
     pub(crate) fn begin_section(
@@ -146,6 +151,7 @@ impl LexerState {
                 ..
             } => {
                 self.marker_active = true;
+                self.active_marker_span = Some(record.span().clone());
                 Ok(())
             }
             MpsRecord::Marker {
@@ -153,6 +159,7 @@ impl LexerState {
                 ..
             } => {
                 self.marker_active = false;
+                self.active_marker_span = None;
                 Ok(())
             }
             _ => Ok(()),

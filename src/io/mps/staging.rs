@@ -221,6 +221,21 @@ impl MpsStagedColumn {
     pub(crate) fn first_entry_span(&self) -> Option<&MpsSourceSpan> {
         self.entries.first().map(MpsColumnEntry::span)
     }
+
+    /// Returns the first COLUMNS-record span encountered inside INTORG.
+    pub(crate) fn first_marked_entry_span(&self) -> Option<&MpsSourceSpan> {
+        self.entries
+            .iter()
+            .find(|entry| entry.integer_marker_span.is_some())
+            .map(MpsColumnEntry::span)
+    }
+
+    /// Returns the INTORG marker controlling the first marked entry.
+    pub(crate) fn first_integer_marker_span(&self) -> Option<&MpsSourceSpan> {
+        self.entries
+            .iter()
+            .find_map(|entry| entry.integer_marker_span.as_ref())
+    }
 }
 
 /// MPS-specific input retained until selected-vector semantic resolution.
