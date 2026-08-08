@@ -117,11 +117,11 @@ Here `r > 0` in the expected column.
 | B15 | marker variable no BOUNDS | integer `[0,1]` |
 | B16 | marker + UP 10 | integer `[0,10]` |
 | B17 | marker + LO -5 | integer `[-5,1]` |
-| B18 | marker + FR | free integer if ROML domain supports it |
+| B18 | marker + FR | free integer `[-inf,+inf]` |
 | B19 | BV then broadening record | typed conflicting-binary error under P35 policy |
 | B20 | continuous LO/UP after integer marker | remains integer |
 
-B18 must first characterize the existing ROML general-integer domain API. If ROML supports unbounded integer variables, the expected result is free integer; otherwise the importer returns a typed model-representation failure and the design must be amended explicitly before merge.
+Current ROML already represents `VarType::Integer` independently from `Bounds` and accepts `-inf/+inf` as valid integer bounds, so B18 is a required supported case rather than a deferred capability probe.
 
 ## G. Marker tests
 
