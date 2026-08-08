@@ -3,7 +3,7 @@
 Date: 2026-08-08
 
 Implementation branch: `phase-roml-P35-mps-import`  
-Latest implementation commit at evidence capture: `c3e4330`
+Latest implementation commit at evidence capture: `38552ee`
 
 The design packet was merged to `main` by `8a24bbeb23b7ae1e2e87a47c7df248698374d84c`.
 The executable P35 plan was merged to `main` by
