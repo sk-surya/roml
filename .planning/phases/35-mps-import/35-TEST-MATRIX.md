@@ -65,7 +65,7 @@ This matrix is the minimum verification contract for P35. Implementation plannin
 | O12 | duplicate objective coefficients | algebraic sum |
 | O13 | nonselected N coefficients | no constraint/objective effect |
 
-## D. Matrix and row tests
+## D. Matrix, RHS, and row tests
 
 | ID | Case | Expected |
 |---|---|---|
@@ -79,6 +79,9 @@ This matrix is the minimum verification contract for P35. Implementation plannin
 | M08 | unknown row reference | typed error |
 | M09 | duplicate row declaration | typed error |
 | M10 | free row not objective | ignored as constraint, preserved metadata |
+| M11 | duplicate same-row entry in selected RHS vector | typed duplicate/ambiguity error; never summed |
+| M12 | duplicate same-row entry in unselected RHS vector | staging succeeds if syntax/references valid; import succeeds while another RHS is selected |
+| M13 | select the duplicate-containing RHS vector from M12 | typed duplicate/ambiguity error |
 
 ## E. RANGES tests
 
@@ -90,9 +93,12 @@ This matrix is the minimum verification contract for P35. Implementation plannin
 | R04 | G, b | `-r` | `[b,b+r]` |
 | R05 | L, b | `+r` | `[b-r,b]` |
 | R06 | L, b | `-r` | `[b-r,b]` |
-| R07 | RANGE on N row | typed error |
-| R08 | duplicate selected range for row | typed ambiguity error |
-| R09 | unselected range vector contains malformed semantic combination | parse/stage succeeds if syntactically valid; selected vector alone affects model |
+| R07 | selected RANGE vector contains entry on `N` row | typed semantic error |
+| R08 | duplicate selected RANGE entry for row | typed duplicate/ambiguity error |
+| R09 | unselected RANGE vector contains entry on `N` row | staging/import succeeds when syntax/reference-valid and another vector/None is selected; unselected vector has no model effect |
+| R10 | explicitly select the R09 vector | same typed semantic error as R07 |
+| R11 | unselected RANGE vector contains duplicate same-row entries | staging/import succeeds while not selected |
+| R12 | explicitly select the R11 vector | same typed duplicate/ambiguity error as R08 |
 
 Here `r > 0` in the expected column.
 
@@ -113,13 +119,15 @@ Here `r > 0` in the expected column.
 | B11 | LI 2.2 | integer lower 3 |
 | B12 | UI 8.8 | integer upper 8 |
 | B13 | LI + UI | general integer interval |
-| B14 | lower > upper | typed domain error |
+| B14 | lower > upper in selected BOUNDS vector | typed domain error |
 | B15 | marker variable no BOUNDS | integer `[0,1]` |
 | B16 | marker + UP 10 | integer `[0,10]` |
 | B17 | marker + LO -5 | integer `[-5,1]` |
 | B18 | marker + FR | free integer `[-inf,+inf]` |
 | B19 | BV then broadening record | typed conflicting-binary error under P35 policy |
 | B20 | continuous LO/UP after integer marker | remains integer |
+| B21 | unselected BOUNDS vector would resolve to lower > upper | staging/import succeeds while another vector/None is selected |
+| B22 | explicitly select B21 vector | typed domain error |
 
 Current ROML already represents `VarType::Integer` independently from `Bounds` and accepts `-inf/+inf` as valid integer bounds, so B18 is a required supported case rather than a deferred capability probe.
 
@@ -147,41 +155,61 @@ Current ROML already represents `VarType::Integer` independently from `Bounds` a
 | V06 | two BOUNDS default/named | exact selected domains |
 | V07 | interleaved records for vectors | first-seen vector order preserved; records grouped correctly |
 | V08 | import metadata | selected vector names recorded |
+| V09 | unknown row in any staged RHS/RANGES vector, even unselected | typed structural/reference error |
+| V10 | unknown variable in any staged BOUNDS vector, even unselected | typed structural/reference error |
+| V11 | malformed/nonfinite numeric in any staged vector, even unselected | typed lexical/numeric error |
+
+V09-V11 distinguish whole-document structural validity from selected-vector semantic validity: references and syntax are always validated; model semantics are selected-vector-only.
 
 ## I. Transaction/error invariants
 
 | ID | Case | Expected |
 |---|---|---|
 | E01 | syntax failure after many valid rows | no `Model` result |
-| E02 | semantic domain failure in BOUNDS | no partial model result |
+| E02 | semantic domain failure in selected BOUNDS | no partial model result |
 | E03 | unknown row in RHS | source-aware error |
 | E04 | unknown variable in BOUNDS | source-aware error |
 | E05 | unsupported section after valid linear data | hard failure; no partial model |
 | E06 | fuzz arbitrary bytes | no panic/UB; success or typed error only |
 
-## J. Metamorphic equivalence
+## J. Provenance and IIS-origin tests
+
+| ID | Case | Expected provenance |
+|---|---|---|
+| P01 | continuous variable, no BOUNDS | finite lower bound `0` maps to `ImplicitContinuousDefault`, anchored to first COLUMNS record |
+| P02 | INTORG variable, no BOUNDS | lower `0` and upper `1` each map to `ImplicitIntegerMarkerDefault`, anchored to INTORG marker + first marked COLUMNS record |
+| P03 | explicit LO/UP/FX/BV/LI/UI | affected finite bound maps to exact BOUNDS record span |
+| P04 | INTORG default upper overridden by UP | final upper maps to UP record; retained lower default maps to synthetic INTORG origin |
+| P05 | continuous default lower overridden by LO | final lower maps to LO record, not synthetic default |
+| P06 | IIS contains implicit continuous lower bound | report/source-map lookup succeeds and renders it as implicit MPS default, not a fake BOUNDS line |
+| P07 | IIS contains implicit INTORG bound | report/source-map lookup succeeds and renders marker-derived default plus source anchors |
+| P08 | every finite imported variable bound exposed as a P29 semantic restriction | exactly one explicit-or-synthetic MPS bound origin resolves |
+
+## K. Metamorphic equivalence
 
 Each pair/group below must compile to equivalent canonical mathematical snapshots:
 
 1. fixed and free forms of the same model;
 2. one coefficient pair per line versus two pairs per line;
-3. a coefficient `3` versus duplicate records `1 + 2`;
+3. a coefficient `3` versus duplicate matrix records `1 + 2`;
 4. explicit RHS zero versus omitted RHS;
 5. explicit default `LO 0` versus omitted bound;
 6. grouped columns versus repeated column blocks;
 7. alternate legal row/column declaration order with names preserved;
 8. equivalent range-sign encodings where row sense makes sign irrelevant.
 
-## K. HiGHS synthetic differential probes
+Duplicate RHS/RANGE records are deliberately absent from metamorphic equivalence because P35 rejects them when their vector is selected.
 
-For each probe, run:
+## L. HiGHS synthetic differential probes and disposition
+
+For each accepted probe, run:
 
 ```text
 A: native HiGHS readModel(file)
 B: ROML MpsReader(file) -> ROML compile -> HiGHS
 ```
 
-Required probes:
+Required accepted probes:
 
 - objective offset sign;
 - objective selection;
@@ -196,9 +224,23 @@ Required probes:
 - long-name free MPS;
 - empty objective.
 
-Compare model structure before solve where the HiGHS API exposes it, then solve status/objective where meaningful.
+Required strict-policy probes:
 
-## L. Netlib corpus tiers
+- duplicate same-row selected RHS;
+- duplicate same-row selected RANGE;
+- selected RANGE entry on an `N` row.
+
+For strict-policy probes, the expected ROML result is the frozen typed rejection. Native HiGHS acceptance or different behavior is recorded as a compatibility observation and does not redefine P35 semantics.
+
+For an input P35 accepts, compare model structure before solve where the HiGHS API exposes it, then solve status/objective where meaningful. Any accepted-input semantic mismatch is a merge blocker until disposition is recorded as one of:
+
+1. `roml_bug_fixed` — ROML changes to the frozen/authoritative semantics;
+2. `dialect_narrowed` — P35 now rejects the input and tests/requirements are amended;
+3. `compatibility_exception` — authoritative evidence supports ROML's semantics, the divergence is explicitly documented, and owner review approves the exception.
+
+There is no `follow_highs_automatically` disposition.
+
+## M. Netlib corpus tiers
 
 ### PR smoke allowlist
 
@@ -223,9 +265,10 @@ Per file compare:
 - dimensions/nonzeros;
 - domains/row bounds/objective when extractable;
 - solve classification;
-- objective value tolerance for feasible solved LPs.
+- objective value tolerance for feasible solved LPs;
+- differential disposition if behavior diverges.
 
-## M. Chinneck corpus tiers
+## N. Chinneck corpus tiers
 
 ### PR IIS smoke
 
@@ -249,14 +292,34 @@ Per complete IIS result record:
 - analysis mode/provider chain;
 - guarantee/completion;
 - member row/bound counts;
-- source mapping success;
+- explicit/synthetic source mapping success;
 - oracle-call count;
 - elapsed analysis time;
 - final verifier outcome.
 
 Do not compare exact member identities to Gurobi as a pass/fail condition.
 
-## N. P36 forward round-trip matrix
+## O. Archive-extraction security tests
+
+These apply to the Chinneck materialization helper before any archive is extracted in CI.
+
+| ID | Archive entry | Expected |
+|---|---|---|
+| A01 | `/tmp/evil.mps` or other POSIX absolute path | reject before write |
+| A02 | `C:\\evil.mps`, `C:/evil.mps`, or UNC path | reject before write |
+| A03 | `../evil.mps` | reject before write |
+| A04 | `a/../../evil.mps` | reject after lexical normalization, before write |
+| A05 | symlink entry | reject |
+| A06 | hardlink entry | reject |
+| A07 | device/FIFO/socket/special entry | reject |
+| A08 | regular nested file `a/b/model.mps` | writes only below fresh extraction root |
+| A09 | pre-existing symlink in extraction parent/root | fresh root creation/no-follow rules prevent traversal |
+| A10 | extraction failure halfway | no completion marker; partial temp tree never promoted/reused |
+| A11 | fully validated extraction | atomically promoted to cache key derived from corpus SHA + archive identity |
+
+The implementation must not rely only on a post-extraction check: unsafe entry type/path validation occurs before each write.
+
+## P. P36 forward round-trip matrix
 
 The following tests are not P35 exit gates but are frozen now:
 
@@ -269,7 +332,7 @@ The following tests are not P35 exit gates but are frozen now:
 7. deterministic byte-for-byte writer output for identical model/options;
 8. unrepresentable ROML construct -> typed representation error.
 
-## O. Verification evidence
+## Q. Verification evidence
 
 P35 release evidence must include:
 
@@ -278,8 +341,9 @@ P35 release evidence must include:
 - HiGHS bundled version and system-version lanes used;
 - corpus repository URLs and exact SHAs;
 - synthetic test totals;
-- differential corpus pass/fail/skip counts;
+- differential corpus pass/fail/skip counts and explicit divergence dispositions;
 - unsupported-section classifications;
 - fuzz/mutation evidence applicable to parser code;
+- archive extraction security-test evidence;
 - performance characterization without unsupported marketing claims;
 - residual risks and intentionally deferred P36 work.
