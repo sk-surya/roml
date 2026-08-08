@@ -53,8 +53,8 @@ pub enum MpsVectorSelection {
 
 /// Limits reserved for the streaming MPS reader.
 ///
-/// Task 35-00 establishes this configuration seam only. Later lexical and
-/// staging tasks enforce each limit with checked accounting.
+/// The streaming lexer and staging boundary enforce each limit with checked
+/// accounting before model construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MpsResourceLimits {
     /// Maximum accepted line length in bytes.
@@ -99,9 +99,9 @@ pub struct MpsReadOptions {
     pub limits: MpsResourceLimits,
 }
 
-/// Configured entry point for a future MPS read operation.
+/// Configured entry point for an MPS read operation.
 ///
-/// The reader is intentionally separate from [`Model`] so a future read
+/// The reader is intentionally separate from [`Model`]. Every successful read
 /// constructs a fresh canonical model rather than mutating a caller-owned
 /// one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -239,7 +239,7 @@ impl std::error::Error for MpsSourceSpanError {}
 /// Identifies the input associated with an MPS diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MpsInputSource {
-    /// A filesystem path supplied to a future path-based reader.
+    /// A filesystem path supplied to the path-based reader.
     Path(PathBuf),
     /// A caller-supplied label for a stream input.
     Label(String),
