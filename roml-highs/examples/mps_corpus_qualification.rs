@@ -15,8 +15,10 @@ use std::{
     process::Command,
 };
 
-use roml::io::mps::MpsReader;
-use roml_highs::{observe_mps_differential, Highs};
+use roml_highs::{
+    compare_mps_solve, compare_mps_structure, observe_mps_differential,
+    observe_mps_solve_differential, MPS_STRUCTURAL_ABS_TOLERANCE, MPS_STRUCTURAL_REL_TOLERANCE,
+};
 
 const CHINNECK_COMMIT: &str = "97a936498e5240d44adaf7dcfe84877fa34ce301";
 const CHINNECK_REPOSITORY: &str = "https://github.com/sk-surya/infeasiblelps";
@@ -76,8 +78,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for pin in PINS {
         let checkout = repository_root.join(pin.checkout);
-        if !checkout.is_dir() {
-            emit_skip(pin, &checkout, "optional corpus checkout is absent")?;
+        if !checkout.is_dir() || !is_initialized_submodule(&checkout) {
+            emit_skip(
+                pin,
+                &checkout,
+                "optional corpus checkout is absent or uninitialized",
+            )?;
             continue;
         }
         validate_pin(pin, &checkout)?;
@@ -136,6 +142,27 @@ fn validate_pin(pin: CorpusPin, checkout: &Path) -> Result<(), Box<dyn Error>> {
         return Err(format!("{} checkout is dirty: {:?}", pin.id, status.trim()).into());
     }
     Ok(())
+}
+
+fn is_initialized_submodule(checkout: &Path) -> bool {
+    let metadata = checkout.join(".git");
+    if !metadata.is_file() && !metadata.is_dir() {
+        return false;
+    }
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+    let reported = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    match (fs::canonicalize(checkout), fs::canonicalize(reported)) {
+        (Ok(checkout), Ok(reported)) => checkout == reported,
+        _ => false,
+    }
 }
 
 fn git_value(checkout: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
@@ -211,17 +238,19 @@ fn emit_file(
         ),
         Err(error) => format!("error:{}", error),
     };
-    let structural = match (&observation.roml, &observation.highs) {
-        (Ok(roml), Ok(highs))
-            if roml.columns == highs.columns
-                && roml.rows == highs.rows
-                && roml.nonzeros == highs.nonzeros
-                && roml.objective_offset == highs.objective_offset =>
-        {
-            "equivalent"
-        }
-        (Ok(_), Ok(_)) => "unresolved_discrepancy",
-        _ => "not_comparable",
+    let structural_comparison = match (&observation.roml, &observation.highs) {
+        (Ok(roml), Ok(highs)) => Some(compare_mps_structure(
+            highs,
+            roml,
+            MPS_STRUCTURAL_ABS_TOLERANCE,
+            MPS_STRUCTURAL_REL_TOLERANCE,
+        )),
+        _ => None,
+    };
+    let structural = match &structural_comparison {
+        Some(comparison) if comparison.equivalent => "equivalent",
+        Some(_) => "unresolved_discrepancy",
+        None => "not_comparable",
     };
     let disposition = match (&observation.roml, &observation.highs, structural) {
         (Ok(_), Ok(_), "equivalent") => "equivalent",
@@ -229,21 +258,45 @@ fn emit_file(
         (Ok(_), Ok(_), "unresolved_discrepancy") => "unresolved_discrepancy",
         _ => "both_or_native_rejected",
     };
-    let solve_status = if !solve {
-        "not_requested".to_owned()
-    } else if let Ok(mut import) = MpsReader::new().read_path(path) {
-        match Highs::new()?.solve(&mut import.model) {
-            Ok(solution) => format!("{:?}", solution.status()),
-            Err(error) => format!("error:{error}"),
-        }
+    let (native_solve_status, roml_solve_status, solve_comparison) = if !solve {
+        (
+            "not_requested".to_owned(),
+            "not_requested".to_owned(),
+            "not_requested".to_owned(),
+        )
     } else {
-        "not_attempted".to_owned()
+        let solve_observation = observe_mps_solve_differential(path);
+        let native_status = match &solve_observation.highs {
+            Ok(observation) => format!("{:?}", observation.status),
+            Err(error) => format!("error:{error}"),
+        };
+        let roml_status = match &solve_observation.roml {
+            Ok(observation) => format!("{:?}", observation.status),
+            Err(error) => format!("error:{error}"),
+        };
+        let comparison = match (&solve_observation.highs, &solve_observation.roml) {
+            (Ok(highs), Ok(roml)) => {
+                let comparison = compare_mps_solve(
+                    highs,
+                    roml,
+                    MPS_STRUCTURAL_ABS_TOLERANCE,
+                    MPS_STRUCTURAL_REL_TOLERANCE,
+                );
+                if comparison.equivalent {
+                    "equivalent".to_owned()
+                } else {
+                    "unresolved_discrepancy".to_owned()
+                }
+            }
+            _ => "not_comparable".to_owned(),
+        };
+        (native_status, roml_status, comparison)
     };
     let absolute = path.strip_prefix(repository_root).unwrap_or(path);
     let mut line = String::new();
     write!(
         line,
-        "{{\"corpus\":{},\"commit\":{},\"path\":{},\"file_bytes\":{},\"roml_parse_status\":{},\"native_highs_read_status\":{},\"structural_comparison_status\":{},\"differential_disposition\":{},\"solve_status\":{}}}",
+        "{{\"corpus\":{},\"commit\":{},\"path\":{},\"file_bytes\":{},\"roml_parse_status\":{},\"native_highs_read_status\":{},\"structural_comparison_status\":{},\"structural_difference_count\":{},\"differential_disposition\":{},\"native_solve_status\":{},\"roml_solve_status\":{},\"solve_comparison_status\":{}}}",
         json(pin.id),
         json(pin.commit),
         json(&absolute.display().to_string()),
@@ -251,13 +304,25 @@ fn emit_file(
         json(&roml_status),
         json(&highs_status),
         json(structural),
+        structural_comparison
+            .as_ref()
+            .map_or(0, |comparison| comparison.differences.len()),
         json(disposition),
-        json(&solve_status)
+        json(&native_solve_status),
+        json(&roml_solve_status),
+        json(&solve_comparison)
     )?;
     println!("{line}");
     if structural == "unresolved_discrepancy" {
         return Err(format!(
             "accepted MPS input {} has an unresolved ROML/HiGHS discrepancy",
+            path.display()
+        )
+        .into());
+    }
+    if solve_comparison == "unresolved_discrepancy" {
+        return Err(format!(
+            "accepted MPS input {} has an unresolved native/ROML solve discrepancy",
             path.display()
         )
         .into());

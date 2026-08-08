@@ -82,8 +82,11 @@ pub use error::HighsError;
 pub use facade::Highs;
 pub use lifecycle::HighsSession;
 pub use mps_oracle::{
-    observe_mps_differential, HighsMpsSummary, MpsDifferentialDisposition,
-    MpsDifferentialObservation, RomlMpsSummary,
+    compare_mps_solve, compare_mps_structure, observe_mps_differential,
+    observe_mps_solve_differential, HighsMpsSummary, MpsColumnSemantics,
+    MpsDifferentialDisposition, MpsDifferentialObservation, MpsRowSemantics, MpsSolveComparison,
+    MpsSolveDifferentialObservation, MpsSolveObservation, MpsStructuralComparison, RomlMpsSummary,
+    MPS_STRUCTURAL_ABS_TOLERANCE, MPS_STRUCTURAL_REL_TOLERANCE,
 };
 pub use session::highs_capability_set;
 
