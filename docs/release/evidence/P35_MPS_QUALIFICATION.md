@@ -84,7 +84,7 @@ operation was performed. The MSRV-specific `cargo +1.85.0` toolchain was not
 installed in this environment, so the local final matrix used the repository's
 available toolchain; CI's pinned MSRV job remains authoritative for that check.
 
-The final hosted matrix for `78ad0d6621fbb0eecc7b393d95abeb8ed53263a5` was
+The final hosted matrix for `93985cdda463e833d6d837c8edb1dfc0bcc8ecfa` was
 green: Core/MSRV, HiGHS (bundled/system/package/MSRV), Coverage, Quality, and
 Policy. PR #44 remains open, mergeable, and draft; merge is intentionally still
 an owner gate.
