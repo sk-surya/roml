@@ -168,6 +168,31 @@ fn absent_optional_corpora_do_not_fail_an_ordinary_test_run() {
 }
 
 #[test]
+fn uninitialized_gitlink_directories_are_treated_as_absent() {
+    let sequence = SANDBOX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must be after the Unix epoch")
+        .as_nanos();
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "target/roml-p35-uninitialized-gitlinks-{}-{nanos}-{sequence}",
+        std::process::id()
+    ));
+    fs::create_dir_all(repository_root.join("testdata/corpora/infeasible-lps"))
+        .expect("uninitialized Chinneck gitlink directory must be creatable");
+    fs::create_dir_all(repository_root.join("testdata/corpora/netlib"))
+        .expect("uninitialized Netlib gitlink directory must be creatable");
+
+    let result = validate_optional_corpora(&repository_root);
+
+    fs::remove_dir_all(&repository_root).expect("temporary gitlink directories must be removed");
+    assert_eq!(
+        result.expect("uninitialized gitlinks must be ignored"),
+        None
+    );
+}
+
+#[test]
 fn a01_rejects_posix_absolute_paths_before_writing() {
     let sandbox = Sandbox::new();
 
