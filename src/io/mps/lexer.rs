@@ -102,6 +102,8 @@ mod tests {
                     && entries[0].value == -2.3e8
         ));
         assert_eq!(column.span().line(), 8);
+        assert_eq!(column.span().start(), 1);
+        assert_eq!(column.span().end(), 64);
     }
 
     #[test]
@@ -304,6 +306,144 @@ mod tests {
         .expect_err("OBJNAME after the matrix section is invalid");
         assert_eq!(error.kind(), &MpsErrorKind::InvalidSectionOrder);
         assert_eq!(error.diagnostic().span().unwrap().line(), 4);
+    }
+
+    #[test]
+    fn reports_non_ascii_input_at_one_based_display_columns() {
+        let error = lex("\u{00ff}", MpsFormat::Free).expect_err("non-ASCII input must be rejected");
+        let span = error
+            .diagnostic()
+            .span()
+            .expect("encoding errors retain their source location");
+        assert_eq!(span.line(), 1);
+        assert_eq!((span.start(), span.end()), (1, 2));
+    }
+
+    #[test]
+    fn rejects_source_columns_that_cannot_be_converted_to_display_coordinates() {
+        assert!(super::source_span(1, usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn auto_locks_a_uniquely_fixed_record_layout() {
+        let fixed_column = format!("    {:<8}  {:<8}  {:<12}\n", "X Y", "OBJ", "1");
+        let input = [
+            "ROWS\n",
+            " N  OBJ\n",
+            "COLUMNS\n",
+            &fixed_column,
+            "ENDATA\n",
+        ]
+        .concat();
+
+        let document = lex_records(
+            Cursor::new(input.as_bytes()),
+            MpsFormat::Auto,
+            &MpsResourceLimits::default(),
+        )
+        .expect("the fixed-only record determines the layout");
+        assert_eq!(document.format, MpsFormat::Fixed);
+    }
+
+    #[test]
+    fn auto_keeps_dual_identical_records_undecided() {
+        let column = format!("    {:<8}  {:<8}  {:<12}\n", "X", "OBJ", "1");
+        let input = ["ROWS\n", " N  OBJ\n", "COLUMNS\n", &column, "ENDATA\n"].concat();
+
+        let document = lex_records(
+            Cursor::new(input.as_bytes()),
+            MpsFormat::Auto,
+            &MpsResourceLimits::default(),
+        )
+        .expect("identical fixed/free interpretations are valid");
+        assert_eq!(document.format, MpsFormat::Auto);
+    }
+
+    #[test]
+    fn auto_rejects_ambiguous_and_mixed_record_layouts() {
+        let ambiguous = format!("    {:<8}  {:<8}  {:<12}\n", "X R 2", "OBJ", "1");
+        let ambiguity = lex(
+            &["ROWS\n", " N  OBJ\n", "COLUMNS\n", &ambiguous, "ENDATA\n"].concat(),
+            MpsFormat::Auto,
+        )
+        .expect_err("distinct fixed and free records are ambiguous");
+        assert_eq!(ambiguity.kind(), &MpsErrorKind::AmbiguousFormat);
+
+        let fixed_column = format!("    {:<8}  {:<8}  {:<12}\n", "X Y", "OBJ", "1");
+        let mixed = [
+            "ROWS\n",
+            " N  OBJ\n",
+            "COLUMNS\n",
+            &fixed_column,
+            " long_free_variable_name OBJ 1\n",
+            "ENDATA\n",
+        ]
+        .concat();
+        let mixed_error = lex(&mixed, MpsFormat::Auto)
+            .expect_err("a fixed document cannot switch to free layout mid-stream");
+        assert_eq!(mixed_error.kind(), &MpsErrorKind::InvalidRecord);
+    }
+
+    #[test]
+    fn rejects_duplicate_and_out_of_order_sections() {
+        let duplicate =
+            lex("ROWS\nROWS\n", MpsFormat::Free).expect_err("a section may occur at most once");
+        assert_eq!(duplicate.kind(), &MpsErrorKind::InvalidSectionOrder);
+
+        let out_of_order = lex("ROWS\nCOLUMNS\nRANGES\nRHS\n", MpsFormat::Free)
+            .expect_err("sections must follow the frozen order");
+        assert_eq!(out_of_order.kind(), &MpsErrorKind::InvalidSectionOrder);
+    }
+
+    #[test]
+    fn handles_unmatched_and_multiple_integer_marker_blocks() {
+        let unmatched = lex(
+            "ROWS\n N OBJ\nCOLUMNS\n M 'MARKER' 'INTEND'\nENDATA\n",
+            MpsFormat::Free,
+        )
+        .expect_err("INTEND requires a preceding INTORG");
+        assert_eq!(unmatched.kind(), &MpsErrorKind::InvalidMarkerNesting);
+
+        let records = lex(
+            concat!(
+                "ROWS\n",
+                " N OBJ\n",
+                "COLUMNS\n",
+                " M1 'MARKER' 'INTORG'\n",
+                " X1 OBJ 1\n",
+                " M2 'MARKER' 'INTEND'\n",
+                " M3 'MARKER' 'INTORG'\n",
+                " X2 OBJ 2\n",
+                " M4 'MARKER' 'INTEND'\n",
+                "ENDATA\n",
+            ),
+            MpsFormat::Free,
+        )
+        .expect("separate marker blocks are valid");
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, MpsRecord::Column { integer: true, .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn rejects_leaving_columns_with_an_active_integer_marker() {
+        let error = lex(
+            "ROWS\n N OBJ\nCOLUMNS\n M 'MARKER' 'INTORG'\nRHS\n",
+            MpsFormat::Free,
+        )
+        .expect_err("INTORG must end before a new section begins");
+        assert_eq!(error.kind(), &MpsErrorKind::InvalidMarkerNesting);
+    }
+
+    #[test]
+    fn rejects_a_final_bare_carriage_return() {
+        let error = lex("ROWS\n N OBJ\nCOLUMNS\n X OBJ 1\nENDATA\r", MpsFormat::Free)
+            .expect_err("a bare final carriage return is not a line terminator");
+        assert_eq!(error.kind(), &MpsErrorKind::InvalidEncoding);
     }
 }
 // Handwritten streaming lexer for the fixed/free linear MPS dialect.
@@ -554,6 +694,16 @@ fn read_line<R: BufRead>(
             )
         })?;
         if buffer.is_empty() {
+            if line.last() == Some(&b'\r') {
+                let start = line.len().saturating_sub(1);
+                return Err(error(
+                    MpsErrorKind::InvalidEncoding,
+                    Some((next_line, start, line.len())),
+                    state.current().cloned(),
+                    None,
+                    "bare carriage return is not an MPS line terminator",
+                ));
+            }
             return if line.is_empty() {
                 Ok(None)
             } else {
@@ -1209,15 +1359,7 @@ fn invalid_record(line: usize, section: &MpsSection, message: &'static str) -> M
 }
 
 fn record_span(line: usize, end: usize) -> Result<MpsSourceSpan, MpsError> {
-    MpsSourceSpan::try_new(line, 0, end).map_err(|_| {
-        error(
-            MpsErrorKind::InvalidRecord,
-            None,
-            None,
-            None,
-            "unable to represent source span",
-        )
-    })
+    source_span(line, 0, end)
 }
 
 fn diagnostic(
@@ -1228,7 +1370,7 @@ fn diagnostic(
 ) -> MpsDiagnostic {
     let mut diagnostic = MpsDiagnostic::new().with_message(message);
     if let Some((line, start, end)) = location {
-        if let Ok(span) = MpsSourceSpan::try_new(line, start, end) {
+        if let Ok(span) = source_span(line, start, end) {
             diagnostic = diagnostic.with_span(span);
         }
     }
@@ -1249,4 +1391,22 @@ fn error(
     message: &'static str,
 ) -> MpsError {
     MpsError::new(kind, diagnostic(location, section, raw_field, message))
+}
+
+fn source_span(line: usize, start: usize, end: usize) -> Result<MpsSourceSpan, MpsError> {
+    let start = start.checked_add(1).ok_or_else(source_column_overflow)?;
+    let end = end.checked_add(1).ok_or_else(source_column_overflow)?;
+    MpsSourceSpan::try_new(line, start, end).map_err(|_| {
+        MpsError::new(
+            MpsErrorKind::InvalidRecord,
+            MpsDiagnostic::new().with_message("unable to represent source span"),
+        )
+    })
+}
+
+fn source_column_overflow() -> MpsError {
+    MpsError::new(
+        MpsErrorKind::InvalidRecord,
+        MpsDiagnostic::new().with_message("source column overflow"),
+    )
 }
