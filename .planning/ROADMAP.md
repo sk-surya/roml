@@ -50,7 +50,7 @@ routing projection so phase discovery and autonomous execution use the same mile
 
 ### Phase 35: MPS import and corpus qualification
 
-**Goal:** import fixed/free linear LP/MILP MPS files transactionally into ROML, preserve source-aware semantics, and qualify the result against synthetic fixtures, HiGHS, Netlib, and Chinneck IIS workflows. **Status:** implementation in progress; synthetic, HiGHS, Netlib, and P29 fixture gates pass, while Chinneck archive materialization remains open.
+**Goal:** import fixed/free linear LP/MILP MPS files transactionally into ROML, preserve source-aware semantics, and qualify the result against synthetic fixtures, HiGHS, Netlib, and Chinneck IIS workflows. **Status:** implementation and selected-corpus qualification complete; hosted CI is green and PR #44 is pending final CLEAR TO MERGE review and owner-authorized merge.
 
 **Design:** `.planning/phases/35-mps-import/35-DESIGN-PACKET.md` and `docs/superpowers/specs/2026-08-07-mps-io-design.md`.
 
