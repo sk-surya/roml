@@ -301,6 +301,19 @@ Broad supported Netlib differential plus bounded Chinneck IIS set. Produces repo
 
 Large cases with explicit time/oracle-call/memory budgets. Used for robustness/performance evidence, not per-PR correctness timing gates.
 
+The qualification executable is `roml-highs/examples/mps_corpus_qualification.rs`.
+Run a bounded PR smoke without solve logs with:
+
+```text
+cargo run -p roml-highs --example mps_corpus_qualification -- . --max-files 3 --no-solve
+```
+
+Omit `--max-files` and `--no-solve` for the scheduled broad run. The command
+validates both exact submodule pins, emits deterministic JSONL, and fails on
+an accepted-input structural discrepancy. It never extracts an archive: a
+Chinneck run requires output produced by the pre-write-safe materializer in a
+fresh, atomically completed `target/roml-corpora/chinneck` directory.
+
 ## 15. Result schema
 
 Per model:
