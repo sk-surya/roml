@@ -44,7 +44,51 @@ Properties:
 - corpus command/workflow: verifies gitlink SHA before running;
 - corpus update: reviewed dependency-like change with before/after qualification report.
 
-## 4. Why submodules instead of copied files
+## 4. Corpus materialization
+
+The two repositories have different physical layouts and the harness must hide that difference behind one manifest/inventory layer.
+
+### Netlib
+
+The Netlib fork stores expanded `.mps` files under its `mps_files/` directory. The qualification harness reads those files directly from the initialized submodule.
+
+### Chinneck
+
+The Chinneck fork stores collections as archives such as:
+
+```text
+INFfromClassificationData.7z
+INFfromNetlibLPs.7z
+Arts.7z
+expand.zip
+```
+
+P35 does **not** commit extracted copies and does not rewrite the fork merely for ROML's convenience. The corpus setup command extracts only the archive(s) needed by the selected tier into an ignored/generated directory, conceptually:
+
+```text
+target/roml-corpora/
+└── chinneck/
+    ├── INFfromClassificationData/
+    ├── INFfromNetlibLPs/
+    ├── Arts/
+    └── expand/
+```
+
+Rules:
+
+- source archives remain immutable inside the pinned submodule;
+- extraction output is disposable and untracked;
+- extraction is idempotent and keyed by corpus SHA + archive identity;
+- a partial extraction is never reused as complete; setup writes an atomic completion marker only after success;
+- the harness validates the expected archive exists before extraction;
+- Linux corpus CI may install/use `7z`/`7zz` solely as qualification tooling; no archive library becomes a `roml` runtime dependency;
+- ZIP extraction may use an available system tool or the same 7-Zip executable;
+- absence of the extraction tool produces an actionable corpus-setup error, never a parser test failure;
+- normal Tier 0 tests have no archive-tool requirement.
+
+A future change may materialize the user's fork with expanded files, but that is not required by P35 and would be reviewed as a corpus-provenance change.
+
+## 5. Why submodules instead of copied files
 
 Submodules are chosen because they provide:
 
@@ -58,18 +102,22 @@ Submodules are chosen because they provide:
 The known disadvantages are accepted and contained:
 
 - recursive clone complexity -> only corpus workflows initialize them;
+- archived Chinneck layout -> materialize into `target/roml-corpora`, never commit extracted data;
 - GitHub archive behavior -> corpus qualification is not a source-package requirement;
 - upstream/fork movement -> exact commits remain the reviewed identity; fork endpoints are owner-controlled.
 
 If submodules later prove operationally harmful, the approved fallback is `corpora.lock` + explicit fetch command using the same URLs/SHAs. Tests must depend on the lock identity, not on HEAD.
 
-## 5. Corpus manifest
+## 6. Corpus manifest
 
 P35 implementation shall create a deterministic manifest owned by ROML, conceptually:
 
 ```text
 corpus_id
-relative_path
+source_repo
+source_commit
+source_archive_or_directory
+relative_model_path
 expected_dialect = supported | unsupported(reason)
 qualification_tier = pr-smoke | scheduled | manual
 known_rows
@@ -83,7 +131,7 @@ The manifest is ROML-authored metadata and may be stored in the repository even 
 
 The manifest must not encode a particular Gurobi IIS as the only correct IIS.
 
-## 6. Netlib role
+## 7. Netlib role
 
 The converted Netlib repository contains MPS conversions of classic Netlib LP models and explicitly notes that some generator/problem cases were not converted. P35 treats this repository as a broad feasible-LP interoperability corpus, not as an authoritative standard for every possible MPS extension.
 
@@ -96,7 +144,9 @@ Qualification goals:
 - inventory files that use unsupported syntax/features;
 - discover real lexical/semantic edge cases before declaring the reader production-qualified.
 
-## 7. Chinneck role
+The repository exposes many ordinary MPS files directly, including small cases such as `afiro.mps`. Exact Tier 1 selection is frozen after the implementation-plan inventory step rather than guessed from filenames alone.
+
+## 8. Chinneck role
 
 The Chinneck repository contains five collections of infeasible linear models. Set 1 alone includes dense classification-derived LPs with all-free or lower-bounded variable variants and empty objective `OBJFCN` rows. The repository notes that models often contain many IISs and that different solvers may isolate different IISs.
 
@@ -113,7 +163,9 @@ P35 therefore uses the corpus to validate:
 
 Published Gurobi IIS row/bound counts are useful descriptive/reference data but are not exact pass criteria.
 
-## 8. Differential execution model
+The initial Tier 1 IIS set shall come from the extracted classification archive and include at least one all-free model and one lower-bounded model. A small bound-participating case such as `IC-wine-LB.mps` is a preferred smoke candidate once extraction inventory confirms the exact archive path/name.
+
+## 9. Differential execution model
 
 Each file has two independent construction paths.
 
@@ -141,7 +193,7 @@ file
 
 The harness must never implement the ROML parser by calling `readModel` and extracting the model. Native HiGHS is test evidence only.
 
-## 9. Structural comparison contract
+## 10. Structural comparison contract
 
 Normalize before comparison where representation differs but mathematics does not.
 
@@ -161,7 +213,7 @@ Compare:
 
 Floating comparisons use explicit absolute/relative tolerances recorded in the harness; exact file decimals should normally round to identical `f64` values but the test contract must not rely on string formatting.
 
-## 10. Solve comparison contract
+## 11. Solve comparison contract
 
 ### Feasible LPs
 
@@ -175,23 +227,24 @@ Require both paths to establish infeasibility under the selected solver policy. 
 
 P35 parser supports linear MILP semantics. Corpus MILP qualification may initially be smaller than LP qualification if the chosen repositories are LP-heavy, but synthetic MILP differential fixtures are mandatory.
 
-## 11. IIS qualification contract
+## 12. IIS qualification contract
 
 For a selected Chinneck model:
 
-1. parse with P35;
-2. independently confirm native HiGHS can read the same supported file;
-3. solve/establish infeasibility through the ROML HiGHS path;
-4. run `analyze_infeasibility` under a recorded plan;
-5. require `Conflict` only when the analysis has the evidence to make that claim;
-6. require each member to resolve through import metadata to an MPS semantic row or variable bound source;
-7. if guarantee is `Irreducible` and completion is complete, rely on/verify the Phase 29 final single-member deletion evidence;
-8. record row-member count and bound-member count;
-9. compare Gurobi published counts only as informational telemetry.
+1. materialize the source archive from the exact pinned submodule;
+2. parse the extracted file with P35;
+3. independently confirm native HiGHS can read the same supported file;
+4. solve/establish infeasibility through the ROML HiGHS path;
+5. run `analyze_infeasibility` under a recorded plan;
+6. require `Conflict` only when the analysis has the evidence to make that claim;
+7. require each member to resolve through import metadata to an MPS semantic row or variable bound source;
+8. if guarantee is `Irreducible` and completion is complete, rely on/verify the Phase 29 final single-member deletion evidence;
+9. record row-member count and bound-member count;
+10. compare Gurobi published counts only as informational telemetry.
 
 Different valid IIS membership is expected.
 
-## 12. Tier policy
+## 13. Tier policy
 
 ### Tier 0 — synthetic
 
@@ -199,23 +252,24 @@ Always runs. No submodules. Full semantic coverage.
 
 ### Tier 1 — PR corpus smoke
 
-Runs on MPS/IIS-impacting changes. Initializes exact submodules. Small allowlist only. Target is stable minutes-scale CI, not exhaustive IIS performance.
+Runs on MPS/IIS-impacting changes. Initializes exact submodules, materializes only required Chinneck archive(s), and executes a small allowlist. Target is stable minutes-scale CI, not exhaustive IIS performance.
 
 ### Tier 2 — scheduled broad corpus
 
-Runs broad supported Netlib parser/solve differential and a bounded Chinneck IIS set. Produces report artifact.
+Runs broad supported Netlib parser/solve differential and a bounded Chinneck IIS set. Materializes required archives and produces a report artifact.
 
 ### Tier 3 — manual/release heavy
 
 Runs large Chinneck/Netlib-derived infeasible cases with explicitly configured time/oracle-call/memory budgets. Used for performance/robustness evidence and algorithm research; not a required per-PR gate.
 
-## 13. Result schema
+## 14. Result schema
 
 The qualification harness should emit deterministic JSON plus a human-readable summary. Per model:
 
 ```text
 corpus
 corpus_sha
+source_archive_or_directory
 path
 file_bytes
 roml_commit
@@ -252,28 +306,31 @@ Rust version
 HiGHS version/build mode
 CPU
 memory
+7z/7zz version when Chinneck archives are materialized
 workflow/run id where applicable
 ```
 
-## 14. Corpus update protocol
+## 15. Corpus update protocol
 
 A submodule pin update is treated like a benchmark dependency update:
 
 1. record old/new SHA;
-2. inventory added/removed/changed files;
-3. rerun supported-dialect classifier;
-4. rerun Tier 1 and relevant Tier 2 qualification;
-5. review any newly unsupported constructs;
-6. commit updated manifest/evidence with the gitlink change.
+2. inventory added/removed/changed files and archive names;
+3. invalidate any materialization cache keyed to the old SHA;
+4. rerun supported-dialect classifier;
+5. rerun Tier 1 and relevant Tier 2 qualification;
+6. review any newly unsupported constructs;
+7. commit updated manifest/evidence with the gitlink change.
 
 No floating branch reference is used as the qualification identity.
 
-## 15. Licensing/provenance posture
+## 16. Licensing/provenance posture
 
 This packet is not a legal opinion. Engineering rules are:
 
 - retain upstream and fork URLs in documentation;
 - do not copy model contents into ROML without explicit redistribution review;
 - submodules are external repositories and remain outside package artifacts;
+- extracted Chinneck files remain generated/untracked test material;
 - synthetic fixtures authored for ROML are the only mandatory in-repository MPS data;
 - if upstream later publishes a license, record it in corpus metadata rather than assuming it retroactively.
