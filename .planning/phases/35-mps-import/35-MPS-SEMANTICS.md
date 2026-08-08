@@ -4,23 +4,52 @@ This file freezes the mathematical interpretation used by P35. It is an implemen
 
 Primary references used during design:
 
-- MOSEK Optimizer API, "The MPS File Format" (11.2): standard/fixed/free layout, row/range/bound semantics, integer markers, duplicate coefficient interpretation.
+- MOSEK, "The MPS File Format": standard/fixed/free layout, row/range/bound semantics, integer markers, and additive duplicate COLUMNS entries.
 - IBM CPLEX MPS documentation: first objective/rim-vector selection and negative RHS objective-offset convention.
-- HiGHS documentation/C API: independent MPS `readModel` support used for qualification.
+- HiGHS documentation/C API: independent MPS `readModel` support used for differential qualification.
 
-Where the original MPS ecosystem is historically ambiguous, ROML chooses one deterministic interpretation and differential-tests it.
+Where the MPS ecosystem is historically ambiguous, ROML chooses one deterministic interpretation in this file. **This file is normative for P35. HiGHS is evidence, not semantic authority.**
 
-## 1. Encoding and lines
+## 1. Validation model: structural for all vectors, semantic for selected vectors
 
-P35 accepts ASCII MPS input. `LF` and `CRLF` line endings are accepted. A non-ASCII byte produces a typed encoding error in P35 rather than being silently reinterpreted.
+MPS may contain multiple named RHS, RANGES, and BOUNDS vectors. P35 deliberately separates two validation layers.
 
-A line whose first character is `*` is a comment and is ignored. Empty/whitespace-only lines are ignored where they do not split a fixed-field token.
+### 1.1 Whole-document structural validation
 
-The reader is streaming and reports one-based line numbers and one-based display columns/spans.
+Every staged record, selected or not, must be structurally valid:
 
-## 2. Section ordering
+- lexical layout is valid;
+- record/bound kind is recognized in the P35 dialect;
+- required numeric fields parse and are finite;
+- COLUMNS/RHS/RANGES row references name declared ROWS entries;
+- BOUNDS targets name variables declared by ordinary COLUMNS data;
+- section order and marker nesting are valid.
 
-P35 recognizes the following linear sequence, allowing optional sections where noted:
+A malformed numeric value or unknown row/variable in an **unselected** vector still makes the file invalid.
+
+### 1.2 Selected-vector semantic validation
+
+Only the selected RHS/RANGES/BOUNDS vector contributes mathematical semantics and only that selected vector is checked for combinations whose validity depends on applying the vector to the model.
+
+Consequences:
+
+- an unselected RANGES vector may contain a syntactically/reference-valid entry targeting an `N` row; it is staged and inert;
+- selecting that vector fails with `InvalidRange`/the dedicated `N`-row RANGE error;
+- an unselected BOUNDS vector may contain a sequence that would resolve to an impossible final domain; it is staged and inert;
+- selecting that BOUNDS vector performs the ordered transitions and then fails domain validation;
+- duplicate same-row RHS/RANGE entries are detected as selected-vector semantic ambiguity when that vector is selected.
+
+This rule applies uniformly to default `First`, explicit `Named`, and `None` selections.
+
+## 2. Encoding and lines
+
+P35 accepts ASCII MPS input. `LF` and `CRLF` line endings are accepted. A non-ASCII byte produces a typed encoding error rather than silent reinterpretation.
+
+A line whose first character is `*` is a comment and is ignored. Empty/whitespace-only lines are ignored where legal. The reader reports one-based logical line numbers and one-based display columns/spans.
+
+## 3. Section ordering
+
+P35 recognizes the following linear sequence:
 
 ```text
 NAME       optional
@@ -34,17 +63,15 @@ BOUNDS     optional
 ENDATA     required
 ```
 
-`OBJSENSE` and `OBJNAME` are accepted in the documented pre-`ROWS` position. P35 does not accept them after matrix/rim sections in the first dialect.
+`OBJSENSE` and `OBJNAME` are accepted in the documented pre-`ROWS` position. `RHS`, `RANGES`, and `BOUNDS` may be omitted and may be present but empty.
 
-`RHS`, `RANGES`, and `BOUNDS` may be omitted. Empty present sections are legal.
+A recognized unsupported semantic section such as `QMATRIX`, `QSECTION`, `QUADOBJ`, `QCMATRIX`, `CSECTION`, `SOS`, or `INDICATORS` terminates parsing with `UnsupportedSection`, even if the preceding linear data is otherwise valid. Unknown section-like headers are errors.
 
-A recognized unsupported semantic section such as `QMATRIX`, `QSECTION`, `QUADOBJ`, `QCMATRIX`, `CSECTION`, `SOS`, or `INDICATORS` terminates parsing with `UnsupportedSection` even if the preceding linear data is otherwise valid.
+P35 accepts at most one occurrence of each section header. Multiple named vectors live inside one RHS/RANGES/BOUNDS section.
 
-Unknown section-like headers are errors, not comments.
+## 4. Fixed lexical fields
 
-## 3. Fixed lexical fields
-
-P35 fixed-format parsing follows the conventional MPS field positions used by MOSEK documentation.
+P35 fixed-format parsing follows conventional MPS field positions.
 
 ### ROWS
 
@@ -63,7 +90,7 @@ P35 fixed-format parsing follows the conventional MPS field positions used by MO
 | row 2 | 40 | 8 | optional row name |
 | value 2 | 50 | 12 | optional numeric value |
 
-For `COLUMNS`, field 2 is the column/variable name. For `RHS` and `RANGES`, field 2 is the vector name.
+For `COLUMNS`, field 2 is the variable name. For `RHS` and `RANGES`, it is the vector name.
 
 ### BOUNDS
 
@@ -72,21 +99,19 @@ For `COLUMNS`, field 2 is the column/variable name. For `RHS` and `RANGES`, fiel
 | bound kind | 2 | 2 | `FR`, `FX`, `LO`, `MI`, `PL`, `UP`, `BV`, `LI`, `UI` |
 | vector name | 5 | 8 | bounds-vector name |
 | variable name | 15 | 8 | target variable |
-| value | 25 | 12 | optional/required depending on bound kind |
+| value | 25 | 12 | optional/required by kind |
 
 ### Integer markers
 
-Marker records occur inside `COLUMNS` using the same fixed fields. The row-name-like field contains `'MARKER'` and the later field contains `'INTORG'` or `'INTEND'`. The marker record is control metadata and contributes no matrix coefficient.
+Marker records occur inside `COLUMNS`. The marker token is `'MARKER'` and the control value is `'INTORG'` or `'INTEND'`. Marker records contribute no matrix coefficient and create no variable.
 
-## 4. Free lexical format
+## 5. Free lexical format
 
-Free MPS uses whitespace-separated fields with no blanks inside identifiers. It permits names longer than eight characters. Quoted marker tokens are recognized according to marker syntax rather than treated as ordinary identifiers.
+Free MPS uses whitespace-separated fields with no blanks inside identifiers and permits names longer than eight characters. Quoted marker tokens are recognized as marker syntax. P35 does not accept arbitrary quoted identifiers containing spaces in the first dialect.
 
-P35 does not accept arbitrary quoted identifiers with embedded spaces in the first dialect.
+## 6. Numeric syntax
 
-## 5. Numeric syntax
-
-P35 accepts finite decimal/scientific values compatible with ordinary MPS examples:
+P35 accepts finite decimal/scientific values such as:
 
 ```text
 12
@@ -99,86 +124,74 @@ P35 accepts finite decimal/scientific values compatible with ordinary MPS exampl
 -2.3e+08
 ```
 
-Numeric fields that parse to NaN are rejected. Infinity must be expressed through bound/row semantics rather than numeric `inf`/`infinity` tokens in P35.
+NaN is rejected. Infinity is expressed through row/bound semantics rather than numeric `inf`/`infinity` tokens. Values are stored as `f64` after syntax validation; ROML domain validation remains authoritative during model construction.
 
-The reader stores values as `f64` after syntax validation. ROML numeric/domain validation remains authoritative during model construction.
+## 7. Row declarations
 
-## 6. Row declarations
+Each `ROWS` record declares a unique row and one kind:
 
-Each `ROWS` record declares a unique row name and one kind:
-
-| Kind | Base activity lower | Base activity upper |
+| Kind | Base lower | Base upper |
 |---|---:|---:|
 | `E` | RHS | RHS |
 | `G` | RHS | `+inf` |
 | `L` | `-inf` | RHS |
 | `N` | `-inf` | `+inf` |
 
-When an RHS entry is omitted for `E/G/L`, its RHS value is zero.
+When selected RHS omits an `E/G/L` row, its RHS defaults to zero. `N` rows are nonconstraint rows. Duplicate row names are errors.
 
-`N` rows are nonconstraint rows. One may supply the objective coefficient vector.
+## 8. Objective selection and sense
 
-Duplicate row names are errors.
-
-## 7. Objective selection and sense
-
-Objective row selection:
+Objective selection:
 
 1. if `OBJNAME` is present, it must name an existing `N` row and that row is selected;
-2. otherwise the first `N` row in declaration order is selected;
-3. if there is no `N` row, the ROML model receives a zero objective.
+2. otherwise the first `N` row is selected;
+3. if there is no `N` row, ROML receives a zero objective.
 
-Nonselected `N` rows do not become constraints. They remain import metadata only.
+Nonselected `N` rows do not become constraints. Their COLUMNS/RHS data may be retained in import metadata but have no model effect.
 
 Objective sense:
 
-- `MIN` or `MINIMIZE` -> minimize;
-- `MAX` or `MAXIMIZE` -> maximize;
+- `MIN` / `MINIMIZE` -> minimize;
+- `MAX` / `MAXIMIZE` -> maximize;
 - absent `OBJSENSE` -> minimize.
 
 Multiple sense records or invalid sense text are errors.
 
-## 8. COLUMNS and matrix coefficients
+## 9. COLUMNS and duplicate coefficients
 
-A COLUMNS data record contains one column name and one or two `(row,value)` pairs.
+A COLUMNS data record contains one variable name and one or two `(row,value)` pairs. Every referenced row must have been declared.
 
-All referenced row names must have been declared in `ROWS`.
+- selected objective row -> objective coefficient;
+- `E/G/L` row -> constraint matrix coefficient;
+- nonselected `N` row -> inert metadata.
 
-Entries targeting the selected objective row contribute to the objective coefficient for that variable. Entries targeting `E/G/L` rows contribute to the constraint matrix. Entries targeting nonselected `N` rows are preserved only as nonselected free-row metadata and do not affect the ROML model.
+A variable exists if it has at least one ordinary COLUMNS data record. If the same matrix/objective cell occurs multiple times, values are **added algebraically**. Exact zero after accumulation is omitted according to ROML canonical coefficient rules.
 
-A variable exists if it has at least one ordinary COLUMNS data record. Marker records do not create variables.
+P35 accepts repeated column blocks even though strict historical MPS expects one variable's elements to be grouped. Staging merges them deterministically.
 
-If the same mathematical matrix/objective entry occurs more than once, values are added algebraically. This applies equally to repeated objective-row coefficients. Exact zero after accumulation is omitted from the canonical ROML coefficient cell.
+**The additive duplicate rule is specific to COLUMNS/objective coefficient cells. It does not imply additive RHS or RANGE semantics.** MOSEK explicitly documents additive duplicate matrix entries; P35 does not extrapolate that rule to other sections.
 
-P35 accepts repeated column blocks even though conventional MPS recommends grouping all entries of one variable together; the staging finalizer merges them deterministically. A strict-grouping warning option may be added later but is not required for semantic correctness.
+## 10. RHS vectors
 
-## 9. RHS vectors
+Multiple RHS vectors are staged. Selection uses `First`, `Named(name)`, or `None`; default is `First`. If no vector is selected/present, row RHS values default to zero.
 
-Multiple RHS vector names may appear. P35 staging preserves all of them.
+For the selected RHS vector:
 
-Selection is controlled by `MpsVectorSelection`:
+- `E/G/L` entries define the base RHS value;
+- selected objective-row entry `r` produces objective constant `-r`;
+- entries on nonselected `N` rows have no model effect.
 
-- `First`: first RHS vector name encountered in file order;
-- `Named(name)`: exact named vector or typed missing-vector error;
-- `None`: behave as if no RHS entries were supplied.
+### 10.1 Duplicate selected RHS entries
 
-Default selection is `First`. If no RHS vector exists, every row RHS defaults to zero.
+If the **selected RHS vector** specifies the same row more than once, P35 rejects the vector with a typed duplicate/ambiguity error. Values are **not summed, first-wins, or last-wins**.
 
-For `E/G/L` rows, selected RHS values establish the base row value described above.
+If a nonselected RHS vector contains repeated same-row entries, the records may remain staged because structural syntax/references are valid. Selecting that vector causes the duplicate error.
 
-For the selected objective row, an RHS value `r` sets the ROML objective constant to `-r`.
+This strict rule is intentional because the cited MPS reference defines RHS assignment but does not define duplicate RHS accumulation.
 
-RHS values on nonselected `N` rows do not affect the ROML objective.
+## 11. RANGES vectors
 
-If an RHS vector specifies the same row multiple times, P35 adds those entries algebraically, matching the matrix-duplicate policy. This is a ROML deterministic interpretation and receives differential fixtures.
-
-## 10. RANGES vectors
-
-Multiple RANGES vectors are staged and one is selected with the same `First` / `Named` / `None` policy. Default is `First`.
-
-Let selected RHS value be `b` and selected range value be `r`.
-
-The resolved constraint bounds are:
+Multiple RANGES vectors are staged; one is selected with `First`, `Named`, or `None`. Let selected RHS value be `b` and selected range value be `r`.
 
 | Row kind | Condition | Lower | Upper |
 |---|---|---:|---:|
@@ -187,15 +200,23 @@ The resolved constraint bounds are:
 | `G` | any sign | `b` | `b + abs(r)` |
 | `L` | any sign | `b - abs(r)` | `b` |
 
-A RANGE entry for an `N` row is rejected in P35 as semantically invalid for the supported dialect rather than silently ignored.
+A ranged row becomes **one** ranged ROML semantic constraint.
 
-A ranged row is emitted into ROML as one ranged semantic constraint with both finite bounds where appropriate.
+### 11.1 RANGE on `N`
 
-Repeated selected RANGE entries for the same row are rejected as ambiguous rather than accumulated. RANGE values are transformations, not sparse linear coefficients.
+The standard RANGE transformation is defined for constraint rows; the MOSEK reference leaves `N` without a RANGE transformation. Therefore:
 
-## 11. Variable defaults before BOUNDS
+- a RANGE entry targeting `N` in the **selected** RANGES vector is a typed semantic error;
+- the same syntactically/reference-valid record in an **unselected** vector is staged but inert;
+- explicitly selecting that vector produces the same typed semantic error.
 
-For an ordinary continuous variable:
+### 11.2 Duplicate selected RANGE entries
+
+If the selected RANGES vector specifies the same row more than once, P35 rejects it as ambiguous. RANGE entries are transformations, not sparse matrix coefficients, and are never algebraically accumulated.
+
+## 12. Variable defaults before selected BOUNDS
+
+Ordinary continuous variable:
 
 ```text
 lower = 0
@@ -203,7 +224,7 @@ upper = +inf
 kind  = continuous
 ```
 
-For a variable whose COLUMNS entries occur inside an active `INTORG`/`INTEND` region:
+Variable appearing while `INTORG` is active:
 
 ```text
 lower = 0
@@ -211,26 +232,24 @@ upper = 1
 kind  = integer
 ```
 
-The integer-marker default of `[0,1]` is a compatibility behavior documented by MOSEK and is deliberately reproduced.
+MOSEK documents the legacy marker default `[0,1]`. If a variable appears in both marked and ordinary COLUMNS records, integer status dominates; it does not toggle back to continuous.
 
-If a variable appears in both integer-marked and ordinary COLUMNS blocks, it remains integer. Conflicting marker structure itself is an error; repeated appearances do not toggle the variable back to continuous.
-
-## 12. Integer markers
+## 13. Integer markers
 
 Marker state begins outside an integer region.
 
-- `'INTORG'` while already inside an integer region -> `InvalidMarkerNesting`.
-- `'INTEND'` while outside -> `InvalidMarkerNesting`.
-- reaching the end of `COLUMNS`/file while still inside -> `InvalidMarkerNesting`.
-- multiple disjoint properly paired integer regions are accepted.
+- `INTORG` while inside -> `InvalidMarkerNesting`;
+- `INTEND` while outside -> `InvalidMarkerNesting`;
+- leaving COLUMNS/EOF while inside -> `InvalidMarkerNesting`;
+- multiple disjoint balanced regions are accepted.
 
-Each variable with any data record encountered while marker state is active is marked integer and receives the marker default bounds unless selected BOUNDS records modify them.
+Every variable with any ordinary data record while the marker is active is marked integer and receives the marker default before selected BOUNDS transitions.
 
-## 13. BOUNDS vectors
+## 14. BOUNDS vectors
 
-Multiple BOUNDS vectors are staged and one is selected. Default selection is `First`. If no BOUNDS vector exists, the domains from section 11 remain.
+Multiple BOUNDS vectors are staged; one is selected. Default is `First`. If no selected BOUNDS exists, section 12 defaults remain.
 
-Selected bound records are applied in file order to the current domain. "unchanged" below means the current value from defaults/markers/prior selected records remains.
+Only the selected BOUNDS vector is executed as a domain state machine. Records apply in file order:
 
 | Kind | Lower | Upper | Makes integer? | Value required? |
 |---|---:|---:|---|---|
@@ -240,87 +259,175 @@ Selected bound records are applied in file order to the current domain. "unchang
 | `MI` | `-inf` | unchanged | no | no |
 | `PL` | unchanged | `+inf` | no | no |
 | `UP` | unchanged | `v` | no | yes |
-| `BV` | `0` | `1` | yes, binary | no |
+| `BV` | `0` | `1` | binary | no |
 | `LI` | `ceil(v)` | unchanged | yes | yes |
 | `UI` | unchanged | `floor(v)` | yes | yes |
 
-For `LI/UI`, the rounding behavior follows the MOSEK documented interpretation and avoids creating a fractional integer bound.
+`LI/UI` rounding follows the MOSEK interpretation. After all selected records, `lower <= upper` and ROML domain validation must succeed.
 
-After all selected records for a variable are applied, `lower <= upper` must hold and ROML domain validation must succeed.
+A `BV` variable remains binary only if final bounds remain inside `[0,1]`; a later selected transition that broadens it outside binary bounds is a typed conflict under P35. Ordinary bound records do not remove integrality established by markers/LI/UI.
 
-A `BV` variable is binary when final bounds remain `[0,1]`. Subsequent selected records that broaden it beyond `[0,1]` are rejected as a conflicting binary-domain representation in P35 rather than silently converting it to a general integer. General integer variables should use marker/`LI`/`UI` semantics.
+Repeated BOUNDS records are **not** governed by the RHS/RANGE duplicate-rejection rule: BOUNDS is an ordered transition stream, so repeated records execute in file order under this table.
 
-A continuous `FX/LO/UP/FR/MI/PL` record does not remove integrality already established by a marker or integer bound record.
+An unselected BOUNDS vector is structurally validated but its final domain is not resolved. If it would be invalid, that matters only when selected.
 
-## 14. Named vector identity
+## 15. Named vector identity and selection
 
-Vector names are compared exactly under ASCII byte equality. P35 does not case-fold row, variable, vector, or objective names.
+Vector names are compared by exact ASCII byte equality. P35 does not case-fold row, variable, vector, or objective names.
 
-Records for one vector may be interleaved with records for another vector inside the same rim section; staging groups them by vector name while preserving first-seen vector order and per-vector record order.
+Records for vectors may be interleaved within a rim section; staging groups by vector name while preserving first-seen vector order and per-vector record order.
 
-## 15. Section multiplicity
+Selection:
 
-P35 accepts at most one occurrence of each section header in the first dialect. Multiple named vectors live inside a single RHS/RANGES/BOUNDS section. Repeated section headers are `InvalidSectionOrder`/duplicate-section errors.
+```text
+First       -> first vector name encountered
+Named(name) -> exact named vector or typed missing-vector error
+None        -> no entries of that class affect the model
+```
 
-## 16. ENDATA and trailing input
+## 16. ENDATA and auto layout
 
-`ENDATA` terminates the model. After `ENDATA`, only blank/comment lines are accepted. Additional data/section records after `ENDATA` are errors.
+`ENDATA` terminates the model. After it, only blank/comment lines are accepted. Missing `ENDATA` is an error.
 
-Missing `ENDATA` is an error in P35 even if EOF otherwise follows a complete BOUNDS/RANGES/RHS/COLUMNS section. This makes truncation visible.
+Before fixed/free layout is locked:
 
-## 17. Auto fixed/free detection
-
-Before layout is locked, a meaningful record is interpreted under both fixed and free lexical rules.
-
-- one valid interpretation -> lock to that layout;
-- both valid and semantically identical -> accept and remain undecided;
-- both valid but semantically different -> `AmbiguousFormat`;
+- one valid interpretation -> lock it;
+- both valid and semantically identical -> accept, remain undecided;
+- both valid but different -> `AmbiguousFormat`;
 - neither valid -> section-aware parse error.
 
-Once locked, the layout does not change within the file.
+After lock, later records use only that layout.
 
-Section headers are recognized independently enough to establish section state before data-line dual parsing.
+## 17. Explicit and synthetic source provenance
+
+The imported model is mathematical/canonical, not a textual AST. `MpsSourceMap` must nevertheless provide a provenance origin for every finite imported bound that can appear as a Phase 29 restriction.
+
+### 17.1 Explicit bound records
+
+A bound produced or last modified by a selected explicit BOUNDS record retains the exact record `SourceSpan` and bound kind.
+
+### 17.2 Implicit continuous default
+
+If an ordinary continuous variable retains the MPS default finite lower bound `0`, its lower-bound provenance is synthetic:
+
+```text
+ImplicitContinuousDefault {
+    side: Lower,
+    value: 0,
+    variable_first_columns_span,
+}
+```
+
+The first ordinary COLUMNS record is an anchor showing where the variable entered the MPS model. The provenance explicitly states that no BOUNDS line supplied the value.
+
+The default `+inf` upper side is metadata but is not a finite IIS restriction.
+
+### 17.3 Implicit INTORG defaults
+
+If an integer-marked variable retains either marker default, provenance is synthetic:
+
+```text
+ImplicitIntegerMarkerDefault {
+    side: Lower | Upper,
+    value: 0 | 1,
+    intorg_marker_span,
+    variable_first_marked_columns_span,
+}
+```
+
+If an explicit selected BOUNDS record overrides one side, that side uses the explicit record while any retained marker-default side keeps the synthetic marker origin.
+
+### 17.4 Rendering rule
+
+Synthetic provenance must render as a format-derived default with source anchors; it must never fabricate a BOUNDS line number. IIS acceptance requires every finite variable-bound member to resolve to exactly one explicit-or-synthetic MPS origin.
+
+Row provenance analogously retains row declaration plus selected RHS/RANGE provenance/default metadata as useful, but the critical P35 blocker is finite variable-bound origin completeness.
 
 ## 18. Normalization versus source preservation
 
-The imported ROML model is mathematical/canonical, not a textual AST. P35 may normalize:
+P35 may normalize:
 
-- duplicate coefficient entries into one coefficient;
-- explicit zero RHS to default zero;
-- equivalent bound sequences to one final domain;
+- duplicate COLUMNS coefficient entries into one coefficient;
+- explicit zero selected RHS to semantic zero;
+- equivalent selected bound transition sequences to one final domain;
 - fixed/free lexical differences;
 - row/column record grouping.
 
-`MpsMetadata` and `MpsSourceMap` preserve enough record provenance for diagnostics and IIS mapping, but P35 does not preserve comments/spacing for P36 byte-for-byte replay.
+It does **not** normalize duplicate selected RHS or RANGE entries into a value; those are errors.
+
+`MpsMetadata` and `MpsSourceMap` preserve enough provenance for diagnostics/IIS mapping but do not preserve comments/spacing for textual replay.
 
 ## 19. P36 writer semantic target
 
-P36 writes models that are representable by the P35 linear dialect. Its canonical free-format output shall, when read by P35, reconstruct the same mathematical ROML snapshot modulo model revision/instance identity and nonsemantic source metadata.
+P36 writes models representable by this linear dialect. Reading P36 canonical free-format output with P35 must reconstruct the same mathematical ROML snapshot modulo model identity/revision and nonsemantic source metadata.
 
-Writer rules shall be derived from this file in reverse:
+Writer reverse rules include:
 
 - one selected objective row;
-- deterministic generated vector names;
+- deterministic generated rim-vector names;
 - one row per ROML linear constraint;
 - RANGES only for genuine ranged rows;
 - minimal deterministic BOUNDS records;
-- integer/binary representation chosen consistently;
+- deterministic integrality representation;
 - objective constant encoded as negative RHS on objective row;
-- stable row/column ordering from ROML canonical ordering, never hash iteration.
+- stable ROML canonical ordering, never hash iteration.
 
-## 20. Required differential probes before implementation closes
+## 20. Differential authority and disposition policy
 
-Because MPS has historical reader variation, the following selected semantics must be checked against native HiGHS on synthetic files before P35 claims compatibility:
+The compatibility target is not "whatever HiGHS does." The authority order is:
+
+1. this frozen P35 semantics reference;
+2. cited authoritative MPS documentation supporting each frozen standard behavior;
+3. explicit strict ROML policy for behavior the historical format does not define sufficiently.
+
+HiGHS `readModel` is an independent implementation used to discover mistakes and interoperability differences.
+
+### 20.1 Accepted P35 inputs
+
+For an input P35 accepts, normalized ROML and HiGHS semantics are expected to match. A mismatch is a **production-merge blocker** until one reviewed disposition is recorded:
+
+- `roml_bug_fixed`: ROML changes to the frozen/authoritative semantics;
+- `dialect_narrowed`: the input is removed from the accepted P35 dialect and ROML now rejects it explicitly;
+- `compatibility_exception`: authoritative evidence supports ROML's semantics, the difference is documented in support metadata, and owner review approves the exception.
+
+There is no rule that automatically changes ROML to match HiGHS.
+
+### 20.2 Intentional strict rejections
+
+For frozen strict-policy inputs such as duplicate selected RHS, duplicate selected RANGE, or selected RANGE-on-`N`, ROML is expected to reject. If HiGHS accepts such a file, the differential harness records `intentional_roml_rejection` plus native behavior. That is not semantic equivalence and must not be reported as a pass of the accepted-input theorem; it is compatibility telemetry for an input outside ROML's accepted strict subset.
+
+### 20.3 Required probes
+
+Accepted-input probes:
 
 1. objective-row RHS sign;
-2. duplicate objective/matrix entries;
+2. duplicate COLUMNS objective/matrix entries;
 3. all four RANGE cases;
 4. marker-default `[0,1]`;
-5. marker + explicit LO/UP bounds;
+5. marker + explicit LO/UP;
 6. `LI/UI` rounding;
-7. `FR`, `MI`, and `PL` sequences;
+7. `FR`, `MI`, `PL`, `FX` sequences;
 8. multiple named rim vectors and first-vector selection;
-9. repeated RHS same-row policy;
-10. long-name free format.
+9. long-name free format;
+10. empty objective.
 
-If native HiGHS differs from this contract, the implementation review must determine whether ROML keeps the documented contract and records an intentional difference or amends this semantics file before production merge. No discrepancy may be silently accepted.
+Strict-policy probes:
+
+11. duplicate same-row selected RHS;
+12. duplicate same-row selected RANGE;
+13. selected RANGE on `N`.
+
+Every observed divergence receives one of the explicit classifications above. No discrepancy may be silently accepted.
+
+## 21. Normative notes tied to the cited MOSEK reference
+
+The current MOSEK MPS reference explicitly documents:
+
+- `E/G/L/N` row meaning and first-`N` objective behavior;
+- standard RANGE transformations for `E/G/L`, while `N` has no transformation entry;
+- integer-marker default lower `0` and upper `1`;
+- multiple disjoint integer marker sections;
+- additive repeated **COLUMNS matrix** elements;
+- fixed and free MPS layouts.
+
+Those observations motivate, but do not replace, the precise ROML policy frozen above.
