@@ -22,13 +22,13 @@ use std::{
     fmt,
     io::{self, Read},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 #[cfg(target_os = "linux")]
 use std::{
     fs::{self, File},
     io::Write,
-    process::Command,
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -236,16 +236,18 @@ pub fn validate_optional_corpora(
     repository_root: &Path,
 ) -> Result<Option<[PathBuf; 2]>, PinValidationError> {
     let checkouts = CORPUS_PINS.map(|pin| repository_root.join(pin.relative_checkout));
-    let present = checkouts.each_ref().map(|checkout| checkout.is_dir());
-    if present == [false, false] {
+    let initialized = checkouts
+        .each_ref()
+        .map(|checkout| checkout.is_dir() && is_initialized_submodule(checkout));
+    if initialized == [false, false] {
         return Ok(None);
     }
-    if !present[0] {
+    if !initialized[0] {
         return Err(PinValidationError::IncompleteSetup {
             missing: checkouts[0].clone(),
         });
     }
-    if !present[1] {
+    if !initialized[1] {
         return Err(PinValidationError::IncompleteSetup {
             missing: checkouts[1].clone(),
         });
@@ -262,6 +264,38 @@ pub fn validate_optional_corpora(
         validate_pin_checkout(pin, checkout, repository.trim(), commit.trim(), &status)?;
     }
     Ok(Some(checkouts))
+}
+
+fn is_initialized_submodule(checkout: &Path) -> bool {
+    let metadata = checkout.join(".git");
+    if !metadata.is_file() && !metadata.is_dir() {
+        return false;
+    }
+
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+    let reported = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    match (fs_canonicalize(checkout), fs_canonicalize(&reported)) {
+        (Some(checkout), Some(reported)) => checkout == reported,
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fs_canonicalize(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fs_canonicalize(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
 }
 
 fn git_value<const N: usize>(
@@ -449,10 +483,14 @@ impl ExpectedArchiveInventory {
     }
 
     fn marker_contents(&self) -> String {
-        self.files
-            .iter()
-            .map(|(path, digest)| format!("{digest}  {path}\n"))
-            .collect()
+        let mut contents = String::new();
+        for (path, digest) in &self.files {
+            contents.push_str(digest);
+            contents.push_str("  ");
+            contents.push_str(path);
+            contents.push('\n');
+        }
+        contents
     }
 }
 
