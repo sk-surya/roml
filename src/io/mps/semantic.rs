@@ -152,6 +152,7 @@ pub(crate) fn resolve(
         let id = add_variable(&mut model, name, state).map_err(model_error)?;
         variable_ids.insert(name.clone(), id);
     }
+    let row_expressions = row_expressions(&staging, &variable_ids);
 
     let mut source_map = MpsSourceMap::default();
     for row in staging.rows() {
@@ -197,7 +198,7 @@ pub(crate) fn resolve(
         .unwrap_or_else(|| model.add_objective(objective_sense));
     let objective_expr = objective_row
         .as_deref()
-        .map(|row| expression_for_row(row, &staging, &variable_ids))
+        .and_then(|row| row_expressions.get(row).cloned())
         .unwrap_or_default();
     model
         .set_objective_expr(objective_id, objective_expr)
@@ -219,7 +220,7 @@ pub(crate) fn resolve(
         let range_value = ranges_values.get(row.name()).copied();
         let constraint_bounds =
             row_bounds(row.kind(), rhs_value, range_value, row.name(), row.span())?;
-        let expression = expression_for_row(row.name(), &staging, &variable_ids);
+        let expression = row_expressions.get(row.name()).cloned().unwrap_or_default();
         model
             .add_constraint(ConstraintSpec::new(expression, constraint_bounds).named(row.name()))
             .map_err(model_error)?;
@@ -478,22 +479,21 @@ fn add_variable(
     model.add_variable(definition)
 }
 
-fn expression_for_row(
-    row_name: &str,
+fn row_expressions(
     staging: &MpsStaging,
     variable_ids: &HashMap<String, crate::Variable>,
-) -> LinExpr {
-    let mut expression = LinExpr::new();
+) -> BTreeMap<String, LinExpr> {
+    let mut expressions: BTreeMap<String, LinExpr> = BTreeMap::new();
     for column in staging.columns() {
         if let Some(var) = variable_ids.get(column.name()) {
             for entry in column.entries() {
-                if entry.row_name() == row_name {
-                    expression = expression.term(entry.value(), *var);
-                }
+                let expression = expressions.entry(entry.row_name().to_owned()).or_default();
+                let current = std::mem::take(expression);
+                *expression = current.term(entry.value(), *var);
             }
         }
     }
-    expression
+    expressions
 }
 
 fn bound_value(
@@ -669,5 +669,29 @@ mod tests {
                     MpsBoundOrigin::ImplicitContinuousDefault { .. }
                 )
         }));
+    }
+
+    #[test]
+    fn row_expression_index_preserves_each_sparse_entry_once() {
+        let input =
+            "ROWS\n N OBJ\n L R1\n G R2\nCOLUMNS\n X OBJ 2 R1 3\n X R1 4 R2 5\n Y R1 6\nENDATA\n";
+        let options = MpsReadOptions::default();
+        let (_, staging) = stage_input(Cursor::new(input.as_bytes()), &options)
+            .expect("staging must accept the sparse fixture");
+        let mut variable_ids = HashMap::new();
+        variable_ids.insert(
+            "X".to_owned(),
+            crate::id::VarId::new(0, crate::id::Generation::new()),
+        );
+        variable_ids.insert(
+            "Y".to_owned(),
+            crate::id::VarId::new(1, crate::id::Generation::new()),
+        );
+
+        let expressions = row_expressions(&staging, &variable_ids);
+
+        assert_eq!(expressions["OBJ"].terms().len(), 1);
+        assert_eq!(expressions["R1"].terms().len(), 3);
+        assert_eq!(expressions["R2"].terms().len(), 1);
     }
 }
