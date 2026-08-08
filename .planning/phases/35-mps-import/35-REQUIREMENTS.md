@@ -32,11 +32,15 @@ The reader shall implement deterministic objective-row selection, objective sens
 
 ### MPS-R08 — Matrix semantics
 
-Repeated matrix entries for the same `(row,column)` shall be added algebraically. Resulting exact zeros shall follow ROML canonical coefficient normalization.
+Repeated matrix entries for the same `(row,column)` shall be added algebraically. Resulting exact zeros shall follow ROML canonical coefficient normalization. This additive rule does not extend to RHS/RANGES records.
 
-### MPS-R09 — Rim vectors
+### MPS-R09 — Rim vectors and validation layers
 
 The staging document shall preserve multiple named RHS, RANGES, and BOUNDS vectors until one vector of each class is selected. Default and named selection shall be deterministic and reported in import metadata.
+
+Every staged rim record shall pass lexical/structural validation: valid record kind, finite numeric syntax where applicable, and valid referenced row/variable identity. Model-semantic validation shall apply only to the selected vector of each class. Thus an unselected syntactically valid alternative vector may contain a combination that would be rejected if selected; selecting that vector must produce the corresponding typed semantic error.
+
+Within a selected RHS vector, specifying the same row more than once is a typed duplicate/ambiguity error. Within a selected RANGES vector, specifying the same row more than once is likewise an error. A selected RANGE entry targeting an `N` row is an error. BOUNDS records remain ordered state transitions under the semantics reference.
 
 ### MPS-R10 — Variable domains
 
@@ -46,9 +50,17 @@ Continuous defaults, free/fixed/lower/upper bounds, binary/integer bound records
 
 Problem, row, and variable names shall be preserved without undocumented truncation. Free-format long names shall remain intact.
 
-### MPS-R12 — Provenance
+### MPS-R12 — Provenance, including implicit semantics
 
-The import result shall expose source metadata sufficient to relate ROML variables, constraints, bounds, and objective records back to MPS source lines/spans without storing source-file concerns in the canonical `Model`.
+The import result shall expose source metadata sufficient to relate ROML variables, constraints, bounds, and objective records back to MPS provenance without storing source-file concerns in the canonical `Model`.
+
+Provenance shall distinguish explicit source records from implicit format defaults. At minimum:
+
+- a continuous variable's implicit finite lower bound `0` shall have synthetic `ImplicitContinuousDefault` provenance anchored to the variable's first ordinary COLUMNS record;
+- an INTORG variable's implicit lower `0` and upper `1` shall have synthetic `ImplicitIntegerMarkerDefault` provenance anchored to the controlling `INTORG` marker and the variable's first marked COLUMNS record;
+- explicit BOUNDS records shall retain their exact source spans.
+
+An IIS member corresponding to a finite imported variable bound must therefore resolve to either an explicit bound record or one of these synthetic MPS origins. Synthetic origins must never be rendered as if a literal BOUNDS line existed.
 
 ### MPS-R13 — Diagnostics
 
@@ -82,9 +94,11 @@ P35 shall not introduce a solver/file-format-neutral interchange IR solely to an
 
 The repository shall contain small redistributable synthetic fixtures covering every supported record and edge semantic. These fixtures shall run in normal CI without external repositories.
 
-### MPS-Q02 — HiGHS differential reader
+### MPS-Q02 — HiGHS differential reader and authority policy
 
 For selected supported files, qualification shall compare native HiGHS file reading with ROML MPS reading followed by ROML-to-HiGHS compilation.
+
+The frozen ROML MPS semantics reference is normative; HiGHS is an independent compatibility oracle, not the authority that defines ROML semantics. For inputs accepted by P35, a semantic mismatch with HiGHS is a production-merge blocker until one of three reviewed dispositions occurs: ROML is corrected; the P35 accepted dialect is narrowed so the input is rejected; or an explicit compatibility exception is approved using authoritative format evidence. HiGHS accepting an input that ROML deliberately rejects under a frozen strict policy is recorded as `intentional_roml_rejection`, not silently treated as parser equivalence.
 
 ### MPS-Q03 — Structural equivalence
 
@@ -104,7 +118,7 @@ Complete ROML IIS reports shall be validated according to the Phase 29 irreducib
 
 ### MPS-Q07 — Source-aware IIS evidence
 
-For imported models, reported IIS members shall be resolvable to original MPS semantic rows and/or variable-bound records with source provenance.
+For imported models, reported IIS members shall be resolvable to original MPS semantic rows and/or variable bounds with explicit-or-synthetic provenance as defined by MPS-R12.
 
 ### MPS-Q08 — External corpus pins
 
@@ -135,6 +149,10 @@ The staging representation shall avoid per-nonzero hash-map/object overhead that
 ### MPS-S04 — Determinism
 
 Given identical bytes and read options, successful imports shall produce deterministic semantic ordering/metadata and deterministic errors for invalid input.
+
+### MPS-S05 — Safe corpus archive extraction
+
+Any Chinneck archive materialization helper shall treat archive entries as untrusted input. Before writing an entry it shall reject absolute paths, Windows drive/UNC paths, any normalized `..` traversal, symlink/hardlink/special-file entries, and any destination that does not remain beneath the fresh extraction root. Extraction shall occur in a fresh temporary directory, shall not follow filesystem symlinks, and shall be atomically promoted/cached only after full validation and successful completion.
 
 ## P36 forward requirements
 
