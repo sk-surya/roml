@@ -8,6 +8,11 @@ use std::{io, path::PathBuf};
 
 use crate::Model;
 
+#[allow(dead_code)]
+mod staging;
+#[allow(dead_code)]
+mod vectors;
+
 /// Selects the lexical layout used to interpret an MPS input.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MpsFormat {
