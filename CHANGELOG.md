@@ -26,6 +26,14 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### MPS import qualification (P35, in progress)
+- Added solver-independent fixed/free MPS stream and path readers with
+  transactional staging, typed source-aware diagnostics, deterministic LP/MILP
+  semantics, and explicit row/variable provenance.
+- Added synthetic, metamorphic, fuzz-surface, HiGHS differential, pinned
+  Netlib, and imported P29 IIS qualification coverage. Chinneck archive
+  materialization remains a qualification gate before P35 completion.
+
 #### Core model correctness (P1)
 - **Canonical coefficient cells** — duplicate terms for the same `(target, variable)` pair
   are algebraically combined (`p*x + q*x → (p+q)*x`) instead of overwriting.
