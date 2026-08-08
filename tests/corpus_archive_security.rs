@@ -15,9 +15,10 @@ use std::{
 };
 
 use corpus::{
-    materialize_chinneck_archive, validate_optional_corpora, validate_pin, validate_pin_checkout,
-    ArchiveEntry, ArchiveEntryKind, CorpusCacheKey, CorpusClassification, CorpusManifestEntry,
-    ExpectedArchiveInventory, MaterializationError, PinValidationError, CORPUS_PINS,
+    materialize_chinneck_archive, materialize_chinneck_archive_stream, validate_optional_corpora,
+    validate_pin, validate_pin_checkout, ArchiveEntry, ArchiveEntryKind, CorpusCacheKey,
+    CorpusClassification, CorpusManifestEntry, ExpectedArchiveInventory, MaterializationError,
+    PinValidationError, CORPUS_PINS,
 };
 use sha2::{Digest, Sha256};
 
@@ -86,6 +87,28 @@ fn inventory(files: &[(&str, &[u8])]) -> ExpectedArchiveInventory {
         ((*path).to_owned(), format!("{digest:x}"))
     }))
     .expect("test inventory must be valid")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn streaming_materializer_consumes_live_payloads_before_atomic_promotion() {
+    let sandbox = Sandbox::new();
+    let expected = inventory(&[("models/case.mps", b"NAME STREAM\nENDATA\n")]);
+    let output =
+        materialize_chinneck_archive_stream(sandbox.path(), &cache_key(), &expected, |emit| {
+            emit("models", ArchiveEntryKind::Directory, &mut io::empty())?;
+            let mut payload = io::Cursor::new(b"NAME STREAM\nENDATA\n".to_vec());
+            emit(
+                "models/case.mps",
+                ArchiveEntryKind::RegularFile,
+                &mut payload,
+            )
+        })
+        .expect("live entry payloads must be streamed into the complete cache");
+    assert_eq!(
+        fs::read(output.join("models/case.mps")).expect("materialized model must be readable"),
+        b"NAME STREAM\nENDATA\n"
+    );
 }
 
 #[test]
