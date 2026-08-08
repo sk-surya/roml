@@ -12,6 +12,14 @@ use crate::Model;
 mod staging;
 #[allow(dead_code)]
 mod vectors;
+// Task 35-01 establishes private parser machinery; Task 35-05 owns wiring it
+// into the public reader seam.
+#[allow(dead_code)]
+mod lexer;
+#[allow(dead_code)]
+mod record;
+#[allow(dead_code)]
+mod state;
 
 /// Selects the lexical layout used to interpret an MPS input.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
