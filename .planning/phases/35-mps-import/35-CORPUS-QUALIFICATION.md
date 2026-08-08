@@ -309,10 +309,12 @@ cargo run -p roml-highs --example mps_corpus_qualification -- . --max-files 3 --
 ```
 
 Omit `--max-files` and `--no-solve` for the scheduled broad run. The command
-validates both exact submodule pins, emits deterministic JSONL, and fails on
-an accepted-input structural discrepancy. It never extracts an archive: a
-Chinneck run requires output produced by the pre-write-safe materializer in a
-fresh, atomically completed `target/roml-corpora/chinneck` directory.
+validates both exact submodule pins, securely materializes the complete
+reviewed Chinneck archives through the pre-write-safe materializer, emits
+deterministic JSONL, and fails on an accepted-input structural discrepancy.
+The resulting archive caches are fresh, atomically completed state under
+`target/roml-corpora/chinneck`; model qualification still uses the explicit
+reviewed allowlist.
 
 ## 15. Result schema
 

@@ -98,3 +98,29 @@ Add contract tests for a path-backed I/O error and a malformed field/entity erro
 _Reviewed: 2026-08-08T05:51:12Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
+
+## P35-09 final independent re-review — PR #44
+
+**Reviewed head:** `2bb729e4207571ad78a170bbb566941d22b8b4cb`
+
+**Review:** GitHub review `4890031528`
+**Disposition:** technical remediation accepted; final CLEAR TO MERGE review and owner-authorized merge remain pending.
+
+The re-review verified that the previously identified implementation and
+qualification blockers are closed:
+
+- Q03 compares full accessible structure, including matrix values, bounds,
+  integrality, objective coefficients, sense, and offset.
+- Q04 compares native-HiGHS and ROML termination classes and objectives under
+  explicit tolerances.
+- Sparse semantic lowering is one-pass O(nnz), the IIS fixture resolves the
+  exact reported bound restriction, and Chinneck archive entries stream through
+  pre-write-safe materialization with atomic promotion.
+- The selected Chinneck models have native/ROML infeasibility agreement,
+  irreducible P29 reports, and exact MPS provenance; hosted CI is green.
+
+The documentation/state closure required by this review is recorded in the
+resulting P35 branch. The remaining merge-gate work is a final CLEAR TO MERGE
+review. `IC-satimage-LB.mps` remains an explicitly
+unselected residual because P35 certifies selected-corpus qualification, not
+every Chinneck instance.

@@ -1,10 +1,10 @@
 //! Optional deterministic Netlib/Chinneck MPS qualification runner.
 //!
 //! The runner is intentionally outside the library API. It validates the
-//! reviewed corpus pins, discovers already-materialized MPS files, and emits
-//! one JSON object per file. Chinneck archives are never extracted by this
-//! command: callers must use the separately reviewed safe materializer and
-//! place its atomically completed output below `target/roml-corpora`.
+//! reviewed corpus pins, securely materializes the complete reviewed Chinneck
+//! archives, discovers MPS files, and emits one JSON object per file. Chinneck
+//! model qualification is then restricted to the explicit reviewed allowlist;
+//! materialized output is atomically completed below `target/roml-corpora`.
 
 #[allow(dead_code)]
 #[path = "../../tests/support/corpus.rs"]
@@ -176,7 +176,7 @@ fn materialize_selected_chinneck_archives(
             Ok(())
         })?;
         eprintln!(
-            "materialized selected Chinneck archive {} into {}",
+            "materialized complete reviewed Chinneck archive {} into {}",
             archive_name,
             cache_key.directory_name()
         );

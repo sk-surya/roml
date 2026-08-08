@@ -52,19 +52,26 @@ cargo run -p roml-highs --example mps_corpus_qualification \
   -- . --no-solve                                               PASS: 3 selected Chinneck + 94/94 Netlib structural equivalent
 ```
 
-## Selected Chinneck allowlist
+## Chinneck materialization and selected model qualification
 
 The pinned Chinneck checkout contains `7z` archives and no expanded MPS files.
-The qualification run materializes only these reviewed archive/model selections:
+The qualification run securely materializes the complete contents of both
+reviewed archives before model discovery:
+
+- `INFfromNetlibLPs.7z`
+- `INFfromClassificationData.7z`
+
+Model qualification is then restricted to this explicit reviewed allowlist:
 
 - `INFfromClassificationData.7z/IC-balancescale-LB.mps`
 - `INFfromClassificationData.7z/IC-balancescale.mps`
 - `INFfromClassificationData.7z/IC-breast1-LB.mps`
 
-For each selected archive, the adapter hashes the archive and preflights the
-entry inventory, then reopens the archive and streams each validated entry
-payload into a fresh descriptor-relative staging tree. Completion inventory
-validation and atomic promotion are required before model discovery.
+For each reviewed archive, the adapter hashes the archive and preflights the
+complete entry inventory, then reopens the archive and streams every validated
+entry payload into a fresh descriptor-relative staging tree. Completion
+inventory validation and atomic promotion are required before model discovery;
+the three-model allowlist applies only to qualification, not materialization.
 
 The broader archive is intentionally not represented as a blanket pass. During
 exploration, an unselected `IC-satimage-LB.mps` reached a HiGHS/P29
