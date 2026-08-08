@@ -27,6 +27,8 @@ pub mod expr;
 pub mod function;
 pub mod id;
 pub mod identity;
+/// Solver-free import and export boundaries for supported file formats.
+pub mod io;
 pub(crate) mod journal;
 pub mod metadata;
 pub mod model;
