@@ -6,24 +6,47 @@
 //! command: callers must use the separately reviewed safe materializer and
 //! place its atomically completed output below `target/roml-corpora`.
 
+#[allow(dead_code)]
+#[path = "../../tests/support/corpus.rs"]
+mod corpus;
+
 use std::{
     env,
     error::Error,
     fmt::Write as _,
-    fs,
+    fs::{self, File},
+    io::{self, Read},
     path::{Path, PathBuf},
     process::Command,
 };
 
+use corpus::{
+    materialize_chinneck_archive_stream, ArchiveEntryKind, CorpusCacheKey,
+    ExpectedArchiveInventory, MaterializationError,
+};
+use roml::{
+    advanced::{BoundSide, ConflictOrigin, InfeasibilityPlan},
+    io::mps::{MpsBoundSide, MpsReader},
+    solver::facade::SolverSession,
+};
 use roml_highs::{
     compare_mps_solve, compare_mps_structure, observe_mps_differential,
-    observe_mps_solve_differential, MPS_STRUCTURAL_ABS_TOLERANCE, MPS_STRUCTURAL_REL_TOLERANCE,
+    observe_mps_solve_differential, HighsSession, MPS_STRUCTURAL_ABS_TOLERANCE,
+    MPS_STRUCTURAL_REL_TOLERANCE,
 };
+use sevenz_rust::{Password, SevenZReader};
+use sha2::{Digest, Sha256};
 
 const CHINNECK_COMMIT: &str = "97a936498e5240d44adaf7dcfe84877fa34ce301";
 const CHINNECK_REPOSITORY: &str = "https://github.com/sk-surya/infeasiblelps";
 const NETLIB_COMMIT: &str = "56257eea85b433ce6aa67d26156b36385318fd6f";
 const NETLIB_REPOSITORY: &str = "https://github.com/sk-surya/lp-data-netlib";
+const CHINNECK_ARCHIVES: [&str; 2] = ["INFfromNetlibLPs.7z", "INFfromClassificationData.7z"];
+const CHINNECK_SELECTED_MODELS: [&str; 3] = [
+    "IC-balancescale-LB.mps",
+    "IC-balancescale.mps",
+    "IC-breast1-LB.mps",
+];
 
 #[derive(Clone, Copy)]
 struct CorpusPin {
@@ -91,9 +114,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         let source_root = if pin.id == "netlib-lp-data" {
             checkout.join("mps_files")
         } else {
+            materialize_selected_chinneck_archives(&checkout, &repository_root)?;
             repository_root.join("target/roml-corpora/chinneck")
         };
-        let files = discover_mps_files(&source_root)?;
+        let mut files = discover_mps_files(&source_root)?;
+        if pin.id == "chinneck-infeasible-lps" {
+            files.retain(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| CHINNECK_SELECTED_MODELS.contains(&name))
+            });
+        }
         if files.is_empty() {
             let reason = if pin.id == "netlib-lp-data" {
                 "pinned checkout contains no mps_files/*.mps entries"
@@ -111,6 +142,120 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn materialize_selected_chinneck_archives(
+    checkout: &Path,
+    repository_root: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let cache_root = repository_root.join("target/roml-corpora/chinneck");
+    for archive_name in CHINNECK_ARCHIVES {
+        let archive_path = checkout.join(archive_name);
+        if !archive_path.is_file() {
+            return Err(format!(
+                "selected Chinneck archive is absent: {}",
+                archive_path.display()
+            )
+            .into());
+        }
+        let archive_hash = sha256_file(&archive_path)?;
+        let cache_key = CorpusCacheKey::new(CHINNECK_COMMIT, archive_name, &archive_hash)?;
+        let expected = read_7z_inventory(&archive_path)?;
+        materialize_chinneck_archive_stream(&cache_root, &cache_key, &expected, |emit| {
+            let mut archive = SevenZReader::open(&archive_path, Password::empty())
+                .map_err(|error| materializer_error(&archive_path, error))?;
+            archive
+                .for_each_entries(|entry, reader| {
+                    let kind = seven_z_entry_kind(entry)
+                        .map_err(|error| seven_z_archive_error(&archive_path, error))?;
+                    emit(entry.name(), kind, reader)
+                        .map_err(|error| seven_z_archive_error(&archive_path, error))?;
+                    Ok(true)
+                })
+                .map_err(|error| materializer_error(&archive_path, error))?;
+            Ok(())
+        })?;
+        eprintln!(
+            "materialized selected Chinneck archive {} into {}",
+            archive_name,
+            cache_key.directory_name()
+        );
+    }
+    Ok(())
+}
+
+fn read_7z_inventory(path: &Path) -> Result<ExpectedArchiveInventory, Box<dyn Error>> {
+    let mut archive = SevenZReader::open(path, Password::empty())?;
+    let mut files = Vec::new();
+    archive.for_each_entries(|entry, reader| {
+        let kind = seven_z_entry_kind(entry).map_err(sevenz_rust::Error::other)?;
+        if kind == ArchiveEntryKind::RegularFile {
+            let mut limited = reader.take(entry.size());
+            let mut digest = Sha256::new();
+            let copied = io::copy(&mut limited, &mut digest).map_err(sevenz_rust::Error::io)?;
+            if copied != entry.size() {
+                return Err(sevenz_rust::Error::other(format!(
+                    "archive entry {} ended at {} bytes, expected {}",
+                    entry.name(),
+                    copied,
+                    entry.size()
+                )));
+            }
+            files.push((entry.name().to_owned(), format!("{:x}", digest.finalize())));
+        }
+        Ok(true)
+    })?;
+    Ok(ExpectedArchiveInventory::new(files)?)
+}
+
+fn seven_z_entry_kind(entry: &sevenz_rust::SevenZArchiveEntry) -> Result<ArchiveEntryKind, String> {
+    if entry.is_anti_item() {
+        return Err(format!("anti-item entry {} is not accepted", entry.name()));
+    }
+    const FILE_ATTRIBUTE_DEVICE: u32 = 0x40;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    if entry.has_windows_attributes
+        && (entry.windows_attributes() & (FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_REPARSE_POINT))
+            != 0
+    {
+        return Err(format!(
+            "special or reparse entry {} has unsupported Windows attributes 0x{:x}",
+            entry.name(),
+            entry.windows_attributes()
+        ));
+    }
+    if entry.is_directory() {
+        if entry.has_stream() {
+            return Err(format!("directory entry {} has a payload", entry.name()));
+        }
+        return Ok(ArchiveEntryKind::Directory);
+    }
+    if entry.has_stream() {
+        return Ok(ArchiveEntryKind::RegularFile);
+    }
+    Err(format!(
+        "non-directory archive entry {} has no regular payload",
+        entry.name()
+    ))
+}
+
+fn seven_z_archive_error(path: &Path, error: impl std::fmt::Display) -> sevenz_rust::Error {
+    sevenz_rust::Error::other(format!("cannot materialize {}: {error}", path.display()))
+}
+
+fn materializer_error(path: &Path, error: impl std::fmt::Display) -> MaterializationError {
+    MaterializationError::Io {
+        operation: "read Chinneck 7z archive",
+        path: path.to_owned(),
+        source: io::Error::other(error.to_string()),
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    io::copy(&mut file, &mut digest)?;
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn validate_pin(pin: CorpusPin, checkout: &Path) -> Result<(), Box<dyn Error>> {
@@ -292,11 +437,19 @@ fn emit_file(
         };
         (native_status, roml_status, comparison)
     };
+    let (iis_status, iis_error) = if pin.id == "chinneck-infeasible-lps" {
+        match qualify_chinneck_iis(path) {
+            Ok(member_count) => (format!("irreducible_exact_source:{member_count}"), None),
+            Err(error) => ("failed".to_owned(), Some(error.to_string())),
+        }
+    } else {
+        ("not_applicable".to_owned(), None)
+    };
     let absolute = path.strip_prefix(repository_root).unwrap_or(path);
     let mut line = String::new();
     write!(
         line,
-        "{{\"corpus\":{},\"commit\":{},\"path\":{},\"file_bytes\":{},\"roml_parse_status\":{},\"native_highs_read_status\":{},\"structural_comparison_status\":{},\"structural_difference_count\":{},\"differential_disposition\":{},\"native_solve_status\":{},\"roml_solve_status\":{},\"solve_comparison_status\":{}}}",
+        "{{\"corpus\":{},\"commit\":{},\"path\":{},\"file_bytes\":{},\"roml_parse_status\":{},\"native_highs_read_status\":{},\"structural_comparison_status\":{},\"structural_difference_count\":{},\"differential_disposition\":{},\"native_solve_status\":{},\"roml_solve_status\":{},\"solve_comparison_status\":{},\"iis_qualification_status\":{},\"iis_error\":{}}}",
         json(pin.id),
         json(pin.commit),
         json(&absolute.display().to_string()),
@@ -310,7 +463,9 @@ fn emit_file(
         json(disposition),
         json(&native_solve_status),
         json(&roml_solve_status),
-        json(&solve_comparison)
+        json(&solve_comparison),
+        json(&iis_status),
+        iis_error.as_deref().map_or_else(|| "null".to_owned(), json)
     )?;
     println!("{line}");
     if structural == "unresolved_discrepancy" {
@@ -327,7 +482,71 @@ fn emit_file(
         )
         .into());
     }
+    if iis_status == "failed" {
+        return Err(format!(
+            "Chinneck IIS qualification failed for {}: {}",
+            path.display(),
+            iis_error.unwrap_or_else(|| "unknown error".to_owned())
+        )
+        .into());
+    }
     Ok(())
+}
+
+fn qualify_chinneck_iis(path: &Path) -> Result<usize, Box<dyn Error>> {
+    let import = MpsReader::new().read_path(path)?;
+    let mut session = SolverSession::new(HighsSession::try_new()?);
+    let report = session.analyze_infeasibility(&import.model, &InfeasibilityPlan::portable_lp())?;
+    if report.outcome != roml::InfeasibilityOutcome::Conflict
+        || report.guarantee != roml::ConflictGuarantee::Irreducible
+    {
+        return Err(format!(
+            "expected an irreducible infeasible conflict, got {:?}/{:?}",
+            report.outcome, report.guarantee
+        )
+        .into());
+    }
+    for member in &report.members {
+        match &member.declaration.origin {
+            ConflictOrigin::ConstraintSide { constraint, .. } => {
+                let name = import
+                    .model
+                    .constraint_name(*constraint)?
+                    .ok_or("reported Chinneck constraint has no name")?;
+                if import.source_map.row_span(name).is_none() {
+                    return Err(format!("IIS constraint {name:?} has no MPS row origin").into());
+                }
+            }
+            ConflictOrigin::VariableBound { variable, side } => {
+                let name = import
+                    .model
+                    .variable_name(*variable)?
+                    .ok_or("reported Chinneck variable has no name")?;
+                let mps_side = match side {
+                    BoundSide::Lower => MpsBoundSide::Lower,
+                    BoundSide::Upper => MpsBoundSide::Upper,
+                };
+                let matches = import
+                    .source_map
+                    .variable_bound_origins()
+                    .iter()
+                    .filter(|origin| origin.variable == name && origin.side == mps_side)
+                    .count();
+                if matches != 1 {
+                    return Err(format!(
+                        "IIS bound ({name}, {mps_side:?}) resolved to {matches} MPS origins"
+                    )
+                    .into());
+                }
+            }
+            origin => {
+                return Err(
+                    format!("unexpected non-original origin in Chinneck IIS: {origin:?}").into(),
+                )
+            }
+        }
+    }
+    Ok(report.members.len())
 }
 
 fn emit_skip(pin: CorpusPin, path: &Path, reason: &str) -> Result<(), Box<dyn Error>> {

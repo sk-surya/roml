@@ -6,15 +6,12 @@
 //! ## Archive integration boundary
 //!
 //! This is a **contract fixture**, not an archive reader or extractor. A
-//! future qualification-only archive adapter (Task 35-08) must obtain each
-//! archive entry's *logical* path and entry kind from an archive listing API,
-//! then construct [`ArchiveEntry`] with the original payload reader. It must
-//! pass entries to [`materialize_chinneck_archive`] in archive order. This
-//! helper validates the path and kind before it creates any destination for
-//! that entry; an adapter must never invoke a blind extractor and scan its
-//! output afterward. No archive library is selected or exercised here, so this
-//! fixture makes no claim that it extracts a real archive. The pinned Chinneck
-//! archives require a later, evidence-backed reader choice.
+//! qualification-only archive adapter obtains each archive entry's *logical*
+//! path and entry kind from an archive listing API, then streams the original
+//! payload reader through [`materialize_chinneck_archive_stream`]. This helper
+//! validates the path and kind before it creates any destination for that
+//! entry; an adapter must never invoke a blind extractor and scan its output
+//! afterward.
 
 use std::{
     collections::BTreeMap,
@@ -590,6 +587,23 @@ pub fn materialize_chinneck_archive(
     materialize_linux(cache_root, cache_key, entries, expected)
 }
 
+/// Materialize an archive reader's live entry stream without buffering an
+/// entry or extracting it through a filesystem helper.
+#[cfg(target_os = "linux")]
+pub fn materialize_chinneck_archive_stream<F>(
+    cache_root: &Path,
+    cache_key: &CorpusCacheKey,
+    expected: &ExpectedArchiveInventory,
+    stream: F,
+) -> Result<PathBuf, MaterializationError>
+where
+    F: FnOnce(
+        &mut dyn FnMut(&str, ArchiveEntryKind, &mut dyn Read) -> Result<(), MaterializationError>,
+    ) -> Result<(), MaterializationError>,
+{
+    linux::materialize_linux_stream(cache_root, cache_key, expected, stream)
+}
+
 /// See the Linux implementation for the verified platform contract.
 #[cfg(not(target_os = "linux"))]
 pub fn materialize_chinneck_archive(
@@ -598,6 +612,24 @@ pub fn materialize_chinneck_archive(
     _entries: impl IntoIterator<Item = ArchiveEntry>,
     _expected: &ExpectedArchiveInventory,
 ) -> Result<PathBuf, MaterializationError> {
+    Err(MaterializationError::UnsupportedPlatform {
+        platform: std::env::consts::OS,
+    })
+}
+
+/// See the Linux implementation for the verified platform contract.
+#[cfg(not(target_os = "linux"))]
+pub fn materialize_chinneck_archive_stream<F>(
+    _cache_root: &Path,
+    _cache_key: &CorpusCacheKey,
+    _expected: &ExpectedArchiveInventory,
+    _stream: F,
+) -> Result<PathBuf, MaterializationError>
+where
+    F: FnOnce(
+        &mut dyn FnMut(&str, ArchiveEntryKind, &mut dyn Read) -> Result<(), MaterializationError>,
+    ) -> Result<(), MaterializationError>,
+{
     Err(MaterializationError::UnsupportedPlatform {
         platform: std::env::consts::OS,
     })
@@ -766,6 +798,45 @@ mod linux {
         finish_with_staging(result, &mut staging, &mut lock)
     }
 
+    pub(super) fn materialize_linux_stream<F>(
+        cache_root: &Path,
+        cache_key: &CorpusCacheKey,
+        expected: &ExpectedArchiveInventory,
+        stream: F,
+    ) -> Result<PathBuf, MaterializationError>
+    where
+        F: FnOnce(
+            &mut dyn FnMut(
+                &str,
+                ArchiveEntryKind,
+                &mut dyn Read,
+            ) -> Result<(), MaterializationError>,
+        ) -> Result<(), MaterializationError>,
+    {
+        let root = SecureDirectory::open_or_create(cache_root)?;
+        let mut lock = CacheLock::acquire(&root, cache_key)?;
+        let existing = match root.open_existing_dir(cache_key.directory_name()) {
+            Ok(existing) => existing,
+            Err(primary) => return Err(with_cleanup(primary, Vec::new(), &mut lock)),
+        };
+        if let Some(cache) = existing {
+            let result = validate_cache(&cache, expected).map(|()| cache.path.clone());
+            return finish_without_staging(result, &mut lock);
+        }
+
+        let mut staging = match FreshStaging::create(&root, cache_key) {
+            Ok(staging) => staging,
+            Err(primary) => return Err(with_cleanup(primary, Vec::new(), &mut lock)),
+        };
+        let result = extract_stream(&mut staging, expected, stream)
+            .and_then(|()| root.promote_noreplace(&staging.name, cache_key.directory_name()))
+            .map(|()| {
+                staging.promoted = true;
+                root.path.join(cache_key.directory_name())
+            });
+        finish_with_staging(result, &mut staging, &mut lock)
+    }
+
     fn finish_without_staging<T>(
         result: Result<T, MaterializationError>,
         lock: &mut CacheLock,
@@ -850,6 +921,56 @@ mod linux {
                 _ => unreachable!("entry kind was validated"),
             }
         }
+        if observed != expected.files {
+            return Err(MaterializationError::InventoryMismatch {
+                reason: "observed paths or SHA-256 values differ".to_owned(),
+            });
+        }
+        staging.dir.write_relative_file(
+            &[COMPLETION_MARKER],
+            &mut io::Cursor::new(expected.marker_contents().into_bytes()),
+        )?;
+        Ok(())
+    }
+
+    fn extract_stream<F>(
+        staging: &mut FreshStaging,
+        expected: &ExpectedArchiveInventory,
+        stream: F,
+    ) -> Result<(), MaterializationError>
+    where
+        F: FnOnce(
+            &mut dyn FnMut(
+                &str,
+                ArchiveEntryKind,
+                &mut dyn Read,
+            ) -> Result<(), MaterializationError>,
+        ) -> Result<(), MaterializationError>,
+    {
+        let mut observed = BTreeMap::new();
+        let mut emit = |logical_path: &str,
+                        kind: ArchiveEntryKind,
+                        payload: &mut dyn Read|
+         -> Result<(), MaterializationError> {
+            let components = validate_logical_path(logical_path)?;
+            match kind {
+                ArchiveEntryKind::Directory => staging.dir.create_relative_dir(&components),
+                ArchiveEntryKind::RegularFile => {
+                    let digest = staging.dir.write_relative_file(&components, payload)?;
+                    if observed.insert(logical_path.to_owned(), digest).is_some() {
+                        return Err(MaterializationError::InventoryMismatch {
+                            reason: format!("duplicate file entry {logical_path:?}"),
+                        });
+                    }
+                    Ok(())
+                }
+                _ => Err(MaterializationError::UnsafeEntryKind {
+                    path: logical_path.to_owned(),
+                    kind,
+                }),
+            }
+        };
+        stream(&mut emit)?;
         if observed != expected.files {
             return Err(MaterializationError::InventoryMismatch {
                 reason: "observed paths or SHA-256 values differ".to_owned(),
