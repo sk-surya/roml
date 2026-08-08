@@ -570,6 +570,7 @@ impl Error for MaterializationError {
 }
 
 const COMPLETION_MARKER: &str = ".roml-corpus-complete";
+#[cfg(target_os = "linux")]
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 /// Materialize a reader-supplied entry stream only through the Linux

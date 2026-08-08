@@ -14,11 +14,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(target_os = "linux")]
+use corpus::materialize_chinneck_archive_stream;
 use corpus::{
-    materialize_chinneck_archive, materialize_chinneck_archive_stream, validate_optional_corpora,
-    validate_pin, validate_pin_checkout, ArchiveEntry, ArchiveEntryKind, CorpusCacheKey,
-    CorpusClassification, CorpusManifestEntry, ExpectedArchiveInventory, MaterializationError,
-    PinValidationError, CORPUS_PINS,
+    materialize_chinneck_archive, validate_optional_corpora, validate_pin, validate_pin_checkout,
+    ArchiveEntry, ArchiveEntryKind, CorpusCacheKey, CorpusClassification, CorpusManifestEntry,
+    ExpectedArchiveInventory, MaterializationError, PinValidationError, CORPUS_PINS,
 };
 use sha2::{Digest, Sha256};
 
