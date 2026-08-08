@@ -45,7 +45,10 @@ pub enum MpsVectorSelection {
 pub struct MpsResourceLimits {
     /// Maximum accepted line length in bytes.
     pub max_line_bytes: usize,
-    /// Maximum number of input records.
+    /// Maximum number of physical, non-comment input records.
+    ///
+    /// A COLUMNS, RHS, or RANGES record with two pairs counts once; metadata
+    /// and marker records count even when they carry no staged payload.
     pub max_records: usize,
     /// Maximum number of declared rows.
     pub max_rows: usize,

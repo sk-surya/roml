@@ -92,6 +92,7 @@ pub(crate) struct MpsColumnEntry {
     row_name: String,
     value: f64,
     span: MpsSourceSpan,
+    integer_marker_span: Option<MpsSourceSpan>,
 }
 
 impl MpsColumnEntry {
@@ -108,6 +109,12 @@ impl MpsColumnEntry {
     /// Returns the source span of this record.
     pub(crate) fn span(&self) -> &MpsSourceSpan {
         &self.span
+    }
+
+    /// Returns the controlling `INTORG` marker span when this entry was
+    /// encountered inside an integer-marker region.
+    pub(crate) fn integer_marker_span(&self) -> Option<&MpsSourceSpan> {
+        self.integer_marker_span.as_ref()
     }
 }
 
@@ -232,6 +239,18 @@ pub(crate) struct MpsStaging {
     bound_vectors: MpsNamedVectors<MpsBoundEntry>,
 }
 
+/// One physical MPS record accepted for staging.
+///
+/// A lexer must acquire one handle for each physical input record, then add
+/// every payload carried by that record through the handle. This keeps
+/// `max_records` accounting independent from the number of coefficient pairs
+/// on a record and includes metadata and marker records with no payload.
+#[derive(Debug)]
+pub(crate) struct MpsStagingRecord<'a> {
+    staging: &'a mut MpsStaging,
+    span: MpsSourceSpan,
+}
+
 impl MpsStaging {
     /// Creates empty private MPS staging storage.
     pub(crate) fn new(limits: MpsResourceLimits) -> Self {
@@ -250,23 +269,39 @@ impl MpsStaging {
         }
     }
 
+    /// Starts staging one physical input record.
+    ///
+    /// The lexer calls this exactly once for every non-comment record before
+    /// passing that record's fields to the returned handle.
+    pub(crate) fn begin_record(
+        &mut self,
+        section: MpsSection,
+        span: MpsSourceSpan,
+    ) -> Result<MpsStagingRecord<'_>, MpsError> {
+        self.reserve_record(section, &span)?;
+        Ok(MpsStagingRecord {
+            staging: self,
+            span,
+        })
+    }
+
     /// Records the optional `NAME` record.
-    pub(crate) fn set_problem_name(&mut self, name: impl Into<String>, span: MpsSourceSpan) {
+    fn set_problem_name(&mut self, name: impl Into<String>, span: MpsSourceSpan) {
         self.problem_name = Some((name.into(), span));
     }
 
     /// Records an optional `OBJSENSE` declaration.
-    pub(crate) fn set_objective_sense(&mut self, sense: MpsObjectiveSense, span: MpsSourceSpan) {
+    fn set_objective_sense(&mut self, sense: MpsObjectiveSense, span: MpsSourceSpan) {
         self.objective_sense = Some((sense, span));
     }
 
     /// Records an optional `OBJNAME` declaration.
-    pub(crate) fn set_objective_name(&mut self, name: impl Into<String>, span: MpsSourceSpan) {
+    fn set_objective_name(&mut self, name: impl Into<String>, span: MpsSourceSpan) {
         self.objective_name = Some((name.into(), span));
     }
 
     /// Adds a declared row in input order.
-    pub(crate) fn add_row(
+    fn add_row(
         &mut self,
         kind: MpsRowKind,
         name: impl Into<String>,
@@ -279,7 +314,6 @@ impl MpsStaging {
             MpsSection::Rows,
             &span,
         )?;
-        self.reserve_record(MpsSection::Rows, &span)?;
         self.rows.push(MpsStagedRow {
             name: name.into(),
             kind,
@@ -289,12 +323,23 @@ impl MpsStaging {
     }
 
     /// Adds one matrix record, merging repeated column blocks but never cells.
-    pub(crate) fn add_column_entry(
+    fn add_column_entry(
         &mut self,
         column_name: impl Into<String>,
         row_name: impl Into<String>,
         value: f64,
         span: MpsSourceSpan,
+    ) -> Result<(), MpsError> {
+        self.add_column_entry_with_marker(column_name, row_name, value, span, None)
+    }
+
+    fn add_column_entry_with_marker(
+        &mut self,
+        column_name: impl Into<String>,
+        row_name: impl Into<String>,
+        value: f64,
+        span: MpsSourceSpan,
+        integer_marker_span: Option<MpsSourceSpan>,
     ) -> Result<(), MpsError> {
         let column_name = column_name.into();
         let column_is_new = !self.columns.iter().any(|column| column.name == column_name);
@@ -314,11 +359,11 @@ impl MpsStaging {
             MpsSection::Columns,
             &span,
         )?;
-        self.reserve_record(MpsSection::Columns, &span)?;
         let entry = MpsColumnEntry {
             row_name: row_name.into(),
             value,
             span,
+            integer_marker_span,
         };
         if let Some(column) = self
             .columns
@@ -337,14 +382,13 @@ impl MpsStaging {
     }
 
     /// Adds a record to its named RHS vector without resolving its semantics.
-    pub(crate) fn add_rhs_entry(
+    fn add_rhs_entry(
         &mut self,
         vector_name: impl Into<String>,
         row_name: impl Into<String>,
         value: f64,
         span: MpsSourceSpan,
     ) -> Result<(), MpsError> {
-        self.reserve_record(MpsSection::Rhs, &span)?;
         self.rhs_vectors.push(
             vector_name,
             MpsRhsEntry {
@@ -357,14 +401,13 @@ impl MpsStaging {
     }
 
     /// Adds a record to its named RANGES vector without applying it to a row.
-    pub(crate) fn add_range_entry(
+    fn add_range_entry(
         &mut self,
         vector_name: impl Into<String>,
         row_name: impl Into<String>,
         value: f64,
         span: MpsSourceSpan,
     ) -> Result<(), MpsError> {
-        self.reserve_record(MpsSection::Ranges, &span)?;
         self.range_vectors.push(
             vector_name,
             MpsRangeEntry {
@@ -377,7 +420,7 @@ impl MpsStaging {
     }
 
     /// Adds an ordered record to its named BOUNDS vector without applying it.
-    pub(crate) fn add_bound_entry(
+    fn add_bound_entry(
         &mut self,
         vector_name: impl Into<String>,
         kind: MpsBoundKind,
@@ -385,7 +428,6 @@ impl MpsStaging {
         value: Option<f64>,
         span: MpsSourceSpan,
     ) -> Result<(), MpsError> {
-        self.reserve_record(MpsSection::Bounds, &span)?;
         self.bound_vectors.push(
             vector_name,
             MpsBoundEntry {
@@ -622,6 +664,87 @@ impl MpsStaging {
     }
 }
 
+impl MpsStagingRecord<'_> {
+    /// Records the optional `NAME` declaration carried by this record.
+    pub(crate) fn set_problem_name(&mut self, name: impl Into<String>) {
+        self.staging.set_problem_name(name, self.span.clone());
+    }
+
+    /// Records the optional `OBJSENSE` declaration carried by this record.
+    pub(crate) fn set_objective_sense(&mut self, sense: MpsObjectiveSense) {
+        self.staging.set_objective_sense(sense, self.span.clone());
+    }
+
+    /// Records the optional `OBJNAME` declaration carried by this record.
+    pub(crate) fn set_objective_name(&mut self, name: impl Into<String>) {
+        self.staging.set_objective_name(name, self.span.clone());
+    }
+
+    /// Adds one declared row carried by this record.
+    pub(crate) fn add_row(
+        &mut self,
+        kind: MpsRowKind,
+        name: impl Into<String>,
+    ) -> Result<(), MpsError> {
+        self.staging.add_row(kind, name, self.span.clone())
+    }
+
+    /// Adds one matrix pair carried by this record.
+    ///
+    /// `integer_marker_span` is the currently active controlling `INTORG`
+    /// marker, if any. It records both integer membership and the source
+    /// origin required by later semantic resolution.
+    pub(crate) fn add_column_entry(
+        &mut self,
+        column_name: impl Into<String>,
+        row_name: impl Into<String>,
+        value: f64,
+        integer_marker_span: Option<&MpsSourceSpan>,
+    ) -> Result<(), MpsError> {
+        self.staging.add_column_entry_with_marker(
+            column_name,
+            row_name,
+            value,
+            self.span.clone(),
+            integer_marker_span.cloned(),
+        )
+    }
+
+    /// Adds one RHS pair carried by this record.
+    pub(crate) fn add_rhs_entry(
+        &mut self,
+        vector_name: impl Into<String>,
+        row_name: impl Into<String>,
+        value: f64,
+    ) -> Result<(), MpsError> {
+        self.staging
+            .add_rhs_entry(vector_name, row_name, value, self.span.clone())
+    }
+
+    /// Adds one RANGES pair carried by this record.
+    pub(crate) fn add_range_entry(
+        &mut self,
+        vector_name: impl Into<String>,
+        row_name: impl Into<String>,
+        value: f64,
+    ) -> Result<(), MpsError> {
+        self.staging
+            .add_range_entry(vector_name, row_name, value, self.span.clone())
+    }
+
+    /// Adds one BOUNDS transition carried by this record.
+    pub(crate) fn add_bound_entry(
+        &mut self,
+        vector_name: impl Into<String>,
+        kind: MpsBoundKind,
+        variable_name: impl Into<String>,
+        value: Option<f64>,
+    ) -> Result<(), MpsError> {
+        self.staging
+            .add_bound_entry(vector_name, kind, variable_name, value, self.span.clone())
+    }
+}
+
 fn structural_error(
     kind: MpsErrorKind,
     section: MpsSection,
@@ -655,7 +778,7 @@ fn limit_error(
 #[cfg(test)]
 mod tests {
     use super::{MpsBoundKind, MpsObjectiveSense, MpsRowKind, MpsStaging};
-    use crate::io::mps::{MpsErrorKind, MpsResourceLimits, MpsSourceSpan};
+    use crate::io::mps::{MpsErrorKind, MpsResourceLimits, MpsSection, MpsSourceSpan};
 
     fn span(line: usize) -> MpsSourceSpan {
         MpsSourceSpan::try_new(line, 0, 1).unwrap()
@@ -783,14 +906,20 @@ mod tests {
         };
         let mut staging = MpsStaging::new(limits);
         staging
-            .add_row(MpsRowKind::Free, "objective", span(1))
+            .begin_record(MpsSection::Rows, span(1))
+            .unwrap()
+            .add_row(MpsRowKind::Free, "objective")
             .unwrap();
         staging
-            .add_column_entry("shipment", "objective", 1.0, span(2))
+            .begin_record(MpsSection::Columns, span(2))
+            .unwrap()
+            .add_column_entry("shipment", "objective", 1.0, None)
             .unwrap();
 
         let error = staging
-            .add_column_entry("overflow", "objective", 1.0, span(3))
+            .begin_record(MpsSection::Columns, span(3))
+            .unwrap()
+            .add_column_entry("overflow", "objective", 1.0, None)
             .unwrap_err();
         assert_eq!(error.kind(), &MpsErrorKind::InvalidRecord);
         assert_eq!(
@@ -802,6 +931,141 @@ mod tests {
             .message()
             .unwrap_or_default()
             .contains("max_columns"),);
+    }
+
+    #[test]
+    fn counts_a_two_pair_columns_record_once_against_max_records() {
+        let limits = MpsResourceLimits {
+            max_records: 3,
+            ..MpsResourceLimits::default()
+        };
+        let mut staging = MpsStaging::new(limits);
+        staging
+            .begin_record(MpsSection::Rows, span(1))
+            .unwrap()
+            .add_row(MpsRowKind::Free, "objective")
+            .unwrap();
+        staging
+            .begin_record(MpsSection::Rows, span(2))
+            .unwrap()
+            .add_row(MpsRowKind::LessThan, "capacity")
+            .unwrap();
+
+        // One physical COLUMNS line may contain both of these pairs.
+        let mut record = staging.begin_record(MpsSection::Columns, span(3)).unwrap();
+        record
+            .add_column_entry("shipment", "objective", 4.0, None)
+            .unwrap();
+        record
+            .add_column_entry("shipment", "capacity", 2.5, None)
+            .unwrap();
+    }
+
+    #[test]
+    fn counts_metadata_records_against_max_records() {
+        let limits = MpsResourceLimits {
+            max_records: 1,
+            ..MpsResourceLimits::default()
+        };
+        let mut staging = MpsStaging::new(limits);
+        staging
+            .begin_record(MpsSection::Name, span(1))
+            .unwrap()
+            .set_problem_name("transport");
+
+        let error = staging.begin_record(MpsSection::Rows, span(2)).unwrap_err();
+        assert_eq!(error.kind(), &MpsErrorKind::InvalidRecord);
+        assert!(error
+            .diagnostic()
+            .message()
+            .unwrap_or_default()
+            .contains("max_records"));
+    }
+
+    #[test]
+    fn rejects_a_second_row_when_the_row_limit_is_reached() {
+        let limits = MpsResourceLimits {
+            max_rows: 1,
+            ..MpsResourceLimits::default()
+        };
+        let mut staging = MpsStaging::new(limits);
+        staging
+            .begin_record(MpsSection::Rows, span(1))
+            .unwrap()
+            .add_row(MpsRowKind::Free, "objective")
+            .unwrap();
+
+        let mut record = staging.begin_record(MpsSection::Rows, span(2)).unwrap();
+        let error = record
+            .add_row(MpsRowKind::LessThan, "capacity")
+            .unwrap_err();
+        assert!(error
+            .diagnostic()
+            .message()
+            .unwrap_or_default()
+            .contains("max_rows"));
+    }
+
+    #[test]
+    fn rejects_a_third_matrix_pair_when_the_nonzero_limit_is_reached() {
+        let limits = MpsResourceLimits {
+            max_nonzeros: 2,
+            ..MpsResourceLimits::default()
+        };
+        let mut staging = MpsStaging::new(limits);
+        staging
+            .begin_record(MpsSection::Rows, span(1))
+            .unwrap()
+            .add_row(MpsRowKind::Free, "objective")
+            .unwrap();
+        let mut record = staging.begin_record(MpsSection::Columns, span(2)).unwrap();
+        record
+            .add_column_entry("shipment", "objective", 4.0, None)
+            .unwrap();
+        record
+            .add_column_entry("shipment", "objective", 2.5, None)
+            .unwrap();
+
+        let mut record = staging.begin_record(MpsSection::Columns, span(3)).unwrap();
+        let error = record
+            .add_column_entry("shipment", "objective", -0.5, None)
+            .unwrap_err();
+        assert!(error
+            .diagnostic()
+            .message()
+            .unwrap_or_default()
+            .contains("max_nonzeros"));
+    }
+
+    #[test]
+    fn preserves_integer_marker_membership_and_controlling_marker_span() {
+        let mut staging = MpsStaging::new(MpsResourceLimits::default());
+        staging
+            .begin_record(MpsSection::Rows, span(1))
+            .unwrap()
+            .add_row(MpsRowKind::Free, "objective")
+            .unwrap();
+
+        let marker_span = span(2);
+        {
+            let mut record = staging.begin_record(MpsSection::Columns, span(3)).unwrap();
+            record
+                .add_column_entry("integer_variable", "objective", 1.0, Some(&marker_span))
+                .unwrap();
+        }
+
+        let mut record = staging.begin_record(MpsSection::Columns, span(4)).unwrap();
+        record
+            .add_column_entry("continuous_variable", "objective", 2.0, None)
+            .unwrap();
+
+        let staging = staging.validate().unwrap();
+        let marked_entry = &staging.columns()[0].entries()[0];
+        assert_eq!(marked_entry.integer_marker_span(), Some(&marker_span));
+        assert_eq!(
+            staging.columns()[1].entries()[0].integer_marker_span(),
+            None
+        );
     }
 
     #[test]
