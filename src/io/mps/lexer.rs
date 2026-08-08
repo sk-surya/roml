@@ -312,6 +312,72 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_payload_sections_with_their_typed_category() {
+        let error = lex("ROWS\n N OBJ\nQSECTION payload\n", MpsFormat::Free)
+            .expect_err("quadratic payload sections are outside P35");
+        assert!(matches!(
+            error.kind(),
+            MpsErrorKind::UnsupportedSection {
+                section: MpsSection::QSection
+            }
+        ));
+    }
+
+    #[test]
+    fn requires_fixed_rim_vectors_to_have_a_name() {
+        let rhs = format!("    {:<8}  {:<8}  {:<12}\n", "", "OBJ", "1");
+        let input = [
+            "ROWS\n",
+            " N  OBJ\n",
+            "COLUMNS\n",
+            " X OBJ 1\n",
+            "RHS\n",
+            &rhs,
+        ]
+        .concat();
+        let error = lex(&input, MpsFormat::Fixed).expect_err("a fixed RHS needs a vector name");
+        assert_eq!(error.kind(), &MpsErrorKind::InvalidRecord);
+    }
+
+    #[test]
+    fn ignores_conventional_fixed_marker_fields_five_and_six() {
+        let marker = format!(
+            "    {:<8}  {:<8}  {:<12}   {:<8}  {:<12}\n",
+            "MARK0000", "'MARKER'", "'INTORG'", "IGNORED", "123"
+        );
+        let column = format!("    {:<8}  {:<8}  {:<12}\n", "X", "OBJ", "1");
+        let intend = format!("    {:<8}  {:<8}  {:<12}\n", "M2", "'MARKER'", "'INTEND'");
+        let input = [
+            "ROWS\n",
+            " N  OBJ\n",
+            "COLUMNS\n",
+            &marker,
+            &column,
+            &intend,
+            "ENDATA\n",
+        ]
+        .concat();
+        let records = lex(&input, MpsFormat::Fixed).expect("ignored marker fields are permitted");
+        assert!(records.iter().any(|record| matches!(
+            record,
+            MpsRecord::Marker {
+                marker: IntegerMarker::Start,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn marker_tokens_must_be_quoted() {
+        let error = lex(
+            "ROWS\n N OBJ\nCOLUMNS\n M MARKER INTORG\nENDATA\n",
+            MpsFormat::Free,
+        )
+        .expect_err("unquoted marker words are not the frozen marker syntax");
+        assert_eq!(error.kind(), &MpsErrorKind::InvalidNumber);
+    }
+
+    #[test]
     fn accepts_optional_pre_rows_sections_only_in_their_frozen_order() {
         let records = lex(
             concat!(
@@ -724,6 +790,14 @@ pub(crate) fn lex_records<R: BufRead>(
                 }
             }
         };
+        let mut record = record;
+        if let MpsRecord::Column {
+            integer_marker_span,
+            ..
+        } = &mut record
+        {
+            *integer_marker_span = state.marker_span().cloned();
+        }
         state.accept_record(&record)?;
         records.push(record);
     }
@@ -851,11 +925,7 @@ fn section_header(line: &str) -> Option<(MpsSection, Vec<Token>)> {
         "USERCUTS" => MpsSection::UserCuts,
         _ => return None,
     };
-    let accepts_payload = matches!(
-        section,
-        MpsSection::Name | MpsSection::ObjSense | MpsSection::ObjName
-    );
-    (fields.len() == 1 || (accepts_payload && fields.len() == 2)).then_some((section, fields))
+    Some((section, fields))
 }
 
 fn parse_header_payload(
@@ -866,6 +936,21 @@ fn parse_header_payload(
 ) -> Result<Option<MpsRecord>, MpsError> {
     let span = record_span(line, line_len)?;
     let payload = fields.get(1);
+    let valid_header_shape = fields.len() == 1
+        || (fields.len() == 2
+            && matches!(
+                section,
+                MpsSection::Name | MpsSection::ObjSense | MpsSection::ObjName
+            ));
+    if !valid_header_shape {
+        return Err(error(
+            MpsErrorKind::InvalidRecord,
+            Some((line, 0, line_len)),
+            Some(section.clone()),
+            None,
+            "MPS section header has an unexpected payload",
+        ));
+    }
     match section {
         MpsSection::Name => Ok(payload.map(|name| MpsRecord::Name {
             name: name.text.clone(),
@@ -1006,13 +1091,6 @@ fn parse_fixed_record(
                 .is_some_and(|field| marker_token(&field.text))
             {
                 let control = required(value, line_number, section, "integer marker control")?;
-                if second.is_some() || second_value.is_some() {
-                    return Err(invalid_record(
-                        line_number,
-                        section,
-                        "integer marker has unexpected row fields",
-                    ));
-                }
                 return marker(&control, line_number, section)
                     .map(|marker| MpsRecord::Marker { marker, span });
             }
@@ -1040,6 +1118,7 @@ fn parse_fixed_record(
                 variable: variable.text,
                 entries,
                 integer: marker_active,
+                integer_marker_span: None,
                 span,
             })
         }
@@ -1050,7 +1129,13 @@ fn parse_fixed_record(
                 line_number,
                 section,
             )?;
-            let vector = fixed_field(line, 4, 12).map_or_else(String::new, |field| field.text);
+            let vector = required(
+                fixed_field(line, 4, 12),
+                line_number,
+                section,
+                "vector name",
+            )?
+            .text;
             let row = required(fixed_field(line, 14, 22), line_number, section, "first row")?;
             let value = required(
                 fixed_field(line, 24, 36),
@@ -1098,7 +1183,13 @@ fn parse_fixed_record(
                 section,
             )?;
             let kind = required(fixed_field(line, 1, 3), line_number, section, "bound kind")?;
-            let vector = fixed_field(line, 4, 12).map_or_else(String::new, |field| field.text);
+            let vector = required(
+                fixed_field(line, 4, 12),
+                line_number,
+                section,
+                "bound vector name",
+            )?
+            .text;
             let variable = required(
                 fixed_field(line, 14, 22),
                 line_number,
@@ -1130,7 +1221,7 @@ fn parse_free_column(
     marker_active: bool,
     span: MpsSourceSpan,
 ) -> Result<MpsRecord, MpsError> {
-    if fields.len() == 3 && marker_token(&fields[1].text) {
+    if fields.len() >= 3 && marker_token(&fields[1].text) {
         return marker(&fields[2], line, section).map(|marker| MpsRecord::Marker { marker, span });
     }
     let (variable, entries) = parse_free_pairs(fields, line, section, false)?;
@@ -1138,6 +1229,7 @@ fn parse_free_column(
         variable,
         entries,
         integer: marker_active,
+        integer_marker_span: None,
         span,
     })
 }
@@ -1282,9 +1374,9 @@ fn parse_row_kind(value: &Token, line: usize, section: &MpsSection) -> Result<Ro
 }
 
 fn marker(value: &Token, line: usize, section: &MpsSection) -> Result<IntegerMarker, MpsError> {
-    match unquote(&value.text) {
-        "INTORG" => Ok(IntegerMarker::Start),
-        "INTEND" => Ok(IntegerMarker::End),
+    match value.text.as_str() {
+        "'INTORG'" => Ok(IntegerMarker::Start),
+        "'INTEND'" => Ok(IntegerMarker::End),
         _ => Err(error(
             MpsErrorKind::InvalidRecord,
             Some((line, value.start, value.end)),
@@ -1296,14 +1388,7 @@ fn marker(value: &Token, line: usize, section: &MpsSection) -> Result<IntegerMar
 }
 
 fn marker_token(value: &str) -> bool {
-    unquote(value) == "MARKER"
-}
-
-fn unquote(value: &str) -> &str {
-    value
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-        .unwrap_or(value)
+    value == "'MARKER'"
 }
 
 fn parse_number(value: &Token, line: usize, section: &MpsSection) -> Result<f64, MpsError> {
