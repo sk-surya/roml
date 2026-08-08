@@ -324,19 +324,20 @@ mod tests {
     }
 
     #[test]
-    fn requires_fixed_rim_vectors_to_have_a_name() {
+    fn accepts_omitted_fixed_rim_vector_names() {
         let rhs = format!("    {:<8}  {:<8}  {:<12}\n", "", "OBJ", "1");
+        let column = format!("    {:<8}  {:<8}  {:<12}\n", "X", "OBJ", "1");
         let input = [
             "ROWS\n",
             " N  OBJ\n",
             "COLUMNS\n",
-            " X OBJ 1\n",
+            &column,
             "RHS\n",
             &rhs,
+            "ENDATA\n",
         ]
         .concat();
-        let error = lex(&input, MpsFormat::Fixed).expect_err("a fixed RHS needs a vector name");
-        assert_eq!(error.kind(), &MpsErrorKind::InvalidRecord);
+        lex(&input, MpsFormat::Fixed).expect("historical fixed RHS may omit its vector name");
     }
 
     #[test]
@@ -937,11 +938,8 @@ fn parse_header_payload(
     let span = record_span(line, line_len)?;
     let payload = fields.get(1);
     let valid_header_shape = fields.len() == 1
-        || (fields.len() == 2
-            && matches!(
-                section,
-                MpsSection::Name | MpsSection::ObjSense | MpsSection::ObjName
-            ));
+        || (matches!(section, MpsSection::Name) && fields.len() >= 2)
+        || (fields.len() == 2 && matches!(section, MpsSection::ObjSense | MpsSection::ObjName));
     if !valid_header_shape {
         return Err(error(
             MpsErrorKind::InvalidRecord,
@@ -1129,13 +1127,11 @@ fn parse_fixed_record(
                 line_number,
                 section,
             )?;
-            let vector = required(
-                fixed_field(line, 4, 12),
-                line_number,
-                section,
-                "vector name",
-            )?
-            .text;
+            // Historical fixed-format corpora commonly omit the optional
+            // RHS/RANGES vector name. Preserve that first-seen vector under
+            // an empty synthetic name; free-format records still require an
+            // explicit vector field.
+            let vector = fixed_field(line, 4, 12).map_or_else(String::new, |field| field.text);
             let row = required(fixed_field(line, 14, 22), line_number, section, "first row")?;
             let value = required(
                 fixed_field(line, 24, 36),
@@ -1183,13 +1179,10 @@ fn parse_fixed_record(
                 section,
             )?;
             let kind = required(fixed_field(line, 1, 3), line_number, section, "bound kind")?;
-            let vector = required(
-                fixed_field(line, 4, 12),
-                line_number,
-                section,
-                "bound vector name",
-            )?
-            .text;
+            // A substantial historical fixed-format corpus omits the
+            // optional bounds-vector name. Treat it like the omitted
+            // RHS/RANGES vector name and retain an empty first-seen vector.
+            let vector = fixed_field(line, 4, 12).map_or_else(String::new, |field| field.text);
             let variable = required(
                 fixed_field(line, 14, 22),
                 line_number,

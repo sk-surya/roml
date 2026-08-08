@@ -65,6 +65,12 @@ ENDATA     required
 
 `OBJSENSE` and `OBJNAME` are accepted in the documented pre-`ROWS` position. `RHS`, `RANGES`, and `BOUNDS` may be omitted and may be present but empty.
 
+For compatibility with historical fixed-format corpora, `NAME` may carry a
+description after its first name token, and fixed-format RHS/RANGES/BOUNDS
+records may omit the vector name. An omitted fixed-field vector name belongs
+to the first synthetic empty-name vector in that section; free-format records
+still require the vector name field.
+
 A recognized unsupported semantic section such as `QMATRIX`, `QSECTION`, `QUADOBJ`, `QCMATRIX`, `CSECTION`, `SOS`, or `INDICATORS` terminates parsing with `UnsupportedSection`, even if the preceding linear data is otherwise valid. Unknown section-like headers are errors.
 
 P35 accepts at most one occurrence of each section header. Multiple named vectors live inside one RHS/RANGES/BOUNDS section.
