@@ -7,22 +7,27 @@
 #[allow(dead_code)]
 mod corpus;
 
+#[cfg(target_os = "linux")]
+use corpus::{materialize_chinneck_archive, materialize_chinneck_archive_stream};
+use corpus::{
+    validate_optional_corpora, validate_pin, validate_pin_checkout, CorpusCacheKey,
+    CorpusClassification, CorpusManifestEntry, MaterializationError, PinValidationError,
+    CORPUS_PINS,
+};
+#[cfg(target_os = "linux")]
+use corpus::{ArchiveEntry, ArchiveEntryKind, ExpectedArchiveInventory};
+#[cfg(target_os = "linux")]
+use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
+use std::error::Error;
+#[cfg(target_os = "linux")]
+use std::io;
 use std::{
-    error::Error,
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-#[cfg(target_os = "linux")]
-use corpus::materialize_chinneck_archive_stream;
-use corpus::{
-    materialize_chinneck_archive, validate_optional_corpora, validate_pin, validate_pin_checkout,
-    ArchiveEntry, ArchiveEntryKind, CorpusCacheKey, CorpusClassification, CorpusManifestEntry,
-    ExpectedArchiveInventory, MaterializationError, PinValidationError, CORPUS_PINS,
-};
-use sha2::{Digest, Sha256};
 
 static SANDBOX_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -56,6 +61,7 @@ impl Drop for Sandbox {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn cache_key() -> CorpusCacheKey {
     CorpusCacheKey::new(
         "97a936498e5240d44adaf7dcfe84877fa34ce301",
@@ -65,6 +71,7 @@ fn cache_key() -> CorpusCacheKey {
     .expect("test cache key must be valid")
 }
 
+#[cfg(target_os = "linux")]
 fn cache_path(root: &Path) -> PathBuf {
     root.join(cache_key().directory_name())
 }
@@ -79,10 +86,12 @@ fn cache_key_with_archive_identity(
     )
 }
 
+#[cfg(target_os = "linux")]
 fn file(path: &str) -> ArchiveEntry {
     ArchiveEntry::regular_file(path, b"NAME TEST\nENDATA\n".to_vec())
 }
 
+#[cfg(target_os = "linux")]
 fn inventory(files: &[(&str, &[u8])]) -> ExpectedArchiveInventory {
     ExpectedArchiveInventory::new(files.iter().map(|(path, bytes)| {
         let digest = Sha256::digest(bytes);
@@ -217,6 +226,7 @@ fn uninitialized_gitlink_directories_are_treated_as_absent() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a01_rejects_posix_absolute_paths_before_writing() {
     let sandbox = Sandbox::new();
@@ -233,6 +243,7 @@ fn a01_rejects_posix_absolute_paths_before_writing() {
     assert!(!cache_path(sandbox.path()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a02_rejects_drive_qualified_and_unc_paths_before_writing() {
     for path in ["C:\\evil.mps", "C:/evil.mps", "\\\\server\\share\\evil.mps"] {
@@ -250,6 +261,7 @@ fn a02_rejects_drive_qualified_and_unc_paths_before_writing() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a03_rejects_direct_lexical_traversal_before_writing() {
     let sandbox = Sandbox::new();
@@ -266,6 +278,7 @@ fn a03_rejects_direct_lexical_traversal_before_writing() {
     assert!(!cache_path(sandbox.path()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a04_rejects_nested_lexical_traversal_before_writing() {
     let sandbox = Sandbox::new();
@@ -282,6 +295,7 @@ fn a04_rejects_nested_lexical_traversal_before_writing() {
     assert!(!cache_path(sandbox.path()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a05_rejects_symlink_entries() {
     let sandbox = Sandbox::new();
@@ -302,6 +316,7 @@ fn a05_rejects_symlink_entries() {
     assert!(!cache_path(sandbox.path()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a06_rejects_hardlink_entries() {
     let sandbox = Sandbox::new();
@@ -322,6 +337,7 @@ fn a06_rejects_hardlink_entries() {
     assert!(!cache_path(sandbox.path()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a07_rejects_device_fifo_socket_and_other_special_entries() {
     for kind in [
@@ -349,6 +365,7 @@ fn a07_rejects_device_fifo_socket_and_other_special_entries() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a08_writes_a_regular_nested_file_only_beneath_the_fresh_root() {
     let sandbox = Sandbox::new();
@@ -370,6 +387,7 @@ fn a08_writes_a_regular_nested_file_only_beneath_the_fresh_root() {
 }
 
 #[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a09_rejects_a_filesystem_symlink_in_the_extraction_root_path() {
     use std::os::unix::fs::symlink;
@@ -395,6 +413,7 @@ fn a09_rejects_a_filesystem_symlink_in_the_extraction_root_path() {
     assert!(!external.join(cache_key().directory_name()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a10_payload_failure_never_promotes_or_reuses_partial_output() {
     let sandbox = Sandbox::new();
@@ -422,6 +441,7 @@ fn a10_payload_failure_never_promotes_or_reuses_partial_output() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a11_promotes_a_fully_validated_archive_to_a_complete_cache_key() {
     let sandbox = Sandbox::new();
@@ -443,6 +463,7 @@ fn a11_promotes_a_fully_validated_archive_to_a_complete_cache_key() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a12_rejects_windows_device_names_and_trailing_components_before_writing() {
     for path in [
@@ -501,6 +522,7 @@ fn cache_identity_is_exactly_one_portable_safe_component() {
         .expect("the approved archive identity must remain valid");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a13_requires_expected_inventory_and_digest_before_promotion() {
     let sandbox = Sandbox::new();
@@ -521,6 +543,7 @@ fn a13_requires_expected_inventory_and_digest_before_promotion() {
     assert!(!cache_path(sandbox.path()).exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a14_revalidates_expected_inventory_and_digest_before_cache_reuse() {
     let sandbox = Sandbox::new();
@@ -545,6 +568,7 @@ fn a14_revalidates_expected_inventory_and_digest_before_cache_reuse() {
     ));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a14b_rejects_an_unexpected_file_when_reusing_a_cache() {
     let sandbox = Sandbox::new();
@@ -583,6 +607,7 @@ fn replace_with_fifo(path: &Path) {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 #[test]
 fn a15_rejects_a_fifo_completion_marker_without_blocking_on_cache_reuse() {
     let sandbox = Sandbox::new();
@@ -608,6 +633,7 @@ fn a15_rejects_a_fifo_completion_marker_without_blocking_on_cache_reuse() {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 #[test]
 fn a16_rejects_a_fifo_data_file_without_blocking_on_cache_reuse() {
     let sandbox = Sandbox::new();
@@ -632,6 +658,7 @@ fn a16_rejects_a_fifo_data_file_without_blocking_on_cache_reuse() {
 }
 
 #[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a17_preserves_the_payload_error_when_staging_cleanup_and_lock_release_fail() {
     use std::os::unix::fs::PermissionsExt;
