@@ -1,280 +1,208 @@
 # Phase 35 Ultra Design Packet — MPS Import, Differential Qualification, and P36 Write-Back Seam
 
-**Status:** architecture approved in discussion; written-spec review pending  
+**Status:** architecture approved in discussion; written-spec review round 1 addressed; re-review pending  
 **Baseline:** `main@ff99389b9bf1318c555dc1f72dff6b5c7a4111c0`  
 **Design:** `docs/superpowers/specs/2026-08-07-mps-io-design.md`  
-**Primary requirement files:** `35-REQUIREMENTS.md`, `35-MPS-SEMANTICS.md`, `35-TEST-MATRIX.md`  
+**Primary semantic authority:** `35-MPS-SEMANTICS.md`  
+**Requirements:** `35-REQUIREMENTS.md`  
+**Verification contract:** `35-TEST-MATRIX.md`  
 **External qualification:** `35-CORPUS-QUALIFICATION.md`  
-**Risk authority:** `35-RISKS.md`  
-**Decisions:** `35-DECISIONS.md`
+**Risk/stop authority:** `35-RISKS.md`  
+**Binding decisions:** `35-DECISIONS.md`
 
 ## Executive intent
 
-Build a production-quality, solver-independent MPS import layer in ROML so real LP/MILP models can be loaded, solved, diagnosed with Phase 29 IIS, and compared against an independent mature MPS reader. Architect the same semantic boundary so P36 can write deterministic MPS and prove semantic round-trip correctness without redesigning the importer.
+Build a production-quality, solver-independent MPS I/O foundation in ROML so real LP/MILP models can be loaded, solved, diagnosed with Phase 29 IIS, and compared with an independent mature MPS reader. P35 implements import and qualification. P36 implements deterministic write-back and semantic round-trip on the same frozen linear semantics.
 
-P35 is not "just enough parser code to run Chinneck." It is the first durable file-format feature in ROML.
+P35 is not a disposable parser for one IIS corpus. It is the first durable member of `roml::io`.
 
-## Architectural theorem
+## 1. Architectural theorem
 
-For every MPS file inside P35's declared linear dialect and read options `o`, let:
-
-```text
-R(file,o) = canonical mathematical ROML model produced by MpsReader
-H(file)   = mathematical model read independently by HiGHS
-```
-
-P35's qualification target is that, after normalization of representation-only differences:
+For an MPS file `f` and read options `o`, define:
 
 ```text
-semantics(R(file,o)) == semantics(H(file))
+R(f,o) = canonical ROML model produced by the P35 reader
+H(f)   = mathematical model produced independently by HiGHS readModel
 ```
 
-for the selected objective and rim vectors under the compatible policy being tested.
+### 1.1 Accepted P35 inputs
 
-For infeasible models, the additional theorem is:
+For every input **accepted by the declared P35 dialect**, the qualification target is:
 
 ```text
-infeasible(R(file,o))
-  && Phase29(R(file,o)) reports only guarantees it independently verifies
-  && every reported semantic member can be related to the imported MPS source
+normalize(semantics(R(f,o))) == normalize(semantics(H(f)))
 ```
 
-P36 adds:
+for the selected objective and selected rim vectors, subject to explicit numeric comparison tolerances.
+
+A mismatch does **not** mean "follow HiGHS." It blocks production qualification until exactly one reviewed disposition is recorded:
 
 ```text
-semantics(read(write(model))) == semantics(model)
+roml_bug_fixed
+    ROML was wrong relative to the frozen/authoritative contract and is corrected
+
+dialect_narrowed
+    ROML deliberately removes that input from its accepted dialect and rejects it
+
+compatibility_exception
+    authoritative MPS evidence supports ROML's interpretation;
+    the divergence is documented and owner review explicitly accepts it
 ```
 
-for every ROML model representable by the selected linear MPS writer dialect.
+There is no automatic HiGHS-wins policy.
 
-## Topology
+### 1.2 Deliberate strict rejections
+
+Some historically ambiguous inputs are intentionally outside ROML's accepted strict subset even if HiGHS accepts them. Examples frozen in P35:
+
+- duplicate same-row records in the **selected RHS vector**;
+- duplicate same-row records in the **selected RANGES vector**;
+- a RANGE entry targeting an `N` row in the **selected RANGES vector**.
+
+For these probes:
 
 ```text
-                         P35 CORE
-
-          path / BufRead / bytes
-                   |
-                   v
-         +--------------------+
-         | lexical line layer |
-         | fixed/free/auto    |
-         | spans/numbers      |
-         +---------+----------+
-                   |
-                   v
-         +--------------------+
-         | record/state layer |
-         | sections/markers   |
-         | named vectors      |
-         +---------+----------+
-                   |
-                   v
-         +--------------------+
-         | MPS staging doc    |
-         | rows/cols/rim data |
-         | source provenance  |
-         +---------+----------+
-                   |
-            validate/resolve
-                   |
-                   v
-         +--------------------+
-         | fresh ROML Model   |
-         +---------+----------+
-                   |
-        +----------+-----------+
-        |                      |
-        v                      v
-   roml-highs solve       Phase 29 IIS
-        |                      |
-        +----------+-----------+
-                   |
-                   v
-             qualification
-
-                       INDEPENDENT ORACLE
-
-      original file ----------------------> HiGHS readModel
-                                                  |
-                                                  v
-                                          structure / solve
-                                                  |
-                   +------------------------------+
-                   |
-                   v
-             normalized comparison
-
-                         P36 FOLLOW-ON
-
-          ROML Model
-              |
-              v
-      representability check
-              |
-              v
-     deterministic MPS writer
-              |
-              v
-          free MPS
-              |
-         +----+----+
-         |         |
-         v         v
-      P35 read   HiGHS readModel
-         |         |
-         +----+----+
-              |
-              v
-       semantic round trip
+ROML = typed intentional rejection
+HiGHS = observed compatibility telemetry
 ```
 
-## Package/module boundary
+HiGHS acceptance is recorded as `intentional_roml_rejection`; it does not redefine P35 semantics.
 
-Planned core API namespace:
+### 1.3 IIS theorem
+
+For an accepted imported infeasible model:
 
 ```text
-src/io/mod.rs
-src/io/mps/mod.rs
-src/io/mps/reader.rs
-src/io/mps/lex.rs
-src/io/mps/record.rs
-src/io/mps/semantic.rs
-src/io/mps/options.rs
-src/io/mps/error.rs
-src/io/mps/metadata.rs
+Phase29(R(f,o)) reports only guarantees independently verified by P29
+AND
+all reported row/bound members resolve to explicit-or-synthetic MPS provenance
 ```
 
-P36 may add:
+The IIS theorem never requires equality with one solver's particular IIS.
+
+### 1.4 P36 theorem
+
+For every ROML linear LP/MILP model representable by the P36 MPS dialect:
 
 ```text
-src/io/mps/writer.rs
+semantics(P35_read(P36_write(model))) == semantics(model)
 ```
 
-Exact file split is implementation-plan territory, but responsibilities must remain isolated. A single monolithic `mps.rs` owning lexing, semantic resolution, model mutation, writing, and diagnostics is not acceptable.
+and selected external round trips must remain structurally/solve equivalent when read by native HiGHS.
 
-## Public seam sketch
+## 2. Phase split
 
-Names are provisional until implementation planning verifies consistency with current ROML API conventions, but semantics are binding.
+### P35 — reader + qualification
+
+P35 delivers:
+
+- handwritten streaming MPS reader;
+- fixed and free lexical layouts;
+- deterministic `Auto` detection;
+- linear LP/MILP semantics only;
+- MPS-native staging before ROML construction;
+- selected-vector semantic resolution;
+- typed source-aware errors;
+- explicit and synthetic import provenance;
+- synthetic/metamorphic/fuzz qualification;
+- independent HiGHS differential harness;
+- pinned Netlib and Chinneck corpus qualification;
+- `MPS -> ROML -> HiGHS -> IIS` end-to-end examples/evidence.
+
+### P36 — writer + round trip
+
+P36 reuses the semantic contract and adds:
+
+- representability analysis;
+- deterministic free-format MPS output by default;
+- strict optional fixed-format output only if lossless;
+- typed representation errors for unrepresentable ROML models;
+- `Model -> MPS -> Model` semantic round trips;
+- external `MPS -> ROML -> MPS -> HiGHS` qualification;
+- deterministic output suitable for diffs.
+
+No P36 production writer code lands in P35.
+
+## 3. Parser-generator decision
+
+**No LALRPOP.** P35 uses a handwritten streaming section/state parser.
+
+MPS complexity is dominated by:
+
+- line-oriented fixed/free lexical layouts;
+- section state;
+- `INTORG`/`INTEND` state;
+- named alternative rim vectors;
+- duplicate coefficient accumulation;
+- source spans and diagnostics.
+
+An LR grammar adds machinery without simplifying those semantics. No parser-combinator dependency is added initially either; small lexical helpers use ordinary Rust. A future genuinely grammar-dominated file format may choose differently.
+
+## 4. Module boundary
+
+Target namespace:
+
+```text
+roml::io
+└── mps
+    ├── reader
+    ├── writer        # P36
+    ├── options
+    ├── error
+    ├── metadata
+    └── semantic      # private MPS staging/resolution
+```
+
+`Model` does not own file parsing. Primary API shape:
 
 ```rust
-pub struct MpsReader {
-    options: MpsReadOptions,
-}
-
-pub struct MpsReadOptions {
-    pub format: MpsFormat,
-    pub rhs: MpsVectorSelection,
-    pub ranges: MpsVectorSelection,
-    pub bounds: MpsVectorSelection,
-    pub limits: MpsReadLimits,
-}
-
-#[non_exhaustive]
-pub enum MpsFormat {
-    Auto,
-    Fixed,
-    Free,
-}
-
-#[non_exhaustive]
-pub enum MpsVectorSelection {
-    First,
-    Named(String),
-    None,
-}
-
-pub struct MpsImport {
-    pub model: Model,
-    pub metadata: MpsMetadata,
-    pub source_map: MpsSourceMap,
-    pub diagnostics: Vec<MpsDiagnostic>,
-}
+let imported = MpsReader::new().read_path("model.mps")?;
+let model = imported.model;
 ```
 
-The final public API must preserve the ability to add new MPS dialect options without breaking semver, so public option/result/error enums should be non-exhaustive where appropriate.
+and:
 
-## Internal state machine
+```rust
+let imported = MpsReader::with_options(options).read(reader)?;
+```
 
-High-level parser states:
+P36 mirrors this with `MpsWriter`; a convenience `Model` wrapper may exist later only as a thin facade.
+
+## 5. Read pipeline
 
 ```text
-Start
-  -> NameOrPrelude
-  -> Rows
-  -> Columns { integer_region: bool }
-  -> Rhs
-  -> Ranges
-  -> Bounds
-  -> End
+BufRead / path
+     |
+     v
+lexical line parser
+ fixed/free/auto
+ source spans
+     |
+     v
+record + section state machine
+     |
+     v
+MPS staging document
+ all named vectors retained
+     |
+     +--> whole-document structural validation
+     |
+     v
+select objective + RHS/RANGES/BOUNDS
+     |
+     +--> selected-vector semantic validation
+     |
+     v
+fresh transactional ROML Model
+     |
+     +--> MpsMetadata + MpsSourceMap
 ```
 
-Optional sections are transitions, not separate parsers that independently mutate the model.
+No live ROML `Model` is mutated while the file remains structurally unresolved.
 
-Each record handler receives:
+## 6. Supported P35 dialect
 
-```text
-active section
-locked/undecided lexical format
-line number + raw bytes
-staging document builder
-```
-
-and returns either:
-
-```text
-accepted record + possible format lock
-```
-
-or a typed source-aware error.
-
-## Staging document invariants
-
-Before semantic resolution:
-
-1. every row name is unique;
-2. every COLUMNS/RHS/RANGES reference resolves to a declared row;
-3. every BOUNDS target resolves to a declared-by-COLUMNS variable;
-4. marker nesting is balanced;
-5. every numeric field is finite and syntax-valid;
-6. section order is valid;
-7. no unsupported semantic section was encountered;
-8. named rim vectors retain first-seen vector ordering and record ordering;
-9. source spans remain associated with each record;
-10. no ROML `Model` has been constructed yet.
-
-After resolution:
-
-1. one objective row or zero objective is selected;
-2. at most one RHS/RANGES/BOUNDS vector affects the model;
-3. duplicate matrix/objective coefficients are accumulated;
-4. ranges are converted into exact row lower/upper bounds;
-5. variable domains are fully resolved;
-6. final domains and numeric values satisfy ROML validation;
-7. one fresh `Model` is built transactionally;
-8. import metadata records all selected policies/vector names.
-
-## Writer seam invariants frozen for P36
-
-P35 must preserve enough semantic clarity that P36 can construct MPS without reaching into parser internals.
-
-P36 receives a canonical ROML model and must:
-
-1. check representability before writing;
-2. choose deterministic names for objective/rim vectors;
-3. emit deterministic row/column order;
-4. encode ranged constraints as one row + RANGES;
-5. encode objective constant as negative objective-row RHS;
-6. encode variable domains using a documented minimal deterministic BOUNDS policy;
-7. emit integrality deterministically;
-8. default to free-format MPS;
-9. reject unrepresentable constructs instead of silently lowering them;
-10. produce output that P35 and native HiGHS both interpret equivalently.
-
-No requirement exists to reproduce the input bytes/comments/layout.
-
-## Supported P35 dialect
-
-Supported:
+Supported sections/records:
 
 ```text
 NAME
@@ -310,11 +238,90 @@ SC / SI
 unqualified vendor semantic extensions
 ```
 
-## High-risk semantic table
+Unsupported semantic sections are hard errors, never warnings or silent omissions.
 
-### RANGES
+## 7. Two-layer rim-vector validation
 
-Let RHS be `b`, range record be `r`.
+This is a binding distinction introduced by written-spec review.
+
+### 7.1 Structural validation applies to every staged vector
+
+For all RHS/RANGES/BOUNDS records, selected or not:
+
+- syntax/field shape must be valid;
+- numeric fields must parse and be finite;
+- referenced rows/variables must exist;
+- record kinds must be supported;
+- section/order rules remain valid.
+
+Thus an unknown row in an unused RHS vector still rejects the file.
+
+### 7.2 Model-semantic validation applies only to the selected vector
+
+Only the selected vector of each class affects the model and is validated for semantics that arise from applying that alternative vector.
+
+Examples:
+
+```text
+unselected RANGES vector contains RANGE on N
+    -> stage successfully; inert
+
+select that RANGES vector
+    -> typed InvalidRangeForNRow
+
+unselected BOUNDS vector would finish lower > upper
+    -> stage successfully; inert
+
+select that BOUNDS vector
+    -> typed domain error
+```
+
+This preserves the purpose of multiple alternative rim vectors without permitting malformed syntax/references to hide in unused data.
+
+## 8. Objective semantics
+
+Selection:
+
+```text
+OBJNAME present -> referenced N row
+else first N row
+else zero objective
+```
+
+Absent `OBJSENSE` means minimize.
+
+For selected objective row:
+
+```text
+RHS value r -> objective constant = -r
+```
+
+Nonselected `N` rows are not constraints and do not affect the ROML objective.
+
+## 9. Matrix and duplicate policy
+
+Staging is column-oriented, not `HashMap<(row,col),...>`.
+
+Duplicate COLUMNS cells are summed algebraically, including duplicate selected-objective coefficient cells. Exact zero after accumulation follows ROML canonical coefficient normalization.
+
+P35 accepts repeated column blocks and merges them by variable name.
+
+**The additive rule stops at COLUMNS.**
+
+For selected vectors:
+
+```text
+duplicate RHS same row   -> typed ambiguity error
+duplicate RANGE same row -> typed ambiguity error
+```
+
+They are not summed, overwritten, or resolved by first/last wins.
+
+BOUNDS is different: selected BOUNDS records are an ordered state-transition stream and execute in file order under the frozen transition table.
+
+## 10. RANGES
+
+Let selected RHS be `b`, selected range be `r`:
 
 ```text
 E, r >= 0 : b       <= a'x <= b + r
@@ -323,199 +330,278 @@ G           : b       <= a'x <= b + |r|
 L           : b-|r|   <= a'x <= b
 ```
 
-A ranged row stays one ROML semantic constraint.
+One MPS ranged row remains one ROML ranged semantic constraint.
 
-### Default variable bounds
+The cited MOSEK table defines E/G/L transformations and leaves `N` without a transformation. P35 therefore rejects selected RANGE-on-`N`. The same record in an unselected vector is structurally valid metadata until that vector is selected.
 
-```text
-ordinary continuous variable:
-    [0,+inf]
+## 11. Variable domains
 
-integer-marker variable before selected BOUNDS modifications:
-    integer [0,1]
-```
-
-### BOUNDS transitions
+Defaults:
 
 ```text
-FR -> [-inf,+inf]
-FX v -> [v,v]
-LO v -> lower=v
-MI -> lower=-inf
-PL -> upper=+inf
-UP v -> upper=v
-BV -> binary [0,1]
-LI v -> integer lower=ceil(v)
-UI v -> integer upper=floor(v)
+ordinary continuous:
+    Continuous [0,+inf]
+
+INTORG variable before selected BOUNDS transitions:
+    Integer [0,1]
 ```
 
-Selected records apply deterministically in file order; ordinary bound records do not erase integrality.
-
-### Objective offset
+Selected BOUNDS transitions:
 
 ```text
-RHS value r on selected objective row
-    -> ROML objective constant = -r
+FR       -> [-inf,+inf]
+FX v     -> [v,v]
+LO v     -> lower=v
+MI       -> lower=-inf
+PL       -> upper=+inf
+UP v     -> upper=v
+BV       -> Binary [0,1]
+LI v     -> Integer lower=ceil(v)
+UI v     -> Integer upper=floor(v)
 ```
 
-## Dependency policy
+Transitions apply in file order. Ordinary bound records do not erase integrality. Current ROML supports unbounded general integer variables, so `INTORG + FR -> Integer [-inf,+inf]` is required behavior.
 
-P35 adds no parser generator and initially no parser-combinator crate. `roml` remains solver-free and `unsafe_code = deny` remains applicable.
+## 12. Provenance model, including implicit bounds
 
-HiGHS-specific differential access remains outside core. The reader must be fully testable with synthetic fixtures without a native solver.
+`MpsSourceMap` remains outside canonical `Model` state but must fully explain finite imported restrictions used by IIS.
 
-## External corpora
+### Explicit origins
 
-Planned optional submodules:
+Selected BOUNDS records preserve exact source spans and bound kind.
+
+### Continuous implicit default
+
+If a continuous variable retains its default finite lower bound `0`:
+
+```text
+ImplicitContinuousDefault {
+    side: Lower,
+    value: 0,
+    variable_first_columns_span,
+}
+```
+
+The COLUMNS span anchors variable introduction; rendering states clearly that the value is an MPS default, not an explicit BOUNDS line.
+
+### INTORG implicit defaults
+
+If a marked integer variable retains marker-default lower/upper:
+
+```text
+ImplicitIntegerMarkerDefault {
+    side: Lower | Upper,
+    value: 0 | 1,
+    intorg_marker_span,
+    variable_first_marked_columns_span,
+}
+```
+
+If an explicit bound overrides only one side, the other side retains its synthetic marker provenance.
+
+### Completeness invariant
+
+Every **finite imported variable-bound restriction** that Phase 29 can report must resolve to exactly one explicit-or-synthetic MPS origin. Synthetic origins never fabricate source lines.
+
+## 13. Errors
+
+Errors are typed and source-aware. Representative categories:
+
+```text
+Io
+InvalidEncoding
+InvalidSectionOrder
+UnsupportedSection
+InvalidRecord
+InvalidNumber
+DuplicateRow
+UnknownRow
+UnknownVariable
+InvalidMarkerNesting
+DuplicateRhsEntry
+DuplicateRangeEntry
+InvalidRangeForNRow
+InvalidBound
+InvalidRange
+MissingRequiredSection
+MissingEndata
+UnknownVector
+AmbiguousFormat
+RepresentationError
+ModelConstruction
+```
+
+Source context includes path, line, span, section, raw field/record, and entity where available.
+
+## 14. Fixed/free detection
+
+`MpsFormat::{Auto,Fixed,Free}`.
+
+Auto behavior before lock:
+
+```text
+only fixed succeeds -> lock Fixed
+only free succeeds  -> lock Free
+both same semantics -> accept, remain undecided
+both differ         -> AmbiguousFormat
+neither             -> best section-aware error
+```
+
+After lock, mixed layout is rejected in P35.
+
+## 15. External corpora
+
+Planned optional pinned submodules:
 
 ```text
 testdata/corpora/infeasible-lps
-    -> https://github.com/sk-surya/infeasiblelps
+    -> sk-surya/infeasiblelps
     -> 97a936498e5240d44adaf7dcfe84877fa34ce301
 
 testdata/corpora/netlib
-    -> https://github.com/sk-surya/lp-data-netlib
+    -> sk-surya/lp-data-netlib
     -> 56257eea85b433ce6aa67d26156b36385318fd6f
 ```
 
-No corpus files are copied into the crate. Normal tests require no recursive checkout.
+Normal tests/package do not require submodules. No corpus files are copied into the crate.
 
-## Qualification tiers
+## 16. Chinneck archive safety
 
-```text
-Tier 0: synthetic, every PR, no corpus
-Tier 1: small corpus smoke, MPS/IIS-impacting PRs
-Tier 2: broad scheduled corpus differential
-Tier 3: heavy/manual performance + large IIS
-```
+Chinneck collections are archived. Materialization is qualification infrastructure and treats archive content as untrusted.
 
-The corpus harness emits machine-readable JSON evidence and a compact human summary.
+Before writing an entry, the helper must reject:
 
-## HiGHS comparison strategy
+- POSIX absolute paths;
+- Windows drive-qualified paths;
+- UNC paths;
+- normalized `..` traversal;
+- symlink/hardlink entries;
+- device/FIFO/socket/special-file entries;
+- any destination not provably beneath a fresh extraction root.
+
+Extraction occurs into a new temporary root with no-follow behavior. A cache/completion marker is atomically promoted only after all entries and inventory checks succeed. Blind `7z x` followed only by post-hoc validation is not an accepted implementation.
+
+## 17. Differential qualification contract
 
 Native path:
 
 ```text
-file -> Highs_readModel/readModel -> inspect/solve
+file -> HiGHS readModel -> inspect/solve
 ```
 
 ROML path:
 
 ```text
-file -> MpsReader -> Model -> ROML compiler -> HighsSession -> inspect/solve
+file -> MpsReader -> Model -> ROML compiler -> HiGHS -> inspect/solve
 ```
 
-Required normalized comparison includes dimensions, matrix values, row bounds, variable bounds/types, objective coefficients/sense/offset, solve status, and objective where meaningful.
+Compare normalized dimensions, matrix, row bounds, column bounds/types, objective coefficients/sense/offset, status, and objective where meaningful.
 
-Native parser acceptance of an intentionally unsupported P35 extension does not make ROML wrong; the comparison applies only inside the declared ROML dialect.
+Accepted-input divergence uses only the three dispositions from §1.1. Strict-policy probes record `intentional_roml_rejection` when applicable.
 
-## IIS test strategy
+The differential harness must never call HiGHS parsing to implement ROML parsing.
 
-For selected Chinneck models:
+## 18. IIS qualification contract
+
+For selected Chinneck cases:
 
 ```text
-parse
- -> structural differential
- -> prove infeasible
- -> ROML analyze_infeasibility
- -> source-map every conflict member
- -> verify Phase 29 guarantee
+safe materialization
+ -> P35 parse
+ -> structural/native differential
+ -> ROML -> HiGHS proves infeasible
+ -> Phase 29 analyze_infeasibility
+ -> explicit/synthetic source-map every member
+ -> validate P29 guarantee/completion
  -> record statistics
 ```
 
-Do not require Gurobi's exact IIS. The Chinneck repository itself states that many models have numerous IISs and different solvers will likely isolate different subsets.
+Do not require exact Gurobi/HiGHS IIS membership. Chinneck explicitly notes multiple IISs are common.
 
-## P35 verification pyramid
+## 19. Qualification tiers
 
 ```text
-                    external corpora
-                  /                  \
-          HiGHS differential     IIS end-to-end
-                 /                    \
-             metamorphic semantic tests
-                     |
-              section/state tests
-                     |
-              lexical/error tests
+Tier 0: synthetic + metamorphic + fuzz + archive-security fixtures
+Tier 1: small corpus smoke on MPS/IIS-impacting PRs
+Tier 2: broad scheduled Netlib + bounded Chinneck qualification
+Tier 3: heavy/manual large IIS and performance characterization
 ```
 
-Every P0 semantic rule must have a small direct fixture even if the corpus covers it incidentally.
+Timing thresholds on hosted runners are not correctness gates.
 
-## Quality gates expected for implementation
+## 20. P36 writer seam
 
-The future executable plan must include, at minimum:
+P36 receives a canonical ROML model and must:
 
-```text
-cargo fmt --all -- --check
-cargo check -p roml --all-targets --locked
-cargo clippy -p roml --all-targets --locked -- -D warnings
-cargo nextest run -p roml --all-targets --locked
-cargo test -p roml --doc --locked
-RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps --locked
+1. check representability before writing;
+2. default to deterministic free MPS;
+3. choose deterministic objective/rim names;
+4. emit deterministic row/column order;
+5. encode ranged constraints with one row + RANGES;
+6. encode objective constant using negative objective-row RHS;
+7. emit minimal deterministic BOUNDS/integrality records under P35 semantics;
+8. reject unrepresentable ROML constructs rather than changing semantics;
+9. round-trip semantically through P35;
+10. interoperate with native HiGHS on selected external round trips.
 
-# HiGHS differential/qualification
-cargo check -p roml-highs --all-targets --features bundled --locked
-cargo clippy -p roml-highs --all-targets --features bundled --locked -- -D warnings
-cargo nextest run -p roml-highs --features bundled --locked
-# plus system HiGHS lane where applicable
+No textual/comment/whitespace preservation is promised.
 
-# parser quality
-fuzz smoke / bounded fuzz target
-mutation coverage for semantic branches where practical
-corpus Tier 1
-scheduled/manual Tier 2/3 evidence separately
-```
+## 21. Expected implementation slices — preview only
 
-Exact commands belong in the implementation plan after written-spec approval and must match repository verification policy at execution time.
-
-## Implementation slice preview — not yet an executable plan
-
-This is architectural decomposition only. The detailed task plan is intentionally withheld until the written-spec review gate passes.
-
-Likely slices:
+The executable `35-PLAN.md` is still withheld until written-spec approval. Expected decomposition:
 
 ```text
-S0 characterize current Model/domain/public I/O seams
+S0 characterize current Model/domain/IIS seams
 S1 lexical + source diagnostics
 S2 section/record staging parser
-S3 semantic resolution + transactional Model construction
-S4 public MpsReader API + docs
-S5 synthetic/metamorphic/fuzz qualification
-S6 HiGHS independent differential harness
-S7 corpus submodules + manifest + tiered workflow
-S8 Chinneck IIS end-to-end qualification + example
-S9 evidence/public docs/independent review
-
-P36:
-W1 writer representability + options
-W2 deterministic free MPS emission
-W3 domains/ranges/objective offset
-W4 synthetic semantic round trip
-W5 external HiGHS/corpus round trip
-W6 optional strict fixed writer / docs / evidence
+S3 vector selection + semantic resolution
+S4 provenance + transactional Model construction
+S5 public MpsReader API/docs
+S6 synthetic/metamorphic/fuzz/security qualification
+S7 HiGHS differential harness + divergence disposition machinery
+S8 corpus submodules + manifest + safe archive materializer
+S9 Netlib + Chinneck IIS qualification
+S10 evidence/public docs/independent review
 ```
 
-The future detailed plan must make each slice TDD-first, with failing characterization/regression tests before implementation and independent review before merge.
+Every slice must be TDD-first and run the repository quality gates appropriate to the affected crates.
 
-## Questions deliberately closed by this packet
+## 22. Questions deliberately closed
 
 - LALRPOP? **No.**
 - Parser dependency? **No by default.**
 - Direct parse into Model? **No.**
-- External universal IR now? **No.**
-- Linear only? **Yes.**
-- Fixed and free? **Yes.**
+- Linear LP/MILP only? **Yes.**
+- Fixed + free? **Yes.**
 - Unsupported extensions ignored? **No.**
-- Duplicate matrix entries? **Sum.**
-- Multiple rim vectors? **Stage all, select one; first by default.**
-- HiGHS reader? **Independent oracle.**
-- Copy datasets into repo? **No.**
-- Submodules? **Yes, optional pinned submodules to owner forks.**
-- Exact Gurobi IIS match? **No.**
+- Duplicate COLUMNS entries? **Sum.**
+- Duplicate selected RHS/RANGE? **Reject.**
+- RANGE on selected `N` row? **Reject.**
+- RANGE on `N` in unselected vector? **Stage if structurally valid; inert until selected.**
+- Semantic validation of unselected rim alternatives? **No; structural validation yes.**
+- BOUNDS repeats? **Ordered transitions, not RHS-style duplicate rejection.**
+- Multiple rim vectors? **Stage all; select one; first by default.**
+- HiGHS authoritative? **No; independent differential oracle.**
+- What if accepted ROML semantics differ from HiGHS? **Block until bug-fix, dialect narrowing, or owner-approved evidence-backed compatibility exception.**
+- Implicit MPS bound provenance? **Synthetic explicit origin types with source anchors.**
+- Copy corpora into ROML? **No.**
+- Submodules? **Optional pinned submodules to owner forks.**
+- Chinneck archive traversal/links? **Rejected before write.**
+- Exact solver IIS match? **No.**
 - Write-back? **P36, designed now.**
 - Default writer dialect? **Deterministic free MPS.**
 - Round trip textual? **No, semantic.**
+- Generic interchange IR now? **No.**
 
-## Written-spec review gate
+## 23. Written-spec review gate
 
-This branch intentionally contains no production parser code, no submodule gitlinks, and no active roadmap-routing mutation. The next step after owner review is to invoke the detailed implementation-planning workflow and create the executable P35 task plan from this packet.
+This branch remains design-only: no production parser/writer code, no `.gitmodules`/gitlinks, no workflow changes, and no active roadmap routing changes.
+
+Review round 1 identified and this packet now closes:
+
+1. selected-vs-unselected RANGE/vector semantic validation;
+2. normative differential policy when HiGHS differs, including duplicate RHS strict semantics;
+3. synthetic provenance for implicit continuous and INTORG bounds;
+4. safe archive extraction rules for Chinneck materialization.
+
+The next step is independent re-review. Only after written-spec approval is the executable `35-PLAN.md` generated.
