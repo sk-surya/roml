@@ -61,7 +61,7 @@ fn default_options_are_deterministic_and_select_first_vectors() {
 fn unsupported_section_errors_preserve_the_section_and_source_context() {
     let diagnostic = MpsDiagnostic::new()
         .with_input_source(MpsInputSource::Path(PathBuf::from("fixtures/q.mps")))
-        .with_span(MpsSourceSpan::try_new(7, 0, 7).unwrap())
+        .with_span(MpsSourceSpan::try_new(7, 1, 8).unwrap())
         .with_section(MpsSection::QMatrix)
         .with_raw_field("x^2")
         .with_entity("x")
@@ -100,7 +100,7 @@ fn unsupported_section_errors_preserve_the_section_and_source_context() {
 fn io_errors_retain_a_typed_cause_and_full_diagnostic_context() {
     let diagnostic = MpsDiagnostic::new()
         .with_input_source(MpsInputSource::Label("uploaded model".to_owned()))
-        .with_span(MpsSourceSpan::try_new(3, 4, 9).unwrap())
+        .with_span(MpsSourceSpan::try_new(3, 5, 10).unwrap())
         .with_section(MpsSection::Columns)
         .with_raw_field("not-a-number")
         .with_entity("shipment_1")
@@ -134,15 +134,19 @@ fn io_errors_retain_a_typed_cause_and_full_diagnostic_context() {
 }
 
 #[test]
-fn source_spans_use_one_based_lines_and_half_open_zero_based_offsets() {
-    let empty_first_byte = MpsSourceSpan::try_new(1, 0, 0).unwrap();
-    assert_eq!(empty_first_byte.line(), 1);
-    assert_eq!(empty_first_byte.start(), 0);
-    assert_eq!(empty_first_byte.end(), 0);
+fn source_spans_use_one_based_display_coordinates() {
+    let empty_first_column = MpsSourceSpan::try_new(1, 1, 1).unwrap();
+    assert_eq!(empty_first_column.line(), 1);
+    assert_eq!(empty_first_column.start(), 1);
+    assert_eq!(empty_first_column.end(), 1);
 
     assert_eq!(
-        MpsSourceSpan::try_new(0, 0, 0),
+        MpsSourceSpan::try_new(0, 1, 1),
         Err(MpsSourceSpanError::ZeroLine)
+    );
+    assert_eq!(
+        MpsSourceSpan::try_new(1, 0, 1),
+        Err(MpsSourceSpanError::ZeroColumn)
     );
     assert_eq!(
         MpsSourceSpan::try_new(1, 8, 7),
