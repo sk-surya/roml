@@ -7,6 +7,7 @@
 mod corpus;
 
 use std::{
+    error::Error,
     fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -14,10 +15,11 @@ use std::{
 };
 
 use corpus::{
-    materialize_chinneck_archive, validate_optional_corpora, validate_pin, ArchiveEntry,
-    ArchiveEntryKind, CorpusCacheKey, CorpusClassification, CorpusManifestEntry,
-    MaterializationError, PinValidationError, CORPUS_PINS,
+    materialize_chinneck_archive, validate_optional_corpora, validate_pin, validate_pin_checkout,
+    ArchiveEntry, ArchiveEntryKind, CorpusCacheKey, CorpusClassification, CorpusManifestEntry,
+    ExpectedArchiveInventory, MaterializationError, PinValidationError, CORPUS_PINS,
 };
+use sha2::{Digest, Sha256};
 
 static SANDBOX_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -66,6 +68,14 @@ fn cache_path(root: &Path) -> PathBuf {
 
 fn file(path: &str) -> ArchiveEntry {
     ArchiveEntry::regular_file(path, b"NAME TEST\nENDATA\n".to_vec())
+}
+
+fn inventory(files: &[(&str, &[u8])]) -> ExpectedArchiveInventory {
+    ExpectedArchiveInventory::new(files.iter().map(|(path, bytes)| {
+        let digest = Sha256::digest(bytes);
+        ((*path).to_owned(), format!("{digest:x}"))
+    }))
+    .expect("test inventory must be valid")
 }
 
 #[test]
@@ -124,6 +134,16 @@ fn corpus_manifest_uses_the_approved_exact_pins_and_deterministic_dispositions()
     let error = validate_pin(CORPUS_PINS[0], CORPUS_PINS[0].repository, "deadbeef")
         .expect_err("a drifted corpus commit must be rejected");
     assert!(matches!(error, PinValidationError::CommitMismatch { .. }));
+
+    let error = validate_pin_checkout(
+        CORPUS_PINS[0],
+        Path::new("testdata/corpora/infeasible-lps"),
+        CORPUS_PINS[0].repository,
+        CORPUS_PINS[0].commit,
+        "?? local-probe.mps\n",
+    )
+    .expect_err("a nested checkout with untracked state must be rejected");
+    assert!(matches!(error, PinValidationError::DirtyCheckout { .. }));
 }
 
 #[test]
@@ -141,8 +161,13 @@ fn absent_optional_corpora_do_not_fail_an_ordinary_test_run() {
 fn a01_rejects_posix_absolute_paths_before_writing() {
     let sandbox = Sandbox::new();
 
-    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [file("/tmp/evil.mps")])
-        .expect_err("absolute entry paths must be rejected");
+    let error = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [file("/tmp/evil.mps")],
+        &ExpectedArchiveInventory::empty(),
+    )
+    .expect_err("absolute entry paths must be rejected");
 
     assert!(matches!(error, MaterializationError::UnsafePath { .. }));
     assert!(!cache_path(sandbox.path()).exists());
@@ -152,8 +177,13 @@ fn a01_rejects_posix_absolute_paths_before_writing() {
 fn a02_rejects_drive_qualified_and_unc_paths_before_writing() {
     for path in ["C:\\evil.mps", "C:/evil.mps", "\\\\server\\share\\evil.mps"] {
         let sandbox = Sandbox::new();
-        let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [file(path)])
-            .expect_err("drive-qualified and UNC entry paths must be rejected");
+        let error = materialize_chinneck_archive(
+            sandbox.path(),
+            &cache_key(),
+            [file(path)],
+            &ExpectedArchiveInventory::empty(),
+        )
+        .expect_err("drive-qualified and UNC entry paths must be rejected");
 
         assert!(matches!(error, MaterializationError::UnsafePath { .. }));
         assert!(!cache_path(sandbox.path()).exists());
@@ -164,8 +194,13 @@ fn a02_rejects_drive_qualified_and_unc_paths_before_writing() {
 fn a03_rejects_direct_lexical_traversal_before_writing() {
     let sandbox = Sandbox::new();
 
-    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [file("../evil.mps")])
-        .expect_err("lexical traversal must be rejected");
+    let error = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [file("../evil.mps")],
+        &ExpectedArchiveInventory::empty(),
+    )
+    .expect_err("lexical traversal must be rejected");
 
     assert!(matches!(error, MaterializationError::UnsafePath { .. }));
     assert!(!cache_path(sandbox.path()).exists());
@@ -175,9 +210,13 @@ fn a03_rejects_direct_lexical_traversal_before_writing() {
 fn a04_rejects_nested_lexical_traversal_before_writing() {
     let sandbox = Sandbox::new();
 
-    let error =
-        materialize_chinneck_archive(sandbox.path(), &cache_key(), [file("a/../../evil.mps")])
-            .expect_err("normalized traversal must be rejected");
+    let error = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [file("a/../../evil.mps")],
+        &ExpectedArchiveInventory::empty(),
+    )
+    .expect_err("normalized traversal must be rejected");
 
     assert!(matches!(error, MaterializationError::UnsafePath { .. }));
     assert!(!cache_path(sandbox.path()).exists());
@@ -188,8 +227,13 @@ fn a05_rejects_symlink_entries() {
     let sandbox = Sandbox::new();
     let entry = ArchiveEntry::new("model.mps", ArchiveEntryKind::Symlink, Vec::new());
 
-    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [entry])
-        .expect_err("symlink entries must be rejected");
+    let error = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [entry],
+        &ExpectedArchiveInventory::empty(),
+    )
+    .expect_err("symlink entries must be rejected");
 
     assert!(matches!(
         error,
@@ -203,8 +247,13 @@ fn a06_rejects_hardlink_entries() {
     let sandbox = Sandbox::new();
     let entry = ArchiveEntry::new("model.mps", ArchiveEntryKind::Hardlink, Vec::new());
 
-    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [entry])
-        .expect_err("hardlink entries must be rejected");
+    let error = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [entry],
+        &ExpectedArchiveInventory::empty(),
+    )
+    .expect_err("hardlink entries must be rejected");
 
     assert!(matches!(
         error,
@@ -224,8 +273,13 @@ fn a07_rejects_device_fifo_socket_and_other_special_entries() {
     ] {
         let sandbox = Sandbox::new();
         let entry = ArchiveEntry::new("model.mps", kind, Vec::new());
-        let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [entry])
-            .expect_err("special entries must be rejected");
+        let error = materialize_chinneck_archive(
+            sandbox.path(),
+            &cache_key(),
+            [entry],
+            &ExpectedArchiveInventory::empty(),
+        )
+        .expect_err("special entries must be rejected");
 
         assert!(matches!(
             error,
@@ -239,9 +293,13 @@ fn a07_rejects_device_fifo_socket_and_other_special_entries() {
 fn a08_writes_a_regular_nested_file_only_beneath_the_fresh_root() {
     let sandbox = Sandbox::new();
 
-    let output =
-        materialize_chinneck_archive(sandbox.path(), &cache_key(), [file("a/b/model.mps")])
-            .expect("a safe nested file must materialize");
+    let output = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [file("a/b/model.mps")],
+        &inventory(&[("a/b/model.mps", b"NAME TEST\nENDATA\n")]),
+    )
+    .expect("a safe nested file must materialize");
 
     assert_eq!(output, cache_path(sandbox.path()));
     assert_eq!(
@@ -262,12 +320,17 @@ fn a09_rejects_a_filesystem_symlink_in_the_extraction_root_path() {
     fs::create_dir(&external).expect("external directory must be created");
     symlink(&external, &cache_root).expect("test symlink must be created");
 
-    let error = materialize_chinneck_archive(&cache_root, &cache_key(), [file("model.mps")])
-        .expect_err("the materializer must not traverse a filesystem symlink");
+    let error = materialize_chinneck_archive(
+        &cache_root,
+        &cache_key(),
+        [file("model.mps")],
+        &ExpectedArchiveInventory::empty(),
+    )
+    .expect_err("the materializer must not traverse a filesystem symlink");
 
     assert!(matches!(
         error,
-        MaterializationError::SymlinkTraversal { .. }
+        MaterializationError::SymlinkTraversal { .. } | MaterializationError::Io { .. }
     ));
     assert!(!external.join(cache_key().directory_name()).exists());
 }
@@ -284,7 +347,8 @@ fn a10_payload_failure_never_promotes_or_reuses_partial_output() {
         ),
     ];
 
-    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), entries)
+    let expected = inventory(&[("first.mps", b"NAME TEST\nENDATA\n"), ("second.mps", b"")]);
+    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), entries, &expected)
         .expect_err("a mid-extraction payload failure must abort materialization");
 
     assert!(matches!(error, MaterializationError::Io { .. }));
@@ -302,11 +366,13 @@ fn a10_payload_failure_never_promotes_or_reuses_partial_output() {
 fn a11_promotes_a_fully_validated_archive_to_a_complete_cache_key() {
     let sandbox = Sandbox::new();
     let entries = [ArchiveEntry::directory("models"), file("models/case.mps")];
+    let expected = inventory(&[("models/case.mps", b"NAME TEST\nENDATA\n")]);
 
-    let first = materialize_chinneck_archive(sandbox.path(), &cache_key(), entries)
+    let first = materialize_chinneck_archive(sandbox.path(), &cache_key(), entries, &expected)
         .expect("fully valid entries must be promoted");
-    let second = materialize_chinneck_archive(sandbox.path(), &cache_key(), std::iter::empty())
-        .expect("a completed cache key must be reusable");
+    let second =
+        materialize_chinneck_archive(sandbox.path(), &cache_key(), std::iter::empty(), &expected)
+            .expect("a completed cache key must be reusable");
 
     assert_eq!(first, cache_path(sandbox.path()));
     assert_eq!(second, first);
@@ -314,5 +380,138 @@ fn a11_promotes_a_fully_validated_archive_to_a_complete_cache_key() {
     assert_eq!(
         fs::read(first.join("models/case.mps")).expect("promoted file must remain available"),
         b"NAME TEST\nENDATA\n"
+    );
+}
+
+#[test]
+fn a12_rejects_windows_device_names_and_trailing_components_before_writing() {
+    for path in [
+        "CON",
+        "con.txt",
+        "a/PRN ",
+        "a/AUX.",
+        "a/COM1.mps",
+        "a/LPT9 ",
+        "a/ordinary. ",
+    ] {
+        let sandbox = Sandbox::new();
+        let error = materialize_chinneck_archive(
+            sandbox.path(),
+            &cache_key(),
+            [file(path)],
+            &ExpectedArchiveInventory::empty(),
+        )
+        .expect_err("Windows-ambiguous archive components must be rejected");
+
+        assert!(matches!(error, MaterializationError::UnsafePath { .. }));
+        assert!(!cache_path(sandbox.path()).exists());
+    }
+}
+
+#[test]
+fn a13_requires_expected_inventory_and_digest_before_promotion() {
+    let sandbox = Sandbox::new();
+    let expected = inventory(&[("models/case.mps", b"expected contents")]);
+
+    let error = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [file("models/case.mps")],
+        &expected,
+    )
+    .expect_err("a content digest mismatch must prevent cache promotion");
+
+    assert!(matches!(
+        error,
+        MaterializationError::InventoryMismatch { .. }
+    ));
+    assert!(!cache_path(sandbox.path()).exists());
+}
+
+#[test]
+fn a14_revalidates_expected_inventory_and_digest_before_cache_reuse() {
+    let sandbox = Sandbox::new();
+    let contents = b"NAME TEST\nENDATA\n";
+    let expected = inventory(&[("models/case.mps", contents)]);
+    let first = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [ArchiveEntry::directory("models"), file("models/case.mps")],
+        &expected,
+    )
+    .expect("valid inventory must promote");
+    fs::write(first.join("models/case.mps"), b"tampered").expect("test cache file must be mutable");
+
+    let error =
+        materialize_chinneck_archive(sandbox.path(), &cache_key(), std::iter::empty(), &expected)
+            .expect_err("a tampered cache must not be reused");
+
+    assert!(matches!(
+        error,
+        MaterializationError::InventoryMismatch { .. }
+    ));
+}
+
+#[test]
+fn a14b_rejects_an_unexpected_file_when_reusing_a_cache() {
+    let sandbox = Sandbox::new();
+    let expected = inventory(&[("models/case.mps", b"NAME TEST\nENDATA\n")]);
+    let cache = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [ArchiveEntry::directory("models"), file("models/case.mps")],
+        &expected,
+    )
+    .expect("valid inventory must promote");
+    fs::write(cache.join("unexpected.mps"), b"unreviewed cache content")
+        .expect("test cache must accept an injected file");
+
+    let error =
+        materialize_chinneck_archive(sandbox.path(), &cache_key(), std::iter::empty(), &expected)
+            .expect_err("an unexpected cache file invalidates exact inventory reuse");
+
+    assert!(matches!(
+        error,
+        MaterializationError::InventoryMismatch { .. }
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a15_preserves_the_payload_error_when_staging_cleanup_and_lock_release_fail() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct PermissionRevokingReader {
+        cache_root: PathBuf,
+    }
+
+    impl io::Read for PermissionRevokingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            fs::set_permissions(&self.cache_root, fs::Permissions::from_mode(0o500))?;
+            Err(io::Error::other(
+                "injected payload failure after permission revocation",
+            ))
+        }
+    }
+
+    let sandbox = Sandbox::new();
+    let expected = inventory(&[("case.mps", b"")]);
+    let entry = ArchiveEntry::with_reader(
+        "case.mps",
+        ArchiveEntryKind::RegularFile,
+        PermissionRevokingReader {
+            cache_root: sandbox.path().to_owned(),
+        },
+    );
+
+    let error = materialize_chinneck_archive(sandbox.path(), &cache_key(), [entry], &expected)
+        .expect_err("permission-revoked cleanup must fail visibly");
+
+    fs::set_permissions(sandbox.path(), fs::Permissions::from_mode(0o700))
+        .expect("test must restore sandbox permissions");
+    assert!(matches!(error, MaterializationError::WithCleanup { .. }));
+    assert!(
+        error.source().is_some(),
+        "the original payload error must remain the error source"
     );
 }
