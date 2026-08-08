@@ -6,7 +6,10 @@
 use std::{ffi::CString, path::Path};
 
 use roml::model::coefficient::CoefficientTarget;
-use roml::{io::mps::MpsError, Model};
+use roml::{
+    io::mps::{MpsDiagnostic, MpsError, MpsErrorKind},
+    Model,
+};
 
 use crate::{bindings, error::check_highs_status, lifecycle::HighsSession, HighsError};
 use roml::solver::backend::{BackendError, ErrorCategory, HealthEffect};
@@ -114,21 +117,25 @@ pub fn observe_mps_differential(path: impl AsRef<Path>) -> MpsDifferentialObserv
     let path = path.as_ref();
     let roml = roml::io::mps::MpsReader::new()
         .read_path(path)
-        .map(|import| roml_summary(&import.model));
+        .and_then(|import| roml_summary(&import.model));
     let highs = HighsSession::try_new().and_then(|mut session| session.read_model_summary(path));
     MpsDifferentialObservation { roml, highs }
 }
 
-fn roml_summary(model: &Model) -> RomlMpsSummary {
-    let snapshot = model
-        .take_snapshot()
-        .expect("a freshly imported model must satisfy snapshot invariants");
+fn roml_summary(model: &Model) -> Result<RomlMpsSummary, MpsError> {
+    let snapshot = model.take_snapshot().map_err(|error| {
+        MpsError::with_source(
+            MpsErrorKind::ModelConstruction,
+            MpsDiagnostic::new().with_message("cannot snapshot imported ROML model"),
+            error,
+        )
+    })?;
     let objective_offset = snapshot
         .objectives
         .iter()
         .find(|objective| objective.active)
         .map_or(0.0, |objective| objective.constant);
-    RomlMpsSummary {
+    Ok(RomlMpsSummary {
         columns: snapshot.variables.len(),
         rows: snapshot.constraints.len(),
         nonzeros: snapshot
@@ -137,7 +144,7 @@ fn roml_summary(model: &Model) -> RomlMpsSummary {
             .filter(|cell| matches!(cell.cell_key.0, CoefficientTarget::Constraint(_)))
             .count(),
         objective_offset,
-    }
+    })
 }
 
 fn checked_count(value: bindings::HighsInt, label: &str) -> Result<usize, HighsError> {

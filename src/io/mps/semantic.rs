@@ -337,9 +337,15 @@ fn resolve_variable_states(
     for (name, column) in columns {
         let marked = column.first_integer_marker_span();
         let (var_type, bounds, lower_origin, upper_origin) = if let Some(marker_span) = marked {
-            let columns_span = column
-                .first_marked_entry_span()
-                .expect("marker has a marked column");
+            let columns_span = column.first_marked_entry_span().ok_or_else(|| {
+                semantic_error(
+                    MpsErrorKind::InvalidRecord,
+                    super::MpsSection::Columns,
+                    name,
+                    Some(marker_span),
+                    "integer marker has no marked COLUMNS entry",
+                )
+            })?;
             (
                 VarType::Integer,
                 Bounds::new(0.0, 1.0),
@@ -353,7 +359,15 @@ fn resolve_variable_states(
                 }),
             )
         } else {
-            let columns_span = column.first_entry_span().expect("column has an entry");
+            let columns_span = column.first_entry_span().ok_or_else(|| {
+                semantic_error(
+                    MpsErrorKind::InvalidRecord,
+                    super::MpsSection::Columns,
+                    name,
+                    None,
+                    "COLUMNS declaration has no matrix entry",
+                )
+            })?;
             (
                 VarType::Continuous,
                 Bounds::NON_NEGATIVE,
@@ -375,9 +389,15 @@ fn resolve_variable_states(
     }
     if let Some(vector) = selected {
         for entry in vector.entries() {
-            let state = states
-                .get_mut(entry.variable_name())
-                .expect("staging validated variable reference");
+            let Some(state) = states.get_mut(entry.variable_name()) else {
+                return Err(semantic_error(
+                    MpsErrorKind::UnknownVariable,
+                    super::MpsSection::Bounds,
+                    entry.variable_name(),
+                    Some(entry.span()),
+                    "BOUNDS references an undeclared variable",
+                ));
+            };
             let origin = MpsBoundOrigin::Explicit {
                 span: entry.span().clone(),
             };
@@ -388,13 +408,13 @@ fn resolve_variable_states(
                     state.upper_origin = None;
                 }
                 MpsBoundKind::Fixed => {
-                    let value = entry.value().expect("FX requires a value");
+                    let value = bound_value(entry, "FX requires a value")?;
                     state.bounds = Bounds::fixed(value, Some(0.0));
                     state.lower_origin = Some(origin.clone());
                     state.upper_origin = Some(origin);
                 }
                 MpsBoundKind::Lower => {
-                    state.bounds.lower = entry.value().expect("LO requires a value");
+                    state.bounds.lower = bound_value(entry, "LO requires a value")?;
                     state.lower_origin = Some(origin);
                 }
                 MpsBoundKind::MinusInfinity => {
@@ -406,7 +426,7 @@ fn resolve_variable_states(
                     state.upper_origin = None;
                 }
                 MpsBoundKind::Upper => {
-                    state.bounds.upper = entry.value().expect("UP requires a value");
+                    state.bounds.upper = bound_value(entry, "UP requires a value")?;
                     state.upper_origin = Some(origin);
                 }
                 MpsBoundKind::Binary => {
@@ -417,12 +437,12 @@ fn resolve_variable_states(
                 }
                 MpsBoundKind::IntegerLower => {
                     state.var_type = VarType::Integer;
-                    state.bounds.lower = entry.value().expect("LI requires a value").ceil();
+                    state.bounds.lower = bound_value(entry, "LI requires a value")?.ceil();
                     state.lower_origin = Some(origin);
                 }
                 MpsBoundKind::IntegerUpper => {
                     state.var_type = VarType::Integer;
-                    state.bounds.upper = entry.value().expect("UI requires a value").floor();
+                    state.bounds.upper = bound_value(entry, "UI requires a value")?.floor();
                     state.upper_origin = Some(origin);
                 }
             }
@@ -476,6 +496,21 @@ fn expression_for_row(
     expression
 }
 
+fn bound_value(
+    entry: &super::staging::MpsBoundEntry,
+    message: &'static str,
+) -> Result<f64, MpsError> {
+    entry.value().ok_or_else(|| {
+        semantic_error(
+            MpsErrorKind::InvalidRecord,
+            super::MpsSection::Bounds,
+            entry.variable_name(),
+            Some(entry.span()),
+            message,
+        )
+    })
+}
+
 fn row_bounds(
     kind: MpsRowKind,
     rhs: f64,
@@ -506,7 +541,15 @@ fn row_bounds(
                 "RANGES does not define a semantic transformation for an N row",
             ));
         }
-        (MpsRowKind::Free, None) => unreachable!("free rows are selected as objectives"),
+        (MpsRowKind::Free, None) => {
+            return Err(semantic_error(
+                MpsErrorKind::InvalidRangeForNRow,
+                super::MpsSection::Ranges,
+                row_name,
+                Some(span),
+                "an N row cannot become a ROML constraint",
+            ));
+        }
     };
     if !bounds.is_valid() {
         return Err(semantic_error(
