@@ -2,140 +2,166 @@
 
 **Reviewed branch:** `docs/p35-mps-io-design`  
 **Baseline:** `main@ff99389b9bf1318c555dc1f72dff6b5c7a4111c0`  
-**Scope:** design/planning only; no production parser, writer, corpus gitlinks, or roadmap-routing mutation
+**Scope:** design/planning only; no production parser, writer, corpus gitlinks, workflow changes, or roadmap-routing mutation  
+**Current gate:** independent re-review after round-1 blocker resolution
 
-## 1. Placeholder scan
+## 1. Review history
 
-No implementation-blocking `TBD`/`TODO` semantic decisions remain in the P35 packet.
+The first written-spec review of head `87956652` found three blockers and one P2:
 
-Items intentionally deferred are explicitly assigned to implementation planning or P36 rather than left as ambiguous P35 behavior. Examples:
+1. contradiction over RANGE-on-`N` in unselected vectors;
+2. unresolved authority/disposition when HiGHS differs, especially repeated RHS;
+3. missing provenance for implicit MPS variable bounds;
+4. archive extraction lacked path/link safety requirements.
 
-- exact Netlib Tier-1 allowlist is selected after corpus inventory, while the required coverage categories are already frozen;
-- deterministic writer numeric formatting is P36 implementation design, while semantic round-trip and no-loss requirements are already frozen;
-- performance thresholds are intentionally not correctness gates on unstable hosted hardware.
+The exact dispositions are recorded in `35-REVIEW-ROUND-1.md`.
 
-## 2. Internal consistency check
+## 2. Internal consistency after round 1
 
-The packet consistently defines:
+The binding documents now agree on:
 
 ```text
 P35 = reader + semantic resolution + HiGHS differential + external corpus/IIS qualification
 P36 = writer + semantic round-trip + external write/read qualification
 ```
 
-All documents agree on:
+and:
 
 - handwritten parser; no LALRPOP;
 - `roml::io::mps` ownership;
 - fixed + free input;
-- staging before Model construction;
+- staging before `Model` construction;
 - linear LP/MILP scope;
 - hard failure on unsupported semantic extensions;
-- objective selection/offset policy;
+- objective selection/negative-offset policy;
 - one semantic ranged row;
-- duplicate matrix accumulation;
-- selected named rim-vector policy;
-- source provenance outside canonical `Model`;
-- HiGHS as independent oracle only;
+- duplicate COLUMNS accumulation only;
+- duplicate selected RHS/RANGE rejection;
+- structural validation for every staged vector;
+- model-semantic validation only for selected rim vectors;
+- selected RANGE-on-`N` rejection and unselected inert staging;
+- explicit named rim-vector policy;
+- synthetic provenance for implicit continuous and INTORG bounds;
+- HiGHS as independent oracle, not semantic authority;
+- explicit divergence disposition policy;
 - optional pinned corpus submodules;
-- semantic rather than textual write-back round trip.
+- pre-write-safe Chinneck archive extraction;
+- semantic rather than textual P36 round trip.
 
 ## 3. Repository-model compatibility review
 
-One ambiguity in the initial test matrix was resolved against current ROML code.
-
-Current ROML represents variable type separately from bounds (`VarType::Integer`) and accepts `-inf/+inf` variable bounds. Therefore:
+Current ROML represents variable type independently from bounds (`VarType::Integer`) and accepts `-inf/+inf` variable bounds. Therefore:
 
 ```text
 INTORG variable + FR
-    -> VarType::Integer
-    -> bounds [-inf,+inf]
+    -> Integer [-inf,+inf]
 ```
 
-is a required supported P35 behavior. It is no longer conditional on a future ROML domain capability.
+is a required P35 behavior, not a deferred capability probe.
 
-## 4. External-format evidence review
+## 4. Vector-validation consistency review
 
-The semantic contract is grounded in MOSEK's current MPS documentation for:
+There is now one explicit two-layer rule:
 
-- fixed field positions;
-- fixed/free dialects;
-- `E/G/L/N` rows;
-- objective selection from `N` rows;
-- variable defaults;
-- `FR/FX/LO/MI/PL/UP/BV/LI/UI` behavior;
-- integer marker default `[0,1]`;
-- RANGE transformations;
-- additive duplicate COLUMNS matrix entries;
-- ASCII expectation.
+### Always validate
 
-CPLEX-compatible objective-offset/first-vector conventions are frozen explicitly and scheduled for independent HiGHS differential probes where historical MPS behavior is not fully standardized.
+- lexical syntax;
+- finite numeric fields;
+- supported record kinds;
+- row/variable references;
+- section/order/marker structure.
 
-The design intentionally accepts repeated COLUMNS blocks for one variable as a relaxed compatibility behavior even though strict MPS expects a variable's elements to be grouped. The semantic result is deterministic because records merge by column name and duplicate cells add. This is covered by synthetic and HiGHS differential tests rather than being mistaken for strict-format conformance.
+### Validate only if selected
 
-## 5. Corpus-layout review
+- duplicate same-row RHS assignment;
+- duplicate same-row RANGE transformation;
+- RANGE-on-`N` semantic applicability;
+- final BOUNDS-domain consistency.
 
-The original corpus design assumed external repositories could simply expose model paths. Inspection showed:
+This closes the prior R07/R09 contradiction. Tests R07-R12, M11-M13, B21-B22, and V09-V11 make the distinction executable.
 
-- Netlib exposes expanded `.mps` files under `mps_files/`;
+## 5. Differential policy review
+
+The semantics reference, requirements, test matrix, design packet, and corpus document now use the same authority policy:
+
+- ROML's frozen semantics are normative;
+- HiGHS is independent compatibility evidence;
+- an accepted-input mismatch blocks merge until `roml_bug_fixed`, `dialect_narrowed`, or owner-approved evidence-backed `compatibility_exception`;
+- strict ROML rejection + HiGHS acceptance is recorded as `intentional_roml_rejection`;
+- there is no automatic `follow_highs` disposition.
+
+Repeated selected RHS/RANGE records are strict typed errors. Additive duplicate semantics remain specific to COLUMNS cells.
+
+## 6. Provenance completeness review
+
+The source-map contract now distinguishes explicit records from implicit format defaults.
+
+Finite default restrictions have synthetic origins:
+
+```text
+ImplicitContinuousDefault
+ImplicitIntegerMarkerDefault
+```
+
+with source anchors to variable-introduction/INTORG records. Explicit BOUNDS overrides replace provenance only on the sides they actually determine.
+
+The invariant is explicit: every finite imported variable-bound restriction reportable by P29 must resolve to exactly one explicit-or-synthetic MPS origin. Tests P01-P08 cover this.
+
+## 7. Archive security review
+
+Chinneck materialization no longer permits blind extraction plus post-checking. Before any write the helper must reject:
+
+- POSIX absolute paths;
+- drive/UNC paths;
+- normalized traversal;
+- symlink/hardlink entries;
+- special files;
+- destinations outside the fresh root.
+
+Extraction is temporary, no-follow, and atomically promoted only after full success. Security tests A01-A11 are binding.
+
+## 8. External-format evidence review
+
+The semantic contract remains grounded in MOSEK's current MPS documentation for fixed/free layouts, E/G/L/N rows, objective selection, variable bounds, integer markers, RANGE transforms, and additive duplicate COLUMNS elements.
+
+The design deliberately accepts repeated COLUMNS blocks as a compatibility relaxation while still applying additive duplicate-cell semantics. This relaxation gets synthetic and HiGHS differential tests rather than being mislabeled strict MPS conformance.
+
+## 9. Corpus/layout and provenance review
+
+- Netlib exposes expanded `.mps` files.
 - Chinneck stores collections in `.7z`/`.zip` archives.
-
-The packet was corrected so Chinneck archives are materialized at test time into ignored `target/roml-corpora/...` output. No extracted model files are committed to ROML and no production/archive dependency is added to `roml`.
-
-## 6. Licensing/provenance review
-
-At design time neither external upstream repository exposes a root `LICENSE` file. The packet therefore:
-
-- uses submodule gitlinks rather than copying dataset contents;
-- pins exact commits on the owner's forks;
-- records upstream URLs;
-- keeps extracted Chinneck files generated/untracked;
-- requires a separate review before any future vendoring.
+- Corpus repositories are pinned submodules to owner forks.
+- Extracted Chinneck data remains generated/untracked.
+- Neither upstream exposed a root LICENSE at design time, so no external dataset contents are copied into ROML.
 
 This is an engineering provenance policy, not a legal conclusion.
 
-## 7. Scope review
+## 10. Architecture isolation review
 
-The work is appropriately decomposed into two production phases rather than one oversized implementation:
-
-### P35
-
-Reader semantics, diagnostics, transactionality, synthetic/metamorphic/fuzz tests, native HiGHS differential validation, corpus acquisition, Netlib qualification, and Chinneck IIS qualification.
-
-### P36
-
-Representability analysis, deterministic free-MPS writer, strict optional fixed writer, semantic round trips, and external native-HiGHS write/read qualification.
-
-P35 does not expand into quadratic/conic MPS or other file formats. Those remain later independent additions to `roml::io`.
-
-## 8. Architecture isolation review
-
-Boundaries satisfy the isolation test:
-
-- lexical layer can be fuzzed without ROML model construction;
-- MPS staging can be tested without native solvers;
-- semantic resolver can be tested with synthetic documents/models;
+- lexical layer is fuzzable without a solver;
+- staging is solver-independent;
+- selected semantic resolution is independently testable;
 - core parser has no HiGHS dependency;
-- native HiGHS reader is confined to qualification;
-- source mapping is separate from canonical model/compiler state;
-- external corpus setup is separate from ordinary unit/CI paths;
-- P36 writer can consume ROML semantics without depending on original reader byte layout.
+- HiGHS reader is confined to qualification;
+- source mapping remains outside canonical model/compiler state;
+- archive setup remains outside ordinary unit/package paths;
+- P36 can consume ROML semantics without original byte layout.
 
-No unrelated refactor is required to begin P35.
+No unrelated production refactor is required to begin P35 after approval.
 
-## 9. Branch-scope verification
+## 11. Branch-scope expectation
 
-Comparison to the baseline shows only design/spec files under:
+This design branch must continue to contain only planning/spec files under:
 
 ```text
 docs/superpowers/specs/
 .planning/phases/35-mps-import/
 ```
 
-There are no changes to `src/`, `tests/`, manifests, workflows, `.gitmodules`, submodule gitlinks, or active roadmap/state routing in this design branch.
+It must not add `src/`, parser tests, manifests, workflows, `.gitmodules`, corpus gitlinks, or active roadmap/state routing before written-spec approval.
 
-## 10. Written-spec disposition
+## 12. Current disposition
 
-**Disposition: READY FOR OWNER WRITTEN-SPEC REVIEW.**
+**Disposition: ROUND-1 FINDINGS ADDRESSED; INDEPENDENT RE-REVIEW REQUIRED.**
 
-The next action is owner review of the written spec/packet. After approval, invoke the repository's implementation-planning workflow and create the executable P35 task plan. Do not begin production implementation before that gate.
+Do not generate executable `35-PLAN.md` or begin production implementation until re-review clears the written spec.
