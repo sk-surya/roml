@@ -781,7 +781,7 @@ mod tests {
     use crate::io::mps::{MpsErrorKind, MpsResourceLimits, MpsSection, MpsSourceSpan};
 
     fn span(line: usize) -> MpsSourceSpan {
-        MpsSourceSpan::try_new(line, 0, 1).unwrap()
+        MpsSourceSpan::try_new(line, 1, 2).unwrap()
     }
 
     fn staging_with_variable() -> MpsStaging {
