@@ -105,7 +105,7 @@ H7 ──> H8 evidence/review/final verification
 
 **Files:** `docs/release/evidence/P35_MPS_QUALIFICATION.md`, `.planning/STATE.md`, `.planning/ROADMAP.md`, `CHANGELOG.md`, review artifact.
 
-- [ ] Run the complete core/HiGHS formatting, check, clippy, test, rustdoc, package, security, oracle, Netlib, and Chinneck matrix on the final head.
-- [ ] Update evidence only with exact commands, toolchain versions, outputs, skipped checks, and residual risks supported by those runs.
-- [ ] Request independent review, resolve all P0/P1 findings, verify the exact PR head, and keep PR #44 draft until the owner approves merge.
-- [ ] Commit as `docs(p35): record qualification completion evidence`.
+- [x] Run the complete core/HiGHS formatting, check, clippy, test, rustdoc, package, security, oracle, Netlib, and Chinneck matrix on the final head.
+- [x] Update evidence only with exact commands, toolchain versions, outputs, skipped checks, and residual risks supported by those runs.
+- [x] Request independent review, resolve all P0/P1 findings, verify the exact PR head, and keep PR #44 draft until the owner approves merge.
+- [x] Commit as `docs(p35): record qualification completion evidence`.
