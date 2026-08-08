@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
-current_phase: 30
-current_phase_name: Soft constraints, slacks, penalties, and feasibility relaxation
-status: ready_for_next_phase
+current_phase: 35
+current_phase_name: MPS import and corpus qualification
+status: planned
 ---
 
 # ROML Active State — M3 Semantic Modeling and Solve Workflows
@@ -16,7 +16,7 @@ frontmatter is the active GSD routing authority.
 **Completed phase:** P29 — IIS/conflict analysis and origin-aware reports
 **Accepted prerequisites:** P25–P28, P32, and P33
 **Completion:** merged PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`; expert review `4884735350` CLEAR TO MERGE.
-**Next review gate:** plan P30 soft constraints; keep system-native IIS qualification and release-grade performance benchmarking in subsequent qualification/release scope.
+**Next review gate:** execute the owner-approved P35 plan from an isolated worktree; keep P30/P31 contracts separate and do not renumber P30–P34.
 
 ## Archived v0.1 Release-Hardening State
 
@@ -99,6 +99,7 @@ These are explicit gates, not requests for immediate clarification:
 | P6 | Complete | release evidence, foundry verification passed, steward audit passed (HEAD: 3ffd94b) | explicit publish authorization (external gate) |
 | P7 | Deferred | none | post-v0.1 |
 | P29 | Complete | `docs/release/evidence/P29_IIS_QUALIFICATION.md`, merged PR #39 (`19c8c70`) | system-native IIS qualification and release-grade performance remain follow-up work |
+| P35 | Planned | `.planning/phases/35-mps-import/35-PLAN.md`, merged design PR #41 (`8a24bbe`) | production implementation and corpus qualification pending |
 
 ### Completed requirement IDs
 

@@ -48,6 +48,14 @@ routing projection so phase discovery and autonomous execution use the same mile
 
 **Goal:** integrate and qualify the M3 workflows without silently expanding scope. **Status:** blocked until P29–P33 are accepted.
 
+### Phase 35: MPS import and corpus qualification
+
+**Goal:** import fixed/free linear LP/MILP MPS files transactionally into ROML, preserve source-aware semantics, and qualify the result against synthetic fixtures, HiGHS, Netlib, and Chinneck IIS workflows. **Status:** planned and pulled forward by owner priority after merged P29 and approved design PR #41.
+
+**Design:** `.planning/phases/35-mps-import/35-DESIGN-PACKET.md` and `docs/superpowers/specs/2026-08-07-mps-io-design.md`.
+
+**Implementation plan:** `.planning/phases/35-mps-import/35-PLAN.md`.
+
 ## ✅ Archived v0.1 — Production-Grade Public Release Roadmap
 
 **Authoritative program base:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
