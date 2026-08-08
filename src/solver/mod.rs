@@ -14,6 +14,7 @@ pub mod conformance;
 pub mod effective_plan;
 pub mod error;
 pub mod facade;
+pub mod infeasibility;
 pub mod options;
 pub mod overlay;
 pub mod plan;
@@ -23,6 +24,13 @@ pub mod session;
 
 pub use error::SolveError;
 pub use facade::SolverSession;
+pub use infeasibility::{
+    reduce_single_deletion, tri_state, AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy,
+    AnalysisProviderRecord, ConflictAtomId, ConflictAtomKind, ConflictGuarantee, ConflictMember,
+    FeasibilityOracle, FeasibilityOutcome, FeasibilityProofStrength, InfeasibilityError,
+    InfeasibilityMode, InfeasibilityPlan, InfeasibilityReport, InfeasibilityScope,
+    MarkdownInfeasibilityReport, TextInfeasibilityReport, UnknownReason,
+};
 pub use options::SolveOptions;
 pub use plan::{
     HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,

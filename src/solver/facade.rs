@@ -26,6 +26,7 @@ use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 use crate::solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
 };
+use crate::solver::infeasibility::{InfeasibilityError, InfeasibilityPlan};
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
     compile_overlay, OverlayApplyReceipt, OverlayRollbackOutcome, SolveOverlay,
@@ -171,6 +172,21 @@ where
             compiler: CompilationSession::new(),
             bound_instance: None,
         }
+    }
+
+    /// Analyze LP infeasibility using an explicit plan.
+    ///
+    /// Native providers and the isolated analysis session are backend-specific;
+    /// until a backend advertises the P29 oracle capability this method fails
+    /// explicitly rather than treating an ordinary solve status as an IIS.
+    pub fn analyze_infeasibility(
+        &mut self,
+        _model: &Model,
+        _plan: &InfeasibilityPlan,
+    ) -> Result<crate::solver::infeasibility::InfeasibilityReport, InfeasibilityError> {
+        Err(InfeasibilityError::Unsupported {
+            reason: "backend has no qualified LP infeasibility provider".to_string(),
+        })
     }
 
     /// Synchronize the backend to the model's committed canonical state,
