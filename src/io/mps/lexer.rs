@@ -147,15 +147,15 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_fixed_integer_markers_in_value_fields() {
+    fn recognizes_conventional_fixed_integer_marker_fields() {
         let intorg = format!(
             "    {:<8}  {:<8}  {:<12}   {:<8}  {:<12}\n",
-            "MARK0000", "", "'MARKER'", "", "'INTORG'"
+            "MARK0000", "'MARKER'", "'INTORG'", "", ""
         );
         let column = format!("    {:<8}  {:<8}  {:<12}\n", "X1", "COST", "1");
         let intend = format!(
             "    {:<8}  {:<8}  {:<12}   {:<8}  {:<12}\n",
-            "MARK0001", "", "'MARKER'", "", "'INTEND'"
+            "MARK0001", "'MARKER'", "'INTEND'", "", ""
         );
         let input = [
             "ROWS\n",
@@ -169,7 +169,7 @@ mod tests {
         .concat();
 
         let records = lex(&input, MpsFormat::Fixed)
-            .expect("fixed INTORG/INTEND markers belong in the value fields");
+            .expect("conventional fixed INTORG/INTEND marker fields must lex");
         assert!(matches!(
             records.get(1),
             Some(MpsRecord::Marker {
@@ -1001,13 +1001,12 @@ fn parse_fixed_record(
             let value = fixed_field(line, 24, 36);
             let second = fixed_field(line, 39, 47);
             let second_value = fixed_field(line, 49, 61);
-            if value
+            if first
                 .as_ref()
                 .is_some_and(|field| marker_token(&field.text))
             {
-                let control =
-                    required(second_value, line_number, section, "integer marker control")?;
-                if first.is_some() || second.is_some() {
+                let control = required(value, line_number, section, "integer marker control")?;
+                if second.is_some() || second_value.is_some() {
                     return Err(invalid_record(
                         line_number,
                         section,
