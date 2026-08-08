@@ -5,6 +5,7 @@
 
 use std::{ffi::CString, path::Path};
 
+use roml::model::coefficient::CoefficientTarget;
 use roml::{io::mps::MpsError, Model};
 
 use crate::{bindings, error::check_highs_status, lifecycle::HighsSession, HighsError};
@@ -130,7 +131,11 @@ fn roml_summary(model: &Model) -> RomlMpsSummary {
     RomlMpsSummary {
         columns: snapshot.variables.len(),
         rows: snapshot.constraints.len(),
-        nonzeros: snapshot.cells.len(),
+        nonzeros: snapshot
+            .cells
+            .iter()
+            .filter(|cell| matches!(cell.cell_key.0, CoefficientTarget::Constraint(_)))
+            .count(),
         objective_offset,
     }
 }
