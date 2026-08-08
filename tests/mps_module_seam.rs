@@ -3,11 +3,17 @@
 //! These tests intentionally exercise only the typed contract shared by later
 //! parser, staging, and reader tasks. They do not assert parsing semantics.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::{
+    error::Error as _,
+    io::{self, BufReader},
+    panic::{catch_unwind, AssertUnwindSafe},
+    path::PathBuf,
+};
 
 use roml::io::mps::{
-    MpsDiagnostic, MpsError, MpsErrorKind, MpsFormat, MpsImport, MpsMetadata, MpsReadOptions,
-    MpsReader, MpsResourceLimits, MpsSourceMap, MpsSourceSpan, MpsVectorSelection,
+    MpsDiagnostic, MpsError, MpsErrorKind, MpsFormat, MpsImport, MpsInputSource, MpsMetadata,
+    MpsReadOptions, MpsReader, MpsResourceLimits, MpsSection, MpsSourceMap, MpsSourceSpan,
+    MpsSourceSpanError, MpsVectorSelection,
 };
 
 #[test]
@@ -53,40 +59,114 @@ fn default_options_are_deterministic_and_select_first_vectors() {
 
 #[test]
 fn unsupported_section_errors_preserve_the_section_and_source_context() {
-    let diagnostic = MpsDiagnostic::new(
-        Some(MpsSourceSpan::new(7, 1, 8)),
-        Some("QMATRIX".to_owned()),
-    );
+    let diagnostic = MpsDiagnostic::new()
+        .with_input_source(MpsInputSource::Path(PathBuf::from("fixtures/q.mps")))
+        .with_span(MpsSourceSpan::try_new(7, 0, 7).unwrap())
+        .with_section(MpsSection::QMatrix)
+        .with_raw_field("x^2")
+        .with_entity("x")
+        .with_message("quadratic matrix records are outside the P35 dialect");
     let error = MpsError::new(
         MpsErrorKind::UnsupportedSection {
-            section: "QMATRIX".to_owned(),
+            section: MpsSection::QMatrix,
         },
         diagnostic.clone(),
     );
 
     assert!(matches!(
         error.kind(),
-        MpsErrorKind::UnsupportedSection { section } if section == "QMATRIX"
+        MpsErrorKind::UnsupportedSection {
+            section: MpsSection::QMatrix
+        }
     ));
     assert_eq!(error.diagnostic(), &diagnostic);
+    assert_eq!(
+        error.diagnostic().input_source(),
+        Some(&MpsInputSource::Path(PathBuf::from("fixtures/q.mps")))
+    );
+    assert_eq!(error.diagnostic().raw_field(), Some("x^2"));
+    assert_eq!(error.diagnostic().entity(), Some("x"));
+
+    let rendered = error.to_string();
+    for expected in ["fixtures/q.mps", "line 7", "QMATRIX", "x^2", "entity x"] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected:?} from {rendered:?}"
+        );
+    }
 }
 
 #[test]
-fn malformed_input_harness_treats_typed_errors_as_non_panics() {
-    assert_malformed_input_is_non_panicking(b"\0 malformed MPS", |input| {
-        assert!(!input.is_empty());
-        Err(MpsError::new(
-            MpsErrorKind::InvalidRecord,
-            MpsDiagnostic::new(Some(MpsSourceSpan::new(1, 1, 1)), None),
-        ))
-    });
+fn io_errors_retain_a_typed_cause_and_full_diagnostic_context() {
+    let diagnostic = MpsDiagnostic::new()
+        .with_input_source(MpsInputSource::Label("uploaded model".to_owned()))
+        .with_span(MpsSourceSpan::try_new(3, 4, 9).unwrap())
+        .with_section(MpsSection::Columns)
+        .with_raw_field("not-a-number")
+        .with_entity("shipment_1")
+        .with_message("unable to continue reading the input");
+    let error = MpsError::io(
+        diagnostic,
+        io::Error::new(io::ErrorKind::PermissionDenied, "fixture is unreadable"),
+    );
+
+    assert_eq!(error.kind(), &MpsErrorKind::Io);
+    assert_eq!(error.io_kind(), Some(io::ErrorKind::PermissionDenied));
+    assert_eq!(
+        error.source().map(ToString::to_string).as_deref(),
+        Some("fixture is unreadable")
+    );
+
+    let rendered = error.to_string();
+    for expected in [
+        "uploaded model",
+        "line 3",
+        "COLUMNS",
+        "not-a-number",
+        "entity shipment_1",
+        "fixture is unreadable",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected:?} from {rendered:?}"
+        );
+    }
 }
 
-fn assert_malformed_input_is_non_panicking<F>(input: &[u8], read: F)
-where
-    F: FnOnce(&[u8]) -> Result<(), MpsError>,
-{
-    let result = catch_unwind(AssertUnwindSafe(|| read(input)));
-    assert!(result.is_ok(), "malformed input must not unwind");
-    assert!(result.expect("unwind checked above").is_err());
+#[test]
+fn source_spans_use_one_based_lines_and_half_open_zero_based_offsets() {
+    let empty_first_byte = MpsSourceSpan::try_new(1, 0, 0).unwrap();
+    assert_eq!(empty_first_byte.line(), 1);
+    assert_eq!(empty_first_byte.start(), 0);
+    assert_eq!(empty_first_byte.end(), 0);
+
+    assert_eq!(
+        MpsSourceSpan::try_new(0, 0, 0),
+        Err(MpsSourceSpanError::ZeroLine)
+    );
+    assert_eq!(
+        MpsSourceSpan::try_new(1, 8, 7),
+        Err(MpsSourceSpanError::ReversedOffsets { start: 8, end: 7 })
+    );
+}
+
+#[test]
+fn deferred_reader_entry_point_is_non_panicking_for_malformed_input() {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        MpsReader::new().read(BufReader::new(&b"\0 malformed MPS"[..]))
+    }));
+
+    let error = match result.expect("the deferred reader must not unwind") {
+        Err(error) => error,
+        Ok(_) => panic!("the parser is intentionally deferred to a later task"),
+    };
+    assert_eq!(error.kind(), &MpsErrorKind::ParserUnavailable);
+    assert!(
+        error
+            .diagnostic()
+            .message()
+            .unwrap_or_default()
+            .contains("deferred"),
+        "the deferred path must state that it did not parse the input"
+    );
 }
