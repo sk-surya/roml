@@ -3,7 +3,7 @@
 Date: 2026-08-08
 
 Implementation branch: `phase-roml-P35-mps-import`
-Latest implementation commit at evidence capture: `fa9a745`
+Latest implementation commit at evidence capture: `78ad0d6621fbb0eecc7b393d95abeb8ed53263a5`
 
 The design packet was merged to `main` by `8a24bbeb23b7ae1e2e87a47c7df248698374d84c`.
 The executable P35 plan was merged to `main` by
@@ -76,3 +76,8 @@ No commercial solver checks were attempted. No publication, tag, or release
 operation was performed. The MSRV-specific `cargo +1.85.0` toolchain was not
 installed in this environment, so the local final matrix used the repository's
 available toolchain; CI's pinned MSRV job remains authoritative for that check.
+
+The final hosted matrix for `78ad0d6621fbb0eecc7b393d95abeb8ed53263a5` was
+green: Core/MSRV, HiGHS (bundled/system/package/MSRV), Coverage, Quality, and
+Policy. PR #44 remains open, mergeable, and draft; merge is intentionally still
+an owner gate.
