@@ -5,21 +5,24 @@
 //!
 //! ## Archive integration boundary
 //!
-//! A future qualification-only archive adapter (Task 35-08) must obtain each
+//! This is a **contract fixture**, not an archive reader or extractor. A
+//! future qualification-only archive adapter (Task 35-08) must obtain each
 //! archive entry's *logical* path and entry kind from an archive listing API,
 //! then construct [`ArchiveEntry`] with the original payload reader. It must
 //! pass entries to [`materialize_chinneck_archive`] in archive order. This
 //! helper validates the path and kind before it creates any destination for
 //! that entry; an adapter must never invoke a blind extractor and scan its
-//! output afterward. No archive library is selected here because the pinned
-//! Chinneck archives require a later, evidence-backed reader choice.
+//! output afterward. No archive library is selected or exercised here, so this
+//! fixture makes no claim that it extracts a real archive. The pinned Chinneck
+//! archives require a later, evidence-backed reader choice.
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -104,6 +107,15 @@ pub enum PinValidationError {
         /// Observed commit SHA.
         actual: String,
     },
+    /// A checkout has uncommitted, untracked, or conflicted state.
+    DirtyCheckout {
+        /// Corpus being checked.
+        corpus_id: &'static str,
+        /// Checkout path.
+        checkout: PathBuf,
+        /// `git status --porcelain=v1 --untracked-files=all` output.
+        status: String,
+    },
     /// Git could not provide the required checkout metadata.
     Git {
         /// Checkout queried.
@@ -138,6 +150,15 @@ impl fmt::Display for PinValidationError {
             } => write!(
                 formatter,
                 "optional corpus {corpus_id} is at {actual:?}; expected {expected:?}"
+            ),
+            Self::DirtyCheckout {
+                corpus_id,
+                checkout,
+                status,
+            } => write!(
+                formatter,
+                "optional corpus {corpus_id} checkout {} is not clean: {status:?}",
+                checkout.display()
             ),
             Self::Git {
                 checkout,
@@ -182,6 +203,25 @@ pub fn validate_pin(
     Ok(())
 }
 
+/// Validate reviewed metadata plus a clean nested-checkout state.
+pub fn validate_pin_checkout(
+    pin: CorpusPin,
+    checkout: &Path,
+    repository: &str,
+    commit: &str,
+    porcelain_status: &str,
+) -> Result<(), PinValidationError> {
+    validate_pin(pin, repository, commit)?;
+    if !porcelain_status.is_empty() {
+        return Err(PinValidationError::DirtyCheckout {
+            corpus_id: pin.corpus_id,
+            checkout: checkout.to_owned(),
+            status: porcelain_status.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// Validate both optional corpus checkouts when they are initialized.
 ///
 /// An entirely absent `testdata/corpora/` returns `Ok(None)`, keeping ordinary
@@ -209,7 +249,12 @@ pub fn validate_optional_corpora(
     for (pin, checkout) in CORPUS_PINS.into_iter().zip(&checkouts) {
         let repository = git_value(checkout, "read origin URL", ["remote", "get-url", "origin"])?;
         let commit = git_value(checkout, "resolve HEAD", ["rev-parse", "HEAD"])?;
-        validate_pin(pin, repository.trim(), commit.trim())?;
+        let status = git_value(
+            checkout,
+            "check checkout cleanliness",
+            ["status", "--porcelain=v1", "--untracked-files=all"],
+        )?;
+        validate_pin_checkout(pin, checkout, repository.trim(), commit.trim(), &status)?;
     }
     Ok(Some(checkouts))
 }
@@ -341,19 +386,13 @@ impl CorpusCacheKey {
         archive_hash: &str,
     ) -> Result<Self, MaterializationError> {
         if !is_ascii_hex(corpus_commit, 40) || !is_ascii_hex(archive_hash, 64) {
-            return Err(MaterializationError::InvalidCacheKey {
-                reason: "corpus commit must be 40 hex characters and archive hash must be 64 hex characters",
-            });
+            return Err(MaterializationError::InvalidCacheKey { reason: "corpus commit must be 40 hex characters and archive hash must be 64 hex characters" });
         }
-        if archive_identity.is_empty()
-            || archive_identity.contains(['/', '\\', '\0'])
-            || archive_identity == "."
-            || archive_identity == ".."
-        {
-            return Err(MaterializationError::InvalidCacheKey {
-                reason: "archive identity must be one safe file-name component",
-            });
-        }
+        validate_component(archive_identity, archive_identity).map_err(|_| {
+            MaterializationError::InvalidCacheKey {
+                reason: "archive identity must be one portable file-name component",
+            }
+        })?;
         Ok(Self {
             directory_name: format!("{corpus_commit}--{archive_identity}--{archive_hash}"),
         })
@@ -365,104 +404,117 @@ impl CorpusCacheKey {
     }
 }
 
+/// The complete, independent file inventory expected from one archive.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpectedArchiveInventory {
+    files: BTreeMap<String, String>,
+}
+
+impl ExpectedArchiveInventory {
+    /// Validate an exact path-to-lowercase-SHA-256 inventory before extraction.
+    pub fn new(
+        entries: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, MaterializationError> {
+        let mut files = BTreeMap::new();
+        for (path, digest) in entries {
+            validate_logical_path(&path)?;
+            if path == COMPLETION_MARKER
+                || !is_ascii_hex(&digest, 64)
+                || digest.bytes().any(|byte| byte.is_ascii_uppercase())
+            {
+                return Err(MaterializationError::InvalidInventory {
+                    reason:
+                        "inventory paths must be portable and digests must be lowercase SHA-256",
+                });
+            }
+            if files.insert(path, digest).is_some() {
+                return Err(MaterializationError::InvalidInventory {
+                    reason: "inventory contains a duplicate path",
+                });
+            }
+        }
+        Ok(Self { files })
+    }
+
+    /// Construct an empty expected inventory for rejection-only fixtures.
+    pub fn empty() -> Self {
+        Self {
+            files: BTreeMap::new(),
+        }
+    }
+
+    fn marker_contents(&self) -> String {
+        self.files
+            .iter()
+            .map(|(path, digest)| format!("{digest}  {path}\n"))
+            .collect()
+    }
+}
+
 fn is_ascii_hex(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Materialization failure that preserves whether no cache output was promoted.
+/// Cleanup error retained alongside the primary materialization failure.
+#[derive(Debug)]
+pub struct CleanupFailure {
+    operation: &'static str,
+    path: PathBuf,
+    source: io::Error,
+}
+
+/// Materialization failure. Cleanup and lock-release failures are never lost.
 #[derive(Debug)]
 pub enum MaterializationError {
     /// The logical archive path cannot be safely materialized.
-    UnsafePath {
-        /// Original archive path.
-        path: String,
-        /// Why the path is unsafe.
-        reason: &'static str,
-    },
+    UnsafePath { path: String, reason: &'static str },
     /// An archive entry has a non-regular/non-directory type.
     UnsafeEntryKind {
-        /// Original archive path.
         path: String,
-        /// Rejected type.
         kind: ArchiveEntryKind,
     },
-    /// A filesystem path component was an existing symlink.
-    SymlinkTraversal {
-        /// Symlink component that would be traversed.
-        path: PathBuf,
-    },
-    /// The destination did not remain beneath the fresh extraction root.
-    EscapingDestination {
-        /// Computed destination.
-        destination: PathBuf,
-    },
-    /// A final cache directory exists but lacks a trustworthy completion marker.
-    IncompleteCache {
-        /// Existing cache path.
-        path: PathBuf,
-    },
-    /// Another materializer currently owns this cache key.
-    CacheBusy {
-        /// Lock path.
-        path: PathBuf,
-    },
+    /// A no-follow descriptor open encountered a symlink.
+    SymlinkTraversal { path: PathBuf },
+    /// An expected inventory was malformed.
+    InvalidInventory { reason: &'static str },
+    /// Observed files or their SHA-256 values differ from the expected inventory.
+    InventoryMismatch { reason: String },
+    /// A final cache directory is missing a valid completion record.
+    IncompleteCache { path: PathBuf },
+    /// Another materializer owns this cache key.
+    CacheBusy { path: PathBuf },
     /// Cache-key data is malformed.
-    InvalidCacheKey {
-        /// Validation reason.
-        reason: &'static str,
-    },
+    InvalidCacheKey { reason: &'static str },
+    /// This contract fixture has no race-safe implementation for this platform.
+    #[allow(dead_code)]
+    UnsupportedPlatform { platform: &'static str },
     /// A filesystem or payload operation failed.
     Io {
-        /// Operation being attempted.
         operation: &'static str,
-        /// Path involved in the failure.
         path: PathBuf,
-        /// Original I/O failure.
         source: io::Error,
+    },
+    /// The original extraction failure plus failures while releasing its resources.
+    WithCleanup {
+        primary: Box<MaterializationError>,
+        cleanup: Vec<CleanupFailure>,
     },
 }
 
 impl fmt::Display for MaterializationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsafePath { path, reason } => {
-                write!(formatter, "unsafe archive path {path:?}: {reason}")
-            }
-            Self::UnsafeEntryKind { path, kind } => {
-                write!(formatter, "unsafe archive entry kind {kind:?} for {path:?}")
-            }
-            Self::SymlinkTraversal { path } => {
-                write!(
-                    formatter,
-                    "refusing filesystem symlink traversal at {}",
-                    path.display()
-                )
-            }
-            Self::EscapingDestination { destination } => write!(
-                formatter,
-                "archive destination escapes the fresh extraction root: {}",
-                destination.display()
-            ),
-            Self::IncompleteCache { path } => write!(
-                formatter,
-                "refusing incomplete corpus cache at {}",
-                path.display()
-            ),
-            Self::CacheBusy { path } => {
-                write!(
-                    formatter,
-                    "corpus cache key is already materializing: {}",
-                    path.display()
-                )
-            }
-            Self::InvalidCacheKey { reason } => {
-                write!(formatter, "invalid corpus cache key: {reason}")
-            }
-            Self::Io {
-                operation,
-                path,
-                source,
-            } => write!(formatter, "cannot {operation} {}: {source}", path.display()),
+            Self::UnsafePath { path, reason } => write!(f, "unsafe archive path {path:?}: {reason}"),
+            Self::UnsafeEntryKind { path, kind } => write!(f, "unsafe archive entry kind {kind:?} for {path:?}"),
+            Self::SymlinkTraversal { path } => write!(f, "refusing filesystem symlink traversal at {}", path.display()),
+            Self::InvalidInventory { reason } => write!(f, "invalid expected archive inventory: {reason}"),
+            Self::InventoryMismatch { reason } => write!(f, "archive inventory does not match expectation: {reason}"),
+            Self::IncompleteCache { path } => write!(f, "refusing incomplete corpus cache at {}", path.display()),
+            Self::CacheBusy { path } => write!(f, "corpus cache key is already materializing: {}", path.display()),
+            Self::InvalidCacheKey { reason } => write!(f, "invalid corpus cache key: {reason}"),
+            Self::UnsupportedPlatform { platform } => write!(f, "the corpus contract fixture has no verified no-follow implementation on {platform}"),
+            Self::Io { operation, path, source } => write!(f, "cannot {operation} {}: {source}", path.display()),
+            Self::WithCleanup { primary, cleanup } => write!(f, "{primary}; additionally failed to clean up {} resource(s)", cleanup.len()),
         }
     }
 }
@@ -471,6 +523,7 @@ impl Error for MaterializationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::WithCleanup { primary, .. } => Some(primary),
             _ => None,
         }
     }
@@ -479,76 +532,32 @@ impl Error for MaterializationError {
 const COMPLETION_MARKER: &str = ".roml-corpus-complete";
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-/// Safely materialize one Chinneck archive into a cache directory.
+/// Materialize a reader-supplied entry stream only through the Linux
+/// descriptor-relative `openat`/`mkdirat` + `O_NOFOLLOW` contract seam.
 ///
-/// The returned directory is either a previously completed cache key or a
-/// directory atomically promoted from a fresh staging root. Any validation,
-/// payload, or filesystem error removes the staging tree and leaves no final
-/// cache directory behind.
+/// This is deliberately not an archive extractor: callers must supply entry
+/// metadata and streams from a separately qualified archive reader.
+#[cfg(target_os = "linux")]
 pub fn materialize_chinneck_archive(
     cache_root: &Path,
     cache_key: &CorpusCacheKey,
     entries: impl IntoIterator<Item = ArchiveEntry>,
+    expected: &ExpectedArchiveInventory,
 ) -> Result<PathBuf, MaterializationError> {
-    ensure_directory_tree_without_symlinks(cache_root)?;
-    let final_cache = cache_root.join(cache_key.directory_name());
-    ensure_no_symlink_components(&final_cache)?;
+    materialize_linux(cache_root, cache_key, entries, expected)
+}
 
-    if final_cache.exists() {
-        return completed_cache(&final_cache).map(|()| final_cache);
-    }
-
-    let _lock = CacheLock::acquire(cache_root, cache_key)?;
-    if final_cache.exists() {
-        return completed_cache(&final_cache).map(|()| final_cache);
-    }
-
-    let mut staging = FreshStaging::create(cache_root, cache_key)?;
-    for mut entry in entries {
-        let relative_path = validate_logical_path(&entry.logical_path)?;
-        validate_entry_kind(&entry)?;
-
-        let destination = staging.path.join(&relative_path);
-        ensure_beneath(&staging.path, &destination)?;
-        match entry.kind {
-            ArchiveEntryKind::Directory => {
-                create_relative_directory(&staging.path, &relative_path)?;
-            }
-            ArchiveEntryKind::RegularFile => {
-                if let Some(parent) = relative_path.parent() {
-                    create_relative_directory(&staging.path, parent)?;
-                }
-                ensure_no_symlink_components(&destination)?;
-                let mut output = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&destination)
-                    .map_err(|source| io_error("create archive file", &destination, source))?;
-                io::copy(&mut entry.payload, &mut output)
-                    .map_err(|source| io_error("write archive file", &destination, source))?;
-                output
-                    .flush()
-                    .map_err(|source| io_error("flush archive file", &destination, source))?;
-            }
-            kind => {
-                return Err(MaterializationError::UnsafeEntryKind {
-                    path: entry.logical_path,
-                    kind,
-                });
-            }
-        }
-    }
-
-    let marker = staging.path.join(COMPLETION_MARKER);
-    File::create_new(&marker)
-        .and_then(|mut file| file.write_all(b"complete\n"))
-        .map_err(|source| io_error("write completion marker", &marker, source))?;
-    ensure_no_symlink_components(&marker)?;
-
-    fs::rename(&staging.path, &final_cache)
-        .map_err(|source| io_error("atomically promote corpus cache", &final_cache, source))?;
-    staging.promoted = true;
-    Ok(final_cache)
+/// See the Linux implementation for the verified platform contract.
+#[cfg(not(target_os = "linux"))]
+pub fn materialize_chinneck_archive(
+    _cache_root: &Path,
+    _cache_key: &CorpusCacheKey,
+    _entries: impl IntoIterator<Item = ArchiveEntry>,
+    _expected: &ExpectedArchiveInventory,
+) -> Result<PathBuf, MaterializationError> {
+    Err(MaterializationError::UnsupportedPlatform {
+        platform: std::env::consts::OS,
+    })
 }
 
 fn validate_entry_kind(entry: &ArchiveEntry) -> Result<(), MaterializationError> {
@@ -561,42 +570,66 @@ fn validate_entry_kind(entry: &ArchiveEntry) -> Result<(), MaterializationError>
     }
 }
 
-fn validate_logical_path(logical_path: &str) -> Result<PathBuf, MaterializationError> {
-    if logical_path.is_empty() || logical_path.contains('\0') {
-        return Err(unsafe_path(logical_path, "path is empty or contains NUL"));
-    }
-    if logical_path.starts_with(['/', '\\']) {
+fn validate_logical_path(path: &str) -> Result<Vec<&str>, MaterializationError> {
+    if path.is_empty() || path.contains('\0') || path.starts_with(['/', '\\']) {
         return Err(unsafe_path(
-            logical_path,
-            "path is POSIX-absolute or UNC/rooted",
+            path,
+            "path is empty, contains NUL, or is rooted",
         ));
     }
-    let bytes = logical_path.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return Err(unsafe_path(logical_path, "path is Windows drive-qualified"));
-    }
-    if logical_path.contains(':') {
+    let bytes = path.as_bytes();
+    if (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        || path.contains(':')
+    {
         return Err(unsafe_path(
-            logical_path,
-            "path contains a Windows device separator",
+            path,
+            "path is Windows drive-qualified or contains a device separator",
         ));
     }
+    let components: Vec<_> = path.split(['/', '\\']).collect();
+    if components
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(unsafe_path(
+            path,
+            "path contains an empty, dot, or traversal component",
+        ));
+    }
+    for component in &components {
+        validate_component(component, path)?;
+    }
+    Ok(components)
+}
 
-    let mut relative = PathBuf::new();
-    for component in logical_path.split(['/', '\\']) {
-        match component {
-            "" | "." => continue,
-            ".." => return Err(unsafe_path(logical_path, "path contains lexical traversal")),
-            safe => relative.push(safe),
-        }
-    }
-    if relative.as_os_str().is_empty() {
+fn validate_component(component: &str, original_path: &str) -> Result<(), MaterializationError> {
+    if component.ends_with(['.', ' ']) {
         return Err(unsafe_path(
-            logical_path,
-            "path resolves to the extraction root",
+            original_path,
+            "component has a Windows-trimmed trailing dot or space",
         ));
     }
-    Ok(relative)
+    let device = component
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || device
+            .strip_prefix("COM")
+            .and_then(|n| n.parse::<u8>().ok())
+            .is_some_and(|n| (1..=9).contains(&n))
+        || device
+            .strip_prefix("LPT")
+            .and_then(|n| n.parse::<u8>().ok())
+            .is_some_and(|n| (1..=9).contains(&n));
+    if reserved {
+        return Err(unsafe_path(
+            original_path,
+            "component is a Windows reserved device name",
+        ));
+    }
+    Ok(())
 }
 
 fn unsafe_path(path: &str, reason: &'static str) -> MaterializationError {
@@ -606,218 +639,591 @@ fn unsafe_path(path: &str, reason: &'static str) -> MaterializationError {
     }
 }
 
-fn ensure_beneath(root: &Path, destination: &Path) -> Result<(), MaterializationError> {
-    if destination.strip_prefix(root).is_ok() {
-        Ok(())
-    } else {
-        Err(MaterializationError::EscapingDestination {
-            destination: destination.to_owned(),
-        })
-    }
-}
-
-fn create_relative_directory(root: &Path, relative: &Path) -> Result<(), MaterializationError> {
-    let mut current = root.to_owned();
-    for component in relative.components() {
-        let Component::Normal(part) = component else {
-            return Err(MaterializationError::EscapingDestination {
-                destination: root.join(relative),
-            });
-        };
-        current.push(part);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(MaterializationError::SymlinkTraversal { path: current });
-            }
-            Ok(metadata) if !metadata.is_dir() => {
-                return Err(io_error(
-                    "create archive directory",
-                    &current,
-                    io::Error::new(io::ErrorKind::AlreadyExists, "path is not a directory"),
-                ));
-            }
-            Ok(_) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(&current)
-                    .map_err(|source| io_error("create archive directory", &current, source))?;
-            }
-            Err(source) => return Err(io_error("inspect archive directory", &current, source)),
-        }
-    }
-    ensure_no_symlink_components(&current)
-}
-
-fn completed_cache(cache: &Path) -> Result<(), MaterializationError> {
-    let metadata = fs::symlink_metadata(cache)
-        .map_err(|source| io_error("inspect corpus cache", cache, source))?;
-    if metadata.file_type().is_symlink() {
-        return Err(MaterializationError::SymlinkTraversal {
-            path: cache.to_owned(),
-        });
-    }
-    if !metadata.is_dir() {
-        return Err(MaterializationError::IncompleteCache {
-            path: cache.to_owned(),
-        });
-    }
-    let marker = cache.join(COMPLETION_MARKER);
-    let marker_metadata =
-        fs::symlink_metadata(&marker).map_err(|_| MaterializationError::IncompleteCache {
-            path: cache.to_owned(),
-        })?;
-    if marker_metadata.file_type().is_symlink() || !marker_metadata.is_file() {
-        return Err(MaterializationError::IncompleteCache {
-            path: cache.to_owned(),
-        });
-    }
-    ensure_no_symlink_components(&marker)
-}
-
-fn ensure_directory_tree_without_symlinks(path: &Path) -> Result<(), MaterializationError> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(component.as_os_str()),
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                return Err(MaterializationError::UnsafePath {
-                    path: path.display().to_string(),
-                    reason: "cache root contains lexical traversal",
-                });
-            }
-            Component::Normal(part) => current.push(part),
-        }
-        if current.as_os_str().is_empty() {
-            continue;
-        }
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(MaterializationError::SymlinkTraversal { path: current });
-            }
-            Ok(metadata) if !metadata.is_dir() => {
-                return Err(io_error(
-                    "create corpus cache root",
-                    &current,
-                    io::Error::new(io::ErrorKind::AlreadyExists, "path is not a directory"),
-                ));
-            }
-            Ok(_) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(&current)
-                    .map_err(|source| io_error("create corpus cache root", &current, source))?;
-            }
-            Err(source) => return Err(io_error("inspect corpus cache root", &current, source)),
-        }
-    }
-    Ok(())
-}
-
-fn ensure_no_symlink_components(path: &Path) -> Result<(), MaterializationError> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(component.as_os_str()),
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                return Err(MaterializationError::UnsafePath {
-                    path: path.display().to_string(),
-                    reason: "filesystem destination contains lexical traversal",
-                });
-            }
-            Component::Normal(part) => current.push(part),
-        }
-        if current.as_os_str().is_empty() {
-            continue;
-        }
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(MaterializationError::SymlinkTraversal { path: current });
-            }
-            Ok(_) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => break,
-            Err(source) => return Err(io_error("inspect filesystem path", &current, source)),
-        }
-    }
-    Ok(())
-}
-
-fn io_error(operation: &'static str, path: &Path, source: io::Error) -> MaterializationError {
+fn io_error(
+    operation: &'static str,
+    path: &Path,
+    source: impl Into<io::Error>,
+) -> MaterializationError {
     MaterializationError::Io {
         operation,
         path: path.to_owned(),
-        source,
+        source: source.into(),
     }
 }
 
-struct FreshStaging {
-    path: PathBuf,
-    promoted: bool,
-}
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use rustix::{
+        fs::{self as rfs, AtFlags, FileType, Mode, OFlags, RawDir, RenameFlags},
+        io::Errno,
+    };
+    use sha2::{Digest, Sha256};
+    use std::{ffi::OsStr, mem::MaybeUninit, path::Component};
 
-impl FreshStaging {
-    fn create(cache_root: &Path, cache_key: &CorpusCacheKey) -> Result<Self, MaterializationError> {
-        for _ in 0..64 {
-            let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|source| {
-                    io_error("read system time", cache_root, io::Error::other(source))
-                })?
-                .as_nanos();
-            let path = cache_root.join(format!(
-                ".{}--staging-{}-{nanos}-{sequence}",
-                cache_key.directory_name(),
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => {
-                    return Ok(Self {
-                        path,
-                        promoted: false,
-                    })
-                }
-                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(source) => return Err(io_error("create fresh extraction root", &path, source)),
-            }
-        }
-        Err(MaterializationError::CacheBusy {
-            path: cache_root.join(format!(".{}--staging", cache_key.directory_name())),
-        })
+    fn dir_flags() -> OFlags {
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
     }
-}
-
-impl Drop for FreshStaging {
-    fn drop(&mut self) {
-        if !self.promoted {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+    fn file_flags() -> OFlags {
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC
     }
-}
 
-struct CacheLock {
-    path: PathBuf,
-}
-
-impl CacheLock {
-    fn acquire(
+    pub(super) fn materialize_linux(
         cache_root: &Path,
         cache_key: &CorpusCacheKey,
-    ) -> Result<Self, MaterializationError> {
-        let path = cache_root.join(format!(".{}--lock", cache_key.directory_name()));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(_) => Ok(Self { path }),
-            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                Err(MaterializationError::CacheBusy { path })
+        entries: impl IntoIterator<Item = ArchiveEntry>,
+        expected: &ExpectedArchiveInventory,
+    ) -> Result<PathBuf, MaterializationError> {
+        let root = SecureDirectory::open_or_create(cache_root)?;
+        let mut lock = CacheLock::acquire(&root, cache_key)?;
+
+        if let Some(cache) = root.open_existing_dir(cache_key.directory_name())? {
+            let result = validate_cache(&cache, expected).map(|()| cache.path.clone());
+            return finish_without_staging(result, &mut lock);
+        }
+
+        let mut staging = FreshStaging::create(&root, cache_key)?;
+        let result = extract(&mut staging, entries, expected)
+            .and_then(|()| root.promote_noreplace(&staging.name, cache_key.directory_name()))
+            .map(|()| {
+                staging.promoted = true;
+                root.path.join(cache_key.directory_name())
+            });
+        finish_with_staging(result, &mut staging, &mut lock)
+    }
+
+    fn finish_without_staging<T>(
+        result: Result<T, MaterializationError>,
+        lock: &mut CacheLock,
+    ) -> Result<T, MaterializationError> {
+        match result {
+            Ok(value) => {
+                lock.release().map_err(cleanup_error)?;
+                Ok(value)
             }
-            Err(source) => Err(io_error("acquire corpus cache lock", &path, source)),
+            Err(primary) => Err(with_cleanup(primary, Vec::new(), lock)),
+        }
+    }
+
+    fn finish_with_staging<T>(
+        result: Result<T, MaterializationError>,
+        staging: &mut FreshStaging,
+        lock: &mut CacheLock,
+    ) -> Result<T, MaterializationError> {
+        match result {
+            Ok(value) => {
+                lock.release().map_err(cleanup_error)?;
+                Ok(value)
+            }
+            Err(primary) => {
+                let mut cleanup = Vec::new();
+                staging.cleanup(&mut cleanup);
+                Err(with_cleanup(primary, cleanup, lock))
+            }
+        }
+    }
+
+    fn with_cleanup(
+        primary: MaterializationError,
+        mut cleanup: Vec<CleanupFailure>,
+        lock: &mut CacheLock,
+    ) -> MaterializationError {
+        if let Err(failure) = lock.release() {
+            cleanup.push(failure);
+        }
+        if cleanup.is_empty() {
+            primary
+        } else {
+            MaterializationError::WithCleanup {
+                primary: Box::new(primary),
+                cleanup,
+            }
+        }
+    }
+
+    fn cleanup_error(failure: CleanupFailure) -> MaterializationError {
+        MaterializationError::Io {
+            operation: failure.operation,
+            path: failure.path,
+            source: failure.source,
+        }
+    }
+
+    fn extract(
+        staging: &mut FreshStaging,
+        entries: impl IntoIterator<Item = ArchiveEntry>,
+        expected: &ExpectedArchiveInventory,
+    ) -> Result<(), MaterializationError> {
+        let mut observed = BTreeMap::new();
+        for mut entry in entries {
+            validate_entry_kind(&entry)?;
+            let components = validate_logical_path(&entry.logical_path)?;
+            match entry.kind {
+                ArchiveEntryKind::Directory => staging.dir.create_relative_dir(&components)?,
+                ArchiveEntryKind::RegularFile => {
+                    let digest = staging
+                        .dir
+                        .write_relative_file(&components, &mut entry.payload)?;
+                    if observed
+                        .insert(entry.logical_path.clone(), digest)
+                        .is_some()
+                    {
+                        return Err(MaterializationError::InventoryMismatch {
+                            reason: format!("duplicate file entry {:?}", entry.logical_path),
+                        });
+                    }
+                }
+                _ => unreachable!("entry kind was validated"),
+            }
+        }
+        if observed != expected.files {
+            return Err(MaterializationError::InventoryMismatch {
+                reason: "observed paths or SHA-256 values differ".to_owned(),
+            });
+        }
+        staging.dir.write_relative_file(
+            &[COMPLETION_MARKER],
+            &mut io::Cursor::new(expected.marker_contents().into_bytes()),
+        )?;
+        Ok(())
+    }
+
+    fn validate_cache(
+        cache: &SecureDirectory,
+        expected: &ExpectedArchiveInventory,
+    ) -> Result<(), MaterializationError> {
+        let marker = cache
+            .read_relative_file(&[COMPLETION_MARKER])
+            .map_err(|_| MaterializationError::IncompleteCache {
+                path: cache.path.clone(),
+            })?;
+        if marker != expected.marker_contents().as_bytes() {
+            return Err(MaterializationError::InventoryMismatch {
+                reason: "completion inventory differs from expected inventory".to_owned(),
+            });
+        }
+        let mut observed = BTreeMap::new();
+        collect_cache_files(cache, "", &mut observed)?;
+        if observed != expected.files {
+            return Err(MaterializationError::InventoryMismatch {
+                reason: "cached files or SHA-256 values differ from expected inventory".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn collect_cache_files(
+        directory: &SecureDirectory,
+        prefix: &str,
+        observed: &mut BTreeMap<String, String>,
+    ) -> Result<(), MaterializationError> {
+        let fd = directory.clone_open()?;
+        let mut buffer = [MaybeUninit::uninit(); 8192];
+        let mut entries = RawDir::new(&fd.fd, &mut buffer);
+        while let Some(entry) = entries.next() {
+            let entry = entry
+                .map_err(|source| io_error("enumerate cache inventory", &directory.path, source))?;
+            let name = entry
+                .file_name()
+                .to_str()
+                .map_err(|_| MaterializationError::InventoryMismatch {
+                    reason: "cached path is not valid UTF-8".to_owned(),
+                })?
+                .to_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let logical_path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if logical_path == COMPLETION_MARKER {
+                continue;
+            }
+            let stat =
+                rfs::statat(&directory.fd, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(|source| {
+                    io_error(
+                        "inspect cache entry without following links",
+                        &directory.path.join(&name),
+                        source,
+                    )
+                })?;
+            let file_type = FileType::from_raw_mode(stat.st_mode);
+            if file_type.is_dir() {
+                let child = directory.open_existing_dir(&name)?.ok_or_else(|| {
+                    MaterializationError::IncompleteCache {
+                        path: directory.path.join(&name),
+                    }
+                })?;
+                collect_cache_files(&child, &logical_path, observed)?;
+            } else if file_type.is_file() {
+                let digest = directory.hash_relative_file(&[name.as_str()])?;
+                if observed.insert(logical_path.clone(), digest).is_some() {
+                    return Err(MaterializationError::InventoryMismatch {
+                        reason: format!("duplicate cached path {logical_path:?}"),
+                    });
+                }
+            } else {
+                return Err(MaterializationError::InventoryMismatch {
+                    reason: format!(
+                        "cached entry {logical_path:?} is not a regular file or directory"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    struct SecureDirectory {
+        fd: File,
+        path: PathBuf,
+    }
+
+    impl SecureDirectory {
+        fn open_or_create(path: &Path) -> Result<Self, MaterializationError> {
+            let mut fd = if path.is_absolute() {
+                File::open("/")
+                    .map_err(|source| io_error("open filesystem root", Path::new("/"), source))?
+            } else {
+                File::open(".")
+                    .map_err(|source| io_error("open current directory", Path::new("."), source))?
+            };
+            let mut display = if path.is_absolute() {
+                PathBuf::from("/")
+            } else {
+                PathBuf::from(".")
+            };
+            for component in path.components() {
+                match component {
+                    Component::RootDir | Component::CurDir => continue,
+                    Component::ParentDir | Component::Prefix(_) => {
+                        return Err(unsafe_path(
+                            &path.display().to_string(),
+                            "cache root contains non-normal components",
+                        ))
+                    }
+                    Component::Normal(name) => {
+                        display.push(name);
+                        fd = open_or_create_dir(&fd, name, &display)?;
+                    }
+                }
+            }
+            Ok(Self { fd, path: display })
+        }
+
+        fn open_existing_dir(&self, name: &str) -> Result<Option<Self>, MaterializationError> {
+            match rfs::openat(&self.fd, name, dir_flags(), Mode::empty()) {
+                Ok(fd) => Ok(Some(Self {
+                    fd: fd.into(),
+                    path: self.path.join(name),
+                })),
+                Err(Errno::NOENT) => Ok(None),
+                Err(Errno::LOOP) => Err(MaterializationError::SymlinkTraversal {
+                    path: self.path.join(name),
+                }),
+                Err(source) => Err(io_error(
+                    "open cache directory without following links",
+                    &self.path.join(name),
+                    source,
+                )),
+            }
+        }
+
+        fn create_new_dir(&self, name: &str) -> Result<Self, MaterializationError> {
+            rfs::mkdirat(&self.fd, name, Mode::from_raw_mode(0o700)).map_err(|source| {
+                io_error(
+                    "create directory without following links",
+                    &self.path.join(name),
+                    source,
+                )
+            })?;
+            self.open_existing_dir(name)?
+                .ok_or_else(|| MaterializationError::Io {
+                    operation: "open newly created directory",
+                    path: self.path.join(name),
+                    source: io::Error::other("directory disappeared"),
+                })
+        }
+
+        fn create_relative_dir(&self, components: &[&str]) -> Result<(), MaterializationError> {
+            let mut dir = self.clone_open()?;
+            for component in components {
+                dir = match dir.open_existing_dir(component)? {
+                    Some(existing) => existing,
+                    None => dir.create_new_dir(component)?,
+                };
+            }
+            Ok(())
+        }
+
+        fn write_relative_file(
+            &self,
+            components: &[&str],
+            input: &mut dyn Read,
+        ) -> Result<String, MaterializationError> {
+            let (name, parents) = components
+                .split_last()
+                .ok_or_else(|| unsafe_path("", "file path has no components"))?;
+            let mut dir = self.clone_open()?;
+            for component in parents {
+                dir = match dir.open_existing_dir(component)? {
+                    Some(existing) => existing,
+                    None => dir.create_new_dir(component)?,
+                };
+            }
+            let path = dir.path.join(name);
+            let fd = rfs::openat(&dir.fd, *name, file_flags(), Mode::from_raw_mode(0o600))
+                .map_err(|source| {
+                    io_error("create archive file without following links", &path, source)
+                })?;
+            let mut output: File = fd.into();
+            let mut digest = Sha256::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let count = input
+                    .read(&mut buffer)
+                    .map_err(|source| io_error("read archive entry", &path, source))?;
+                if count == 0 {
+                    break;
+                }
+                output
+                    .write_all(&buffer[..count])
+                    .map_err(|source| io_error("write archive file", &path, source))?;
+                digest.update(&buffer[..count]);
+            }
+            output
+                .flush()
+                .map_err(|source| io_error("flush archive file", &path, source))?;
+            Ok(format!("{:x}", digest.finalize()))
+        }
+
+        fn hash_relative_file(&self, components: &[&str]) -> Result<String, MaterializationError> {
+            let mut file = self.open_relative_file(components)?;
+            let mut digest = Sha256::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let count = file
+                    .read(&mut buffer)
+                    .map_err(|source| io_error("read cached archive file", &self.path, source))?;
+                if count == 0 {
+                    break;
+                }
+                digest.update(&buffer[..count]);
+            }
+            Ok(format!("{:x}", digest.finalize()))
+        }
+
+        fn read_relative_file(&self, components: &[&str]) -> Result<Vec<u8>, MaterializationError> {
+            let mut file = self.open_relative_file(components)?;
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents)
+                .map_err(|source| io_error("read completion inventory", &self.path, source))?;
+            Ok(contents)
+        }
+
+        fn open_relative_file(&self, components: &[&str]) -> Result<File, MaterializationError> {
+            let (name, parents) = components
+                .split_last()
+                .ok_or_else(|| unsafe_path("", "file path has no components"))?;
+            let mut dir = self.clone_open()?;
+            for component in parents {
+                dir = dir.open_existing_dir(component)?.ok_or_else(|| {
+                    MaterializationError::IncompleteCache {
+                        path: dir.path.join(component),
+                    }
+                })?;
+            }
+            rfs::openat(
+                &dir.fd,
+                *name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map(Into::into)
+            .map_err(|source| match source {
+                Errno::LOOP => MaterializationError::SymlinkTraversal {
+                    path: dir.path.join(name),
+                },
+                _ => io_error(
+                    "open cache file without following links",
+                    &dir.path.join(name),
+                    source,
+                ),
+            })
+        }
+
+        fn promote_noreplace(
+            &self,
+            staging: &str,
+            final_name: &str,
+        ) -> Result<(), MaterializationError> {
+            rfs::renameat_with(
+                &self.fd,
+                staging,
+                &self.fd,
+                final_name,
+                RenameFlags::NOREPLACE,
+            )
+            .map_err(|source| {
+                io_error(
+                    "atomically promote corpus cache without replacement",
+                    &self.path.join(final_name),
+                    source,
+                )
+            })
+        }
+
+        fn clone_open(&self) -> Result<Self, MaterializationError> {
+            let fd = rfs::openat(&self.fd, ".", dir_flags(), Mode::empty()).map_err(|source| {
+                io_error("duplicate secure directory descriptor", &self.path, source)
+            })?;
+            Ok(Self {
+                fd: fd.into(),
+                path: self.path.clone(),
+            })
+        }
+    }
+
+    fn open_or_create_dir(
+        parent: &File,
+        name: &OsStr,
+        display: &Path,
+    ) -> Result<File, MaterializationError> {
+        match rfs::openat(parent, name, dir_flags(), Mode::empty()) {
+            Ok(fd) => Ok(fd.into()),
+            Err(Errno::NOENT) => {
+                rfs::mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|source| {
+                    io_error("create cache root without following links", display, source)
+                })?;
+                rfs::openat(parent, name, dir_flags(), Mode::empty())
+                    .map(Into::into)
+                    .map_err(|source| match source {
+                        Errno::LOOP => MaterializationError::SymlinkTraversal {
+                            path: display.to_owned(),
+                        },
+                        _ => io_error("open cache root without following links", display, source),
+                    })
+            }
+            Err(Errno::LOOP) => Err(MaterializationError::SymlinkTraversal {
+                path: display.to_owned(),
+            }),
+            Err(source) => Err(io_error(
+                "open cache root without following links",
+                display,
+                source,
+            )),
+        }
+    }
+
+    struct FreshStaging {
+        dir: SecureDirectory,
+        name: String,
+        promoted: bool,
+    }
+
+    impl FreshStaging {
+        fn create(
+            root: &SecureDirectory,
+            key: &CorpusCacheKey,
+        ) -> Result<Self, MaterializationError> {
+            for _ in 0..64 {
+                let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|source| {
+                        io_error("read system time", &root.path, io::Error::other(source))
+                    })?
+                    .as_nanos();
+                let name = format!(
+                    ".{}--staging-{}-{nanos}-{sequence}",
+                    key.directory_name(),
+                    std::process::id()
+                );
+                match root.create_new_dir(&name) {
+                    Ok(dir) => {
+                        return Ok(Self {
+                            dir,
+                            name,
+                            promoted: false,
+                        })
+                    }
+                    Err(MaterializationError::Io { source, .. })
+                        if source.kind() == io::ErrorKind::AlreadyExists =>
+                    {
+                        continue
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(MaterializationError::CacheBusy {
+                path: root
+                    .path
+                    .join(format!(".{}--staging", key.directory_name())),
+            })
+        }
+
+        fn cleanup(&mut self, failures: &mut Vec<CleanupFailure>) {
+            if !self.promoted {
+                if let Err(source) = fs::remove_dir_all(&self.dir.path) {
+                    failures.push(CleanupFailure {
+                        operation: "remove staging directory",
+                        path: self.dir.path.clone(),
+                        source,
+                    });
+                }
+            }
+        }
+    }
+
+    struct CacheLock<'a> {
+        root: &'a SecureDirectory,
+        name: String,
+        released: bool,
+    }
+
+    impl<'a> CacheLock<'a> {
+        fn acquire(
+            root: &'a SecureDirectory,
+            key: &CorpusCacheKey,
+        ) -> Result<Self, MaterializationError> {
+            let name = format!(".{}--lock", key.directory_name());
+            let path = root.path.join(&name);
+            match rfs::openat(&root.fd, &name, file_flags(), Mode::from_raw_mode(0o600)) {
+                Ok(fd) => {
+                    drop(File::from(fd));
+                    Ok(Self {
+                        root,
+                        name,
+                        released: false,
+                    })
+                }
+                Err(Errno::EXIST) => Err(MaterializationError::CacheBusy { path }),
+                Err(Errno::LOOP) => Err(MaterializationError::SymlinkTraversal { path }),
+                Err(source) => Err(io_error(
+                    "acquire corpus cache lock without following links",
+                    &path,
+                    source,
+                )),
+            }
+        }
+
+        fn release(&mut self) -> Result<(), CleanupFailure> {
+            if self.released {
+                return Ok(());
+            }
+            rfs::unlinkat(&self.root.fd, &self.name, AtFlags::empty()).map_err(|source| {
+                CleanupFailure {
+                    operation: "release corpus cache lock",
+                    path: self.root.path.join(&self.name),
+                    source: source.into(),
+                }
+            })?;
+            self.released = true;
+            Ok(())
         }
     }
 }
 
-impl Drop for CacheLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
+#[cfg(target_os = "linux")]
+use linux::materialize_linux;
