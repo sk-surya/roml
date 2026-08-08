@@ -1,10 +1,14 @@
 //! MPS import contract types.
 //!
 //! This module intentionally freezes the solver-free public seam used by the
-//! MPS lexer, staging, resolution, and reader tasks. It does not implement
-//! lexical parsing or model construction.
+//! MPS lexer, staging, resolution, and reader tasks. Model construction stays
+//! solver-independent and transactional inside this format boundary.
 
-use std::{io, path::PathBuf};
+use std::{
+    fs::File,
+    io,
+    path::{Path, PathBuf},
+};
 
 use crate::Model;
 
@@ -121,20 +125,37 @@ impl MpsReader {
         &self.options
     }
 
-    /// Attempts to import an MPS document from a buffered stream.
-    ///
-    /// Task 35-00 exposes this entry point solely so malformed-input harnesses
-    /// exercise production code. It deliberately does not inspect `input` or
-    /// implement lexical semantics; until Task 35-05 connects the completed
-    /// parser and resolver, every call returns
-    /// [`MpsErrorKind::ParserUnavailable`].
-    pub fn read<R: io::BufRead>(&self, _input: R) -> Result<MpsImport, MpsError> {
-        Err(MpsError::new(
-            MpsErrorKind::ParserUnavailable,
-            MpsDiagnostic::new().with_message(
-                "MPS parsing is deferred; this Task 35-00 reader seam does not inspect input",
-            ),
-        ))
+    /// Imports an MPS document from a buffered stream into a fresh model.
+    pub fn read<R: io::BufRead>(&self, input: R) -> Result<MpsImport, MpsError> {
+        self.read_with_source(input, MpsInputSource::Label("<stream>".to_owned()))
+    }
+
+    /// Imports an MPS document from a filesystem path.
+    pub fn read_path<P: AsRef<Path>>(&self, path: P) -> Result<MpsImport, MpsError> {
+        let path = path.as_ref();
+        let input = File::open(path).map_err(|cause| {
+            MpsError::io(
+                MpsDiagnostic::new()
+                    .with_input_source(MpsInputSource::Path(path.to_owned()))
+                    .with_message("unable to open MPS input"),
+                cause,
+            )
+        })?;
+        self.read_with_source(
+            io::BufReader::new(input),
+            MpsInputSource::Path(path.to_owned()),
+        )
+    }
+
+    fn read_with_source<R: io::BufRead>(
+        &self,
+        input: R,
+        source: MpsInputSource,
+    ) -> Result<MpsImport, MpsError> {
+        let (document, staging) = crate::io::mps::semantic::stage_input(input, &self.options)
+            .map_err(|error| error.with_input_source(source.clone()))?;
+        crate::io::mps::semantic::resolve(&document, staging, &self.options)
+            .map_err(|error| error.with_input_source(source))
     }
 }
 
@@ -440,8 +461,6 @@ pub enum MpsErrorKind {
     RepresentationError,
     /// Constructing a fresh ROML model failed.
     ModelConstruction,
-    /// The public reader seam is present but lexical parsing is not yet wired.
-    ParserUnavailable,
 }
 
 /// A typed, source-aware MPS import failure.
@@ -477,6 +496,12 @@ impl MpsError {
     /// Creates an I/O failure that preserves its source error.
     pub fn io(diagnostic: MpsDiagnostic, cause: io::Error) -> Self {
         Self::with_source(MpsErrorKind::Io, diagnostic, cause)
+    }
+
+    fn with_input_source(mut self, input_source: MpsInputSource) -> Self {
+        let diagnostic = (*self.diagnostic).clone().with_input_source(input_source);
+        self.diagnostic = Box::new(diagnostic);
+        self
     }
 
     /// Returns the typed category of this failure.
@@ -564,7 +589,6 @@ impl std::fmt::Display for MpsErrorKind {
             Self::AmbiguousFormat => write!(f, "ambiguous MPS format"),
             Self::RepresentationError => write!(f, "representation error"),
             Self::ModelConstruction => write!(f, "model construction failure"),
-            Self::ParserUnavailable => write!(f, "MPS parser unavailable"),
         }
     }
 }

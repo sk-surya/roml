@@ -155,22 +155,15 @@ fn source_spans_use_one_based_display_coordinates() {
 }
 
 #[test]
-fn deferred_reader_entry_point_is_non_panicking_for_malformed_input() {
+fn reader_entry_point_is_non_panicking_for_malformed_input() {
     let result = catch_unwind(AssertUnwindSafe(|| {
         MpsReader::new().read(BufReader::new(&b"\0 malformed MPS"[..]))
     }));
 
-    let error = match result.expect("the deferred reader must not unwind") {
+    let error = match result.expect("the reader must not unwind") {
         Err(error) => error,
-        Ok(_) => panic!("the parser is intentionally deferred to a later task"),
+        Ok(_) => panic!("malformed input must reject"),
     };
-    assert_eq!(error.kind(), &MpsErrorKind::ParserUnavailable);
-    assert!(
-        error
-            .diagnostic()
-            .message()
-            .unwrap_or_default()
-            .contains("deferred"),
-        "the deferred path must state that it did not parse the input"
-    );
+    assert_eq!(error.kind(), &MpsErrorKind::InvalidEncoding);
+    assert!(error.diagnostic().input_source().is_some());
 }
