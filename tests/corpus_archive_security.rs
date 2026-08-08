@@ -66,6 +66,16 @@ fn cache_path(root: &Path) -> PathBuf {
     root.join(cache_key().directory_name())
 }
 
+fn cache_key_with_archive_identity(
+    archive_identity: &str,
+) -> Result<CorpusCacheKey, MaterializationError> {
+    CorpusCacheKey::new(
+        "97a936498e5240d44adaf7dcfe84877fa34ce301",
+        archive_identity,
+        "a3b8e4c1641ec6f82564d78cf8402213bc410ed76ef061785e16cd761bb6c046",
+    )
+}
+
 fn file(path: &str) -> ArchiveEntry {
     ArchiveEntry::regular_file(path, b"NAME TEST\nENDATA\n".to_vec())
 }
@@ -409,6 +419,39 @@ fn a12_rejects_windows_device_names_and_trailing_components_before_writing() {
 }
 
 #[test]
+fn cache_identity_is_exactly_one_portable_safe_component() {
+    for archive_identity in [
+        "",
+        ".",
+        "..",
+        "nested/archive.7z",
+        "nested\\archive.7z",
+        "archive:name.7z",
+        "archive?.7z",
+        "archive*.7z",
+        "archive|name.7z",
+        "archive\"name.7z",
+        "archive<name.7z",
+        "archive>name.7z",
+        "archive\u{0001}.7z",
+        "archive\u{007f}.7z",
+        "COM¹",
+        "LPT².txt",
+        "com³.7z",
+    ] {
+        let error = cache_key_with_archive_identity(archive_identity)
+            .expect_err("archive identity must be a portable cache-name component");
+        assert!(matches!(
+            error,
+            MaterializationError::InvalidCacheKey { .. }
+        ));
+    }
+
+    cache_key_with_archive_identity("INFfromNetlibLPs.7z")
+        .expect("the approved archive identity must remain valid");
+}
+
+#[test]
 fn a13_requires_expected_inventory_and_digest_before_promotion() {
     let sandbox = Sandbox::new();
     let expected = inventory(&[("models/case.mps", b"expected contents")]);
@@ -476,9 +519,71 @@ fn a14b_rejects_an_unexpected_file_when_reusing_a_cache() {
     ));
 }
 
+#[cfg(target_os = "linux")]
+fn replace_with_fifo(path: &Path) {
+    use rustix::fs::{self as rfs, Mode};
+    use std::fs::File;
+
+    let parent = path.parent().expect("cache entry must have a parent");
+    let name = path.file_name().expect("cache entry must have a name");
+    fs::remove_file(path).expect("cached regular file must be removable for adversarial test");
+    let parent_fd = File::open(parent).expect("cache parent must be openable");
+    rfs::mkfifoat(&parent_fd, name, Mode::from_raw_mode(0o600))
+        .expect("adversarial FIFO must be creatable");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a15_rejects_a_fifo_completion_marker_without_blocking_on_cache_reuse() {
+    let sandbox = Sandbox::new();
+    let expected = inventory(&[("models/case.mps", b"NAME TEST\nENDATA\n")]);
+    let cache = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [ArchiveEntry::directory("models"), file("models/case.mps")],
+        &expected,
+    )
+    .expect("valid inventory must promote");
+    replace_with_fifo(&cache.join(".roml-corpus-complete"));
+
+    let error =
+        materialize_chinneck_archive(sandbox.path(), &cache_key(), std::iter::empty(), &expected)
+            .expect_err("a FIFO completion marker must not be reused");
+
+    assert!(matches!(
+        error,
+        MaterializationError::IncompleteCache { .. }
+            | MaterializationError::InventoryMismatch { .. }
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a16_rejects_a_fifo_data_file_without_blocking_on_cache_reuse() {
+    let sandbox = Sandbox::new();
+    let expected = inventory(&[("models/case.mps", b"NAME TEST\nENDATA\n")]);
+    let cache = materialize_chinneck_archive(
+        sandbox.path(),
+        &cache_key(),
+        [ArchiveEntry::directory("models"), file("models/case.mps")],
+        &expected,
+    )
+    .expect("valid inventory must promote");
+    replace_with_fifo(&cache.join("models/case.mps"));
+
+    let error =
+        materialize_chinneck_archive(sandbox.path(), &cache_key(), std::iter::empty(), &expected)
+            .expect_err("a FIFO cache file must not be hashed or reused");
+
+    assert!(matches!(
+        error,
+        MaterializationError::InventoryMismatch { .. }
+    ));
+}
+
 #[cfg(unix)]
 #[test]
-fn a15_preserves_the_payload_error_when_staging_cleanup_and_lock_release_fail() {
+fn a17_preserves_the_payload_error_when_staging_cleanup_and_lock_release_fail() {
     use std::os::unix::fs::PermissionsExt;
 
     struct PermissionRevokingReader {

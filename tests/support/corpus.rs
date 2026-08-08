@@ -388,7 +388,7 @@ impl CorpusCacheKey {
         if !is_ascii_hex(corpus_commit, 40) || !is_ascii_hex(archive_hash, 64) {
             return Err(MaterializationError::InvalidCacheKey { reason: "corpus commit must be 40 hex characters and archive hash must be 64 hex characters" });
         }
-        validate_component(archive_identity, archive_identity).map_err(|_| {
+        validate_cache_name_component(archive_identity).map_err(|_| {
             MaterializationError::InvalidCacheKey {
                 reason: "archive identity must be one portable file-name component",
             }
@@ -603,6 +603,18 @@ fn validate_logical_path(path: &str) -> Result<Vec<&str>, MaterializationError> 
 }
 
 fn validate_component(component: &str, original_path: &str) -> Result<(), MaterializationError> {
+    if component.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            )
+    }) {
+        return Err(unsafe_path(
+            original_path,
+            "component contains a Windows-invalid or control character",
+        ));
+    }
     if component.ends_with(['.', ' ']) {
         return Err(unsafe_path(
             original_path,
@@ -614,11 +626,13 @@ fn validate_component(component: &str, original_path: &str) -> Result<(), Materi
         .next()
         .unwrap_or_default()
         .to_ascii_uppercase();
-    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || device
-            .strip_prefix("COM")
-            .and_then(|n| n.parse::<u8>().ok())
-            .is_some_and(|n| (1..=9).contains(&n))
+    let reserved = matches!(
+        device.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "COM¹" | "COM²" | "COM³" | "LPT¹" | "LPT²" | "LPT³"
+    ) || device
+        .strip_prefix("COM")
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=9).contains(&n))
         || device
             .strip_prefix("LPT")
             .and_then(|n| n.parse::<u8>().ok())
@@ -630,6 +644,16 @@ fn validate_component(component: &str, original_path: &str) -> Result<(), Materi
         ));
     }
     Ok(())
+}
+
+fn validate_cache_name_component(component: &str) -> Result<(), MaterializationError> {
+    if component.is_empty() || matches!(component, "." | "..") || component.contains(['/', '\\']) {
+        return Err(unsafe_path(
+            component,
+            "archive identity must be exactly one non-dot cache-name component",
+        ));
+    }
+    validate_component(component, component)
 }
 
 fn unsafe_path(path: &str, reason: &'static str) -> MaterializationError {
@@ -1034,23 +1058,25 @@ mod linux {
                     }
                 })?;
             }
-            rfs::openat(
+            let path = dir.path.join(name);
+            let fd = rfs::openat(
                 &dir.fd,
                 *name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                 Mode::empty(),
             )
-            .map(Into::into)
             .map_err(|source| match source {
-                Errno::LOOP => MaterializationError::SymlinkTraversal {
-                    path: dir.path.join(name),
-                },
-                _ => io_error(
-                    "open cache file without following links",
-                    &dir.path.join(name),
-                    source,
-                ),
-            })
+                Errno::LOOP => MaterializationError::SymlinkTraversal { path: path.clone() },
+                _ => io_error("open cache file without following links", &path, source),
+            })?;
+            let stat = rfs::fstat(&fd)
+                .map_err(|source| io_error("inspect opened cache file", &path, source))?;
+            if !FileType::from_raw_mode(stat.st_mode).is_file() {
+                return Err(MaterializationError::InventoryMismatch {
+                    reason: format!("cached entry {:?} is not a regular file", path),
+                });
+            }
+            Ok(fd.into())
         }
 
         fn promote_noreplace(
