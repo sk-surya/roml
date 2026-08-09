@@ -1,0 +1,6 @@
+[submodule "testdata/corpora/infeasible-lps"]
+	path = testdata/corpora/infeasible-lps
+	url = https://github.com/sk-surya/infeasiblelps
+[submodule "testdata/corpora/netlib"]
+	path = testdata/corpora/netlib
+	url = https://github.com/sk-surya/lp-data-netlib
