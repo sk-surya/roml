@@ -113,6 +113,14 @@ PASS at written-spec level.
 - `write_path` is the only operation governed by `MpsDestinationPolicy`.
 - Both methods capture one evaluated canonical snapshot before output; failures return typed errors without a success report.
 
+## Historical-artifact routing scan
+
+PASS.
+
+- The retained original milestone `ROADMAP.md` and `README.md` are explicitly marked historical/superseded.
+- Their old parallel P29/P30/P31 dependency text is explicitly non-authoritative and the current serialized path is stated.
+- No retained historical artifact can be mistaken for current production authorization; root/milestone state remains the active authority.
+
 ## Remaining gate
 
 Independent written-spec re-review of the corrected exact head. This self-review is not approval. No P36 production code may begin before re-review clearance and owner merge of PR #45.
