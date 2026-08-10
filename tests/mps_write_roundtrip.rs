@@ -44,6 +44,64 @@ fn named_lp_round_trips_to_the_same_normalized_mathematics() {
 }
 
 #[test]
+fn generated_names_do_not_change_unnamed_duplicate_or_invalid_math() {
+    let mut model = Model::with_name("invalid model name");
+    let unnamed = model
+        .add_variable(continuous().bounds(0.0, 10.0))
+        .expect("valid unnamed variable");
+    let duplicate_a = model
+        .add_variable(continuous().named("duplicate"))
+        .expect("valid first duplicate variable");
+    let duplicate_b = model
+        .add_variable(integer().bounds(0.0, 4.0).named("duplicate"))
+        .expect("valid second duplicate variable");
+    let invalid = model
+        .add_variable(binary().named("invalid variable name"))
+        .expect("valid invalid-name variable");
+
+    let unnamed_row = model.add_empty_constraint(ConstraintBounds::le(20.0));
+    let duplicate_row_a = model
+        .add_constraint(
+            ConstraintSpec::new(LinExpr::new(), ConstraintBounds::ge(-3.0))
+                .named("duplicate"),
+        )
+        .expect("valid first duplicate row");
+    let duplicate_row_b = model
+        .add_constraint(
+            ConstraintSpec::new(LinExpr::new(), ConstraintBounds::eq(5.0)).named("duplicate"),
+        )
+        .expect("valid second duplicate row");
+    let invalid_row = model
+        .add_constraint(
+            ConstraintSpec::new(LinExpr::new(), ConstraintBounds::range(-2.0, 8.0))
+                .named("invalid row name"),
+        )
+        .expect("valid invalid-name row");
+
+    model
+        .add_coeff(unnamed_row, unnamed, 1.0)
+        .expect("unnamed matrix cell");
+    model
+        .add_coeff(duplicate_row_a, duplicate_a, 2.0)
+        .expect("first duplicate matrix cell");
+    model
+        .add_coeff(duplicate_row_b, duplicate_b, 3.0)
+        .expect("second duplicate matrix cell");
+    model
+        .add_coeff(invalid_row, invalid, 4.0)
+        .expect("invalid-name matrix cell");
+    let objective = model.add_objective_named(Sense::Maximize, "invalid objective name");
+    model
+        .add_objective_coeff(objective, unnamed, 1.5)
+        .expect("objective cell");
+    model
+        .set_active_objective(objective)
+        .expect("objective exists");
+
+    assert_round_trip(&model, "generated-names");
+}
+
+#[test]
 fn no_objective_and_free_variable_round_trip() {
     let mut model = Model::with_name("hand-no-objective");
     let x = model
