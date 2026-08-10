@@ -99,6 +99,10 @@ impl MpsWriter {
 
 `write` is stream-only and may leave partial bytes; `write_path` alone applies the destination policy. The signatures and semantics are mirrored in `36-CONTRACT.md`, `36-PLAN.md`, and the top-level design. This is a planning correction, not implementation authorization.
 
+## Final historical-artifact routing closure
+
+A follow-up scan found stale original routing language in the retained milestone `ROADMAP.md` and `README.md`. Both now carry explicit historical/superseded notices, identify the current `PR #45 -> P36 -> P30 -> P31 -> P34` route, and state that they do not authorize production work. Root/milestone state and `COMPLETION-ROADMAP.md` remain the binding routing authorities.
+
 ## Re-review gate
 
 This disposition does not self-approve PR #45. The corrected exact head must receive independent written-spec re-review. P36 production remains forbidden until that review clears and PR #45 is owner-merged.
