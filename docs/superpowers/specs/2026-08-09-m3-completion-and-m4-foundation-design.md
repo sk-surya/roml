@@ -103,7 +103,16 @@ pub struct MpsWriteOptions {
     pub name_policy: MpsNamePolicy,
     pub destination_policy: MpsDestinationPolicy,
 }
+
+impl MpsWriter {
+    pub fn new() -> Self;
+    pub fn with_options(options: MpsWriteOptions) -> Self;
+    pub fn write<W: std::io::Write>(&self, model: &Model, output: W) -> Result<MpsWriteReport, MpsWriteError>;
+    pub fn write_path<P: AsRef<std::path::Path>>(&self, model: &Model, path: P) -> Result<MpsWriteReport, MpsWriteError>;
+}
 ```
+
+`write` is stream-only and may leave partial bytes; `write_path` alone applies `MpsDestinationPolicy` and its atomic-commit contract. Both methods capture one evaluated canonical snapshot before output.
 
 Defaults:
 
