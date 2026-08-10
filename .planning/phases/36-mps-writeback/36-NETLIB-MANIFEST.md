@@ -113,7 +113,7 @@ woodw.mps
 4. An unexpected additional `.mps` file is reported as corpus drift and blocks qualification until the manifest/pin is reviewed; it is not silently added.
 5. Every one of the 94 files must pass:
    - P35 ROML import;
-   - P36 `SemanticModel` writer representability;
+   - P36 semantic-writer representability;
    - deterministic second write;
    - independent ROML mathematical round-trip oracle;
    - native HiGHS structural differential.
