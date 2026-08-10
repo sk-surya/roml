@@ -60,12 +60,14 @@ PASS at written-spec level.
 
 PASS at written-spec level.
 
-- P30 has a workflow-specific provider policy, not generic unsupported-feature policy;
-- mathematical outcomes are separate from operational errors;
+- P30 has a workflow-specific provider policy and explicit `RelaxationAcceptance::{RequireOptimal,AcceptFeasible}`; default is `RequireOptimal`;
+- `FeasibleRepair` is legal only under `AcceptFeasible` with a valid feasible incumbent; `NoRepairFound`, `Unknown`, and operational errors remain distinct;
 - P29 origin mapping is explicit and all-or-error;
-- parameterized penalties resolve before backend mutation/priority execution;
+- parameterized P30 penalties resolve before backend mutation/priority execution;
 - P31 owns final objective/priority/stage/lock/result schemas;
-- P31 consumes the frozen `|z*|` lock formula;
+- P31 objective weights are frozen finite nonnegative `f64` in M3; no unresolved symbolic-weight choice remains;
+- P31 consumes the frozen normalized `|z*|` lock formula;
+- P30/P31 execution-provider enums are explicitly defined;
 - cleanup failure cannot be hidden behind a mathematically successful result.
 
 ## P34 consistency
@@ -87,6 +89,7 @@ PASS for binding contracts.
 - no P36 public feature is intentionally shipped unsupported-only;
 - future native providers have explicit `PortableOnly/PreferNative/NativeRequired` behavior rather than placeholder success;
 - future compiled MPS formulation export is deferred rather than exposed decoratively;
+- P30 repair acceptance and P31 weight representation no longer contain implementation-time choices;
 - M4 choices remain design questions and do not authorize production.
 
 ## Guarantee-language review
