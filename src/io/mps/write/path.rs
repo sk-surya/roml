@@ -103,10 +103,16 @@ pub(crate) fn commit_path_with_ops<O: MpsPathOps>(
     }
 
     match ops.atomic_commit(&mut temp, destination, policy) {
-        Ok(()) => match ops.cleanup(temp) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(io_error(destination, MpsPathStage::Cleanup, error)),
-        },
+        Ok(()) => {
+            // Publication is complete before cleanup runs. A cleanup failure
+            // therefore has no primary operation to compose and is reported
+            // as a standalone Cleanup-stage error; callers must not mistake
+            // this error for an unpublished destination.
+            match ops.cleanup(temp) {
+                Ok(()) => Ok(()),
+                Err(error) => Err(published_cleanup_error(destination, error)),
+            }
+        }
         Err(error) => {
             let kind = match (policy, error.kind()) {
                 (MpsDestinationPolicy::CreateNew, io::ErrorKind::AlreadyExists) => {
@@ -156,6 +162,16 @@ fn io_error(destination: &Path, stage: MpsPathStage, error: io::Error) -> MpsWri
         MpsWriteContext::default()
             .with_path(destination.to_owned())
             .with_stage(stage),
+        error,
+    )
+}
+
+fn published_cleanup_error(destination: &Path, error: io::Error) -> MpsWriteError {
+    MpsWriteError::io(
+        MpsWriteContext::default()
+            .with_path(destination.to_owned())
+            .with_stage(MpsPathStage::Cleanup)
+            .with_message("destination published; temporary cleanup failed"),
         error,
     )
 }
@@ -248,6 +264,12 @@ fn platform_atomic_replace(source: &Path, destination: &Path) -> io::Result<()> 
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn platform_atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    // Windows integration-gate note: this source-only scope cannot qualify
+    // MoveFileExW replacement against the supported Windows filesystem and
+    // toolchain matrix. The gate remains blocked until a Windows runner
+    // verifies replacement with an existing destination, open-handle sharing,
+    // failure mapping, and staged-file cleanup. No Windows release support is
+    // claimed by this implementation or by the current Unix-only evidence.
     use std::os::windows::ffi::OsStrExt;
 
     // SAFETY: both paths are converted to NUL-terminated UTF-16 buffers that
