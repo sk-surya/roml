@@ -74,11 +74,23 @@ git diff --check                                            PASS
 
 The following must still be recorded on the final candidate head before P36 closure:
 
-- Windows runtime path qualification in addition to the verified Windows GNU
-  compile check;
-- independent full implementation review and exact-head hosted checks;
+- local/native HiGHS Windows runtime-path qualification in addition to the
+  verified Windows GNU compile check;
+- independent full implementation review and any remaining exact-head hosted
+  checks;
 - final P36 verification, review, summary, and owner-authorized merge.
 
-Windows runtime qualification is currently unavailable in this Linux
-environment because no Wine/runtime host is installed; it remains an explicit
-residual gate and is not being marked PASS.
+## Hosted Windows Core qualification
+
+At the exact PR #46 head `c017d1aa61c0079086d6fdf80bb39cc77b08172c`, the hosted
+GitHub Actions `CI - Core / Test (windows-latest)` job passed
+([run/job](https://github.com/sk-surya/roml/actions/runs/31359712077/job/93365995014)).
+That solver-free Core job runs ROML all-target compilation and tests, in
+addition to formatting, Clippy, doctests, and rustdoc. This is a PASS for
+hosted Windows Core target/test qualification.
+
+Qualification boundary: the Core job does not by itself qualify the P36
+`roml-highs` writer/oracle or a native HiGHS Windows runtime path. The local
+Linux environment still has no Windows/Wine runtime host, so local/native
+HiGHS Windows runtime qualification remains unverified and is not marked
+PASS.
