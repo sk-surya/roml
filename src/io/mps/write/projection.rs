@@ -17,6 +17,7 @@ use crate::{
     model::{Bounds, ConstraintBounds, Sense, VarType},
     model::{CoefficientTarget, Model},
     snapshot::{CellEntry, ConstraintEntry, ModelSnapshot, VariableEntry},
+    value_expr::ValueExpr,
 };
 
 /// The evaluated semantic document handed to the formatter.
@@ -134,6 +135,15 @@ pub(crate) fn project_snapshot(
         .collect();
     let active_objective = snapshot.objectives.iter().find(|entry| entry.active);
 
+    let objective_source_name = if let Some(entry) = active_objective {
+        model
+            .objective_name(entry.id)
+            .map_err(|error| stale_error(model, MpsEntityKind::Objective, error.to_string()))?
+            .map(str::to_owned)
+    } else {
+        None
+    };
+
     validate_snapshot_cell_references(model, snapshot)?;
 
     let variable_sources = active_variables
@@ -165,9 +175,26 @@ pub(crate) fn project_snapshot(
         })
         .collect::<Result<Vec<_>, MpsWriteError>>()?;
 
-    let (variable_names, variable_name_map) =
-        allocate_names(&variable_sources, name_policy, "X", model)?;
-    let (row_names, row_name_map) = allocate_names(&row_sources, name_policy, "R", model)?;
+    let empty_reserved_names = BTreeSet::new();
+    let (variable_names, variable_name_map) = allocate_names(
+        &variable_sources,
+        name_policy,
+        "X",
+        model,
+        &empty_reserved_names,
+    )?;
+    let objective_reserved_names = objective_source_name
+        .as_deref()
+        .filter(|name| valid_mps_name(name))
+        .map(|name| BTreeSet::from([name.to_owned()]))
+        .unwrap_or_default();
+    let (row_names, row_name_map) = allocate_names(
+        &row_sources,
+        name_policy,
+        "R",
+        model,
+        &objective_reserved_names,
+    )?;
 
     let mut variables = Vec::with_capacity(active_variables.len());
     let mut variable_indexes = HashMap::with_capacity(active_variables.len());
@@ -227,42 +254,50 @@ pub(crate) fn project_snapshot(
     }
 
     let (objective, objective_name, objective_name_map) = if let Some(entry) = active_objective {
-        let source_name = model
-            .objective_name(entry.id)
-            .map_err(|error| stale_error(model, MpsEntityKind::Objective, error.to_string()))?
-            .map(str::to_owned);
         let objective_source = [NamedSource {
-            source_name: source_name.clone(),
+            source_name: objective_source_name.clone(),
             entity_kind: MpsEntityKind::Objective,
         }];
         let occupied: BTreeSet<String> = row_names.iter().cloned().collect();
-        let (mut names, mut maps) = allocate_names(&objective_source, name_policy, "OBJ", model)?;
-        if source_name
+        let (mut names, mut maps) =
+            allocate_names(&objective_source, name_policy, "OBJ", model, &occupied)?;
+        let allocated_name = names
+            .first()
+            .cloned()
+            .ok_or_else(|| internal_error(model, "objective name allocation is empty"))?;
+        if objective_source_name
             .as_deref()
-            .is_none_or(|name| !valid_mps_name(name) || names[0] != name)
+            .is_none_or(|name| !valid_mps_name(name) || allocated_name != name)
         {
-            names[0] = "OBJ".to_owned();
-            maps[0].emitted_name = names[0].clone();
+            set_first_name(&mut names, &mut maps, "OBJ".to_owned(), model)?;
         }
-        if occupied.contains(&names[0]) {
+        let allocated_name = names
+            .first()
+            .ok_or_else(|| internal_error(model, "objective name allocation is empty"))?;
+        if occupied.contains(allocated_name) {
             if name_policy == MpsNamePolicy::StrictPreserve {
                 return Err(entity_error(
                     model,
                     MpsWriteErrorKind::NameAllocation,
                     MpsEntityKind::Objective,
-                    &names[0],
+                    allocated_name,
                     "objective row collides with a constraint row",
                 ));
             }
-            names[0] = next_generated_name("OBJ", 1, &occupied);
-            maps[0].emitted_name = names[0].clone();
+            let generated = next_generated_name("OBJ", 1, &occupied);
+            set_first_name(&mut names, &mut maps, generated, model)?;
         }
-        (Some(entry), Some(names[0].clone()), Some(maps))
+        let objective_name = names
+            .first()
+            .cloned()
+            .ok_or_else(|| internal_error(model, "objective name allocation is empty"))?;
+        (Some(entry), Some(objective_name), Some(maps))
     } else {
         (None, None, None)
     };
 
     let mut consumed_parameters = BTreeSet::new();
+    let mut consumed_parameter_order = Vec::new();
     for cell in &snapshot.cells {
         match cell.cell_key.0 {
             CoefficientTarget::Constraint(con) => {
@@ -274,6 +309,7 @@ pub(crate) fn project_snapshot(
                         &variable_indexes,
                         &mut rows[row_index].cells,
                         &mut consumed_parameters,
+                        &mut consumed_parameter_order,
                     )?;
                 }
             }
@@ -292,26 +328,30 @@ pub(crate) fn project_snapshot(
                     &variable_indexes,
                     &mut objective_cells,
                     &mut consumed_parameters,
+                    &mut consumed_parameter_order,
                 )?;
             }
         }
     }
 
     let objective = if let Some(entry) = objective {
-        let objective_emitted_name = objective_name_map
+        let objective_name_map = objective_name_map
             .as_ref()
-            .expect("active objective name map")
-            .first()
-            .expect("active objective name")
-            .emitted_name
-            .clone();
+            .ok_or_else(|| internal_error(model, "active objective is missing its name map"))?;
+        let objective_name_entry = objective_name_map.first().ok_or_else(|| {
+            internal_error(model, "active objective is missing its name allocation")
+        })?;
+        let objective_emitted_name = objective_name_entry.emitted_name.clone();
+        let objective_name = objective_name
+            .clone()
+            .ok_or_else(|| internal_error(model, "active objective is missing its emitted name"))?;
         Some(MpsWriteObjective {
             source_id: entry.id,
             source_name: model
                 .objective_name(entry.id)
                 .map_err(|error| stale_error(model, MpsEntityKind::Objective, error.to_string()))?
                 .map(str::to_owned),
-            name: objective_name.expect("active objective name allocated"),
+            name: objective_name,
             sense: entry.sense,
             constant: checked_finite(
                 model,
@@ -326,11 +366,21 @@ pub(crate) fn project_snapshot(
         None
     };
 
-    let evaluated_parameters = snapshot
-        .parameters
-        .iter()
-        .filter(|entry| consumed_parameters.contains(&entry.id))
-        .map(|entry| {
+    let evaluated_parameters = consumed_parameter_order
+        .into_iter()
+        .map(|parameter_id| {
+            let entry = snapshot
+                .parameters
+                .iter()
+                .find(|entry| entry.id == parameter_id)
+                .ok_or_else(|| {
+                    parameter_error(
+                        model,
+                        parameter_id,
+                        "parameter dependency is absent from the captured snapshot",
+                        Vec::new(),
+                    )
+                })?;
             Ok(MpsEvaluatedParameter {
                 id: entry.id,
                 name: model
@@ -414,18 +464,24 @@ fn allocate_names(
     policy: MpsNamePolicy,
     prefix: &str,
     model: &Model,
+    namespace_reserved: &BTreeSet<String>,
 ) -> Result<(Vec<String>, Vec<MpsWriteName>), MpsWriteError> {
     let mut counts = BTreeMap::<&str, usize>::new();
+    for name in namespace_reserved {
+        *counts.entry(name.as_str()).or_default() += 1;
+    }
     for source in sources {
         if let Some(name) = source.source_name.as_deref() {
             *counts.entry(name).or_default() += 1;
         }
     }
-    let reserved: BTreeSet<String> = sources
-        .iter()
-        .filter_map(|source| source.source_name.clone())
-        .filter(|name| valid_mps_name(name))
-        .collect();
+    let mut reserved = namespace_reserved.clone();
+    reserved.extend(
+        sources
+            .iter()
+            .filter_map(|source| source.source_name.clone())
+            .filter(|name| valid_mps_name(name)),
+    );
     let mut used = BTreeSet::new();
     let mut generated = 0usize;
     let mut emitted = Vec::with_capacity(sources.len());
@@ -436,7 +492,15 @@ fn allocate_names(
             valid_mps_name(name) && counts.get(name).copied() == Some(1) && !used.contains(name)
         });
         let name = if preserve {
-            source_name.clone().expect("preserve implies a source name")
+            match source_name.clone() {
+                Some(name) => name,
+                None => {
+                    return Err(internal_error(
+                        model,
+                        "name allocator marked a nameless source for preservation",
+                    ));
+                }
+            }
         } else {
             if policy == MpsNamePolicy::StrictPreserve {
                 let display = source_name
@@ -481,32 +545,34 @@ fn append_cell(
     variable_indexes: &HashMap<VarId, usize>,
     destination: &mut Vec<MpsWriteCell>,
     consumed_parameters: &mut BTreeSet<ParamId>,
+    consumed_parameter_order: &mut Vec<ParamId>,
 ) -> Result<(), MpsWriteError> {
     if !variable_indexes.contains_key(&cell.cell_key.1) {
         return Ok(());
     }
-    let value = cell
-        .value_expr
-        .eval_checked(|id| {
-            snapshot
-                .parameters
-                .iter()
-                .find(|parameter| parameter.id == id)
-                .map(|parameter| parameter.value)
-                .ok_or(id)
-        })
-        .map_err(|missing| {
-            MpsWriteError::new(
-                MpsWriteErrorKind::ParameterEvaluation,
-                model_context(model)
-                    .with_entity(MpsEntityKind::MatrixCell, "matrix cell")
-                    .with_feature(format!("missing parameter dependency {missing:?}"))
-                    .with_parameter_dependencies(cell.dependencies.clone()),
-            )
-        })?;
-    for dependency in cell.value_expr.dependencies() {
-        consumed_parameters.insert(dependency);
+    let mut dependencies = ordered_dependencies(&cell.value_expr);
+    for &dependency in &cell.dependencies {
+        if !dependencies.contains(&dependency) {
+            dependencies.push(dependency);
+        }
     }
+    for dependency in dependencies {
+        if !snapshot
+            .parameters
+            .iter()
+            .any(|parameter| parameter.id == dependency)
+        {
+            return Err(missing_parameter_error(
+                model,
+                dependency,
+                cell.dependencies.clone(),
+            ));
+        }
+        if consumed_parameters.insert(dependency) {
+            consumed_parameter_order.push(dependency);
+        }
+    }
+    let value = cell.evaluated_value;
     if !value.is_finite() {
         return Err(entity_error(
             model,
@@ -642,6 +708,31 @@ fn checked_finite(
     }
 }
 
+fn ordered_dependencies(expression: &ValueExpr) -> Vec<ParamId> {
+    let mut dependencies = Vec::new();
+    collect_ordered_dependencies(expression, &mut dependencies);
+    dependencies
+}
+
+fn collect_ordered_dependencies(expression: &ValueExpr, dependencies: &mut Vec<ParamId>) {
+    match expression {
+        ValueExpr::Constant(_) => {}
+        ValueExpr::Param(id) => {
+            if !dependencies.contains(id) {
+                dependencies.push(*id);
+            }
+        }
+        ValueExpr::Add(left, right)
+        | ValueExpr::Sub(left, right)
+        | ValueExpr::Mul(left, right)
+        | ValueExpr::Div(left, right) => {
+            collect_ordered_dependencies(left, dependencies);
+            collect_ordered_dependencies(right, dependencies);
+        }
+        ValueExpr::Neg(inner) => collect_ordered_dependencies(inner, dependencies),
+    }
+}
+
 fn generated_name(prefix: &str, ordinal: usize) -> String {
     format!("{prefix}{ordinal:06}")
 }
@@ -692,10 +783,69 @@ fn entity_error(
     entity_name: &str,
     feature: &str,
 ) -> MpsWriteError {
+    let mut context = model_context(model)
+        .with_entity(entity_kind, entity_name)
+        .with_feature(feature);
+    if matches!(&kind, MpsWriteErrorKind::NonFiniteValue) {
+        context = context.with_numeric_field(feature);
+    }
+    MpsWriteError::new(kind, context)
+}
+
+fn parameter_error(
+    model: &Model,
+    parameter: ParamId,
+    feature: &str,
+    dependencies: Vec<ParamId>,
+) -> MpsWriteError {
     MpsWriteError::new(
-        kind,
+        MpsWriteErrorKind::ParameterEvaluation,
         model_context(model)
-            .with_entity(entity_kind, entity_name)
-            .with_feature(feature),
+            .with_entity(MpsEntityKind::Parameter, "parameter")
+            .with_feature(feature)
+            .with_parameter_dependencies(if dependencies.is_empty() {
+                vec![parameter]
+            } else {
+                dependencies
+            }),
+    )
+}
+
+fn missing_parameter_error(
+    model: &Model,
+    parameter: ParamId,
+    dependencies: Vec<ParamId>,
+) -> MpsWriteError {
+    MpsWriteError::new(
+        MpsWriteErrorKind::ParameterEvaluation,
+        model_context(model)
+            .with_entity(MpsEntityKind::MatrixCell, "matrix cell")
+            .with_feature(format!("missing parameter dependency {parameter:?}"))
+            .with_parameter_dependencies(dependencies),
+    )
+}
+
+fn set_first_name(
+    names: &mut [String],
+    mappings: &mut [MpsWriteName],
+    name: String,
+    model: &Model,
+) -> Result<(), MpsWriteError> {
+    let emitted_name = names
+        .first_mut()
+        .ok_or_else(|| internal_error(model, "name allocation is empty"))?;
+    let mapping = mappings
+        .first_mut()
+        .ok_or_else(|| internal_error(model, "name mapping is empty"))?;
+    *emitted_name = name.clone();
+    mapping.emitted_name = name;
+    Ok(())
+}
+
+fn internal_error(model: &Model, message: &str) -> MpsWriteError {
+    error_for_model(
+        model,
+        MpsWriteErrorKind::InternalInvariant,
+        message.to_owned(),
     )
 }

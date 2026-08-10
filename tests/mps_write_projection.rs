@@ -1,7 +1,5 @@
 //! Focused semantic projection tests for P36 Task 36-01A.
 
-use std::collections::BTreeMap;
-
 use roml::{
     binary, continuous, integer,
     io::mps::write::{MpsEntityKind, MpsNamePolicy, MpsWriteErrorKind, MpsWriteLowering},
@@ -214,6 +212,30 @@ fn evaluates_parameterized_cells_once_and_reports_consumed_values() {
 }
 
 #[test]
+fn projects_the_captured_cell_value_without_re_evaluating_its_expression() {
+    let mut model = Model::new();
+    let p = model.add_parameter(parameter(4.0)).unwrap();
+    let x = model.add_variable(continuous()).unwrap();
+    let row = model.add_empty_constraint(ConstraintBounds::le(20.0));
+    model
+        .add_constraint_coefficient(
+            row,
+            x,
+            ValueExpr::mul(ValueExpr::param(p), ValueExpr::constant(2.0)),
+        )
+        .unwrap();
+
+    let mut snapshot = model.take_snapshot().unwrap();
+    snapshot.cells[0].value_expr = ValueExpr::constant(f64::NAN);
+
+    let document =
+        projection::project_snapshot(&model, &snapshot, MpsNamePolicy::PreserveOrGenerate).unwrap();
+
+    assert_eq!(document.rows[0].cells[0].value, 8.0);
+    assert_eq!(document.report.evaluated_parameters[0].id, p);
+}
+
+#[test]
 fn supports_no_active_objective_and_allocates_names_without_raw_ids() {
     let mut model = Model::new();
     let first = model.add_variable(continuous().named("duplicate")).unwrap();
@@ -278,29 +300,122 @@ fn duplicate_canonical_cells_are_projected_as_one_cell() {
 }
 
 #[test]
-fn projection_report_parameter_order_is_stable() {
+fn projection_report_parameter_order_follows_semantic_cell_order() {
     let mut model = Model::new();
     let p1 = model.add_parameter(parameter(1.0).named("first")).unwrap();
     let p2 = model.add_parameter(parameter(2.0).named("second")).unwrap();
     let x = model.add_variable(continuous()).unwrap();
-    let row = model.add_empty_constraint(ConstraintBounds::le(10.0));
+    let first_row = model.add_empty_constraint(ConstraintBounds::le(10.0));
+    let second_row = model.add_empty_constraint(ConstraintBounds::le(10.0));
     model
-        .add_constraint_coefficient(
-            row,
-            x,
-            ValueExpr::add(ValueExpr::param(p2), ValueExpr::param(p1)),
-        )
+        .add_constraint_coefficient(first_row, x, ValueExpr::param(p2))
+        .unwrap();
+    model
+        .add_constraint_coefficient(second_row, x, ValueExpr::param(p1))
         .unwrap();
 
     let document = project(&model).unwrap();
-    let by_name: BTreeMap<_, _> = document
+    let parameter_order: Vec<_> = document
         .report
         .evaluated_parameters
         .iter()
-        .map(|entry| (entry.name.as_deref().unwrap(), entry.value))
+        .map(|entry| (entry.id, entry.name.as_deref(), entry.value))
         .collect();
-    assert_eq!(by_name["first"], 1.0);
-    assert_eq!(by_name["second"], 2.0);
+    assert_eq!(
+        parameter_order,
+        [(p2, Some("second"), 2.0), (p1, Some("first"), 1.0)]
+    );
+}
+
+#[test]
+fn preserves_valid_objective_name_when_generated_row_would_collide() {
+    let mut model = Model::new();
+    let row = model.add_empty_constraint(ConstraintBounds::le(10.0));
+    let objective = model.add_objective_named(Sense::Minimize, "R000001");
+    model.set_active_objective(objective).unwrap();
+
+    let document = project(&model).unwrap();
+
+    assert_eq!(document.rows[0].name, "R000002");
+    assert_eq!(document.objective.as_ref().unwrap().name, "R000001");
+    assert_eq!(
+        document
+            .report
+            .name_map
+            .objective
+            .as_ref()
+            .unwrap()
+            .emitted_name,
+        "R000001"
+    );
+    assert_eq!(document.rows[0].source_id, row);
+}
+
+#[test]
+fn reports_numeric_field_for_nonfinite_captured_cell_value() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous()).unwrap();
+    let row = model.add_empty_constraint(ConstraintBounds::le(10.0));
+    model.add_constraint_coefficient(row, x, 2.0).unwrap();
+    let mut snapshot = model.take_snapshot().unwrap();
+    snapshot.cells[0].evaluated_value = f64::INFINITY;
+
+    let error = projection::project_snapshot(&model, &snapshot, MpsNamePolicy::PreserveOrGenerate)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), &MpsWriteErrorKind::NonFiniteValue);
+    assert_eq!(
+        error.context().numeric_field.as_deref(),
+        Some("evaluated coefficient")
+    );
+}
+
+#[test]
+fn rejects_snapshot_cell_with_missing_parameter_dependency() {
+    let mut model = Model::new();
+    let p = model.add_parameter(parameter(4.0)).unwrap();
+    let x = model.add_variable(continuous()).unwrap();
+    let row = model.add_empty_constraint(ConstraintBounds::le(20.0));
+    model
+        .add_constraint_coefficient(row, x, ValueExpr::param(p))
+        .unwrap();
+    let mut snapshot = model.take_snapshot().unwrap();
+    snapshot.parameters.clear();
+
+    let error = projection::project_snapshot(&model, &snapshot, MpsNamePolicy::PreserveOrGenerate)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), &MpsWriteErrorKind::ParameterEvaluation);
+    assert_eq!(error.context().entity_kind, Some(MpsEntityKind::MatrixCell));
+    assert_eq!(error.context().parameter_dependencies, vec![p]);
+}
+
+#[test]
+fn omits_inactive_constructs_and_records_the_omission() {
+    let mut model = Model::new();
+    let b = model.add_variable(binary()).unwrap();
+    let x = model.add_variable(continuous()).unwrap();
+    model
+        .add_indicator(
+            b,
+            roml::construct::IndicatorDirection::WhenOne,
+            roml::function::FunctionConstraint {
+                function: roml::function::ScalarFunction::Linear(
+                    roml::expr::LinExpr::new().term(1.0, x),
+                ),
+                set: roml::function::ScalarSet::LessEqual(ValueExpr::constant(2.0)),
+            },
+            None,
+        )
+        .unwrap();
+    let mut snapshot = model.take_snapshot().unwrap();
+    snapshot.constructs[0].active = false;
+
+    let document =
+        projection::project_snapshot(&model, &snapshot, MpsNamePolicy::PreserveOrGenerate).unwrap();
+
+    assert_eq!(document.report.omitted_inactive_entities, 1);
+    assert!(document.rows.is_empty());
 }
 
 #[test]
