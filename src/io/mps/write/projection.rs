@@ -638,6 +638,7 @@ fn reject_active_constructs(model: &Model, snapshot: &ModelSnapshot) -> Result<(
     Ok(())
 }
 
+#[allow(unreachable_patterns)]
 fn construct_kind_name(kind: &ConstructKind) -> &'static str {
     match kind {
         ConstructKind::Indicator(_) => "indicator construct",

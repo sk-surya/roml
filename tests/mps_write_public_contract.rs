@@ -87,29 +87,13 @@ fn public_writer_api_and_report_fields_are_callable_without_a_solver() {
 
     let model = Model::new();
     let mut stream = Vec::new();
-    let stream_error = MpsWriter::new()
+    let stream_report = MpsWriter::new()
         .write(&model, &mut stream)
-        .expect_err("the Wave 0-only transitional stub is not a runtime qualification outcome");
-    assert_eq!(stream_error.kind(), &MpsWriteErrorKind::InternalInvariant);
-    assert_eq!(
-        stream_error.context().message.as_deref(),
-        Some(
-            "Wave 0-only transitional stub: MPS write projection and path transaction are not implemented; this is not a runtime qualification outcome"
-        )
-    );
-    assert!(stream.is_empty(), "the stub must not emit output");
-
-    let path = PathBuf::from("mps-write-public-contract-unused.mps");
-    let path_error = MpsWriter::new()
-        .write_path(&model, &path)
-        .expect_err("the Wave 0-only transitional stub is not a runtime qualification outcome");
-    assert_eq!(path_error.kind(), &MpsWriteErrorKind::InternalInvariant);
-    assert_eq!(path_error.context().path(), Some(path.as_path()));
-    assert_eq!(
-        path_error.context().message.as_deref(),
-        Some(
-            "Wave 0-only transitional stub: MPS write projection and path transaction are not implemented; this is not a runtime qualification outcome"
-        )
+        .expect("the public writer seam is wired to the qualified pipeline");
+    assert_eq!(stream_report.columns, 0);
+    assert!(
+        !stream.is_empty(),
+        "an empty model still has a valid MPS document"
     );
 }
 
