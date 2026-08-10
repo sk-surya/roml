@@ -53,7 +53,18 @@ Tests are likewise split so parallel workers do not edit the same files.
 - Create: `tests/mps_write_public_contract.rs`
 - Evidence: `.planning/phases/36-mps-writeback/36-BASELINE.md`
 
-**Interfaces:** exactly the concepts/defaults in `36-CONTRACT.md`: `MpsWriter`, `MpsWriteOptions`, `MpsNamePolicy`, `MpsDestinationPolicy`, `MpsWriteReport`, and structured `MpsWriteError`.
+**Interfaces:** the exact public API in `36-CONTRACT.md`:
+
+```rust
+impl MpsWriter {
+    pub fn new() -> Self;
+    pub fn with_options(options: MpsWriteOptions) -> Self;
+    pub fn write<W: std::io::Write>(&self, model: &Model, output: W) -> Result<MpsWriteReport, MpsWriteError>;
+    pub fn write_path<P: AsRef<std::path::Path>>(&self, model: &Model, path: P) -> Result<MpsWriteReport, MpsWriteError>;
+}
+```
+
+`write` is stream-only and may leave partial bytes; it never performs destination replacement. `write_path` alone consults `MpsDestinationPolicy`. Both capture one evaluated canonical snapshot before output.
 
 - [ ] Record exact `main` base SHA, toolchain, current core/HiGHS test counts, public API inventory, and P35 corpus gitlink SHA before production edits.
 - [ ] Initialize the Netlib submodule and compare its exact regular-file `.mps` inventory to `36-NETLIB-MANIFEST.md`; require 94/94 exact names and pinned commit `56257eea85b433ce6aa67d26156b36385318fd6f`.
