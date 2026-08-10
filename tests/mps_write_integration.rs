@@ -10,7 +10,10 @@ use std::{
 
 use roml::{
     continuous, integer,
-    io::mps::{MpsDestinationPolicy, MpsReader, MpsWriteErrorKind, MpsWriteOptions, MpsWriter},
+    io::mps::{
+        MpsDestinationPolicy, MpsPathStage, MpsReader, MpsWriteErrorKind, MpsWriteOptions,
+        MpsWriter,
+    },
     model::{ConstraintBounds, Sense},
     parameter, ConstraintExprExt, Model, ValueExpr,
 };
@@ -146,10 +149,15 @@ fn stream_failures_preserve_partial_bytes_and_the_io_source() {
         .write(&model, &mut output)
         .expect_err("the injected stream must fail after a partial write");
 
-    assert_eq!(error.kind(), &MpsWriteErrorKind::Serialization);
+    assert_eq!(error.kind(), &MpsWriteErrorKind::Io);
     assert_eq!(error.io_kind(), Some(io::ErrorKind::BrokenPipe));
     assert!(error.source().is_some());
+    assert_eq!(error.context().model_lineage, Some(model.lineage()));
     assert_eq!(error.context().model_instance, Some(model.instance()));
+    assert_eq!(
+        error.context().model_revision,
+        Some(model.current_revision())
+    );
     assert!(!output.bytes.is_empty());
 }
 
@@ -200,6 +208,32 @@ fn write_path_create_new_preserves_an_existing_destination() {
 
     assert_eq!(error.kind(), &MpsWriteErrorKind::DestinationExists);
     assert_eq!(fs::read(&destination).unwrap(), b"old bytes");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn write_path_projection_failures_retain_destination_and_model_context() {
+    let directory = test_directory();
+    let destination = directory.join("model.mps");
+    let mut model = Model::with_name("semi");
+    let x = model
+        .add_variable(continuous().bounds(0.0, 10.0).named("x"))
+        .unwrap();
+    model.set_semicontinuous(x, 2.0).unwrap();
+
+    let error = MpsWriter::new()
+        .write_path(&model, &destination)
+        .expect_err("semi-continuous projection is not representable in standard MPS");
+
+    assert_eq!(error.kind(), &MpsWriteErrorKind::Unrepresentable);
+    assert_eq!(error.context().path(), Some(destination.as_path()));
+    assert_eq!(error.context().stage(), Some(MpsPathStage::Write));
+    assert_eq!(error.context().model_lineage, Some(model.lineage()));
+    assert_eq!(error.context().model_instance, Some(model.instance()));
+    assert_eq!(
+        error.context().model_revision,
+        Some(model.current_revision())
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 

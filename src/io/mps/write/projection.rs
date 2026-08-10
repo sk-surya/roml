@@ -426,6 +426,7 @@ pub(crate) fn project_snapshot(
         model_lineage: model.lineage(),
         model_instance: model.instance(),
         model_revision: snapshot.revision,
+        name_policy,
         evaluated_parameters,
         columns: variables.len(),
         rows: rows.len(),
@@ -749,11 +750,16 @@ fn next_generated_name(prefix: &str, mut ordinal: usize, occupied: &BTreeSet<Str
 }
 
 fn valid_mps_name(name: &str) -> bool {
-    !name.is_empty()
+    !is_mps_marker_token(name)
+        && !name.is_empty()
         && name.len() <= 255
         && name.chars().all(|character| {
             character.is_ascii() && !character.is_ascii_control() && !character.is_whitespace()
         })
+}
+
+fn is_mps_marker_token(name: &str) -> bool {
+    matches!(name, "'MARKER'" | "'INTORG'" | "'INTEND'")
 }
 
 fn model_context(model: &Model) -> MpsWriteContext {
