@@ -12,8 +12,10 @@ Recorded before production edits on 2026-08-10.
 
 ## Frozen corpus gate
 
-The pinned submodule was initialized at the exact gitlink. The manifest and
-regular-file inventory both contain 94 `.mps` files and compare exactly.
+The separately-run pinned Netlib manifest check passed at the exact gitlink:
+the manifest and regular-file inventory both contain 94 `.mps` files and
+compare exactly. The optional `testdata/corpora/infeasible-lps` setup was not
+available for the full core test.
 
 ## Baseline verification
 
@@ -22,7 +24,8 @@ regular-file inventory both contain 94 `.mps` files and compare exactly.
 | `cargo fmt --all -- --check` | PASS |
 | `cargo check -p roml --all-targets` | PASS |
 | `cargo clippy -p roml --all-targets -- -D warnings` | PASS |
-| `cargo test -p roml --all-targets` | PASS; 284 unit/integration test binaries passed |
+| `cargo test -p roml --all-targets` | SETUP FAILURE; `pinned_netlib_historical_fixed_files_import_when_initialized` returned `IncompleteSetup { missing: "./testdata/corpora/infeasible-lps" }` |
+| Pinned Netlib manifest check at `56257eea85b433ce6aa67d26156b36385318fd6f` | PASS; 94/94 expected `.mps` names present with zero missing or unexpected files |
 | `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` | PASS |
 | `cargo package --list -p roml` | PASS |
 | `cargo test -p roml --all-targets -- --list` | 1064 listed tests |

@@ -44,11 +44,6 @@ impl MpsWriter {
         Self { options }
     }
 
-    /// Returns the options configured for this writer.
-    pub fn options(&self) -> &MpsWriteOptions {
-        &self.options
-    }
-
     /// Serializes the model to a caller-provided stream.
     ///
     /// Stream writes may leave partial bytes when implemented and never
@@ -60,7 +55,9 @@ impl MpsWriter {
         output: W,
     ) -> Result<MpsWriteReport, MpsWriteError> {
         let _ = (model, output);
-        Err(MpsWriteError::not_yet_implemented())
+        Err(MpsWriteError::not_yet_implemented(
+            MpsWriteContext::default(),
+        ))
     }
 
     /// Serializes the model and commits it according to the destination policy.
@@ -74,7 +71,8 @@ impl MpsWriter {
         path: P,
     ) -> Result<MpsWriteReport, MpsWriteError> {
         let _ = model;
-        Err(MpsWriteError::not_yet_implemented()
-            .with_context(MpsWriteContext::default().with_path(path.as_ref().to_owned())))
+        Err(MpsWriteError::not_yet_implemented(
+            MpsWriteContext::default().with_path(path.as_ref().to_owned()),
+        ))
     }
 }
