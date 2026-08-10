@@ -1,5 +1,7 @@
 # M3 — Semantic Modeling and Solve Workflows
 
+> **Historical/superseded routing notice:** This milestone README records the original M3 planning contract and product context. It is not an active routing or production-authorization authority. Current execution is governed by root `.planning/STATE.md`, milestone `STATE.md`, and `COMPLETION-ROADMAP.md`: `PR #45 merge -> P36 -> P30 -> P31 -> P34`. While PR #45 is unmerged, production authorization is false.
+
 **Branch:** `docs/m3-semantic-modeling-workflows`  
 **Baseline:** `main@d1f1ad38cec75abb671729df8efb87736861628c`  
 **Planning date:** 2026-08-02  
@@ -105,11 +107,12 @@ P25 Semantic IR, identity, metadata
                  -> P34 Qualification, docs, migration, NLP-readiness audit
 ```
 
-P29–P31 may proceed in parallel only after P28 is accepted and only when review capacity permits. P32 depends on P26 and may overlap with P29–P31 after the compiler contract is frozen. P33 follows P32 because PWL reuses construct storage, origin mapping, and bridge selection.
+The paragraph above describes the original milestone dependency view and is retained for historical context only. It is superseded for active execution by the completion program: `PR #45 merge -> P36 -> P30 -> P31 -> P34`. Research/review may proceed ahead, but production implementation remains serialized and no phase is active while PR #45 is unmerged.
 
 ## Execution rule
 
 - Keep one implementation phase active by default.
+- Current completion-program rule: while PR #45 is unmerged, zero production phases are active; after merge, only P36 may activate.
 - At most one additional review/fix branch may be active.
 - Do not implement modeling conveniences before P26 freezes the semantic-to-backend compilation contract.
 - Do not add native solver code from memory; derive every symbol and capability from pinned official headers or APIs.
