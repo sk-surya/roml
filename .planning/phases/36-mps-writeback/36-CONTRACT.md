@@ -1,8 +1,10 @@
 # P36 MPS Write-Back Frozen Contract
 
-**Authority:** P36 implementation must satisfy this file plus `M3 .../SHARED-CONTRACTS.md` and MPS-W01–W14. Any mismatch is a written-spec blocker.
+**Authority:** P36 implementation must satisfy this file plus the milestone `SHARED-CONTRACTS.md` and MPS-W01–W14. Any mismatch is a written-spec blocker.
 
 ## 1. Default public API
+
+P36 has one semantic meaning: write the current canonical/evaluated mathematical model to deterministic free MPS.
 
 Target API shape:
 
@@ -12,14 +14,8 @@ pub struct MpsWriter {
 }
 
 pub struct MpsWriteOptions {
-    pub target: MpsWriteTarget,
     pub name_policy: MpsNamePolicy,
     pub destination_policy: MpsDestinationPolicy,
-}
-
-pub enum MpsWriteTarget {
-    SemanticModel,
-    CompiledLinearFormulation,
 }
 
 pub enum MpsNamePolicy {
@@ -36,7 +32,6 @@ pub enum MpsDestinationPolicy {
 `MpsWriteOptions::default()` is frozen as:
 
 ```text
-target             = SemanticModel
 name_policy        = PreserveOrGenerate
 destination_policy = AtomicReplace
 output dialect     = free MPS
@@ -46,7 +41,7 @@ numeric formatting = ROML canonical finite f64 formatting
 
 Output dialect, LF line endings, vector names, and numeric formatting are **not** user-tunable in P36. This keeps one canonical byte representation.
 
-`CompiledLinearFormulation` is an advanced reserved target. It is optional for P36 implementation and must return typed `UnsupportedWriteTarget` until an exact compiled-export contract is implemented and reviewed. It is not required for P36 acceptance.
+A compiled-formulation export is **not** a P36 public option. If later required, it receives a separate design/API because it has different identity, provenance, and backend-IR semantics. P36 never ships an option that can only return `Unsupported`.
 
 ## 2. Successful report
 
@@ -54,7 +49,6 @@ A successful writer returns `MpsWriteReport` with at least:
 
 ```rust
 pub struct MpsWriteReport {
-    pub target: MpsWriteTarget,
     pub model_lineage: ModelLineageId,
     pub model_instance: ModelInstanceId,
     pub model_revision: ModelRevision,
@@ -89,7 +83,6 @@ DestinationExists
 AtomicReplaceUnavailable
 PathTransaction
 ModelValidation
-UnsupportedWriteTarget
 Unrepresentable
 ParameterEvaluation
 NonFiniteValue
@@ -110,9 +103,9 @@ Required context where applicable:
 
 `Unrepresentable` is never converted to a warning.
 
-## 4. Representability matrix — `SemanticModel`
+## 4. Representability matrix
 
-| Canonical feature | P36 semantic target | Export rule | Round-trip claim |
+| Canonical feature | P36 export | Export rule | Round-trip claim |
 |---|---|---|---|
 | continuous variable, default/nondefault bounds | supported | deterministic BOUNDS omission/records | same mathematical bounds |
 | integer variable | supported | deterministic INTORG/INTEND + explicit bounds when needed | same integrality + bounds |
@@ -123,20 +116,20 @@ Required context where applicable:
 | semi-continuous / semi-integer | **reject** | `Unrepresentable::VariableDomain` | none |
 | linear equality/lower/upper/ranged constraint | supported | E/G/L + RHS/RANGES | same normalized row |
 | inactive primitive constraint | omitted | record inactive omission count | same active mathematical model |
-| active semantic construct (indicator, Boolean, min/max, abs, product, PWL, etc.) | **reject** in `SemanticModel` | use typed construct error; do not silently compile | none |
+| active semantic construct (indicator, Boolean, min/max, abs, product, PWL, etc.) | **reject** | typed construct error; do not silently compile | none |
 | inactive semantic construct | omitted | report omission; no mathematical effect | same active mathematical model |
 | active single objective | supported | ROWS/COLUMNS + OBJSENSE + offset convention | same scalar objective |
 | no active objective | supported | deterministic zero-objective encoding | same feasibility problem |
 | extra inactive objectives | omitted | report omission | same active mathematical model |
-| weighted/lexicographic `ObjectivePolicy` after P31 | **reject** in `SemanticModel` | standard linear MPS cannot preserve policy | none |
+| weighted/lexicographic `ObjectivePolicy` after P31 | **reject** | standard linear MPS cannot preserve policy | none |
 | parameterized coefficient/bound/objective/offset | supported by evaluation | evaluate against exact `(instance, revision)` environment | same evaluated mathematical snapshot; parameter graph not reconstructed |
 | NaN/±inf coefficient or objective offset | **reject** | `NonFiniteValue` | none |
 | ±inf variable/row bounds where standard MPS semantics can represent them | supported | omit/default or FR/MI/PL as canonical | same bounds |
 | duplicate/missing/invalid user names | supported under default | `PreserveOrGenerate`; deterministic name map | mathematical equality; display names may be generated |
 | invalid name under `StrictPreserve` | **reject** | `NameAllocation`/typed name error | none |
 | source comments/layout/rim-vector spellings | not represented | explicit non-goal | no textual round-trip claim |
-| solve overlay / temporary lock / cutoff | not part of canonical export | never observed by semantic writer | base model only |
-| compiler-generated bridge rows/variables | not part of `SemanticModel` | reject need for compiled formulation rather than leak backend IR | base semantic model only |
+| solve overlay / temporary lock / cutoff | not part of canonical export | never observed by writer | base model only |
+| compiler-generated bridge rows/variables | not part of P36 | typed `Unrepresentable` if an active semantic construct requires them | compiled-formulation export is deferred to a separate future design |
 
 The P36 equality oracle is **normalized active mathematical equality**, not byte/source/provenance equality. Loss of a canonical distinction is allowed only when the emitted formulation is mathematically exact and the report explicitly records the lowering/omission rule above.
 
