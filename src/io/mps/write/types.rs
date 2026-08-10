@@ -116,7 +116,9 @@ pub struct MpsWriteReport {
     pub columns: usize,
     /// Number of emitted constraint/row entities.
     pub rows: usize,
-    /// Number of emitted matrix nonzero cells.
+    /// Number of emitted mathematical matrix entries, including explicit
+    /// zero-valued cells and synthetic zero entries used to declare empty
+    /// columns.
     pub nonzeros: usize,
     /// Number of emitted integer variable/column entities.
     pub integer_columns: usize,
