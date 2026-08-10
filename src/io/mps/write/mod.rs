@@ -1,7 +1,9 @@
 //! Solver-free deterministic MPS write-back.
 
+mod bounds;
 mod error;
 mod format;
+mod objective;
 mod path;
 mod projection;
 mod types;
@@ -22,14 +24,14 @@ use std::{
 };
 
 use crate::{
-    model::{Bounds, ConstraintBounds, Sense, VarType},
+    model::{Bounds, ConstraintBounds, VarType},
     Model,
 };
 
 use self::{
     format::{
-        MpsBoundKind, MpsBoundRecord, MpsColumnRecord, MpsEntry, MpsMarkerKind, MpsObjectiveSense,
-        MpsRowKind, MpsRowRecord,
+        MpsBoundKind, MpsBoundRecord, MpsColumnRecord, MpsEntry, MpsMarkerKind, MpsRowKind,
+        MpsRowRecord,
     },
     projection::{MpsWriteCell, MpsWriteDocument as SemanticDocument, MpsWriteVariable},
 };
@@ -156,14 +158,19 @@ fn normalize_document(
         name: objective_name.clone(),
     });
 
+    let objective_encoding = objective::encode_objective(
+        semantic.objective.as_ref().map(|objective| objective.sense),
+        semantic
+            .objective
+            .as_ref()
+            .map(|objective| objective.constant),
+        &objective_name,
+        report,
+    )?;
     let mut rhs_entries = Vec::new();
     let mut range_entries = Vec::new();
-    if let Some(objective) = &semantic.objective {
-        rhs_entries.push(MpsEntry {
-            row: objective_name.clone(),
-            value: finite_value(objective.constant, report, "objective offset")
-                .map(|value| -value)?,
-        });
+    if let Some(rhs) = objective_encoding.rhs {
+        rhs_entries.push(rhs);
     }
 
     let mut row_names = BTreeSet::new();
@@ -175,20 +182,14 @@ fn normalize_document(
                 "projection emitted duplicate constraint row names",
             ));
         }
-        let (kind, rhs, range) = encode_row_bounds(row.bounds, report, &row.name)?;
+        let row_encoding = objective::encode_row_bounds(row.bounds, &row.name, report)?;
         rows.push(MpsRowRecord {
-            kind,
+            kind: row_encoding.kind,
             name: row.name.clone(),
         });
-        rhs_entries.push(MpsEntry {
-            row: row.name.clone(),
-            value: rhs,
-        });
-        if let Some(value) = range {
-            range_entries.push(MpsEntry {
-                row: row.name.clone(),
-                value,
-            });
+        rhs_entries.push(row_encoding.rhs);
+        if let Some(range) = row_encoding.range {
+            range_entries.push(range);
         }
     }
 
@@ -232,8 +233,8 @@ fn normalize_document(
         }
     }
 
-    let columns = encode_columns(&semantic.variables, entries_by_variable, report)?;
-    let bounds = encode_bounds(&semantic.variables, report)?;
+    let columns = bounds::encode_columns(&semantic.variables, entries_by_variable, report)?;
+    let bounds = bounds::encode_bounds(&semantic.variables, report)?;
 
     report.rhs_vector = (!rhs_entries.is_empty()).then(|| "RHS1".to_owned());
     report.ranges_vector = (!range_entries.is_empty()).then(|| "RNG1".to_owned());
@@ -241,13 +242,7 @@ fn normalize_document(
 
     Ok(format::MpsWriteDocument {
         name,
-        objective_sense: semantic.objective.as_ref().map_or(
-            MpsObjectiveSense::Minimize,
-            |objective| match objective.sense {
-                Sense::Minimize => MpsObjectiveSense::Minimize,
-                Sense::Maximize => MpsObjectiveSense::Maximize,
-            },
-        ),
+        objective_sense: objective_encoding.sense,
         objective_name: Some(objective_name),
         rows,
         columns,
@@ -347,6 +342,9 @@ fn push_cell(
     Ok(())
 }
 
+// Retained as a reference while the Wave 2 encoders are integrated.  The
+// active pipeline uses `bounds::encode_columns` and `bounds::encode_bounds`.
+#[allow(dead_code)]
 fn encode_columns(
     variables: &[MpsWriteVariable],
     entries_by_variable: Vec<Vec<MpsEntry>>,
@@ -417,6 +415,7 @@ fn encode_columns(
     Ok(columns)
 }
 
+#[allow(dead_code)]
 fn encode_row_bounds(
     bounds: ConstraintBounds,
     report: &MpsWriteReport,
@@ -472,6 +471,7 @@ fn encode_row_bounds(
     }
 }
 
+#[allow(dead_code)]
 fn encode_bounds(
     variables: &[MpsWriteVariable],
     report: &MpsWriteReport,
@@ -504,6 +504,7 @@ fn encode_bounds(
     Ok(records)
 }
 
+#[allow(dead_code)]
 fn encode_continuous_bounds(
     variable: &MpsWriteVariable,
     report: &MpsWriteReport,
@@ -549,6 +550,7 @@ fn encode_continuous_bounds(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn encode_integer_bounds(
     variable: &MpsWriteVariable,
     report: &MpsWriteReport,
@@ -611,6 +613,7 @@ fn encode_integer_bounds(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn encode_binary_bounds(
     variable: &MpsWriteVariable,
     report: &MpsWriteReport,
@@ -649,6 +652,7 @@ fn encode_binary_bounds(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn bound(kind: MpsBoundKind, variable: &str, value: Option<f64>) -> MpsBoundRecord {
     MpsBoundRecord {
         kind,
