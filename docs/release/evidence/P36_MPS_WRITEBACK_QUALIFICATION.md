@@ -18,7 +18,8 @@ that the phase is merge-complete until the remaining Wave 4 gates pass.
 cargo run -p roml-highs --example mps_write_corpus_qualification -- /tmp/roml-p36-source
 ```
 
-Observed result on the exact local candidate head before this evidence commit:
+Observed result on candidate `e02b4fb` (the final tolerance-fix commit before
+this evidence refresh):
 
 - manifest count: 94
 - writer output: 94/94 PASS
@@ -28,6 +29,9 @@ Observed result on the exact local candidate head before this evidence commit:
 - bounded solve subset: `blend.mps`, `fit2d.mps`, `gfrd-pnc.mps`; all PASS
 - process exit: 0
 - bundled native solver: HiGHS 1.15.0
+
+The complete runner was rerun after the P36 tolerance correction; the final
+process exit remained 0 with 94/94 PASS rows.
 
 The runner writes machine-readable per-file rows under
 `target/roml-corpora/p36-mps-writeback`. Those generated artifacts are not
