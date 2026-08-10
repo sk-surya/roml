@@ -104,6 +104,15 @@ PASS.
 - MPS round trip is evaluated mathematical equality, not source/provenance/parameter-graph equality;
 - NLP local behavior is not labeled global IIS/infeasibility.
 
+## Final callable-API contract check
+
+PASS at written-spec level.
+
+- `MpsWriter::new`, `with_options`, stream `write`, and transactional `write_path` signatures are identical in `36-CONTRACT.md`, `36-PLAN.md`, and the top-level design.
+- `write` is explicitly stream-only and may produce partial bytes; it never claims atomic replacement.
+- `write_path` is the only operation governed by `MpsDestinationPolicy`.
+- Both methods capture one evaluated canonical snapshot before output; failures return typed errors without a success report.
+
 ## Remaining gate
 
 Independent written-spec re-review of the corrected exact head. This self-review is not approval. No P36 production code may begin before re-review clearance and owner merge of PR #45.
