@@ -51,11 +51,30 @@ no-objective cases.
 
 ## Remaining Wave 4 evidence
 
-The following must be recorded on the final candidate head before P36 closure:
+The following local checks passed after the qualification runner:
 
-- full `roml` and `roml-highs` test, clippy, rustdoc, and package checks;
+```text
+cargo fmt --all -- --check                                  PASS
+cargo test -p roml --all-targets                            PASS
+cargo test -p roml-highs --all-targets                      PASS
+cargo clippy -p roml --all-targets -- -D warnings           PASS
+cargo clippy -p roml-highs --all-targets -- -D warnings     PASS
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps      PASS
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml-highs --no-deps PASS
+cargo package --list -p roml                                PASS
+cargo package --list -p roml-highs                          PASS
+cargo check -p roml --target x86_64-pc-windows-gnu --tests PASS
+cargo run -p roml --example mps_write                       PASS
+git diff --check                                            PASS
+```
+
+The following must still be recorded on the final candidate head before P36 closure:
+
 - Windows runtime path qualification in addition to the verified Windows GNU
   compile check;
-- public documentation and changelog updates;
 - independent full implementation review and exact-head hosted checks;
 - final P36 verification, review, summary, and owner-authorized merge.
+
+Windows runtime qualification is currently unavailable in this Linux
+environment because no Wine/runtime host is installed; it remains an explicit
+residual gate and is not being marked PASS.
