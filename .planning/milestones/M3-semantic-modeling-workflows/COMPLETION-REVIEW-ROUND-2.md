@@ -84,6 +84,21 @@ Four residual ambiguities found after the main pass were also closed:
 
 The top-level design spec was updated to match these final contracts rather than relying on phase-plan precedence.
 
+## Post-round-2 callable API closure
+
+The final P36 contract refinement freezes the previously implicit public methods:
+
+```rust
+impl MpsWriter {
+    pub fn new() -> Self;
+    pub fn with_options(options: MpsWriteOptions) -> Self;
+    pub fn write<W: std::io::Write>(&self, model: &Model, output: W) -> Result<MpsWriteReport, MpsWriteError>;
+    pub fn write_path<P: AsRef<std::path::Path>>(&self, model: &Model, path: P) -> Result<MpsWriteReport, MpsWriteError>;
+}
+```
+
+`write` is stream-only and may leave partial bytes; `write_path` alone applies the destination policy. The signatures and semantics are mirrored in `36-CONTRACT.md`, `36-PLAN.md`, and the top-level design. This is a planning correction, not implementation authorization.
+
 ## Re-review gate
 
 This disposition does not self-approve PR #45. The corrected exact head must receive independent written-spec re-review. P36 production remains forbidden until that review clears and PR #45 is owner-merged.
