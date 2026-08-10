@@ -1,5 +1,7 @@
 # M3 Semantic Modeling and Solve Workflows Roadmap
 
+> **Historical/superseded routing notice:** This original milestone roadmap is retained for the historical M3 phase contract. It is not an active routing or authorization authority. Current execution is governed by root `.planning/STATE.md`, milestone `STATE.md`, and `COMPLETION-ROADMAP.md`: `PR #45 merge -> P36 -> P30 -> P31 -> P34`. While PR #45 is unmerged, production authorization is false.
+
 ## Dependency graph
 
 ```text
@@ -29,7 +31,7 @@ P29 IIS        P30 Soft     P31 Objective policies
 P34 Qualification, migration, docs, NLP-readiness
 ```
 
-P32 may begin after P26 while P27–P31 proceed, but only when the compiler contract is frozen and review capacity exists. P29, P30, and P31 may proceed independently after P28; integration into P34 remains sequential.
+Historical original dependency note (superseded): P32/P29/P30/P31 were once allowed to overlap after prerequisite phases. The completion program replaces that route with one serialized production path: P36 -> P30 -> P31 -> P34. Research/review may proceed ahead, but production implementation may not overlap.
 
 ---
 
