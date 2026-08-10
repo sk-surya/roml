@@ -11,7 +11,7 @@ use std::{
 use roml::{
     continuous, integer,
     io::mps::{
-        MpsDestinationPolicy, MpsPathStage, MpsReader, MpsWriteErrorKind, MpsWriteOptions,
+        MpsDestinationPolicy, MpsReader, MpsWriteErrorKind, MpsWriteOptions,
         MpsWriter,
     },
     model::{ConstraintBounds, Sense},
@@ -227,13 +227,36 @@ fn write_path_projection_failures_retain_destination_and_model_context() {
 
     assert_eq!(error.kind(), &MpsWriteErrorKind::Unrepresentable);
     assert_eq!(error.context().path(), Some(destination.as_path()));
-    assert_eq!(error.context().stage(), Some(MpsPathStage::Write));
+    assert_eq!(
+        error.context().stage(),
+        None,
+        "semantic preflight failure must not be labeled as a filesystem write"
+    );
     assert_eq!(error.context().model_lineage, Some(model.lineage()));
     assert_eq!(error.context().model_instance, Some(model.instance()));
     assert_eq!(
         error.context().model_revision,
         Some(model.current_revision())
     );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn write_path_model_validation_failure_is_preflight_only() {
+    let directory = test_directory();
+    let destination = directory.join("model.mps");
+    let mut model = Model::with_name("invalid");
+    model.add_empty_constraint(ConstraintBounds { lower: 5.0, upper: 1.0 });
+
+    let error = MpsWriter::new()
+        .write_path(&model, &destination)
+        .expect_err("invalid model bounds must fail before path staging");
+
+    assert_eq!(error.kind(), &MpsWriteErrorKind::ModelValidation);
+    assert_eq!(error.context().path(), Some(destination.as_path()));
+    assert_eq!(error.context().stage(), None);
+    assert!(!destination.exists());
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
     fs::remove_dir_all(directory).unwrap();
 }
 

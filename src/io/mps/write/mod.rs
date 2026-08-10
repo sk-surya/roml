@@ -733,6 +733,27 @@ fn attach_report_context(error: MpsWriteError, report: &MpsWriteReport) -> MpsWr
 fn attach_write_path_context(error: MpsWriteError, destination: &Path) -> MpsWriteError {
     let mut context = error.context().clone();
     context.path = Some(destination.to_owned());
-    context.stage = Some(MpsPathStage::Write);
     error.with_context(context)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_path_context_keeps_preflight_errors_out_of_filesystem_stages() {
+        for kind in [
+            MpsWriteErrorKind::Unrepresentable,
+            MpsWriteErrorKind::ParameterEvaluation,
+            MpsWriteErrorKind::ModelValidation,
+        ] {
+            let error = attach_write_path_context(
+                MpsWriteError::new(kind, MpsWriteContext::default()),
+                Path::new("model.mps"),
+            );
+
+            assert_eq!(error.context().path(), Some(Path::new("model.mps")));
+            assert_eq!(error.context().stage(), None);
+        }
+    }
 }
