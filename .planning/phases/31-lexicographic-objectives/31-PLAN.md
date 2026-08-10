@@ -2,23 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** provide the single canonical objective-policy model and a deterministic portable weighted/lexicographic executor whose stage locks, continuation, cleanup, and reports are exact and backend-independent.
+**Goal:** provide one canonical objective-policy model and a deterministic portable weighted/lexicographic executor whose stage locks, continuation, cleanup, and reporting are exact.
 
-**Architecture:** P31 is the **sole owner** of canonical `ObjectivePolicy` and the shared `ObjectivePriority`. Policy is canonical model intent; execution/provider choice is solve-scoped. The portable sequential executor is normative and uses P27/P28 rollback-safe overlays. Native multiobjective is optional only after semantic qualification.
-
-**Requirements:** SM-11.1–SM-11.8, SM-07.7 objective-stage closure, P27 objective-lock debt, and the priority-target portion of SM-10.6. Identity/overlay/error and lock-formula semantics are frozen in `SHARED-CONTRACTS.md`.
+**Requirements:** SM-11.1–SM-11.8, SM-07.7 objective-stage closure, P27 objective-lock debt, and priority-target SM-10.6. `SHARED-CONTRACTS.md` governs identity/overlay/error/lock semantics.
 
 ## Global constraints
 
-- P31 begins only after P30 is accepted/merged.
-- No second `ObjectivePolicy` type or second priority newtype exists anywhere in M3.
-- `ObjectivePriority(0)` is highest/earliest; ascending numeric order defines stages.
-- Every weight/tolerance is finite; weights/tolerances are nonnegative.
-- Default continuation requires an optimal stage.
-- Stage artifacts never persist in canonical state or following solves.
-- Portable/native results share one structured result contract.
-- Native provider semantics never weaken the portable contract.
-- Primary + cleanup/rebuild failures are both preserved per shared contracts §2.
+- P31 starts only after P30 is accepted/merged and state authorizes P31.
+- P31 is sole owner of `ObjectivePolicy` and `ObjectivePriority`.
+- `ObjectivePriority(0)` is highest; levels execute in ascending numeric order.
+- **P31 objective weights are plain finite nonnegative `f64` in M3.** Parameterized objective weights are deferred; P30 penalty weights remain parameterized and are numerically resolved before priority execution.
+- Default stage continuation is `RequireOptimal`.
+- Stage artifacts never persist.
+- Portable sequential execution is normative; native is optional only on exact semantic equivalence.
+- Primary and cleanup/rebuild failures are both retained.
 
 ## Frozen public schemas
 
@@ -63,6 +60,11 @@ pub enum ObjectiveProviderPolicy {
     NativeRequired,
 }
 
+pub enum ObjectiveExecutionProvider {
+    PortableSequential,
+    Native { backend: String, version: String },
+}
+
 pub struct ObjectiveValue {
     pub objective: Objective,
     pub value: f64,
@@ -78,13 +80,12 @@ pub enum StageContinuationDecision {
 
 pub struct ObjectiveLockReport {
     pub priority: ObjectivePriority,
-    pub stage_sense: ObjectiveSense,
     pub reference_value: f64,
     pub absolute_tolerance: f64,
     pub relative_tolerance: f64,
     pub relative_scale: f64,
     pub allowed_degradation: f64,
-    pub bound: f64,
+    pub normalized_upper_bound: f64,
 }
 
 pub struct ObjectiveStageResult {
@@ -105,172 +106,139 @@ pub struct MultiObjectiveResult {
 }
 ```
 
-Exact placement inside `Solution`/metadata can reuse existing structures, but the information above is mandatory and may not be split into competing result types.
+Exact placement may reuse current `Solution`/metadata structures, but the information above is mandatory and may not split into competing result models.
 
-## Objective-sense normalization
+## Weighted-stage normalization
 
-Each weighted scalar stage is normalized deterministically. One acceptable canonical convention is minimization:
+M3 uses one canonical minimization normalization:
 
 ```text
-normalized term = +w * f(x) for MIN objective
-normalized term = -w * f(x) for MAX objective
+normalized term = +w * f(x) for original MIN objective
+normalized term = -w * f(x) for original MAX objective
 ```
 
-The stage scalar objective `g(x)` is the sum of normalized terms including each objective constant exactly once. The compiler/report records the normalization. All stage-lock math applies to this scalar stage objective or equivalently maps the bound back with its declared stage sense; tests must prove equivalence.
+All P31 `WeightedObjective.weight` values are finite nonnegative `f64`. The normalized scalar stage `g(x)` includes every referenced objective constant exactly once.
 
-## Frozen degradation formula
-
-From shared contracts §5:
+Because `g` is always minimized, P31 stage locks are represented canonically as:
 
 ```text
+z* = solved normalized scalar stage value
 scale = abs(z*)
 delta = abs_tol + rel_tol * scale
+g(x) <= z* + delta
 ```
 
-Minimization stage:
+This is exactly the shared `|z*|` formula expressed after sense normalization. At `z*=0`, relative tolerance contributes zero. Negative values use positive magnitude. No `max(1, |z*|)` scale exists.
 
-```text
-f(x) <= z* + delta
-```
-
-Maximization stage:
-
-```text
-f(x) >= z* - delta
-```
-
-At `z*=0`, relative tolerance contributes zero. Negative optima use positive magnitude `|z*|`. No `max(1, |z*|)` or backend-default scale is permitted.
+Native providers may internally use other sense forms only if their externally observed semantics are proven equivalent to this normalized contract.
 
 ---
 
-## Task 31-00: Characterize and freeze objective/priority ownership
+## Task 31-00 — characterize and freeze ownership/API
 
-- [ ] Freeze existing active-objective state, objective constants, objective override, P27 objective locks, P28 SolvePlan/effective-plan reporting, and P30 penalty types.
-- [ ] Add compile-target fixture for weighted policy and two lexicographic levels using `ObjectivePriority`.
-- [ ] Add negative API guard against a second priority alias/newtype and a second objective-policy owner.
-- [ ] Reproduce P27 placeholder lock debt with failing test against the frozen `|z*|` formula.
-- [ ] Record exact base/API inventory and leaf requirements, including P31 ownership of priority portion of SM-10.6.
-- [ ] Commit characterization only.
+- [ ] Freeze current objectives/constants/override/P27 locks/P28 effective-plan reporting/P30 penalty types.
+- [ ] Compile-target weighted + two-level lexicographic policy using `ObjectivePriority`.
+- [ ] Negative API guard: no second objective policy/priority type; no symbolic/parameterized P31 objective weight type.
+- [ ] Reproduce P27 lock debt against `|z*|` formula.
+- [ ] Record exact base/API inventory and priority-target SM-10.6 ownership.
 
-## Task 31-01: Canonical `ObjectivePolicy` + `ObjectivePriority`
+## Task 31-01 — canonical policy / priority model
 
-**Files:** objective model module, snapshot/delta/compiler IR, focused tests.
+- [ ] Implement `ObjectivePriority`, `ObjectivePolicy::{None,Single,Weighted,Lexicographic}`.
+- [ ] Validate stale refs, duplicate objectives within a level, duplicate priorities, empty sets/levels, nonfinite/negative weights/tolerances atomically.
+- [ ] Same objective may appear at different priorities; each level owns its own weight/tolerances.
+- [ ] Existing single-objective convenience API maps to `Single` without golden-path break.
+- [ ] Clone/snapshot/delta/rebuild/revision semantics proven.
 
-- [ ] Implement validated `ObjectivePriority`; 0 highest, ascending order.
-- [ ] Implement `ObjectivePolicy::{None,Single,Weighted,Lexicographic}` as the sole canonical policy.
-- [ ] Validate stale objectives, duplicate objective terms in one level, duplicate priorities, empty weighted set/level, and nonfinite/negative weights/tolerances atomically.
-- [ ] Define whether duplicate objectives across different priorities are allowed; default is **allowed** because the same metric may legitimately refine at multiple stages, but each level owns its own weight/tolerance.
-- [ ] Preserve current single-objective convenience API by mapping onto `Single` without changing golden-path source use.
-- [ ] Prove clone/snapshot/delta/rebuild and revision semantics.
-- [ ] Commit.
+## Task 31-02 — backend IR / reporting / provider policy
 
-## Task 31-02: Backend IR, reports, provider policy
+- [ ] Solver-neutral normalized policy IR only; no backend receives canonical object handles directly.
+- [ ] Add native weighted/lexicographic capabilities only if executable.
+- [ ] `ObjectiveProviderPolicy::{PortableOnly,PreferNative,NativeRequired}` is solve-scoped and separate from generic unsupported-feature policy.
+- [ ] Effective plan/report records normalized terms, priorities/tolerances, provider and fallback/rejection reason.
+- [ ] Primitive `Single` remains observationally equivalent to pre-P31 behavior.
 
-- [ ] Extend compiled objective-policy IR only with normalized solver-neutral data; never pass canonical handles directly to backend.
-- [ ] Add typed native weighted/lexicographic features only if a provider can actually use them.
-- [ ] Add solve-scoped `ObjectiveProviderPolicy::{PortableOnly,PreferNative,NativeRequired}` rather than overloading generic unsupported-feature policy.
-- [ ] Compilation/effective-plan report records policy, normalized terms, priorities/tolerances, provider selection, and rejection/fallback reason.
-- [ ] Primitive `Single` compilation/solve remains observationally equivalent to pre-P31 behavior.
-- [ ] Commit.
+## Task 31-03 — portable weighted policy
 
-## Task 31-03: Portable weighted scalar policy
+- [ ] Independent references combine min/max objectives, zero/positive weights, constants, and negative/zero/positive objective values.
+- [ ] Reject any non-finite/negative weight before canonical mutation/compilation.
+- [ ] Parameterized objective weights are explicitly unsupported in M3 rather than represented by a second expression type.
+- [ ] HiGHS equivalence against manually combined scalar objective.
 
-- [ ] Reference tests combine min/max objectives, zero/positive weights, constants, and objectives whose optimal values are negative/zero/positive.
-- [ ] Prove direct evaluation of original objectives equals normalized scalar expression transformation.
-- [ ] If P31 allows parameterized objective weights, evaluate and validate them before backend mutation using the same pattern as P30 penalty weights; otherwise keep weights plain `f64` and reject any attempt to encode symbolic weights.
-- [ ] HiGHS equivalence against a manually combined scalar objective.
-- [ ] Commit.
+## Task 31-04 — exact lock construction
 
-## Task 31-04: Exact objective lock construction
-
-- [ ] Table tests for min/max and `z* < 0`, `z*=0`, `z*>0`; abs-only, rel-only, both-zero, and mixed tolerances.
-- [ ] Assert `relative_scale == abs(z*)` and exact derived bound in `ObjectiveLockReport`.
-- [ ] Test objective constants exactly once.
-- [ ] Test weighted multiobjective level lock against independently built scalar row.
+- [ ] Table-test `z*<0`, `z*=0`, `z*>0`; abs-only, rel-only, zero, mixed tolerances.
+- [ ] Assert `relative_scale == abs(z*)` and `normalized_upper_bound == z* + delta`.
+- [ ] Test objective constants once and weighted-level lock versus independent scalar row.
 - [ ] Replace P27 placeholder reference optimum with actual stage value.
-- [ ] Generated lock origins include `ObjectivePriority`, normalized scalar-stage identity, and exact compilation identity.
-- [ ] Commit.
+- [ ] Generated lock origins include priority, normalized stage identity, exact CompilationId.
 
-## Task 31-05: Portable lexicographic executor
-
-Algorithm:
+## Task 31-05 — portable lexicographic executor
 
 ```text
-validate canonical policy + solve execution policy
-synchronize exact base compilation
-for levels sorted by ObjectivePriority ascending:
-    apply temporary normalized objective override
-    solve stage
-    extract status + all objective values + scalar stage value
-    classify continuation
-    if another stage may run:
-        create exact degradation lock from frozen formula
-finally:
-    rollback all stage artifacts
-    verify base or require rebuild
-return MultiObjectiveResult only after cleanup verification
+validate policy + provider/continuation
+synchronize exact base
+for priorities ascending:
+  apply normalized objective override
+  solve
+  extract status + objective vector + scalar stage value
+  classify continuation
+  if next stage allowed: add exact normalized degradation lock
+finally rollback all temporary artifacts and verify base
+return result only after cleanup verification
 ```
 
-- [ ] Known 2-level and 3-level fixtures with unique final result.
-- [ ] `RequireOptimal`: time/iteration/unknown stage does not descend.
-- [ ] `BestFeasible`: only a valid feasible incumbent may descend; stage result records `ContinueBestFeasible` and lock reference uses that incumbent value, never an unavailable bound.
-- [ ] No-feasible/unknown status is distinguished from operational error.
-- [ ] Inject failures at every apply/solve/extract/lock/rollback/verification/rebuild boundary.
-- [ ] Successful mathematics + failed rollback returns composite operational error; no result leaks.
-- [ ] Following ordinary solve sees no stage artifacts.
-- [ ] Commit.
+- [ ] Known 2/3-level unique-result fixtures.
+- [ ] `RequireOptimal`: any nonoptimal stage stops descent.
+- [ ] `BestFeasible`: descend only from a valid feasible incumbent; lock uses its scalar incumbent value; record `ContinueBestFeasible` without implying optimality.
+- [ ] No-feasible/Unknown outcomes are separate from operational errors.
+- [ ] Fault injection every apply/solve/extract/lock/rollback/verify/rebuild boundary.
+- [ ] Successful math + failed cleanup => composite error and no `MultiObjectiveResult`.
+- [ ] Ordinary solve afterward proves no leaked stage state.
 
-## Task 31-06: Final stage/result/metadata contract
+## Task 31-06 — stage/result metadata
 
-- [ ] Populate every mandatory `ObjectiveStageResult` field honestly for portable execution.
-- [ ] Final solution exposes all canonical objective values at the final point.
-- [ ] Stage compilation IDs are exact; stale stage/lock artifacts reject on reuse.
-- [ ] Text/Markdown structured rendering is deterministic and does not imply optimality for `BestFeasible` stages.
-- [ ] Numerical/provider limitations are explicit in effective-plan metadata.
-- [ ] Commit.
+- [ ] Populate every mandatory stage field honestly for portable provider.
+- [ ] Final solution exposes all canonical objective values at final point.
+- [ ] Exact stage CompilationIds; stale stage/lock artifacts reject.
+- [ ] Deterministic rendering never overstates `BestFeasible` optimality.
 
-## Task 31-07: Activate P30 priority penalties
+## Task 31-07 — activate P30 priority penalties
 
-P31 adds the one new P30 enum variant:
+P31 adds exactly:
 
 ```rust
 PenaltyTarget::Priority(ObjectivePriority)
 ```
 
-- [ ] No separate P30/P31 priority integer or alias is introduced.
-- [ ] At execution, evaluate all parameterized P30 penalty weights to finite nonnegative numeric values **before** constructing the priority stage and before backend mutation.
+- [ ] No alternate numeric priority type.
+- [ ] Evaluate every P30 parameterized penalty weight to a finite nonnegative numeric value **before** constructing priority stage and before backend mutation.
 - [ ] Missing referenced priority rejects atomically.
-- [ ] Build integration example: priority 0 minimize weighted violation, priority 1 maximize economics, priority 2 minimize deviation/churn.
-- [ ] Compare against an independent manually staged reference implementation.
-- [ ] Verify zero-violation optimum with `z*=0` cannot reintroduce violation through a relative-only tolerance; only declared absolute tolerance can allow degradation.
-- [ ] Commit.
+- [ ] Integration reference: priority 0 minimize weighted violation; priority 1 maximize economics; priority 2 minimize deviation/churn.
+- [ ] Zero-violation `z*=0` with relative-only tolerance cannot reintroduce violation; only absolute tolerance can.
 
-## Task 31-08: Native multiobjective audit/provider
+## Task 31-08 — native provider audit
 
-- [ ] Audit official pinned HiGHS API/version semantics for objectives, priorities, weights, abs/rel degradation, continuation/status, and objective constants.
-- [ ] `PortableOnly` always uses sequential ROML execution.
-- [ ] `PreferNative` selects native only if the entire frozen contract—including `|z*|` scale—is equivalent; otherwise portable with explicit reason.
-- [ ] `NativeRequired` rejects before mutation when equivalence is not qualified.
-- [ ] If native is qualified, run native/portable differential corpus across positive/zero/negative optima and mixed senses.
+- [ ] Audit official pinned HiGHS priorities/weights/tolerances/status/constants semantics.
+- [ ] `PortableOnly` always portable.
+- [ ] `PreferNative` selects native only when entire normalized contract—including `|z*|` scale—is equivalent; else portable with explicit reason.
+- [ ] `NativeRequired` rejects before mutation if unqualified.
+- [ ] Qualified native path differentially covers mixed senses and positive/zero/negative optima.
 - [ ] Native absence does not block P31 portable completion.
-- [ ] Commit audit/evidence.
 
-## Task 31-09: Qualification and closure
+## Task 31-09 — qualification / closure
 
-- [ ] Independent sequential reference corpus for small weighted/lexicographic models.
-- [ ] Full P30 priority integration corpus with parameterized penalty weights evaluated before stage execution.
-- [ ] Fault matrix proves no objective/lock leak and preserves primary + rollback/rebuild failures.
-- [ ] Record solve count, lock count, delta/rebuild behavior, provider/version, and objective numerical observations.
-- [ ] Core/HiGHS/MSRV/fmt/clippy/rustdoc/package/coverage/quality/policy green on exact head.
-- [ ] Independent review explicitly checks single ownership, priority type, sense normalization, `|z*|` formula, zero/negative optima, continuation, result schema, P30 integration, and cleanup composition.
-- [ ] Zero unresolved P0/P1.
-- [ ] Evidence `docs/release/evidence/P31_OBJECTIVE_POLICIES.md` includes leaf SM-11 rows + priority sub-clause of SM-10.6.
-- [ ] Owner merge; P34 activates only afterward.
+- [ ] Independent weighted/lexicographic reference corpus.
+- [ ] Full P30 priority integration with parameterized penalty resolution before stage execution.
+- [ ] Fault matrix proves no objective/lock leakage and no lost primary/cleanup errors.
+- [ ] Core/HiGHS/MSRV/fmt/clippy/rustdoc/package/coverage/quality/policy green exact head.
+- [ ] Independent review checks sole ownership, numeric weight contract, normalization, `|z*|`, continuation, result schema, P30 integration, cleanup.
+- [ ] Leaf evidence `P31_OBJECTIVE_POLICIES.md`; zero unresolved P0/P1; owner merge.
 
-## P31 positive closure predicate
+## Positive closure predicate
 
-P31 is complete iff one canonical `ObjectivePolicy` and one `ObjectivePriority` exist, all SM-11 leaves and priority-target SM-10.6 evidence pass, portable weighted/lexicographic execution agrees with independent reference models, every lock uses the frozen `|z*|` formula, parameterized P30 penalties are numerically resolved before priority execution, fault cleanup is exact, exact-head CI/review are green, and owner merge is complete.
+P31 is complete iff one canonical `ObjectivePolicy` and one `ObjectivePriority` exist; all P31 objective weights satisfy the frozen numeric contract; all SM-11 leaves and priority SM-10.6 have evidence; portable execution agrees with independent reference models; every lock uses normalized `|z*|` math; P30 parameterized penalties resolve before priority construction; cleanup is exact; exact-head mandatory CI/review pass; and owner merge completes.
 
 ## Stop conditions
 
-Stop and return to written-spec review if objective locks cannot be represented transactionally, the priority type fragments, native semantics require a different degradation formula, stage outcome/continuation cannot be represented without guarantee inflation, parameterized penalties remain symbolic at priority execution, or any failed stage can leak objective/lock state.
+Stop for design review if objective locks cannot be transactional, priority fragments, native semantics require different degradation guarantees, stage outcomes cannot be reported honestly, P30 penalties remain symbolic at execution, or failed stages can leak state.
