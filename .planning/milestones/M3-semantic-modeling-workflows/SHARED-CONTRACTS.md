@@ -121,7 +121,7 @@ A successful `MpsWriteReport` records:
 - `ModelInstanceId`;
 - `ModelRevision`;
 - deterministic evaluated-parameter entries sufficient to identify every parameter value consumed by export;
-- target and naming policy;
+- active naming policy;
 - emitted dimensions/counts and deterministic name map.
 
 Evaluated parameter entries are ordered deterministically by export-local canonical traversal, not by debug rendering of arena/slot IDs.
