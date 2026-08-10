@@ -2,192 +2,141 @@
 
 ## Program state
 
-M3 has a mature LP/MILP foundation. P25-P29, P32-P33, and pulled-forward P35 are accepted/merged. Remaining execution is intentionally narrowed to four phases:
+M3 has a mature LP/MILP foundation. P25–P29, P32–P33, and P35 are merged/accepted. The remaining completion path is deliberately serialized:
 
 ```text
-ACTIVE: P36 MPS write-back
-NEXT:   P30 soft constraints / feasibility relaxation
-NEXT:   P31 objective policies / lexicographic solve
-FINAL:  P34 integrated qualification / M3 closure
-LATER:  M4 quadratic + nonlinear foundation design
+PLANNED ROUTING TARGET: P36 MPS write-back
+THEN:                   P30 soft constraints / feasibility relaxation
+THEN:                   P31 objective policies / lexicographic solve
+FINAL:                  P34 integrated qualification / M3 closure
+LATER:                  M4 quadratic/nonlinear foundation design gate
 ```
 
-## Primary objective
+**No P36/P30/P31/P34 production implementation is active while PR #45 is unmerged.** Merging an accepted PR #45 authorizes only P36 to begin on an isolated production branch/worktree.
 
-Finish a coherent optimization modeling system with closed import/export, diagnosis/repair, and multiobjective workflows before opening nonlinear scope.
+## Program dependency
 
-## Dependency DAG
+P36 is an explicit owner-selected program gate for P30:
 
 ```text
-P25 Semantic IR ─> P26 Compiler/Backend IR
-                         |
-              +----------+-----------+
-              |                      |
-              v                      v
-          P27 overlays            P32 constructs
-              |                      |
-              v                      v
-          P28 SolvePlan            P33 PWL
-              |
-       +------+------+-------------------+
-       |             |                   |
-       v             v                   |
-     P29 IIS        P35 MPS read          |
-       |             |                   |
-       |             v                   |
-       |           P36 MPS write          |
-       |             |                   |
-       +-----------> P30 relaxation       |
-                     |                    |
-                     v                    |
-                   P31 objectives <-------+
-                     |
-                     v
-                   P34 closure
-                     |
-                     v
-              M4 design gate only
+PR #45 merge -> P36 merge -> P30 merge -> P31 merge -> P34 merge
 ```
 
-P36 does not technically gate P30, but it executes first because it closes the current I/O thread and strengthens differential evidence. P30 then closes the infeasibility repair loop. P31 follows because P30 penalties compose with lexicographic priorities. P34 integrates everything.
+This supersedes older routing text that treated P30 as immediately executable after P28. The reason is deliberate sequencing: close and qualify MPS read/write interchange first, then return to infeasibility repair and multiobjective solve semantics.
+
+## Binding authorities
+
+- routing/authorization: `.planning/STATE.md` and milestone `STATE.md`;
+- cross-phase semantics: `SHARED-CONTRACTS.md`;
+- completion requirements: `COMPLETION-REQUIREMENTS.md`;
+- execution order/gates: `COMPLETION-ROADMAP.md`;
+- original stable M3 semantic contracts: `REQUIREMENTS.md`, `DECISIONS.md`;
+- P36: `36-CONTRACT.md`, `36-NETLIB-MANIFEST.md`, `36-PLAN.md`;
+- P30/P31: their phase plans plus shared contracts;
+- P34: `34-QUALIFICATION-CONTRACT.md` + `34-PLAN.md`.
+
+A lower-level artifact cannot weaken a higher-level guarantee silently.
+
+## Shared contract freeze
+
+The completion program now freezes rather than restates these semantics independently:
+
+1. exact roles/lifecycle/equality for lineage, model instance, revision, and CompilationId;
+2. overlay apply/rollback, dirty-session/rebuild, and preservation of primary + cleanup failures;
+3. parameterized MPS export as one evaluated exact model revision/environment;
+4. deterministic export-local names independent of arena/debug IDs;
+5. objective degradation lock scale `|z*|` across positive/zero/negative optima;
+6. P31 as sole canonical `ObjectivePolicy` owner and sole shared `ObjectivePriority` owner.
+
+## P36 completion gate
+
+P36 public surface is **semantic MPS export only**. A compiled-formulation export is not a decorative P36 option; it is deferred to a future independent design.
+
+Required:
+- frozen writer defaults/report/error taxonomy;
+- complete representability matrix;
+- evaluated-parameter report metadata;
+- deterministic free-MPS bytes;
+- transactional Linux/macOS/Windows path commit contract + fault seam;
+- independent test-local ROML mathematical oracle;
+- native HiGHS full-structure + normalized solve oracle;
+- exact pinned 94-file manifest with 94/94 required PASS and zero writer rejections;
+- all MPS-W01–W14 evidenced;
+- exact-head mandatory CI/review and owner merge.
+
+## P30 completion gate
+
+Required:
+- persistent soft constraints with exact two-sided algebra/provenance;
+- parameter-aware finite penalty evaluation before backend mutation;
+- P30-specific `RelaxationProviderPolicy`, not generic SolvePlan unsupported policy;
+- portable weighted-L1 normative provider;
+- separate `OptimalRepair`, `FeasibleRepair`, `NoRepairFound`, `Unknown`, and operational-error semantics with numerical metadata;
+- exact P29 IIS supported-origin mapping and all-or-error rejection of unsupported origins;
+- primary + rollback/rebuild failure preservation;
+- exact-head qualification/review and owner merge.
+
+P30 does not ship a decorative priority target. P31 adds the shared priority variant when it actually executes.
+
+## P31 completion gate
+
+Required:
+- one canonical `ObjectivePolicy` and one `ObjectivePriority`;
+- final weighted-level, stage-result, lock-report, and aggregate-result contracts;
+- explicit sense normalization;
+- portable sequential semantic reference executor;
+- frozen `scale=|z*|` degradation locks;
+- parameterized P30 penalties resolved before priority execution;
+- native provider only on exact semantic equivalence;
+- no stage-artifact leak and multi-error cleanup preservation;
+- exact-head qualification/review and owner merge.
+
+## P34 final closure gate
+
+P34 is qualification, not a feature bucket. It must execute `34-QUALIFICATION-CONTRACT.md`:
+- leaf requirement ledger for every SM-xx.y, MPS-Wxx, M3-Cxx;
+- executable fault matrix;
+- exact Q01–Q14 fixture corpus;
+- backend/version/OS matrix and frozen comparison rules;
+- reproducible primitive performance fixture/baseline;
+- exact packed consumer/package protocol;
+- concrete N1–N4 quadratic/NLP readiness shapes and per-component verdicts;
+- positive closure predicate where every mandatory conjunction passes;
+- zero unresolved P0/P1, exact-head CI, owner merge.
 
 ## WIP policy
 
-- Exactly one implementation phase is active.
-- Planning/research for the following phase is allowed, production implementation is not.
-- Every implementation phase gets an isolated branch/worktree, TDD task slices, independent review, fresh exact-head CI, evidence, and owner merge gate.
-- No feature is merged because it is architecturally interesting; it must close a listed acceptance criterion.
+- Before PR #45 merges: zero remaining production phases active.
+- After PR #45 merges: exactly P36 may be active.
+- After each phase merges: root/milestone state explicitly authorizes exactly one successor.
+- Review/research ahead is allowed; future production code is not.
+- No M4 production implementation begins before P34 closes M3.
 
-## Phase gates
+## Evidence policy
 
-### Gate P36
-
-Required before P30 starts:
-
-- deterministic free-MPS writer public API;
-- typed representability errors;
-- semantic `Model -> MPS -> ROML` equivalence;
-- `Model -> MPS -> native HiGHS readModel` structural equivalence;
-- bounded native/ROML solve equivalence;
-- Netlib transcode qualification for all P35-supported files;
-- cross-platform core/HiGHS/MSRV/quality/coverage/policy green;
-- writer package/public API docs;
-- no P0/P1 review finding.
-
-### Gate P30
-
-Required before P31 starts:
-
-- persistent soft-constraint construct with correct upper/lower/equality/ranged algebra;
-- stable violation identities and complete origins;
-- parameter-aware finite penalty semantics;
-- solution violation accessors in original terms;
-- separate solve-scoped portable feasibility relaxation;
-- transactional rollback and failure injection;
-- P29 IIS-to-relaxation composition without minimum-repair overclaim;
-- qualified native path only if exact semantics are established;
-- no P0/P1 review finding.
-
-### Gate P31
-
-Required before P34 starts:
-
-- canonical single/weighted/lexicographic policies;
-- deterministic portable sequential executor;
-- objective locks correct for min/max and positive/zero/negative optima;
-- explicit stage continuation policy;
-- all stage/all-objective results recorded;
-- P30 violation-priority integration;
-- native path only when semantically equivalent;
-- no leaked stage artifacts under failure injection;
-- no P0/P1 review finding.
-
-### Gate P34
-
-Required to close M3:
-
-- every mandatory SM requirement mapped to tests/evidence;
-- integrated workflows across import/export, IIS/relaxation, overlays, starts, constructs/PWL, and lexicographic solves;
-- cross-platform/version matrix green;
-- public API/package/fresh-consumer review passes;
-- performance gates pass or owner-approved profiled exception;
-- NLP-readiness review explicitly certifies extension seams;
-- no P0/P1 findings;
-- milestone state set complete;
-- no publication implied.
-
-## Program decisions
-
-### C1 — P36 before P30
-
-Close MPS read/write now. Reason: the interchange commuting square becomes an independent correctness oracle for later features and avoids reopening I/O while P30/P31 are active.
-
-### C2 — writer is semantic, not source-preserving
-
-Round-trip target is mathematical equivalence. Original comments, fixed/free layout, duplicate-record spelling, and ordering are not preserved.
-
-### C3 — free MPS only for P36 output
-
-Fixed MPS output is not required. P35 continues reading both.
-
-### C4 — standard linear LP/MILP output only
-
-Unsupported high-level semantics fail explicitly unless an advanced compiled-formulation export is deliberately selected.
-
-### C5 — portable relaxation is ROML-owned
-
-Solver-native feasibility relaxation is an optional qualified provider, analogous to P29 native IIS.
-
-### C6 — softening and relaxation are distinct
-
-Persistent soft constraints mutate canonical model state. Feasibility relaxation is solve-scoped analysis and must roll back.
-
-### C7 — portable lexicographic execution is normative
-
-Native multiobjective is optional and must prove semantic equivalence.
-
-### C8 — M4 extends current seams
-
-Quadratic/nonlinear support must extend `ScalarFunction`, backend IR, capabilities, origin mapping, solve plans, and reports rather than replace them.
-
-## Review bottlenecks
-
-The principal program risk is no longer implementation throughput; it is semantic review and integration. Therefore:
-
-- no parallel P30/P31 implementation;
-- every phase has explicit normalized/reference oracles;
-- agent-generated APIs are rejected if configuration fields do not govern execution;
-- reports cannot claim guarantees stronger than the evidence path;
-- test counts are not acceptance evidence by themselves.
-
-## Evidence strategy
-
-Each phase creates `docs/release/evidence/PXX_*.md` containing:
-
+Each phase evidence records:
 - exact base/head SHA;
-- requirement IDs;
-- public API changes;
-- test commands and results;
-- differential corpus outcomes;
-- backend/version matrix;
-- performance measurements where applicable;
-- independent review IDs/dispositions;
-- explicit residuals/non-goals.
+- leaf requirement IDs;
+- actual APIs and public diff;
+- commands/results + backend/version/OS scope;
+- independent/reference/native/corpus outcomes;
+- failure/recovery evidence;
+- review IDs/dispositions;
+- explicit residual risks/non-goals;
+- exact next gate.
 
-## Completion state machine
+Test counts alone never establish acceptance.
+
+## State machine
 
 ```text
-planned
-  -> design_reviewed
-  -> implementation_in_progress
-  -> qualification_in_progress
-  -> pending_independent_review
-  -> pending_merge
-  -> complete
+planned_routing_target
+ -> implementation_authorized
+ -> implementation_in_progress
+ -> qualification_in_progress
+ -> pending_independent_review
+ -> pending_merge
+ -> complete
 ```
 
-No phase skips independent review or exact-head CI.
-
-## Immediate next gate
-
-Execute P36 from its detailed plan. P30/P31/P34 packets are binding scope/architecture but remain inactive until their predecessor merges.
+The first transition requires the planning/predecessor merge gate. A roadmap phase label alone never authorizes code.
