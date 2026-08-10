@@ -6,6 +6,8 @@ use crate::{
     revision::ModelRevision,
 };
 
+use super::MpsEntityKind;
+
 /// Controls how source names are handled during deterministic export.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MpsNamePolicy {
@@ -63,6 +65,10 @@ pub struct MpsEvaluatedParameter {
 /// One deterministic mapping from a source name to an emitted MPS name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MpsWriteName {
+    /// The deterministic MPS entity namespace for this assignment.
+    pub entity_kind: MpsEntityKind,
+    /// One-based export-local ordinal within the entity namespace.
+    pub ordinal: usize,
     /// The source semantic name, when one exists.
     pub source_name: Option<String>,
     /// The deterministic name emitted in the MPS document.

@@ -40,9 +40,6 @@ pub enum MpsWriteErrorKind {
     StaleEntity,
     /// An internal canonical invariant was violated.
     InternalInvariant,
-    /// Transitional Wave 0 result: the writer implementation is not present.
-    #[doc(hidden)]
-    NotYetImplemented,
 }
 
 impl fmt::Display for MpsWriteErrorKind {
@@ -60,7 +57,6 @@ impl fmt::Display for MpsWriteErrorKind {
             Self::Serialization => "serialization failure",
             Self::StaleEntity => "stale entity",
             Self::InternalInvariant => "internal invariant failure",
-            Self::NotYetImplemented => "writer not yet implemented",
         };
         f.write_str(label)
     }
@@ -240,7 +236,18 @@ pub struct MpsWriteError {
     kind: MpsWriteErrorKind,
     context: Box<MpsWriteContext>,
     cause: Option<Box<dyn Error + Send + Sync + 'static>>,
+    internal_kind: Option<MpsWriteInternalKind>,
+    primary: Option<Box<MpsWriteError>>,
+    cleanup: Option<Box<MpsWriteError>>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MpsWriteInternalKind {
+    NotYetImplemented,
+}
+
+const WAVE_0_STUB_MESSAGE: &str =
+    "MPS write projection and path transaction are not implemented in this slice";
 
 impl MpsWriteError {
     /// Creates an error with a top-level kind and structured context.
@@ -249,6 +256,9 @@ impl MpsWriteError {
             kind,
             context: Box::new(context),
             cause: None,
+            internal_kind: None,
+            primary: None,
+            cleanup: None,
         }
     }
 
@@ -266,6 +276,9 @@ impl MpsWriteError {
             kind,
             context: Box::new(context),
             cause: Some(Box::new(cause)),
+            internal_kind: None,
+            primary: None,
+            cleanup: None,
         }
     }
 
@@ -275,13 +288,15 @@ impl MpsWriteError {
     }
 
     /// Creates the typed transitional error used by the Wave 0 writer stubs.
-    pub(crate) fn not_yet_implemented() -> Self {
-        Self::new(
-            MpsWriteErrorKind::NotYetImplemented,
-            MpsWriteContext::default().with_message(
-                "MPS write projection and path transaction are not implemented in this slice",
-            ),
-        )
+    pub(crate) fn not_yet_implemented(context: MpsWriteContext) -> Self {
+        Self {
+            kind: MpsWriteErrorKind::InternalInvariant,
+            context: Box::new(context.with_message(WAVE_0_STUB_MESSAGE)),
+            cause: None,
+            internal_kind: Some(MpsWriteInternalKind::NotYetImplemented),
+            primary: None,
+            cleanup: None,
+        }
     }
 
     /// Returns the stable top-level kind.
@@ -300,18 +315,51 @@ impl MpsWriteError {
         self
     }
 
+    /// Preserves a cleanup failure alongside this primary failure.
+    ///
+    /// The returned `PathTransaction` error retains both typed failures. Path
+    /// transaction code is responsible for deciding when cleanup is needed;
+    /// this method only preserves the resulting error composition.
+    pub fn with_cleanup(self, cleanup: Self) -> Self {
+        let context = (*self.context).clone();
+        Self {
+            kind: MpsWriteErrorKind::PathTransaction,
+            context: Box::new(context),
+            cause: None,
+            internal_kind: None,
+            primary: Some(Box::new(self)),
+            cleanup: Some(Box::new(cleanup)),
+        }
+    }
+
+    /// Returns the preserved primary operation failure, when this is a
+    /// composed path-transaction error.
+    pub fn primary(&self) -> Option<&MpsWriteError> {
+        self.primary.as_deref()
+    }
+
+    /// Returns the preserved cleanup failure, when one was recorded.
+    pub fn cleanup(&self) -> Option<&MpsWriteError> {
+        self.cleanup.as_deref()
+    }
+
     /// Returns the I/O error kind when the underlying cause is an I/O error.
     pub fn io_kind(&self) -> Option<io::ErrorKind> {
         self.cause
             .as_deref()
             .and_then(|cause| cause.downcast_ref::<io::Error>())
             .map(io::Error::kind)
+            .or_else(|| self.primary.as_deref().and_then(Self::io_kind))
     }
 }
 
 impl fmt::Display for MpsWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MPS write error: {}", self.kind)?;
+        if self.internal_kind == Some(MpsWriteInternalKind::NotYetImplemented) {
+            f.write_str("MPS write error: writer not yet implemented")?;
+        } else {
+            write!(f, "MPS write error: {}", self.kind)?;
+        }
         if let Some(path) = self.context.path() {
             write!(f, " at {}", path.display())?;
         }
@@ -336,14 +384,24 @@ impl fmt::Display for MpsWriteError {
         if let Some(cause) = &self.cause {
             write!(f, ": {cause}")?;
         }
+        if let Some(primary) = &self.primary {
+            write!(f, ": primary failure: {primary}")?;
+        }
+        if let Some(cleanup) = &self.cleanup {
+            write!(f, "; cleanup failure: {cleanup}")?;
+        }
         Ok(())
     }
 }
 
 impl Error for MpsWriteError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.cause
-            .as_deref()
-            .map(|cause| cause as &(dyn Error + 'static))
+        if let Some(primary) = self.primary.as_deref() {
+            Some(primary)
+        } else {
+            self.cause
+                .as_deref()
+                .map(|cause| cause as &(dyn Error + 'static))
+        }
     }
 }

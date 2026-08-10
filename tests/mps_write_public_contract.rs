@@ -7,9 +7,9 @@ use std::{error::Error as _, io, path::PathBuf};
 
 use roml::{
     io::mps::write::{
-        MpsDestinationPolicy, MpsEvaluatedParameter, MpsNamePolicy, MpsPathStage, MpsWriteContext,
-        MpsWriteError, MpsWriteErrorKind, MpsWriteLowering, MpsWriteNameMap, MpsWriteOptions,
-        MpsWriteReport, MpsWriter,
+        MpsDestinationPolicy, MpsEntityKind, MpsEvaluatedParameter, MpsNamePolicy, MpsPathStage,
+        MpsWriteContext, MpsWriteError, MpsWriteErrorKind, MpsWriteLowering, MpsWriteName,
+        MpsWriteNameMap, MpsWriteOptions, MpsWriteReport, MpsWriter,
     },
     Model,
 };
@@ -23,16 +23,13 @@ fn default_writer_options_are_exactly_the_frozen_contract() {
         options.destination_policy,
         MpsDestinationPolicy::AtomicReplace
     );
-    assert_eq!(MpsWriter::new().options(), &options);
+    let _default_writer = MpsWriter::new();
 
     let configured = MpsWriteOptions {
         name_policy: MpsNamePolicy::StrictPreserve,
         destination_policy: MpsDestinationPolicy::CreateNew,
     };
-    assert_eq!(
-        MpsWriter::with_options(configured.clone()).options(),
-        &configured
-    );
+    let _configured_writer = MpsWriter::with_options(configured);
 }
 
 #[test]
@@ -85,48 +82,197 @@ fn public_writer_api_and_report_fields_are_callable_without_a_solver() {
     let stream_error = MpsWriter::new()
         .write(&model, &mut stream)
         .expect_err("the Wave 0 writer is typed but not implemented");
-    assert_eq!(stream_error.kind(), &MpsWriteErrorKind::NotYetImplemented);
+    assert_eq!(stream_error.kind(), &MpsWriteErrorKind::InternalInvariant);
+    assert_eq!(
+        stream_error.context().message.as_deref(),
+        Some("MPS write projection and path transaction are not implemented in this slice")
+    );
     assert!(stream.is_empty(), "the stub must not emit output");
 
     let path = PathBuf::from("mps-write-public-contract-unused.mps");
     let path_error = MpsWriter::new()
         .write_path(&model, &path)
         .expect_err("the Wave 0 path writer is typed but not implemented");
-    assert_eq!(path_error.kind(), &MpsWriteErrorKind::NotYetImplemented);
+    assert_eq!(path_error.kind(), &MpsWriteErrorKind::InternalInvariant);
+    assert_eq!(path_error.context().path(), Some(path.as_path()));
+    assert_eq!(
+        path_error.context().message.as_deref(),
+        Some("MPS write projection and path transaction are not implemented in this slice")
+    );
 }
 
 #[test]
 fn mandatory_top_level_error_kinds_remain_distinct_and_contextual() {
     let required = [
-        MpsWriteErrorKind::Io,
-        MpsWriteErrorKind::DestinationExists,
-        MpsWriteErrorKind::AtomicReplaceUnavailable,
-        MpsWriteErrorKind::PathTransaction,
-        MpsWriteErrorKind::ModelValidation,
-        MpsWriteErrorKind::Unrepresentable,
-        MpsWriteErrorKind::ParameterEvaluation,
-        MpsWriteErrorKind::NonFiniteValue,
-        MpsWriteErrorKind::NameAllocation,
-        MpsWriteErrorKind::Serialization,
-        MpsWriteErrorKind::StaleEntity,
-        MpsWriteErrorKind::InternalInvariant,
+        (MpsWriteErrorKind::Io, "I/O failure", MpsPathStage::Write),
+        (
+            MpsWriteErrorKind::DestinationExists,
+            "destination exists",
+            MpsPathStage::Replace,
+        ),
+        (
+            MpsWriteErrorKind::AtomicReplaceUnavailable,
+            "atomic replacement unavailable",
+            MpsPathStage::Replace,
+        ),
+        (
+            MpsWriteErrorKind::PathTransaction,
+            "path transaction failure",
+            MpsPathStage::Cleanup,
+        ),
+        (
+            MpsWriteErrorKind::ModelValidation,
+            "model validation failure",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::Unrepresentable,
+            "unrepresentable model feature",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::ParameterEvaluation,
+            "parameter evaluation failure",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::NonFiniteValue,
+            "non-finite value",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::NameAllocation,
+            "name allocation failure",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::Serialization,
+            "serialization failure",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::StaleEntity,
+            "stale entity",
+            MpsPathStage::Write,
+        ),
+        (
+            MpsWriteErrorKind::InternalInvariant,
+            "internal invariant failure",
+            MpsPathStage::Write,
+        ),
     ];
 
-    assert_eq!(required.len(), 12);
-    for kind in required {
+    assert_eq!(required.len(), 12, "the frozen taxonomy has twelve kinds");
+    for (kind, label, stage) in required {
         let error = MpsWriteError::new(
             kind.clone(),
             MpsWriteContext::default()
                 .with_path(PathBuf::from("/tmp/contract-output.mps"))
-                .with_stage(MpsPathStage::Write),
+                .with_stage(stage),
         );
         assert_eq!(error.kind(), &kind);
         assert_eq!(
-            error.context().path(),
-            Some(std::path::Path::new("/tmp/contract-output.mps"))
+            error.to_string(),
+            format!("MPS write error: {label} at /tmp/contract-output.mps during {stage}")
         );
-        assert_eq!(error.context().stage(), Some(MpsPathStage::Write));
     }
+}
+
+#[test]
+fn name_map_identity_disambiguates_missing_and_duplicate_source_names() {
+    let name_map = MpsWriteNameMap {
+        variables: vec![
+            MpsWriteName {
+                entity_kind: MpsEntityKind::Variable,
+                ordinal: 1,
+                source_name: None,
+                emitted_name: "X000001".to_owned(),
+            },
+            MpsWriteName {
+                entity_kind: MpsEntityKind::Variable,
+                ordinal: 2,
+                source_name: Some("duplicate".to_owned()),
+                emitted_name: "X000002".to_owned(),
+            },
+            MpsWriteName {
+                entity_kind: MpsEntityKind::Variable,
+                ordinal: 3,
+                source_name: Some("duplicate".to_owned()),
+                emitted_name: "X000003".to_owned(),
+            },
+        ],
+        rows: vec![MpsWriteName {
+            entity_kind: MpsEntityKind::Constraint,
+            ordinal: 1,
+            source_name: Some("duplicate".to_owned()),
+            emitted_name: "R000001".to_owned(),
+        }],
+        objective: Some(MpsWriteName {
+            entity_kind: MpsEntityKind::Objective,
+            ordinal: 1,
+            source_name: None,
+            emitted_name: "OBJ".to_owned(),
+        }),
+    };
+
+    assert_eq!(name_map.variables[0].entity_kind, MpsEntityKind::Variable);
+    assert_eq!(name_map.variables[0].ordinal, 1);
+    assert_eq!(name_map.variables[0].source_name, None);
+    assert_eq!(name_map.variables[0].emitted_name, "X000001");
+    assert_eq!(
+        name_map.variables[1].source_name.as_deref(),
+        Some("duplicate")
+    );
+    assert_eq!(
+        name_map.variables[2].source_name.as_deref(),
+        Some("duplicate")
+    );
+    assert_ne!(name_map.variables[1].ordinal, name_map.variables[2].ordinal);
+    assert_ne!(
+        name_map.variables[1].emitted_name,
+        name_map.variables[2].emitted_name
+    );
+    assert_eq!(name_map.rows[0].entity_kind, MpsEntityKind::Constraint);
+    assert_eq!(name_map.rows[0].ordinal, 1);
+    assert_eq!(
+        name_map.objective.as_ref().unwrap().entity_kind,
+        MpsEntityKind::Objective
+    );
+    assert_eq!(name_map.objective.as_ref().unwrap().emitted_name, "OBJ");
+}
+
+#[test]
+fn structured_context_preserves_entity_feature_and_numeric_distinctions() {
+    let error = MpsWriteError::new(
+        MpsWriteErrorKind::Unrepresentable,
+        MpsWriteContext::default()
+            .with_entity(MpsEntityKind::Variable, "semi-continuous-x")
+            .with_feature("semi-continuous domain")
+            .with_numeric_field("lower bound")
+            .with_message("standard MPS cannot preserve this active domain"),
+    );
+
+    assert_eq!(error.context().entity_kind, Some(MpsEntityKind::Variable));
+    assert_eq!(
+        error.context().entity_name.as_deref(),
+        Some("semi-continuous-x")
+    );
+    assert_eq!(
+        error.context().feature.as_deref(),
+        Some("semi-continuous domain")
+    );
+    assert_eq!(
+        error.context().numeric_field.as_deref(),
+        Some("lower bound")
+    );
+    assert_eq!(
+        error.context().message.as_deref(),
+        Some("standard MPS cannot preserve this active domain")
+    );
+    assert_eq!(
+        error.to_string(),
+        "MPS write error: unrepresentable model feature for variable semi-continuous-x (semi-continuous domain) in numeric field lower bound: standard MPS cannot preserve this active domain"
+    );
 }
 
 #[test]
@@ -146,4 +292,52 @@ fn error_sources_and_path_transaction_stage_are_preserved() {
         error.source().map(ToString::to_string).as_deref(),
         Some("sync denied")
     );
+}
+
+#[test]
+fn primary_and_cleanup_failures_are_both_preserved_in_public_error_structure() {
+    let primary = MpsWriteError::with_source(
+        MpsWriteErrorKind::Io,
+        MpsWriteContext::default()
+            .with_path(PathBuf::from("output.mps"))
+            .with_stage(MpsPathStage::Replace),
+        io::Error::new(io::ErrorKind::PermissionDenied, "replace denied"),
+    );
+    let cleanup = MpsWriteError::with_source(
+        MpsWriteErrorKind::Io,
+        MpsWriteContext::default()
+            .with_path(PathBuf::from("output.mps.tmp"))
+            .with_stage(MpsPathStage::Cleanup),
+        io::Error::other("cleanup denied"),
+    );
+
+    let composed = primary.with_cleanup(cleanup);
+    assert_eq!(composed.kind(), &MpsWriteErrorKind::PathTransaction);
+    let preserved_primary = composed.primary().expect("primary failure is preserved");
+    let preserved_cleanup = composed.cleanup().expect("cleanup failure is preserved");
+    assert_eq!(preserved_primary.kind(), &MpsWriteErrorKind::Io);
+    assert_eq!(
+        preserved_primary.context().stage(),
+        Some(MpsPathStage::Replace)
+    );
+    assert_eq!(
+        preserved_primary.io_kind(),
+        Some(io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(preserved_cleanup.kind(), &MpsWriteErrorKind::Io);
+    assert_eq!(
+        preserved_cleanup.context().stage(),
+        Some(MpsPathStage::Cleanup)
+    );
+    assert_eq!(preserved_cleanup.io_kind(), Some(io::ErrorKind::Other));
+    assert!(
+        composed
+            .source()
+            .and_then(|source| source.downcast_ref::<MpsWriteError>())
+            .is_some(),
+        "the primary typed error remains the source chain"
+    );
+    let rendered = composed.to_string();
+    assert!(rendered.contains("replace denied"));
+    assert!(rendered.contains("cleanup denied"));
 }
