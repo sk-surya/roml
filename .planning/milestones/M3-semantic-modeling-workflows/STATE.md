@@ -1,94 +1,106 @@
-# M3 Semantic Modeling and Solve Workflows State
+# M3 Semantic Modeling and Solve Workflows — State
 
-## Current state
+## Routing state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P25–P29, P32, P33 accepted; P30–P31 unblocked
-**Current phase:** P30 — Soft constraints (next coding phase per the WIP policy)
-**Planning branch:** `docs/m3-semantic-modeling-workflows` (merged via PR #25)  
-**Implementation branches:** `phase-roml-P25-semantic-ir-foundation` … `phase-roml-P33-piecewise-linear-bounds` (all merged via PRs #27–#32)  
-**Authoritative baseline:** `main@19c8c70` (P29 merge; P33 and P29 evidence retained)
-**Design:** `docs/superpowers/specs/2026-08-02-semantic-modeling-and-solve-workflows-design.md`
+**Status:** completion planning under review  
+**Planned routing target:** P36 — MPS write-back  
+**Active production implementation:** **none** until PR #45 is accepted and merged  
+**Implementation authorization:** false  
+**Current authoritative main for this planning branch:** `main@4467797f002c93a1baab638b5e65976fb8492505`  
+**Completion roadmap:** `COMPLETION-ROADMAP.md`  
+**Shared contracts:** `SHARED-CONTRACTS.md`
 
-## Approved owner direction
+`Planned routing target` means the phase GSD should activate next after its planning gate. It does **not** mean a production branch may exist yet.
 
-- Preserve high-level semantic constructs in canonical model state.
-- Design abstractions so later nonlinear programming extends rather than replaces the architecture.
-- Implement MILP workflows first; do not implement NLP in M3.
-- Use bound tightening as the default representation of variable fixing.
-- Proceed with programming design and an implementation-ready planning packet.
+## Accepted phases
 
-## Immediate next gate
+| Phase | Capability | State | Evidence / authority |
+|---|---|---|---|
+| P25 | semantic IR / identity | complete | accepted P25 evidence |
+| P26 | compiler/backend IR | complete | accepted P26 evidence |
+| P27 | fixing / assignments / locks / overlays | complete | accepted P27 evidence |
+| P28 | SolvePlan / starts / hints | complete | accepted P28 evidence |
+| P29 | IIS/conflict analysis | complete | PR #39 + `P29_IIS_QUALIFICATION.md` |
+| P30 | soft constraints / feasibility relaxation | planned, inactive | SM-10 + `30-PLAN.md`; gated by P36 merge |
+| P31 | objective policies / lexicographic execution | planned, inactive | SM-11 + `31-PLAN.md`; gated by P30 merge |
+| P32 | common semantic constructs | complete | accepted P32 evidence |
+| P33 | PWL / bound analysis | complete | accepted P33 evidence |
+| P34 | integrated M3 qualification | planned, inactive | SM-15 + P34 qualification contract; gated by P31 merge |
+| P35 | MPS import / corpus qualification | complete | PR #44 merge `7159fad8830b32f5a9377174e6e57bb24f99de95` |
+| P36 | MPS write-back / round trip | planning review | gated by acceptance + merge of PR #45 |
 
-P25–P29, P32, P33 are accepted and merged; P29 merged via PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`. The next coding phase is **P30 — Soft constraints**. System-native IIS qualification and release-grade performance benchmarking remain follow-up qualification work, not P29 merge gates.
+## Binding completion sequence
 
-Before P29 code:
+```text
+PR #45 accepted + merged
+  -> P36 implementation active
+  -> P36 accepted + merged
+  -> P30 implementation active
+  -> P30 accepted + merged
+  -> P31 implementation active
+  -> P31 accepted + merged
+  -> P34 qualification active
+  -> P34 accepted + merged
+  -> M3 complete
+  -> M4 design gate only
+```
 
-1. fetch current refs and record exact base SHA (`main@2fa0596`);
-2. read `AGENTS.md`, the M3 packet, and the approved design;
-3. create an isolated worktree/branch `phase-roml-P29-iis-conflicts`;
-4. capture untouched baseline commands and public API;
-5. write characterization/failing tests first.
+P36 is an explicit **program dependency** for P30. The older statement that P30 was already the next coding phase is superseded by this completion-program routing decision.
 
-## Phase ledger
+## Shared contract freeze
 
-| Phase | Status | Prerequisite | Evidence | Blocking decision |
-|---|---|---|---|---|
-| P25 Semantic IR/identity | Accepted | M3 plan approval | `docs/release/evidence/M3_P25_SEMANTIC_IR.md` (merged PR #27, `9c2a9df`) | none |
-| P26 Compiler/backend IR | Accepted | P25 accepted (PR #27, `9c2a9df`) | `docs/release/evidence/M3_P26_COMPILER_BACKEND_IR.md` (merged PR #28, `192cd00`) | backend contract amendment review (passed, Task 0 acceptance record) |
-| P27 Fixing/locks/overlays | Blocked | P26 accepted | none | none |
-| P28 Starts/hints/SolvePlan | Accepted | P27 accepted (PR #29, `4f86791`) | `docs/release/evidence/M3_P28_SOLVE_PLAN_STARTS_HINTS.md` (merged PR #32, `2fa0596`) | none |
-| P29 IIS/conflicts | Accepted | P28 accepted (PR #32, `2fa0596`) | `docs/release/evidence/P29_IIS_QUALIFICATION.md`, merged PR #39 (`19c8c70`) | system-native IIS qualification deferred; portable system lane passed |
-| P30 Soft constraints | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | none |
-| P31 Lexicographic objectives | Ready to execute | P28 accepted (PR #32, `2fa0596`) | none | native HiGHS semantics audit |
-| P32 Common constructs | Accepted | P26 accepted | `docs/release/evidence/M3_P32_COMMON_CONSTRUCTS.md` (merged PR #30, `538336d`) | none |
-| P33 PWL/bounds | Accepted | P32 accepted (PR #30, `538336d`) | `docs/release/evidence/M3_P33_PIECEWISE_LINEAR_BOUNDS.md` (merged PR #31, `4caf03c`) | none |
-| P34 Qualification | Blocked | P29–P33 accepted | none | no publication in M3 |
+P36/P30/P31/P34 must use `SHARED-CONTRACTS.md` for:
+- lifecycle/equality of `ModelLineageId`, `ModelInstanceId`, `ModelRevision`, and `CompilationId`;
+- overlay apply/rollback, dirty session/rebuild, and multi-error preservation;
+- parameterized MPS export as one evaluated snapshot;
+- deterministic export naming independent of slot/debug IDs;
+- objective degradation lock formula including zero/negative optima;
+- P31 sole ownership of `ObjectivePolicy` and `ObjectivePriority`.
 
-## Bounded technical decisions to resolve during execution
+No phase plan may silently redefine those semantics.
 
-These are not open architecture questions; each has a prescribed evidence gate.
+## Phase-specific hard gates
 
-1. **HiGHS IIS support:** bundled 1.15.0 is audited and qualified; system-native IIS remains version-gated `Unsupported` until a separate official-header/library matrix is reviewed.
-2. **HiGHS native multiobjective:** compare official priority/tolerance semantics to ROML's policy. Use native execution only on an exact match; otherwise use sequential overlay execution.
-3. **HiGHS variable hints:** if no official hint capability exists, report unsupported. Do not simulate hints silently.
-4. **Backend IR native PWL:** expose the normalized primitive only after at least one backend implementation and a portable fallback exist.
-5. **Metadata source capture:** M3 stores user-supplied source metadata. Automatic procedural-macro source capture remains deferred unless it can be additive and optional.
+### P36
+
+Binding artifacts:
+- `.planning/phases/36-mps-writeback/36-CONTRACT.md`
+- `.planning/phases/36-mps-writeback/36-NETLIB-MANIFEST.md`
+- `.planning/phases/36-mps-writeback/36-PLAN.md`
+
+MPS-W01–W14 are all binding. Frozen Netlib qualification is 94 exact files; a missing file or writer rejection is a failure, not a skip.
+
+### P30
+
+Portable weighted-L1 is normative. Provider choice, mathematical outcome, and operational failure are distinct. P29 IIS composition is all-or-error over explicitly supported original origins.
+
+### P31
+
+P31 owns canonical `ObjectivePolicy` and `ObjectivePriority`; objective locks use `scale = |z*|`. P31 adds the actual priority-target penalty integration only when it executes.
+
+### P34
+
+`34-QUALIFICATION-CONTRACT.md` is the final closure authority: leaf requirement ledger, executable fault matrix, native/portable corpus, performance baseline, packed consumers, concrete NLP readiness, positive closure predicate.
 
 ## WIP policy
 
-- Default: one coding phase active.
-- Maximum: one coding phase plus one review/fix branch.
-- P29/P30/P31 parallelism is allowed only after P28, with separate owners and an integration reviewer.
-- P32 may overlap only when P26's compiler contract is frozen and unchanged.
-- P34 begins only after all feature branches are merged and no unresolved cross-phase contract changes remain.
+- One production phase active at a time.
+- A planning/review branch may coexist with one production phase only when it does not authorize or accumulate future production code.
+- While PR #45 is unmerged, **zero** P36/P30/P31/P34 production phases are active.
+- P34 starts only after all feature phases are merged and cross-phase contracts are stable.
 
-## Evidence protocol
+## Evidence/update protocol
 
-Each phase evidence file must record:
+For each phase:
+1. record exact base/head SHAs;
+2. map leaf requirement IDs to tests/evidence;
+3. record exact local/hosted commands and backend/version/OS scope;
+4. record public API changes, residuals, and review dispositions;
+5. require exact-head independent review and hosted mandatory CI;
+6. owner-authorized merge;
+7. only then update root/milestone state to authorize the next phase.
 
-- base and head SHAs;
-- requirement IDs closed;
-- exact commands and results;
-- public API changes;
-- backend/version/feature matrix;
-- skipped checks with reasons;
-- deviations from design;
-- reviewer findings and dispositions;
-- residual risks;
-- next gate.
+## M3 stop condition
 
-## State update protocol
-
-After each phase:
-
-1. update this ledger with verified facts only;
-2. link the phase evidence and merge commit;
-3. update `TRACEABILITY.md` requirement status;
-4. record any accepted design amendment in `DECISIONS.md`;
-5. identify exactly one next coding phase;
-6. never mark a skipped mandatory check as passing.
-
-## Milestone stopping condition
-
-Stop M3 execution after P34 evidence and reviews. Do not publish, tag, or release. Publication requires a separate explicit owner decision against an exact SHA and crate list.
+M3 ends only when P34's positive closure predicate passes and P34 is owner-merged. No publication/tag/release is implied. Quadratic/nonlinear production remains blocked until the separate M4 design gate.
