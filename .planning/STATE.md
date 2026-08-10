@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
-current_phase: 35
-current_phase_name: MPS import and corpus qualification
-status: pending_merge
+current_phase: 36
+current_phase_name: MPS write-back and round-trip qualification
+status: planned
 ---
 
 # ROML Active State — M3 Semantic Modeling and Solve Workflows
@@ -13,132 +13,122 @@ The detailed M3 ledger is retained at
 `.planning/milestones/M3-semantic-modeling-workflows/STATE.md`. This root state
 frontmatter is the active GSD routing authority.
 
-**Completed phase:** P29 — IIS/conflict analysis and origin-aware reports
-**Accepted prerequisites:** P25–P28, P32, and P33
-**Completion:** merged PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`; expert review `4884735350` CLEAR TO MERGE.
-**P35 state:** implementation, secure complete-archive materialization, selected-corpus qualification, and hosted CI are complete on PR #44 head `93985cdda463e833d6d837c8edb1dfc0bcc8ecfa`. The PR remains draft and unmerged pending final CLEAR TO MERGE review and owner approval.
-**Next review gate:** final independent CLEAR TO MERGE review of PR #44, followed by owner-authorized merge; keep P30/P31 contracts separate and do not renumber P30–P34.
+## Active execution state
+
+**Current phase:** P36 — deterministic MPS write-back and round-trip qualification.  
+**Status:** planned; design/plan review is the next gate.  
+**Implementation base:** current `main` after merged P35 PR #44 (`7159fad8830b32f5a9377174e6e57bb24f99de95`) and merged P29 architecture record PR #38 (`4467797f002c93a1baab638b5e65976fb8492505`).  
+**Execution plan:** `.planning/phases/36-mps-writeback/36-PLAN.md`.  
+**Program roadmap:** `.planning/milestones/M3-semantic-modeling-workflows/COMPLETION-ROADMAP.md`.  
+**Next review gate:** review/approve this completion packet, then implement P36 from an isolated phase branch/worktree. P30/P31/P34 production implementation remains inactive.
+
+## M3 completion sequence
+
+```text
+P36 MPS write-back
+  -> P30 soft constraints / feasibility relaxation
+  -> P31 objective policies / lexicographic solve
+  -> P34 M3 integration / qualification / NLP-readiness
+  -> M3 complete
+  -> M4 quadratic/nonlinear foundation design gate
+```
+
+Accepted/merged prerequisites: P25–P29, P32–P33, P35. P30 and P31 retain their original phase numbers and requirement ownership; P36 is the pulled-forward I/O closure phase after P35.
+
+## Current phase ledger
+
+| Phase | Status | Evidence / authority | Blocking decision |
+|---|---|---|---|
+| P25 | Complete | accepted phase evidence | none |
+| P26 | Complete | accepted phase evidence | none |
+| P27 | Complete | accepted phase evidence | none |
+| P28 | Complete | accepted phase evidence | none |
+| P29 | Complete | `docs/release/evidence/P29_IIS_QUALIFICATION.md`, PR #39 (`19c8c70`), design record PR #38 | system-native IIS/performance remain follow-up, not M3 blockers |
+| P30 | Planned | SM-10 + `30-PLAN.md` | P36 must merge first |
+| P31 | Planned | SM-11 + `31-PLAN.md` | P30 must merge first |
+| P32 | Complete | accepted phase evidence | none |
+| P33 | Complete | accepted phase evidence | none |
+| P34 | Planned | SM-15 + `34-PLAN.md` | P31 must merge first |
+| P35 | Complete | `docs/release/evidence/P35_MPS_QUALIFICATION.md`, merged PR #44 (`7159fad`) | residual `IC-satimage-LB` qualification is follow-up |
+| P36 | **Planned / active** | completion packet + `36-PLAN.md` | design/plan review then implementation |
+
+## WIP rule
+
+Only one P36/P30/P31/P34 implementation phase may be active. Research/review can be prepared ahead, but production code for the next phase does not accumulate before the current phase is accepted and merged.
 
 ## Archived v0.1 Release-Hardening State
 
-## Current milestone
+The following section is historical release-roadmap state. It is not the active GSD execution route above.
+
+### Historical milestone
 
 **Milestone:** crates.io production-readiness  
-**Status:** planned; implementation not started  
-**Current phase:** P0 — baseline, repository hygiene, and release controls  
+**Status:** planned/previously executed in its own roadmap context  
 **Authoritative implementation base:** `82e2ed95545635b628187ba0081fe8c8b03eaafb`  
 **Historical audit base:** `f9ba1921e650b5057bbc4de090a78391f7932a53`
 
-## Planning branch
+### Historical planning branch
 
 `docs/public-release-production-roadmap`
 
-Current `main` was reconciled into this branch through PR #2, merge commit `083cc6d890c59efab9da74c687031cb9ecf27d5b`. The branch contains current implementation source plus planning/governance documents. It is not an implementation branch and is not a release candidate.
+Current `main` was reconciled into this branch through PR #2, merge commit `083cc6d890c59efab9da74c687031cb9ecf27d5b`. The branch contains planning/governance documents and is not an implementation branch or release candidate.
 
-## Accepted planning assumptions
+### Accepted planning assumptions
 
 - First release train prioritizes `roml` and `roml-highs`.
 - `roml-mosek` and `roml-xpress` graduate independently and may remain unpublished/experimental.
 - Recommended project license is `MIT OR Apache-2.0`; implementation must obtain owner confirmation before adding license files or changing package metadata.
-- Core remains solver-free; transient `SolveOptions` move out of canonical `Model` state during P1/P2 API redesign.
-- HiGHS should use `rust-or/highs-sys` if required APIs are available or can be upstreamed.
+- Core remains solver-free.
+- HiGHS should use maintained/generated official bindings where required APIs are available.
 - MOSEK should use the official `mosek` Rust crate/API.
 - Xpress needs a separate binding/licensing investigation before selecting generated link-time bindings versus runtime loading.
-- The current changelog API is not a compatibility constraint; correctness and multi-adapter recoverability take precedence.
-- Existing Xpress bulk-update behavior should be characterized and migrated to typed delta batches, not preserved through accidental event ordering.
 - Language wrappers are post-v0.1.
 
-## Open owner decisions
+### Open owner decisions retained from release roadmap
 
-These are explicit gates, not requests for immediate clarification:
-
-1. Confirm `MIT OR Apache-2.0` or choose another license before P0 metadata completion.
-2. Confirm whether crates.io names `roml`, `roml-highs`, `roml-mosek`, and `roml-xpress` are owned/available before P6.
+1. Confirm `MIT OR Apache-2.0` or choose another license before publication metadata completion.
+2. Confirm whether crates.io names `roml`, `roml-highs`, `roml-mosek`, and `roml-xpress` are owned/available before publication.
 3. Select which commercial adapters, if any, are included in the first published release.
 4. Approve use of protected self-hosted CI runners for licensed solver tests.
-5. Approve publication only after P6 evidence review.
+5. Approve publication only after the separate release evidence gate.
 
-## Immediate next actions
-
-1. Execute Phase 00 exactly as specified against current `main` or a reviewed descendant.
-2. Capture untouched baseline command outputs before cleanup.
-3. Open separate implementation PRs from isolated branches/worktrees.
-4. Keep this planning branch immutable except for reviewed roadmap/audit amendments.
-5. Treat `docs/release/CURRENT_MAIN_DELTA_AUDIT.md` as authoritative for the four commits after the historical audit.
-
-## Known P0/P1 findings already established
-
-- Missing license files and incomplete crates.io metadata.
-- No CI workflows.
-- Root and solver crates mix core/runtime dependencies with logging configuration.
-- Placeholder Python scaffold and generated solver logs are tracked at the root and in backend crates.
-- Handwritten HiGHS, MOSEK, and Xpress ABI declarations/constants.
-- macOS-centric and incomplete native discovery/build scripts.
-- Invalid MOSEK callback strategy mutates a task inside a callback contrary to official guidance.
-- Duplicate parametric terms can map to the same matrix cell with last-write-wins behavior.
-- Model changes are destructively drained before backend acknowledgement.
-- Multiple adapters cannot independently synchronize from one model.
-- Semi-continuous HiGHS application is a concrete partial-apply/lost-delta counterexample.
-- Semi-continuous domain semantics are fragmented across bounds, `VarType`, and a side map.
-- Canonical `Model` owns transient `SolveOptions`, leaking solver policy into the model layer.
-- Unsupported solve options are silently ignored, preventing reliable capability negotiation.
-- One-shot solve options and deltas can be consumed before a failed solve attempt is acknowledged.
-- Constructors and callback bridges contain panic/unchecked-FFI/ignored-return-code risks.
-- `ModelConstants::default()` remains recursively defined.
-- Repository guidance and support claims are stale relative to the current workspace.
-
-## Progress ledger
+### Historical progress ledger
 
 | Phase | Status | Evidence | Blocking decision |
 |---|---|---|---|
 | P0 | Complete | `docs/release/evidence/P0_BASELINE.md` (HEAD: c1fe456) | license confirmation before metadata merge |
 | P1 | Complete | canonical cells, validation, invariant checker (HEAD: c1fe456) | none remaining |
-| P2 | Complete | revision, snapshot, delta, journal, cursor, ref backend, atomic tx, sync characterization (HEAD: c1fe456) | journal retention policy decided (no early compaction) |
-| P3 | Complete | backend errors, SolveRequest/Result, capabilities, Xpress decision doc (HEAD: c1fe456) | Xpress binding/licensing (doc exists, blocked on legal) |
-| P4 | Complete | core CI (3-OS + MSRV), policy CI (audit/deny/machete), deny.toml, workspace lints (HEAD: c1fe456) | commercial CI runner approval (future) |
-| P5 | Complete | examples, CHANGELOG, RELEASE_CHECKLIST, SUPPORT_MATRIX, PACKAGING.md (HEAD: c1fe456) | public support labels documented |
-| P6 | Complete | release evidence, foundry verification passed, steward audit passed (HEAD: 3ffd94b) | explicit publish authorization (external gate) |
+| P2 | Complete | revision, snapshot, delta, journal, cursor, ref backend, atomic tx, sync characterization (HEAD: c1fe456) | journal retention policy decided |
+| P3 | Complete | backend errors, SolveRequest/Result, capabilities, Xpress decision doc (HEAD: c1fe456) | Xpress binding/licensing deferred |
+| P4 | Complete | core CI, policy CI, workspace lints | commercial CI runner approval future |
+| P5 | Complete | examples, CHANGELOG, RELEASE_CHECKLIST, SUPPORT_MATRIX, PACKAGING.md | public support labels documented |
+| P6 | Complete | release evidence, foundry verification, steward audit | explicit publish authorization external gate |
 | P7 | Deferred | none | post-v0.1 |
-| P29 | Complete | `docs/release/evidence/P29_IIS_QUALIFICATION.md`, merged PR #39 (`19c8c70`) | system-native IIS qualification and release-grade performance remain follow-up work |
-| P35 | Pending merge | `docs/release/evidence/P35_MPS_QUALIFICATION.md`, PR #44 head `93985cd` on `phase-roml-P35-mps-import` | final CLEAR TO MERGE review and owner-authorized merge |
 
-### Completed requirement IDs
+### Completed historical requirement IDs
 
-- R0 (package metadata): P0 ✅
-- R1 (repository hygiene): P0 ✅
-- R2 (canonical semantics, canonical cells, validation): P1 ✅
-- R3 (revisioned sync, journal, cursor, atomic tx, commuting square): P2 ✅
-- R4 (solver boundaries, backend errors, SolveRequest, capabilities): P3 ✅
-- R5 (Xpress binding decision documented): P3 ✅
-- R6 (cross-platform CI design): P4 ✅
-- R7.1-R7.3 (CI workflows, 3-OS + MSRV): P4 ✅
-- R8.1 (reference backend): P2 ✅
-- R8.3 (validation): P1 ✅
-- R9.5-R9.6 (publication controls, publish gates): P0 ✅
-- R9.1-R9.4 (examples, docs, CHANGELOG): P5 ✅
-
-### Remaining (requires native solver access or external action)
-
-- R4 (HiGHS/MOSEK migration to official bindings): P3 — requires native installs
-- R6 (cross-platform CI execution): P4 — requires push to trigger
-- R7 (full CI lanes green): P4 — requires push + native backends
-- R10 (language ABI): P7 — deferred post-v0.1
-- License files: pending owner confirmation
-- Publication: requires owner authorization after P6
-- R5 (Xpress binding decision): P3
-- R6 (cross-platform qualification): P4
-- R7 (all CI lanes): P4
-- R8 (full test matrix): P4
-- R9 (public API, docs, semver): P5
-- R10 (language ABI): P7 (deferred)
+- R0 package metadata: P0
+- R1 repository hygiene: P0
+- R2 canonical semantics/cells/validation: P1
+- R3 revisioned synchronization/journal/cursor/atomicity: P2
+- R4 solver boundaries/backend errors/capabilities: P3
+- R5 Xpress binding decision documented: P3
+- R6 cross-platform CI design: P4
+- R7.1–R7.3 CI lanes: P4
+- R8.1 reference backend: P2
+- R8.3 validation: P1
+- R9.1–R9.4 public API/docs: P5
+- R9.5–R9.6 publication controls: P0
+- R10 language ABI: deferred P7
 
 ## State update protocol
 
-After each phase:
+After each active M3 phase:
 
 - set status and completion commit;
-- link the evidence report;
+- link the evidence report and independent review;
 - record requirement IDs closed;
-- record deviations and ADR amendments;
-- identify the next unblocked phase;
-- never mark a skipped mandatory check as passing.
+- record deviations/ADR amendments;
+- identify exactly one next unblocked implementation phase;
+- never mark a skipped mandatory check as passing;
+- never treat a future milestone preview as active implementation authorization.
