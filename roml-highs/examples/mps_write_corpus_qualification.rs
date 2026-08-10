@@ -25,12 +25,13 @@ use roml::{
 };
 use roml_highs::{
     compare_mps_solve, compare_mps_structure, observe_mps_differential,
-    observe_mps_solve_differential, MpsSolveComparison, MPS_STRUCTURAL_ABS_TOLERANCE,
-    MPS_STRUCTURAL_REL_TOLERANCE,
+    observe_mps_solve_differential, MpsSolveComparison,
 };
 
 const EXPECTED_NETLIB_COMMIT: &str = "56257eea85b433ce6aa67d26156b36385318fd6f";
 const SOLVE_SUBSET: [&str; 3] = ["blend.mps", "fit2d.mps", "gfrd-pnc.mps"];
+const P36_STRUCTURAL_ABS_TOLERANCE: f64 = 1e-10;
+const P36_STRUCTURAL_REL_TOLERANCE: f64 = 1e-10;
 
 #[derive(Clone, Debug, PartialEq)]
 struct SemanticModel {
@@ -202,8 +203,8 @@ fn qualify_one_inner(source: &Path, destination: &Path, name: &str) -> Result<us
     let structure = compare_mps_structure(
         &native,
         &imported,
-        MPS_STRUCTURAL_ABS_TOLERANCE,
-        MPS_STRUCTURAL_REL_TOLERANCE,
+        P36_STRUCTURAL_ABS_TOLERANCE,
+        P36_STRUCTURAL_REL_TOLERANCE,
     );
     if !structure.equivalent {
         return Err(format!(
