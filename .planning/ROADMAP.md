@@ -1,338 +1,102 @@
-# ROML Active Roadmap — M3 Semantic Modeling and Solve Workflows
+# ROML Active Roadmap — M3 Completion
 
-## 🚧 M3 — Semantic Modeling and Solve Workflows
+This root file is the concise GSD routing projection. Historical milestone design remains under `.planning/milestones/`; it is not duplicated here.
 
-The active execution milestone is M3. Its accepted design and state ledger remain in
-`.planning/milestones/M3-semantic-modeling-workflows/`; this root section is the GSD
-routing projection so phase discovery and autonomous execution use the same milestone.
-
-### Phase 25: Semantic IR, lineage, identity, and metadata
-
-**Goal:** establish canonical semantic state before adding workflows. **Status:** accepted.
-
-### Phase 26: Compiler boundary, backend IR, capabilities, origins, and compilation identity
-
-**Goal:** establish deterministic semantic compilation and exact compiled-state identity. **Status:** accepted.
-
-### Phase 27: Persistent fixing, assignments, locks, and overlays
-
-**Goal:** support hard solution reuse while protecting canonical history and backend state. **Status:** accepted with prior evidence retained.
-
-### Phase 28: SolvePlan, starts, hints, and effective-plan reporting
-
-**Goal:** expose one explicit solve-attempt contract. **Status:** accepted.
-
-### Phase 29: IIS/conflict analysis and origin-aware reports
-
-**Goal:** diagnose LP infeasibility accurately in original ROML terms. **Requirements:** SM-09 and IIS-related SM-02.6/SM-04.3. **Status:** accepted and complete; owner-approved packet, detailed plans, and evidence are in `.planning/phases/29-iis-conflict-analysis/` and `docs/release/evidence/P29_IIS_QUALIFICATION.md`.
-
-**Completion:** merged via PR #39 at `main@19c8c70e3f463fc96b2b723537deb71759b825f5`; independent expert review `4884735350` is CLEAR TO MERGE.
-
-### Phase 30: Soft constraints, slacks, penalties, and feasibility relaxation
-
-**Goal:** make controlled violation an ordinary modeling operation. **Status:** unplanned.
-
-### Phase 31: Lexicographic objectives and objective policies
-
-**Goal:** make objective policy explicit, deterministic, and backend-qualified. **Status:** unplanned.
-
-### Phase 32: Common semantic constructs
-
-**Goal:** provide reusable semantic constructs over the frozen compiler contract. **Status:** accepted.
-
-### Phase 33: Piecewise-linear and bound analysis
-
-**Goal:** provide deterministic piecewise-linear and bound-analysis support. **Status:** accepted.
-
-### Phase 34: Qualification, migration, documentation, and NLP readiness
-
-**Goal:** integrate and qualify the M3 workflows without silently expanding scope. **Status:** blocked until P29–P33 are accepted.
-
-### Phase 35: MPS import and corpus qualification
-
-**Goal:** import fixed/free linear LP/MILP MPS files transactionally into ROML, preserve source-aware semantics, and qualify the result against synthetic fixtures, HiGHS, Netlib, and Chinneck IIS workflows. **Status:** implementation and selected-corpus qualification complete; hosted CI is green and PR #44 is pending final CLEAR TO MERGE review and owner-authorized merge.
-
-**Design:** `.planning/phases/35-mps-import/35-DESIGN-PACKET.md` and `docs/superpowers/specs/2026-08-07-mps-io-design.md`.
-
-**Implementation plan:** `.planning/phases/35-mps-import/35-PLAN.md`.
-
-## ✅ Archived v0.1 — Production-Grade Public Release Roadmap
-
-**Authoritative program base:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
-**Historical audit base:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
-**Current delta audit:** `docs/release/CURRENT_MAIN_DELTA_AUDIT.md`  
-**Execution model:** GSD milestone/phase control + Superpowers TDD, debugging, verification, and review.  
-**Release rule:** no crate publication until Phase 6 has passed and the owner explicitly authorizes the exact release SHA and crate list.
-
-## Dependency graph
+## Current routing gate
 
 ```text
-P0 Baseline and hygiene
- ├──> P1 Core semantic correctness
- │     └──> P2 Revisioned synchronization
- │            └──> P3 Solver boundary and FFI hardening
- │                   └──> P4 Cross-platform CI and backend qualification
- │                          └──> P5 Public API, documentation, packaging
- │                                 └──> P6 Release qualification and staged publication
- └──────────────────────────────────────────────────────────────┘
-
-P7 Foreign-language ABI foundation begins only after P6 and is not part of v0.1.
+written-spec PR #45 under review
+  -> merge accepted completion packet
+  -> P36 MPS write-back
+  -> P30 soft constraints / feasibility relaxation
+  -> P31 objective policies / lexicographic solves
+  -> P34 integrated M3 qualification / NLP readiness
+  -> M3 complete
+  -> M4 design gate only
 ```
 
-P1 and selected P4 infrastructure tasks may proceed in parallel after P0, but P3 adapter rewrites must target the P2 synchronization contract rather than preserving the current destructive changelog API. Current Xpress bulk synchronization is useful implementation evidence, not a contract to preserve through accidental event ordering.
+**Planned routing target:** P36.  
+**Active production implementation:** none until PR #45 is accepted and merged.  
+**Hard rule:** `current_phase`/roadmap position is not authorization to create production code. `.planning/STATE.md` carries the explicit authorization flag.
 
-## Release slices
+P36 is an owner-selected **program dependency** of P30. P30 may have had its mathematical prerequisites after P28, but the active completion program deliberately requires P36 to merge first so the MPS interchange/differential loop is closed before solve-semantics work resumes.
 
-### Slice A — Trustworthy core
+## Phase status
 
-Phases P0–P2. Outcome: a solver-independent crate whose canonical model/domain semantics, solve-request boundary, and revision protocol are correct, portable, and testable without native libraries.
+| Phase | Capability | Status | Next gate |
+|---|---|---|---|
+| P25 | semantic IR / identity | complete | none |
+| P26 | compiler/backend IR | complete | none |
+| P27 | fixing / locks / overlays | complete | none |
+| P28 | SolvePlan / starts / hints | complete | none |
+| P29 | IIS / conflict analysis | complete | follow-up native/perf work is nonblocking |
+| P30 | soft constraints / relaxation | planned, inactive | P36 merge |
+| P31 | objective policies / lexicographic | planned, inactive | P30 merge |
+| P32 | semantic constructs | complete | none |
+| P33 | PWL / bound analysis | complete | none |
+| P34 | M3 final qualification | planned, inactive | P31 merge |
+| P35 | MPS import / corpus qualification | complete | residual broad Chinneck work is nonblocking |
+| P36 | deterministic MPS write-back | planning review | PR #45 acceptance + merge |
 
-### Slice B — Reference backend
+## Binding authorities
 
-Phases P3–P4, initially HiGHS only. Outcome: generated/maintained bindings, safe lifecycle, portable native build, and incremental-vs-rebuild equivalence on Linux/macOS/Windows.
+- Root execution state: `.planning/STATE.md`
+- Original M3 requirements: `.planning/milestones/M3-semantic-modeling-workflows/REQUIREMENTS.md`
+- Original M3 architecture decisions: `.planning/milestones/M3-semantic-modeling-workflows/DECISIONS.md`
+- Current completion routing: `.planning/milestones/M3-semantic-modeling-workflows/COMPLETION-ROADMAP.md`
+- Completion requirements: `.planning/milestones/M3-semantic-modeling-workflows/COMPLETION-REQUIREMENTS.md`
+- Shared identity/transaction/objective contracts: `.planning/milestones/M3-semantic-modeling-workflows/SHARED-CONTRACTS.md`
+- Detailed milestone state: `.planning/milestones/M3-semantic-modeling-workflows/STATE.md`
 
-### Slice C — Public package
+## P36 — MPS write-back
 
-Phases P5–P6. Outcome: curated API, complete documentation, reproducible package contents, release evidence, and staged crates.io publication.
+**Goal:** export the evaluated active primitive LP/MILP mathematical model as deterministic free MPS and prove independent ROML/native-HiGHS equivalence.
 
-### Slice D — Commercial adapters
+**Binding requirements:** MPS-W01–MPS-W14.
 
-MOSEK and Xpress graduate independently. They must not block the core/HiGHS release, and they must not inherit a “supported” label merely because they compile on one licensed macOS machine.
+**Frozen artifacts:**
+- `.planning/phases/36-mps-writeback/36-CONTRACT.md`
+- `.planning/phases/36-mps-writeback/36-NETLIB-MANIFEST.md`
+- `.planning/phases/36-mps-writeback/36-PLAN.md`
 
-## Phase 0 — Baseline, repository hygiene, and release controls
+**Gate to P30:** all MPS-W01–W14 evidenced; exact pinned 94-model manifest has 94/94 writer/determinism/ROML-structure/HiGHS-structure PASS; required solve comparisons, CI, review, and owner merge pass.
 
-**Goal:** establish a reproducible baseline, remove accidental artifacts, define package ownership, and install fast feedback before semantic refactoring.
+## P30 — soft constraints and feasibility relaxation
 
-**Primary requirements:** R0, R1, R7.2–R7.3, R9.5–R9.6.
+**Goal:** persistent semantic softening plus a distinct portable weighted-L1 solve-scoped repair workflow that composes honestly with P29.
 
-**Deliverables:**
+**Ownership:** SM-10.1–SM-10.5, SM-10.7–SM-10.9 and the `None`/`Objective` portion of SM-10.6. P31 closes priority targeting.
 
-- Baseline evidence report for formatting, clippy, tests, docs, package contents, dependency tree, unsafe inventory, public API inventory, and current backend build behavior.
-- Repository cleanup: placeholder Python scaffold, all tracked solver logs, obsolete logging/configuration artifacts, generated/machine-local files, and review of `.claude/settings.json` for public-repository/package appropriateness.
-- Review `MODELING_API.md` for correctness against the planned API; its previous missing-file defect is closed.
-- Dual-license files and manifest metadata recommendation implemented after owner confirmation.
-- Workspace-level package metadata, dependencies, lints, and release profiles.
-- Initial solver-free CI on Linux/macOS/Windows.
-- `cargo deny`, `cargo machete` or equivalent unused-dependency check, `cargo audit`, rustdoc warnings, and package-list checks.
-- Explicit crate publication map: `roml` and `roml-highs` candidate; commercial adapters gated.
+**Gate to P31:** portable algebra/outcomes/provenance, P29 supported-origin mapping, parameterized weights, fault cleanup/error composition, exact-head qualification/review/merge.
 
-**Gate P0:** core builds/tests/docs/packages on all three operating systems without any solver installation; package lists are reviewed; no generated log or placeholder scaffold remains; repository guidance no longer overclaims production readiness.
+## P31 — objective policies and lexicographic solves
 
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-00-release-baseline.md`
+**Goal:** one canonical `ObjectivePolicy`, one `ObjectivePriority`, deterministic portable weighted/lexicographic execution, and exact degradation locks.
 
-## Phase 1 — Canonical model and domain semantics
+**Ownership:** SM-11.1–SM-11.8, SM-07.7 objective-stage closure, P27 lock debt, and priority-target SM-10.6.
 
-**Goal:** eliminate model-level correctness ambiguity and solver-policy leakage before changing synchronization or adapters.
+**Gate to P34:** independent reference equivalence, `|z*|` lock formula across positive/zero/negative optima, P30 priority integration, cleanup/fault evidence, exact-head qualification/review/merge.
 
-**Primary requirements:** R2, R4.1–R4.2, R8.3.
+## P34 — M3 final qualification
 
-**Critical work:**
+**Goal:** prove the milestone as one coherent system; no adjacent feature expansion.
 
-- Introduce validated numeric/domain types or centralized validation for bounds, coefficients, parameters, tolerances, and expressions.
-- Replace silent invalid-ID behavior with typed failures.
-- Define a unique canonical coefficient cell for each `(CoefficientTarget, VarId)` and algebraically combine all terms into one `ValueExpr`.
-- Replace fragmented semi-continuous state (`VarType` + bounds + side map) with a coherent validated variable-domain representation covering continuous, integer, binary, semi-continuous, and semi-integer semantics.
-- Define duplicate-term, zero-term, parameter dependency, deletion cascade, objective constant, activity, and domain-transition semantics.
-- Move transient solver options out of canonical `Model` state into a solve request/session boundary.
-- Replace “unsupported options are silently ignored” with explicit capability validation and effective-configuration reporting.
-- Remove recursive/default and API inconsistencies.
-- Add an internal `Model::validate()`/invariant checker used by tests and debug paths.
-- Add property tests for random legal model mutations and invalid-input rejection.
+**Frozen closure protocol:** `.planning/phases/34-m3-qualification/34-QUALIFICATION-CONTRACT.md`.
 
-**Gate P1:** generated model sequences preserve all invariants; duplicate parametric terms produce the mathematically correct coefficient; variable domains are coherent; no public mutation silently fails; canonical model state contains no transient solver policy.
+P34 requires a leaf-level requirement ledger, executable fault matrix, frozen native/portable corpus and backend/OS/version matrix, reproducible performance fixture/baseline, packed-consumer protocol, concrete quadratic/NLP readiness verdicts, and the complete positive closure predicate.
 
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-01-core-correctness.md`
+## M4 preview
 
-## Phase 2 — Revisioned snapshots, journals, solve attempts, and recoverable synchronization
+Quadratic/nonlinear production implementation is forbidden before P34 closes. M4 begins with a fresh design gate and must extend rather than replace the M3 identity, provenance, compiler/backend IR, SolvePlan, objective, and reporting seams.
 
-**Goal:** replace the single-consumer destructive changelog with a protocol that supports failure recovery, multiple adapters, and immutable solve attempts.
+## Deferred, noncritical work
 
-**Primary requirements:** R3, R4.1, R8.1.
-
-**Target protocol:**
-
-```text
-ModelRevision r
-CanonicalSnapshot(r)
-DeltaBatch { from: r0, to: r1, operations: [...] }
-AdapterCursor { applied_revision, health }
-SolveRequest { policy, capabilities_required }
-apply(batch) -> Acknowledgement | RequiresRebuild | RecoverableFailure | DirtyFailure
-solve(request) -> SolveResult { effective_configuration, termination, solution }
-rebuild(snapshot) -> Acknowledgement
-```
-
-**Critical work:**
-
-- Define revisions and typed delta batches with explicit ordering guarantees.
-- Keep journal entries replayable until retention policy permits compaction.
-- Give each attached adapter an independent cursor.
-- On apply failure, preserve the model delta and mark adapter state; rebuild from snapshot when needed.
-- Make transactions atomic at the model revision boundary.
-- Make solve requests immutable for one attempt; a failed option/application/solve path cannot consume requested policy or model changes ambiguously.
-- Build a reference in-memory backend to test synchronization independent of native solvers.
-- Establish the core theorem by executable testing: applying all deltas to revision `r` is observationally equivalent to projecting snapshot `r`.
-- Add the current semi-continuous/HiGHS sequence as a mandatory partial-apply regression: ordinary bound application followed by unsupported domain operation must retain replayability and classify adapter health correctly.
-
-**Gate P2:** two adapters can independently lag/catch up; injected failures lose no model changes or solve policy; randomized incremental projection equals snapshot rebuild; the semi-continuous partial-apply counterexample is closed.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-02-revisioned-sync.md`
-
-## Phase 3 — Binding topology, native discovery, and unsafe boundary hardening
-
-**Goal:** isolate all ABI risk, replace handwritten declarations where authoritative bindings exist, and redesign callbacks/lifecycles around official contracts.
-
-**Primary requirements:** R4, R5, R6.
-
-**Binding decisions:**
-
-- **HiGHS:** adopt `rust-or/highs-sys` if its generated official-header surface covers required APIs. Upstream missing callback symbols or pin a narrow fork before creating a new ROML sys crate.
-- **MOSEK:** use the official `mosek` crate/API. Remove handwritten enum/function/parameter constants. The current callback implementation is invalid because it mutates the task from inside a callback; redesign as collect/terminate/apply-outside/re-optimize or expose only supported callback capabilities.
-- **Xpress:** create a dedicated binding boundary only after verifying header redistribution and package licensing. Prefer generated bindings plus runtime loading for commercial-library availability, or a link-time sys crate with strict target discovery if runtime loading is unsuitable.
-- Characterize the current Xpress bulk-additive path and migrate its proven optimizations onto typed P2 operations. Require bulk-vs-scalar and incremental-vs-rebuild equivalence plus failure-injection coverage.
-- Add a small internal adapter-support crate/module only for genuinely solver-neutral mechanics such as dense index bookkeeping and revision application scaffolding; do not force solver semantics into false uniformity.
-
-**Unsafe rules:**
-
-- no panic crossing C;
-- no unchecked null/length assumptions;
-- no ignored return codes;
-- no undocumented `Send`/`Sync`;
-- callback cleanup is RAII and unwind-safe;
-- backend versions and capabilities are queryable;
-- constructors return errors, not asserts/panics;
-- copied SDK enum/control values are forbidden when authoritative generated/official bindings are available.
-
-**Gate P3:** core contains no raw FFI; HiGHS and MOSEK contain no handwritten ABI declarations; callback and lifecycle invariants have dedicated tests and safety comments; Xpress has an approved binding/licensing decision; current batching behavior is either migrated with equivalence evidence or intentionally replaced.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-03-solver-boundaries.md`
-
-## Phase 4 — Cross-platform CI and backend qualification
-
-**Goal:** turn portability from an assumption into an executable support matrix.
-
-**Primary requirements:** R6, R7, R8.
-
-**Matrix:**
-
-| Layer | Linux | macOS | Windows | License |
-|---|---:|---:|---:|---|
-| Core | required | required | required | none |
-| HiGHS build/load/solve | required | required | required | MIT |
-| MOSEK compile/load | required where supported | required where supported | required where supported | install + protected license for solve |
-| Xpress compile/load | required where supported | required where supported | required where supported | install + protected license for solve |
-| MSRV | Linux required | optional smoke | optional smoke | none |
-| Miri/fuzz/sanitizer | scheduled Linux | sanitizer where useful | optional | none |
-
-**Critical work:**
-
-- Build reusable CI workflows with a fast core lane and backend lanes.
-- Validate both clean-host failure diagnostics and successful native discovery.
-- Test HiGHS bundled/static and optional system discovery modes.
-- Test runtime library resolution without embedding developer-machine rpaths.
-- Separate compile, native load, license acquisition, solve-policy validation, and solve failures.
-- Add randomized differential tests and benchmark smoke thresholds.
-- Add protected self-hosted runner design for commercial solvers without leaking binaries/licenses.
-
-**Gate P4:** all required matrix cells are green; unsupported cells are explicitly documented; a clean user environment receives actionable diagnostics rather than linker/runtime mysteries.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-04-cross-platform-ci.md`
-
-## Phase 5 — Public API curation, documentation, and package engineering
-
-**Goal:** make ROML understandable, semver-manageable, and installable by users without repository knowledge.
-
-**Primary requirements:** R0, R1, R9.
-
-**Critical work:**
-
-- Audit every public module/type/field and narrow visibility.
-- Define prelude intentionally; remove implementation stores from stable surface where possible.
-- Add `#![deny(missing_docs)]` when documentation debt is closed.
-- Rewrite/revalidate `MODELING_API.md` against the released canonical-domain, revision, and solve-request contracts.
-- Write architecture, incremental protocol, native backend, migration, troubleshooting, and performance guides.
-- Provide solver-free, HiGHS, incremental-parameter, transactions, solve-request, capability-negotiation, and failure-recovery examples.
-- Establish semver policy and run `cargo-semver-checks` against the release baseline.
-- Add changelog, contributing, security, support, and release documents.
-- Verify docs.rs behavior and package contents for each crate.
-
-**Gate P5:** a new Rust user can discover, install, model, synchronize, solve with HiGHS, update parameters, request supported solve policy, and diagnose failures from public documentation alone; public API review has no unintentional exposures.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-05-public-api-packaging.md`
-
-## Phase 6 — Release qualification and staged publication
-
-**Goal:** produce a defensible release candidate and publish in dependency order only after explicit authorization.
-
-**Primary requirements:** all R0–R9 requirements applicable to the selected release crates.
-
-**Critical work:**
-
-- Freeze versions and generate a release-candidate evidence bundle.
-- Test crates from packed `.crate` archives in fresh projects/containers, not from workspace paths.
-- Verify dependency publication order and exact versions.
-- Run semver, license, provenance, checksum, docs, examples, benchmark, and compatibility checks.
-- Conduct independent principal-engineer review and unsafe/FFI review.
-- Publish canary/pre-release where appropriate; validate crates.io/docs.rs; then publish stable crates under owner authorization.
-- Tag only the exact verified commit and archive evidence.
-
-**Gate P6:** signed checklist, zero unresolved P0/P1 issues, all mandatory CI green, package-consumer smoke tests green, owner authorization recorded.
-
-**Detailed plan:** `docs/superpowers/plans/2026-07-13-phase-06-release-qualification.md`
-
-## Phase 7 — Foreign-language ABI foundation (post-v0.1)
-
-**Goal:** establish a stable C-facing contract suitable for Python, Java, and .NET wrappers without exporting Rust ABI or arena internals.
-
-**Primary requirements:** R10.
-
-**Proposed form:**
-
-- `roml-c-api` crate producing `cdylib`/`staticlib`.
-- opaque handles with generation-safe registries;
-- explicit ownership and destroy functions;
-- versioned function table or ABI version negotiation;
-- error objects/status codes with thread-local or caller-owned messages;
-- no unwinding across ABI;
-- bulk array APIs for model construction and updates;
-- stable external IDs independent of Rust slot indices;
-- generated C header and ABI compatibility tests;
-- wrappers layered over the C API rather than directly over internal Rust types.
-
-**Start condition:** P6 complete and at least one released Rust/HiGHS version has real-world usage feedback.
-
-## Parallel execution map
-
-After P0:
-
-- **Track A:** P1 core/domain semantics and solve-request boundary.
-- **Track B:** CI scaffolding portions of P4 that do not encode old APIs.
-- **Track C:** external binding/legal research and upstream probes for P3.
-- **Track D:** documentation inventory and examples research for P5, without freezing unstable APIs.
-
-After P1:
-
-- P2 is the critical path.
-- HiGHS binding integration spikes may run in parallel, but adapter implementation waits for the P2 delta contract.
-
-After P2:
-
-- HiGHS, MOSEK, and Xpress adapter work can run as independent worktrees/agents with a frozen backend contract.
-- A separate verifier owns cross-backend equivalence and does not author adapter code.
-
-## Program-level stop conditions
-
-Stop and escalate when:
-
-- an official solver contract contradicts the intended generic abstraction;
-- a proprietary license forbids distributing generated bindings or package metadata;
-- an unsafe invariant cannot be expressed and tested;
-- a semantic change would silently alter existing model results;
-- a requested solve policy cannot be represented without silent degradation;
-- a performance optimization requires weakening recoverability or correctness;
-- crates.io name ownership or dependency publication order is unresolved;
-- the implementation agent proposes publishing before P6.
-
-## Definition of done
-
-The roadmap is complete when the selected release crates satisfy all mapped requirements, all phase gates have evidence, public claims match tested support, and a fresh consumer can use ROML without relying on the maintainer's macOS paths, solver installations, or implicit knowledge.
+Unless a correctness/user blocker emerges, keep these outside M3's critical path:
+- fixed-format MPS writer;
+- compiled-formulation MPS export;
+- LP/JSON/SMPS format breadth;
+- broad system-native IIS expansion;
+- minimum-cardinality IIS;
+- residual `IC-satimage-LB` investigation;
+- additional solver-adapter breadth;
+- release/publication work without separate owner authorization.
