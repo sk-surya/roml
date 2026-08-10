@@ -26,6 +26,14 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### MPS write-back qualification (P36)
+- Added deterministic solver-free free-MPS writing for representable linear
+  LP/MILP models, including evaluated parameter snapshots, objective offsets,
+  RHS/RANGES rows, variable domains, integer markers, typed errors, and
+  transactional path publication.
+- Added independent ROML semantic round-trip, native HiGHS structure/solve,
+  and exact 94-model Netlib transcode qualification coverage.
+
 #### MPS import qualification (P35, in progress)
 - Added solver-independent fixed/free MPS stream and path readers with
   transactional staging, typed source-aware diagnostics, deterministic LP/MILP

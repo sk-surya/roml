@@ -79,6 +79,26 @@ There is nothing else to call: `solve` commits your model changes,
 synchronizes the solver, runs the solve, and returns a `Solution` — no
 revisions, snapshots, deltas, or synchronization calls.
 
+## Write a model as MPS
+
+The solver-free core can export representable linear LP/MILP state as
+deterministic free MPS. `MpsWriter` evaluates parameter-dependent coefficients
+once for the write snapshot, preserves mathematical domains and objective
+offsets, and reports any explicit lowering or omission. The round trip is
+mathematical rather than source-name or byte identity. A stream may contain a
+partial prefix if its `Write` implementation fails; `write_path` stages output
+and commits it according to its destination policy.
+
+The compiled example at
+[`examples/mps_write.rs`](examples/mps_write.rs) writes a small LP/MILP model:
+
+```bash
+cargo run -p roml --example mps_write
+```
+
+Active constructs outside the frozen linear MPS representability contract are
+rejected with typed errors rather than silently dropped.
+
 ## Incremental parameter updates
 
 Model coefficients can depend on parameters. Change a parameter and call
