@@ -21,6 +21,27 @@
 ## Target concepts
 
 ```rust
+pub struct WeightedObjective {
+    pub objective: Objective,
+    pub weight: f64,
+}
+
+pub struct WeightedObjectives {
+    pub objectives: Vec<WeightedObjective>,
+}
+
+pub struct LexicographicLevel {
+    /// P30 PenaltyTarget::Priority(n) maps to this stable numeric priority.
+    pub priority: u32,
+    pub objectives: Vec<WeightedObjective>,
+    pub absolute_tolerance: f64,
+    pub relative_tolerance: f64,
+}
+
+pub struct LexicographicObjectives {
+    pub levels: Vec<LexicographicLevel>,
+}
+
 pub enum ObjectivePolicy {
     None,
     Single(Objective),
@@ -28,19 +49,26 @@ pub enum ObjectivePolicy {
     Lexicographic(LexicographicObjectives),
 }
 
-pub struct LexicographicLevel {
-    pub objectives: Vec<WeightedObjective>,
-    pub absolute_tolerance: f64,
-    pub relative_tolerance: f64,
-}
-
 pub enum StageContinuation {
     RequireOptimal,
     BestFeasible,
 }
 
+pub struct ObjectiveValue {
+    pub objective: Objective,
+    pub value: f64,
+}
+
+pub struct ObjectiveLockReport {
+    pub priority: u32,
+    pub reference_value: f64,
+    pub absolute_tolerance: f64,
+    pub relative_tolerance: f64,
+    pub allowed_degradation: f64,
+}
+
 pub struct ObjectiveStageResult {
-    pub level: usize,
+    pub priority: u32,
     pub status: SolveStatus,
     pub objective_values: Vec<ObjectiveValue>,
     pub lock: Option<ObjectiveLockReport>,
@@ -48,11 +76,14 @@ pub struct ObjectiveStageResult {
 }
 ```
 
+Existing `Objective`, `SolveStatus`, and `CompilationId` are reused. If Task 31-00 finds established equivalent result/value types, use them rather than create duplicate wrappers; update the phase context before production code.
+
 ---
 
 ### Task 31-00: Characterize existing objective state and P27 lock debt
 
 - [ ] Freeze current single-objective semantics, activation/replacement, objective constants, `SolvePlan::objective_override`, overlay objective locks, and solution metadata.
+- [ ] Map every target concept above to existing reusable types or new P31-owned types; prohibit duplicate wrappers where an equivalent stable type already exists.
 - [ ] Add target compile fixture for weighted and 2-level lexicographic policy.
 - [ ] Reproduce P27 accepted debt: objective-lock degradation currently lacks real stage optimum semantics; write failing characterization for the intended P31 behavior.
 - [ ] Record base API/evidence.
@@ -63,7 +94,7 @@ pub struct ObjectiveStageResult {
 **Files:** objective model module, snapshot/delta/compiler IR, tests.
 
 - [ ] Define `ObjectivePolicy::{None,Single,Weighted,Lexicographic}` in canonical semantic state.
-- [ ] Validate duplicate objective references, stale objectives, empty levels, weight/tolerance finiteness/nonnegativity, deterministic priority order.
+- [ ] Validate duplicate objective references, stale objectives, duplicate priorities, empty levels, weight/tolerance finiteness/nonnegativity, deterministic priority order.
 - [ ] Weighted policy normalizes objective senses into one minimization or maximization convention before combination; document formula.
 - [ ] Model mutations affecting active policy are atomic and revisioned.
 - [ ] Clone/snapshot/delta/rebuild equivalence tests.
@@ -113,7 +144,7 @@ If the existing approved design specifies another scale, the implementation must
 - [ ] Test objective constants are included exactly once.
 - [ ] Test multi-objective weighted stage lock against direct scalar expression.
 - [ ] Replace P27 placeholder/zero-reference behavior with stage-result-based lock construction.
-- [ ] Ensure lock origins identify level and objective policy.
+- [ ] Ensure lock origins identify priority and objective policy.
 - [ ] Commit.
 
 ### Task 31-05: Portable lexicographic executor
@@ -125,7 +156,7 @@ Algorithm:
 ```text
 validate policy + plan against model state
 sync/compile exact base
-for each level:
+for each level in deterministic priority order:
     apply temporary objective override
     solve exactly once for stage attempt
     capture status/objective values/CompilationId
@@ -147,7 +178,7 @@ return aggregate stage report
 
 ### Task 31-06: Result/report contract
 
-- [ ] `Solution`/metadata expose all canonical objective values at final solution and each stage result.
+- [ ] `Solution`/metadata expose all canonical objective values at final solution and each `ObjectiveStageResult`.
 - [ ] Record stage status, continuation decision, optimum/incumbent used for lock, abs/rel tolerance, derived lock, provider, exact CompilationId.
 - [ ] Text/Markdown diagnostics remain deterministic.
 - [ ] Stale stage artifacts cannot be applied to another model instance/compilation.
@@ -155,7 +186,7 @@ return aggregate stage report
 
 ### Task 31-07: P30 penalty-priority integration
 
-- [ ] Activate `PenaltyTarget::Priority` from P30 without changing stored soft-constraint semantics.
+- [ ] Map `PenaltyTarget::Priority(u32)` from P30 to the matching P31 `LexicographicLevel::priority`; missing priorities reject before backend mutation.
 - [ ] Build integration example: priority 0 minimize weighted violations, priority 1 maximize economics, priority 2 minimize deviation/churn.
 - [ ] Compare result against manually staged reference solves.
 - [ ] Verify zero-violation optimum does not permit economics stage to reintroduce violation beyond declared tolerance.
