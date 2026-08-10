@@ -264,28 +264,11 @@ fn platform_atomic_replace(source: &Path, destination: &Path) -> io::Result<()> 
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn platform_atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
-    // Windows integration-gate note: this source-only scope cannot qualify
-    // MoveFileExW replacement against the supported Windows filesystem and
-    // toolchain matrix. The gate remains blocked until a Windows runner
-    // verifies replacement with an existing destination, open-handle sharing,
-    // failure mapping, and staged-file cleanup. No Windows release support is
-    // claimed by this implementation or by the current Unix-only evidence.
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
 
-    // SAFETY: both paths are converted to NUL-terminated UTF-16 buffers that
-    // remain alive for the duration of the call. Interior NULs are rejected
-    // before the buffers are passed to the Windows API.
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(
-            existing_file_name: *const u16,
-            new_file_name: *const u16,
-            flags: u32,
-        ) -> i32;
-    }
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
     let mut source: Vec<u16> = source.as_os_str().encode_wide().collect();
     let mut destination: Vec<u16> = destination.as_os_str().encode_wide().collect();
     if source.contains(&0) || destination.contains(&0) {
@@ -299,6 +282,9 @@ fn platform_atomic_replace(source: &Path, destination: &Path) -> io::Result<()> 
 
     // MoveFileExW with REPLACE_EXISTING performs one same-volume replacement
     // operation; it does not expose a remove-then-rename sequence.
+    // SAFETY: both paths are converted to NUL-terminated UTF-16 buffers that
+    // remain alive for the duration of the call. Interior NULs are rejected
+    // before the buffers are passed to the generated Windows API.
     let result = unsafe {
         MoveFileExW(
             source.as_ptr(),
@@ -319,4 +305,20 @@ fn platform_atomic_replace(_: &Path, _: &Path) -> io::Result<()> {
         io::ErrorKind::Unsupported,
         "atomic replacement is unavailable on this target",
     ))
+}
+
+#[cfg(all(test, windows))]
+mod windows_binding_compile_tests {
+    #[test]
+    fn generated_move_file_ex_api_is_available() {
+        use windows_sys::{
+            core::{BOOL, PCWSTR},
+            Win32::Storage::FileSystem::{
+                MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MOVE_FILE_FLAGS,
+            },
+        };
+
+        let _: unsafe extern "system" fn(PCWSTR, PCWSTR, MOVE_FILE_FLAGS) -> BOOL = MoveFileExW;
+        let _: MOVE_FILE_FLAGS = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    }
 }
