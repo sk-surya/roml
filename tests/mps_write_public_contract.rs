@@ -23,13 +23,21 @@ fn default_writer_options_are_exactly_the_frozen_contract() {
         options.destination_policy,
         MpsDestinationPolicy::AtomicReplace
     );
-    let _default_writer = MpsWriter::new();
+    assert_eq!(
+        MpsWriter::new(),
+        MpsWriter::with_options(MpsWriteOptions::default()),
+        "new() retains the frozen default options"
+    );
 
     let configured = MpsWriteOptions {
         name_policy: MpsNamePolicy::StrictPreserve,
         destination_policy: MpsDestinationPolicy::CreateNew,
     };
-    let _configured_writer = MpsWriter::with_options(configured);
+    assert_ne!(
+        MpsWriter::new(),
+        MpsWriter::with_options(configured),
+        "with_options() retains configured options"
+    );
 }
 
 #[test]
@@ -81,23 +89,27 @@ fn public_writer_api_and_report_fields_are_callable_without_a_solver() {
     let mut stream = Vec::new();
     let stream_error = MpsWriter::new()
         .write(&model, &mut stream)
-        .expect_err("the Wave 0 writer is typed but not implemented");
+        .expect_err("the Wave 0-only transitional stub is not a runtime qualification outcome");
     assert_eq!(stream_error.kind(), &MpsWriteErrorKind::InternalInvariant);
     assert_eq!(
         stream_error.context().message.as_deref(),
-        Some("MPS write projection and path transaction are not implemented in this slice")
+        Some(
+            "Wave 0-only transitional stub: MPS write projection and path transaction are not implemented; this is not a runtime qualification outcome"
+        )
     );
     assert!(stream.is_empty(), "the stub must not emit output");
 
     let path = PathBuf::from("mps-write-public-contract-unused.mps");
     let path_error = MpsWriter::new()
         .write_path(&model, &path)
-        .expect_err("the Wave 0 path writer is typed but not implemented");
+        .expect_err("the Wave 0-only transitional stub is not a runtime qualification outcome");
     assert_eq!(path_error.kind(), &MpsWriteErrorKind::InternalInvariant);
     assert_eq!(path_error.context().path(), Some(path.as_path()));
     assert_eq!(
         path_error.context().message.as_deref(),
-        Some("MPS write projection and path transaction are not implemented in this slice")
+        Some(
+            "Wave 0-only transitional stub: MPS write projection and path transaction are not implemented; this is not a runtime qualification outcome"
+        )
     );
 }
 
