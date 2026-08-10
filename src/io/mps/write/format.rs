@@ -30,6 +30,7 @@ pub(crate) struct MpsWriteDocument {
 
 impl MpsWriteDocument {
     /// Constructs the smallest normalized document with a zero objective row.
+    #[allow(dead_code)]
     pub(crate) fn minimal(name: &str) -> Self {
         Self {
             name: name.to_owned(),

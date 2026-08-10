@@ -39,10 +39,6 @@ pub enum MpsWriteErrorKind {
     /// A referenced canonical entity is stale or no longer available.
     StaleEntity,
     /// An internal canonical invariant was violated.
-    ///
-    /// During Wave 0 only, the writer's not-yet-implemented seam also uses
-    /// this kind as a transitional stub. That placeholder is not a runtime
-    /// qualification outcome and must be removed before writer qualification.
     InternalInvariant,
 }
 
@@ -240,17 +236,9 @@ pub struct MpsWriteError {
     kind: MpsWriteErrorKind,
     context: Box<MpsWriteContext>,
     cause: Option<Box<dyn Error + Send + Sync + 'static>>,
-    internal_kind: Option<MpsWriteInternalKind>,
     primary: Option<Box<MpsWriteError>>,
     cleanup: Option<Box<MpsWriteError>>,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MpsWriteInternalKind {
-    NotYetImplemented,
-}
-
-const WAVE_0_STUB_MESSAGE: &str = "Wave 0-only transitional stub: MPS write projection and path transaction are not implemented; this is not a runtime qualification outcome";
 
 impl MpsWriteError {
     /// Creates an error with a top-level kind and structured context.
@@ -259,7 +247,6 @@ impl MpsWriteError {
             kind,
             context: Box::new(context),
             cause: None,
-            internal_kind: None,
             primary: None,
             cleanup: None,
         }
@@ -279,7 +266,6 @@ impl MpsWriteError {
             kind,
             context: Box::new(context),
             cause: Some(Box::new(cause)),
-            internal_kind: None,
             primary: None,
             cleanup: None,
         }
@@ -288,20 +274,6 @@ impl MpsWriteError {
     /// Creates an I/O error while retaining the original I/O cause.
     pub fn io(context: MpsWriteContext, cause: io::Error) -> Self {
         Self::with_source(MpsWriteErrorKind::Io, context, cause)
-    }
-
-    /// Creates the typed transitional error used only by the Wave 0 writer
-    /// stubs. It is not a runtime qualification outcome and must be replaced
-    /// before the writer implementation is qualified.
-    pub(crate) fn not_yet_implemented(context: MpsWriteContext) -> Self {
-        Self {
-            kind: MpsWriteErrorKind::InternalInvariant,
-            context: Box::new(context.with_message(WAVE_0_STUB_MESSAGE)),
-            cause: None,
-            internal_kind: Some(MpsWriteInternalKind::NotYetImplemented),
-            primary: None,
-            cleanup: None,
-        }
     }
 
     /// Returns the stable top-level kind.
@@ -331,7 +303,6 @@ impl MpsWriteError {
             kind: MpsWriteErrorKind::PathTransaction,
             context: Box::new(context),
             cause: None,
-            internal_kind: None,
             primary: Some(Box::new(self)),
             cleanup: Some(Box::new(cleanup)),
         }
@@ -360,11 +331,7 @@ impl MpsWriteError {
 
 impl fmt::Display for MpsWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.internal_kind == Some(MpsWriteInternalKind::NotYetImplemented) {
-            f.write_str("MPS write error: writer not yet implemented")?;
-        } else {
-            write!(f, "MPS write error: {}", self.kind)?;
-        }
+        write!(f, "MPS write error: {}", self.kind)?;
         if let Some(path) = self.context.path() {
             write!(f, " at {}", path.display())?;
         }

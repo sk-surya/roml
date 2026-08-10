@@ -56,6 +56,7 @@ pub(crate) fn commit_path(
 }
 
 /// Compatibility name for the bytes-only integration seam.
+#[allow(dead_code)]
 pub(crate) fn commit_bytes(
     bytes: &[u8],
     destination: &Path,
@@ -136,6 +137,7 @@ pub(crate) fn commit_path_with_ops<O: MpsPathOps>(
 }
 
 /// Test hook counterpart for [`commit_bytes`].
+#[allow(dead_code)]
 pub(crate) fn commit_bytes_with_ops<O: MpsPathOps>(
     ops: &O,
     bytes: &[u8],
@@ -188,9 +190,9 @@ impl MpsPathOps for StdPathOps {
 
     fn create_temp(&self, destination: &Path) -> io::Result<Self::TempHandle> {
         let directory = destination.parent().unwrap_or_else(|| Path::new("."));
-        let filename = destination
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename"))?;
+        let filename = destination.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename")
+        })?;
 
         for _ in 0..1024 {
             let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
@@ -241,9 +243,7 @@ impl MpsPathOps for StdPathOps {
                 // replace a destination that won a concurrent race.
                 fs::hard_link(&temp.path, destination)
             }
-            MpsDestinationPolicy::AtomicReplace => {
-                platform_atomic_replace(&temp.path, destination)
-            }
+            MpsDestinationPolicy::AtomicReplace => platform_atomic_replace(&temp.path, destination),
         }
     }
 
@@ -286,14 +286,8 @@ fn platform_atomic_replace(source: &Path, destination: &Path) -> io::Result<()> 
 
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let mut source: Vec<u16> = source
-        .as_os_str()
-        .encode_wide()
-        .collect();
-    let mut destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .collect();
+    let mut source: Vec<u16> = source.as_os_str().encode_wide().collect();
+    let mut destination: Vec<u16> = destination.as_os_str().encode_wide().collect();
     if source.contains(&0) || destination.contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
