@@ -20,19 +20,70 @@
 
 ## Target public concepts
 
-```rust
-pub struct SoftConstraint { /* stable construct handle */ }
+The plan freezes semantic roles, not decorative configuration. Exact names may be adjusted during API review only when the same invariant remains explicit.
 
-pub struct SoftConstraintOptions {
-    pub lower: ViolationPolicy,
-    pub upper: ViolationPolicy,
-    pub penalty: PenaltyPolicy,
+```rust
+pub struct SoftConstraint { /* opaque stable construct handle */ }
+
+pub struct ViolationPolicy {
+    pub max_violation: Option<f64>,
+}
+
+pub enum PenaltyWeight {
+    Constant(f64),
+    Parameter(Parameter),
 }
 
 pub enum PenaltyTarget {
     None,
     Objective(Objective),
-    Priority(LexicographicPriority),
+    /// Stored by numeric priority in P30; P31 owns the richer level type.
+    Priority(u32),
+}
+
+pub struct PenaltyPolicy {
+    pub weight: PenaltyWeight,
+    pub target: PenaltyTarget,
+}
+
+pub struct SoftConstraintOptions {
+    pub lower: Option<ViolationPolicy>,
+    pub upper: Option<ViolationPolicy>,
+    pub penalty: PenaltyPolicy,
+}
+
+pub enum RelaxationRestriction {
+    ConstraintSide { constraint: Constraint, side: BoundSide },
+    VariableBound { variable: Variable, side: BoundSide },
+}
+
+pub enum RelaxationScope {
+    AllEligible,
+    Explicit(Vec<RelaxationRestriction>),
+}
+
+pub enum RelaxationObjective {
+    WeightedL1,
+}
+
+pub enum RelaxationOutcome {
+    RepairedFeasible,
+    NoRepairFound,
+    Unknown,
+}
+
+pub struct RelaxedRestriction {
+    pub restriction: RelaxationRestriction,
+    pub violation: f64,
+    pub weight: f64,
+}
+
+pub struct RelaxationMetadata {
+    pub model_lineage: ModelLineageId,
+    pub model_instance: ModelInstanceId,
+    pub model_revision: ModelRevision,
+    pub compilation_id: CompilationId,
+    pub provider: String,
 }
 
 pub struct FeasibilityRelaxationPlan {
@@ -49,6 +100,8 @@ pub struct FeasibilityRelaxationReport {
 }
 ```
 
+`BoundSide`, identity/revision types, and `UnsupportedFeaturePolicy` reuse existing P27–P29 types where available. If the existing exact type names differ, Task 30-00 records and uses them rather than introducing aliases solely to match this sketch.
+
 Names are binding intent, not permission to ship decorative fields. Any field not governing execution is removed before merge.
 
 ---
@@ -60,6 +113,7 @@ Names are binding intent, not permission to ship decorative fields. Any field no
 - [ ] Freeze behavioral characterization for constraint identity, construct origins, parameter dependencies, objective replacement, and overlay rollback.
 - [ ] Add compile-only target API fixture for one persistent soft upper constraint and one solve-scoped relaxation request.
 - [ ] Confirm no existing public type ambiguously means both persistent softening and solve-scoped relaxation.
+- [ ] Map every sketch type above to an existing reusable type or a new P30-owned type before implementation; record the exact signatures in phase context.
 - [ ] Record exact base SHA and API inventory.
 - [ ] Commit characterization only.
 
@@ -104,7 +158,7 @@ ranged            => both sides with distinct violations
 - [ ] Write min-objective and max-objective sign tests; penalty must always make violation worse according to the selected objective semantics.
 - [ ] Write tests for zero weight, positive weight, parameterized weight updates, invalid negative/non-finite weight.
 - [ ] Implement `PenaltyTarget::None` and `PenaltyTarget::Objective` without depending on P31 runtime.
-- [ ] Store `Priority` semantically if needed for forward compatibility, but until P31 is present, attempting to solve an active priority-targeted penalty must return typed Unsupported rather than ignore it.
+- [ ] Store numeric `Priority(u32)` semantically for P31 forward compatibility, but until P31 is present, attempting to solve an active priority-targeted penalty must return typed Unsupported rather than ignore it.
 - [ ] Verify parameter delta updates the compiled penalty cells without semantic drift.
 - [ ] Commit.
 
@@ -131,7 +185,7 @@ ranged            => both sides with distinct violations
 - Create `src/solver/feasibility_relaxation.rs` (or established solver workflow module).
 - Tests: core fault backend + HiGHS integration.
 
-- [ ] Define `RelaxationScope` over original constraint sides/variable bounds/fixings/locks as appropriate for M3.
+- [ ] Define `RelaxationScope` over original constraint sides/variable bounds/fixings/locks as appropriate for M3; extend `RelaxationRestriction` only when a concrete supported role is implemented.
 - [ ] Define tri-state/typed outcome and completion metadata; preserve model lineage/instance/revision/CompilationId/provider/numerical policy.
 - [ ] Default objective: weighted L1 sum of nonnegative violation magnitudes.
 - [ ] Build an isolated analysis model or temporary overlay from the exact compiled base; do not mutate canonical revision.
