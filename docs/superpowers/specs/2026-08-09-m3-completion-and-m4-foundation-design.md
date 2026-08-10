@@ -65,15 +65,13 @@ Writer bytes never contain raw slot/generation/debug IDs. Default naming preserv
 
 ### 3.5 Objective degradation locks
 
-For reference stage value `z*`, absolute tolerance `a >= 0`, relative tolerance `r >= 0`:
+For the P31 normalized minimization stage value `z*`, absolute tolerance `a >= 0`, relative tolerance `r >= 0`:
 
 ```text
 scale = abs(z*)
 delta = a + r * scale
+g(x) <= z* + delta
 ```
-
-Min stage: `f(x) <= z* + delta`.  
-Max stage: `f(x) >= z* - delta`.
 
 At zero, relative tolerance contributes zero. Negative optima use positive magnitude `|z*|`. No hidden `max(1, |z*|)` scale is permitted.
 
@@ -155,7 +153,7 @@ P35 read
  -> native HiGHS structure compare
 ```
 
-Missing corpus/file, manifest drift, parser failure, writer rejection, or unresolved mismatch is failure. P36 does not get to classify a frozen-manifest writer rejection as a successful exclusion.
+Missing corpus/file, manifest drift, parser failure, writer rejection, or unresolved mismatch is failure. P36 does not classify a frozen-manifest writer rejection as a successful exclusion.
 
 ### 4.7 Execution waves
 
@@ -195,16 +193,22 @@ P30 defines its own provider policy:
 PortableOnly | PreferNative | NativeRequired
 ```
 
-The normative portable objective is weighted L1. Mathematical outcomes remain distinct:
+and explicit acceptance policy:
+
+```text
+RequireOptimal | AcceptFeasible
+```
+
+Defaults are weighted-L1, portable provider, and `RequireOptimal`. Mathematical outcomes remain distinct:
 
 ```text
 OptimalRepair
-FeasibleRepair
-NoRepairFound        // proven no permitted repair under scope/caps
-Unknown(reason)      // limit/numerical/interruption/unclassified
+FeasibleRepair        // only AcceptFeasible + valid feasible incumbent
+NoRepairFound         // proven no permitted repair under scope/caps
+Unknown(reason)       // no accepted repair and no proof of no repair
 ```
 
-Preflight/compile/apply/solve/extract/rollback/rebuild failures are operational errors, not mathematical outcomes. Numerical metadata records objective/bound/gaps/tolerances where honestly available.
+Under `RequireOptimal`, a feasible incumbent without optimality proof remains `Unknown` according to termination evidence rather than becoming `FeasibleRepair`. Preflight/compile/apply/solve/extract/rollback/rebuild failures are operational errors, not mathematical outcomes. Numerical metadata records objective/bound/gaps/tolerances where honestly available.
 
 ### 5.4 P29 composition
 
@@ -230,7 +234,9 @@ pub enum ObjectivePolicy {
 }
 ```
 
-Weighted levels, stage result, lock report, continuation decision, provider, exact CompilationId, and aggregate result schemas are frozen by `31-PLAN.md`.
+**P31 objective weights are finite nonnegative plain `f64` in M3. Parameterized/symbolic P31 objective weights are deferred.** P30 penalty weights remain parameter-aware, and P31 resolves those penalty weights numerically before constructing priority stages.
+
+Weighted levels, execution provider, stage result, lock report, continuation decision, exact CompilationId, and aggregate result schemas are frozen by `31-PLAN.md`.
 
 Portable execution is the semantic reference:
 
@@ -241,16 +247,14 @@ for priority ascending:
   solve stage
   extract all objective values + scalar stage value
   classify continuation
-  create exact |z*|-scaled degradation lock if another stage runs
+  create exact |z*|-scaled normalized degradation lock if another stage runs
 finally rollback and verify base
 return result only after cleanup verification
 ```
 
 Default continuation requires optimal. `BestFeasible` is explicit and may descend only from a valid feasible incumbent; reports never imply optimality.
 
-Before priority execution, any P30 parameterized penalty weights are evaluated/validated numerically. A missing priority rejects before mutation.
-
-Native multiobjective is selected only if priorities, weights, abs/rel tolerances, zero/negative optimum scaling, continuation/status, and objective constants match the ROML contract.
+Native multiobjective is selected only if priorities, numeric weights, abs/rel tolerances, zero/negative optimum scaling, continuation/status, and objective constants match the ROML contract.
 
 ## 7. P34 — final M3 qualification
 
