@@ -92,6 +92,10 @@ fn projects_active_lp_and_milp_cells_in_deterministic_order() {
     assert!(document.report.objective_present);
     assert_eq!(document.report.model_instance, model.instance());
     assert_eq!(document.report.model_revision, model.current_revision());
+    assert_eq!(
+        document.report.name_policy,
+        MpsNamePolicy::PreserveOrGenerate
+    );
     assert_eq!(document.rows[0].bounds, ConstraintBounds::range(1.0, 4.0));
     assert_eq!(document.rows[0].cells[0].variable, x);
     assert_eq!(document.rows[0].cells[0].value, 2.0);
@@ -283,6 +287,44 @@ fn strict_preserve_rejects_missing_invalid_and_duplicate_names() {
     let error = projection::project_model(&duplicate, MpsNamePolicy::StrictPreserve).unwrap_err();
     assert_eq!(error.kind(), &MpsWriteErrorKind::NameAllocation);
     assert_eq!(error.context().entity_name.as_deref(), Some("same"));
+}
+
+#[test]
+fn name_policy_is_recorded_for_strict_preserve_success() {
+    let mut model = Model::new();
+    model.add_variable(continuous().named("x")).unwrap();
+
+    let document = projection::project_model(&model, MpsNamePolicy::StrictPreserve).unwrap();
+
+    assert_eq!(document.report.name_policy, MpsNamePolicy::StrictPreserve);
+    assert_eq!(document.variables[0].name, "x");
+}
+
+#[test]
+fn marker_control_tokens_are_rejected_or_replaced_without_changing_generation() {
+    for marker_token in ["'MARKER'", "'INTORG'", "'INTEND'"] {
+        let mut strict = Model::new();
+        strict
+            .add_variable(continuous().named(marker_token))
+            .unwrap();
+        let error = projection::project_model(&strict, MpsNamePolicy::StrictPreserve)
+            .expect_err("marker control tokens cannot be preserved as entity names");
+        assert_eq!(error.kind(), &MpsWriteErrorKind::NameAllocation);
+        assert_eq!(error.context().entity_kind, Some(MpsEntityKind::Variable));
+        assert_eq!(error.context().entity_name.as_deref(), Some(marker_token));
+
+        let mut generated = Model::new();
+        generated
+            .add_variable(continuous().named(marker_token))
+            .unwrap();
+        let document =
+            projection::project_model(&generated, MpsNamePolicy::PreserveOrGenerate).unwrap();
+        assert_eq!(document.variables[0].name, "X000001");
+        assert_eq!(
+            document.report.name_policy,
+            MpsNamePolicy::PreserveOrGenerate
+        );
+    }
 }
 
 #[test]

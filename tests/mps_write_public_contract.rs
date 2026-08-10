@@ -47,6 +47,7 @@ fn public_writer_api_and_report_fields_are_callable_without_a_solver() {
             model_lineage: _,
             model_instance: _,
             model_revision: _,
+            name_policy: _,
             evaluated_parameters: _,
             columns: _,
             rows: _,
@@ -91,10 +92,19 @@ fn public_writer_api_and_report_fields_are_callable_without_a_solver() {
         .write(&model, &mut stream)
         .expect("the public writer seam is wired to the qualified pipeline");
     assert_eq!(stream_report.columns, 0);
+    assert_eq!(stream_report.name_policy, MpsNamePolicy::PreserveOrGenerate);
     assert!(
         !stream.is_empty(),
         "an empty model still has a valid MPS document"
     );
+
+    let strict_report = MpsWriter::with_options(MpsWriteOptions {
+        name_policy: MpsNamePolicy::StrictPreserve,
+        destination_policy: MpsDestinationPolicy::AtomicReplace,
+    })
+    .write(&model, Vec::new())
+    .expect("StrictPreserve succeeds when there are no entities to name");
+    assert_eq!(strict_report.name_policy, MpsNamePolicy::StrictPreserve);
 }
 
 #[test]

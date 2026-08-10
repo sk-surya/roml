@@ -70,7 +70,7 @@ impl MpsWriter {
         let serialized = self.serialize(model)?;
         output.write_all(&serialized.bytes).map_err(|cause| {
             MpsWriteError::with_source(
-                MpsWriteErrorKind::Serialization,
+                MpsWriteErrorKind::Io,
                 report_context(&serialized.report).with_message("writing MPS bytes to stream"),
                 cause,
             )
@@ -85,7 +85,9 @@ impl MpsWriter {
         path: P,
     ) -> Result<MpsWriteReport, MpsWriteError> {
         let destination = path.as_ref();
-        let serialized = self.serialize(model)?;
+        let serialized = self
+            .serialize(model)
+            .map_err(|error| attach_write_path_context(error, destination))?;
         path::commit_path(
             &serialized.bytes,
             destination,
@@ -101,7 +103,7 @@ impl MpsWriter {
         let normalized = normalize_document(&semantic, &mut report)?;
         let bytes = format::format_document(&normalized).map_err(|error| {
             MpsWriteError::with_source(
-                MpsWriteErrorKind::InternalInvariant,
+                MpsWriteErrorKind::Serialization,
                 report_context(&report).with_feature("canonical formatter input"),
                 error,
             )
@@ -259,7 +261,8 @@ fn validate_projection_report(
     semantic: &SemanticDocument,
     report: &MpsWriteReport,
 ) -> Result<(), MpsWriteError> {
-    if report.columns != semantic.variables.len()
+    if report.name_policy != semantic.name_policy
+        || report.columns != semantic.variables.len()
         || report.rows != semantic.rows.len()
         || report.objective_present != semantic.objective.is_some()
         || report.integer_columns
@@ -720,5 +723,12 @@ fn attach_report_context(error: MpsWriteError, report: &MpsWriteReport) -> MpsWr
     context.model_lineage = Some(report.model_lineage);
     context.model_instance = Some(report.model_instance);
     context.model_revision = Some(report.model_revision);
+    error.with_context(context)
+}
+
+fn attach_write_path_context(error: MpsWriteError, destination: &Path) -> MpsWriteError {
+    let mut context = error.context().clone();
+    context.path = Some(destination.to_owned());
+    context.stage = Some(MpsPathStage::Write);
     error.with_context(context)
 }

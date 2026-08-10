@@ -108,6 +108,8 @@ pub struct MpsWriteReport {
     pub model_instance: ModelInstanceId,
     /// Revision of the canonical model snapshot that was exported.
     pub model_revision: ModelRevision,
+    /// Name-preservation policy used for this export.
+    pub name_policy: MpsNamePolicy,
     /// Parameter values consumed while evaluating the exported snapshot.
     pub evaluated_parameters: Vec<MpsEvaluatedParameter>,
     /// Number of emitted variable/column entities.
