@@ -29,6 +29,32 @@ pub enum MpsDestinationPolicy {
 }
 ```
 
+The callable writer API is frozen as follows:
+
+```rust
+impl MpsWriter {
+    pub fn new() -> Self;
+    pub fn with_options(options: MpsWriteOptions) -> Self;
+
+    /// Serialize to the caller-provided stream. This method may leave partial
+    /// bytes on failure and never performs destination replacement.
+    pub fn write<W: std::io::Write>(
+        &self,
+        model: &Model,
+        output: W,
+    ) -> Result<MpsWriteReport, MpsWriteError>;
+
+    /// Serialize and commit according to `options.destination_policy`.
+    pub fn write_path<P: AsRef<std::path::Path>>(
+        &self,
+        model: &Model,
+        path: P,
+    ) -> Result<MpsWriteReport, MpsWriteError>;
+}
+```
+
+`destination_policy` is consulted only by `write_path`; `write` is a stream operation and has no atomic-commit guarantee. `new()` is equivalent to `with_options(MpsWriteOptions::default())`. Both methods capture one evaluated canonical snapshot before emitting any output. A failed operation returns `MpsWriteError` and no success report.
+
 `MpsWriteOptions::default()` is frozen as:
 
 ```text
