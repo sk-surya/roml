@@ -1,69 +1,106 @@
 # M3 Completion Packet Self-Review
 
-**Branch:** `docs/m3-completion-ultra-roadmap`
-**Base:** `main@4467797f002c93a1baab638b5e65976fb8492505`
+**Branch:** `docs/m3-completion-ultra-roadmap`  
+**Base:** `main@4467797f002c93a1baab638b5e65976fb8492505`  
+**Review round incorporated:** independent round 2 on prior head `b34213e691e3fc43f24dc78ae5142b169c4ed830`.
 
-## Scope check
+## Scope
 
-PASS. The packet contains one program roadmap and four separately executable phase plans. P36/P30/P31/P34 are not collapsed into one implementation plan. M4 is preview/design-only.
+PASS. This remains planning/governance only. No production Rust, CI workflow, dependency, publication, tag, release, or P36 implementation branch is authorized by the branch itself.
 
-## Original-contract coverage
+## Routing consistency
 
-- P30 plan explicitly owns SM-10.1–SM-10.9.
-- P31 plan explicitly owns SM-11.1–SM-11.8 and objective-stage integration debt.
-- P34 plan explicitly owns SM-15.1–SM-15.8 and residual M3 evidence.
-- P36 adds new MPS-W01–W14 requirements without modifying original SM IDs.
+PASS after round-2 remediation.
 
-## Ambiguity review
+- root `ROADMAP.md` and `STATE.md` agree with milestone `STATE.md`;
+- planned routing target is P36;
+- active production implementation is **none** until PR #45 merges;
+- P36 is an explicit program gate for P30;
+- P30 -> P31 -> P34 are sequential merge gates;
+- M4 is design-only after P34.
 
-### SR-01 — P30 priority type crossed a phase boundary
+No current authority routes P30 directly while PR #45/P36 are pending.
 
-**Finding:** initial sketch referenced an undefined `LexicographicPriority` owned conceptually by P31.
+## Requirement numbering
 
-**Resolution:** P30 stores `PenaltyTarget::Priority(u32)` as a stable numeric priority and returns Unsupported at solve time until P31 activates priority execution. P31 maps that numeric priority to `LexicographicLevel::priority`.
+PASS.
 
-### SR-02 — P31 sketch used unnamed supporting types
+- P36 uses one namespace only: MPS-W01–MPS-W14.
+- Original M3 SM IDs are unchanged.
+- P30 owns SM-10 except priority-target execution; P31 closes that sub-clause and owns SM-11/objective policy.
+- P34 requires every leaf SM-xx.y + MPS-Wxx + M3-Cxx in its final ledger.
 
-**Finding:** `WeightedObjectives`, `WeightedObjective`, `ObjectiveValue`, and `ObjectiveLockReport` were referenced without definitions.
+## Shared-contract consistency
 
-**Resolution:** target type shapes are now explicit in `31-PLAN.md`, with a Task 31-00 rule to reuse established equivalent types rather than create duplicate wrappers.
+PASS against `SHARED-CONTRACTS.md`.
 
-### SR-03 — Compiled MPS formulation export could become decorative scope
+- lineage, instance, revision, CompilationId roles are distinct;
+- exact canonical-state and compiled-state authorities are explicit;
+- overlay cleanup uncertainty forces rebuild;
+- primary + rollback/rebuild failures are retained;
+- parameterized MPS output is one evaluated exact snapshot;
+- deterministic names never depend on raw slot/debug IDs;
+- objective lock formula is `scale=|z*|` with zero/negative cases frozen;
+- one `ObjectivePolicy` owner and one `ObjectivePriority` owner are named.
 
-**Finding:** design discusses `CompiledLinearFormulation`, but P36 acceptance only requires semantic export.
+## P36 consistency
 
-**Resolution:** `36-PLAN.md` explicitly requires removal of the public option if it would ship as decorative/Unsupported-only configuration. Compiled export cannot delay P36.
+PASS at written-spec level.
 
-### SR-04 — Root GSD state was stale after P35 merge
+- public API is semantic-only; decorative `CompiledLinearFormulation` target removed;
+- defaults/report/error taxonomy frozen;
+- representability matrix covers parameters/fixings/domains/constructs/names/nonfinite/inactive state;
+- cross-platform path semantics + injection seam frozen;
+- independent ROML oracle prohibited from reusing writer internals;
+- native structural/solve tolerances + mismatch dispositions frozen;
+- exact pinned 94-file manifest exists; missing file/corpus or writer rejection is failure;
+- plan implements reviewer-prescribed Wave 0–4 topology with disjoint Wave 1/2 production ownership.
 
-**Finding:** `STATE.md` still routed P35 `pending_merge`.
+## P30/P31 consistency
 
-**Resolution:** active frontmatter now routes P36, records P35 merged, and makes P30/P31/P34 inactive sequential successors.
+PASS at written-spec level.
 
-### SR-05 — Parallelism risk
+- P30 has a workflow-specific provider policy, not generic unsupported-feature policy;
+- mathematical outcomes are separate from operational errors;
+- P29 origin mapping is explicit and all-or-error;
+- parameterized penalties resolve before backend mutation/priority execution;
+- P31 owns final objective/priority/stage/lock/result schemas;
+- P31 consumes the frozen `|z*|` lock formula;
+- cleanup failure cannot be hidden behind a mathematically successful result.
 
-**Finding:** original M3 roadmap allowed P29/P30/P31 independence; current agentic throughput could produce overlapping unreviewed work.
+## P34 consistency
 
-**Resolution:** completion program adds M3-C01: only one P36/P30/P31/P34 production implementation phase is active. Review/integration capacity is treated as the bottleneck.
+PASS at written-spec level.
 
-## Placeholder scan
+- leaf requirement ledger schema fixed;
+- executable fault matrix fixed;
+- Q01–Q14 corpus, Reference/HiGHS version/OS scope, observables, tolerances, and discrepancy rules fixed;
+- performance fixture `P34_PRIMITIVE_PARAMETER_UPDATE_V1` and baseline `4d111cce...` fixed;
+- packed-consumer commands/assertions fixed;
+- N1–N4 quadratic/NLP shapes + component verdict vocabulary fixed;
+- positive closure predicate requires every gate to pass.
 
-No planned section intentionally contains `TBD`, `TODO`, “implement later,” or an unresolved owner decision required before P36 design review. Future choices are expressed as explicit branches with stop/review rules, for example native backend support and optional compiled-formulation MPS export.
+## Placeholder / decorative option scan
+
+PASS for binding contracts.
+
+- no P36 public feature is intentionally shipped unsupported-only;
+- future native providers have explicit `PortableOnly/PreferNative/NativeRequired` behavior rather than placeholder success;
+- future compiled MPS formulation export is deferred rather than exposed decoratively;
+- M4 choices remain design questions and do not authorize production.
 
 ## Guarantee-language review
 
-PASS with explicit safeguards:
+PASS.
 
-- native IIS/relaxation/multiobjective are optional providers, not semantic authorities;
+- HiGHS is an oracle/provider, never semantic authority;
 - IIS does not imply minimum repair;
-- local future NLP failure does not imply IIS/global infeasibility;
-- MPS round trip is semantic, not byte/source-layout preservation;
-- P34 public claims are capped by evidence.
+- `NoRepairFound` requires proof under permitted scope/caps;
+- limits/numerical states remain `Unknown` or operational error as appropriate;
+- `BestFeasible` does not imply stage optimality;
+- MPS round trip is evaluated mathematical equality, not source/provenance/parameter-graph equality;
+- NLP local behavior is not labeled global IIS/infeasibility.
 
-## Execution-boundary review
+## Remaining gate
 
-PASS. P36 is the only active target. P30 begins only after P36 merge; P31 only after P30; P34 only after P31; M4 implementation only after P34 closes and NLP-readiness passes.
-
-## Remaining review gate
-
-Independent written architecture/plan review of this packet. Production P36 code should not start until the packet is accepted.
+Independent written-spec re-review of the corrected exact head. This self-review is not approval. No P36 production code may begin before re-review clearance and owner merge of PR #45.
