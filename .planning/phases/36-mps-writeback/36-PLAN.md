@@ -15,9 +15,10 @@
 - Default options/report/errors/representability/path semantics are frozen in `36-CONTRACT.md`.
 - Parameterized models export one evaluated `(ModelInstanceId, ModelRevision)` mathematical snapshot; parameter graphs are not serialized.
 - Writer bytes never embed raw arena slot/generation/debug IDs.
-- `SemanticModel` never silently compiles active semantic constructs.
+- P36 semantic export never silently compiles active semantic constructs.
 - All 94 files in `36-NETLIB-MANIFEST.md` are mandatory: missing input or writer rejection is a qualification failure.
 - Core writer remains solver-free.
+- Compiled-formulation export is not a P36 public option; it is deferred to a separate future design.
 - No later P30/P31/P34 implementation starts until P36 merges.
 
 ## File ownership map
@@ -52,14 +53,14 @@ Tests are likewise split so parallel workers do not edit the same files.
 - Create: `tests/mps_write_public_contract.rs`
 - Evidence: `.planning/phases/36-mps-writeback/36-BASELINE.md`
 
-**Interfaces:** exactly the concepts/defaults in `36-CONTRACT.md`: `MpsWriter`, `MpsWriteOptions`, `MpsWriteTarget`, `MpsNamePolicy`, `MpsDestinationPolicy`, `MpsWriteReport`, and structured `MpsWriteError`.
+**Interfaces:** exactly the concepts/defaults in `36-CONTRACT.md`: `MpsWriter`, `MpsWriteOptions`, `MpsNamePolicy`, `MpsDestinationPolicy`, `MpsWriteReport`, and structured `MpsWriteError`.
 
 - [ ] Record exact `main` base SHA, toolchain, current core/HiGHS test counts, public API inventory, and P35 corpus gitlink SHA before production edits.
 - [ ] Initialize the Netlib submodule and compare its exact regular-file `.mps` inventory to `36-NETLIB-MANIFEST.md`; require 94/94 exact names and pinned commit `56257eea85b433ce6aa67d26156b36385318fd6f`.
 - [ ] If the manifest disagrees, **stop** and amend the written spec through review; do not “fix” implementation around corpus drift.
-- [ ] Write compile/failing tests for default options: `SemanticModel`, `PreserveOrGenerate`, `AtomicReplace`; verify no extra decorative formatting controls exist.
+- [ ] Write compile/failing tests for default options: `PreserveOrGenerate`, `AtomicReplace`, free MPS/LF/canonical numeric output; verify no decorative target/format/vector controls exist.
 - [ ] Write failing tests for mandatory top-level error distinctions from `36-CONTRACT.md`.
-- [ ] Implement only public contract/types/errors and module seams. `write`/`write_path` may return a typed internal-not-yet-implemented error in this task if needed for TDD, but no shipped decorative target may claim support.
+- [ ] Implement only public contract/types/errors and module seams. `write`/`write_path` may return a typed internal-not-yet-implemented error during this TDD slice, but no public option may advertise unavailable behavior.
 - [ ] Verify `cargo fmt`, focused tests, clippy `-D warnings`, and rustdoc `-D warnings`.
 - [ ] Commit `feat(mps): freeze write-back contract`.
 
