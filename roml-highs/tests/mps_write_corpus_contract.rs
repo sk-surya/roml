@@ -26,7 +26,11 @@ fn expected_netlib_names() -> BTreeSet<String> {
 #[test]
 fn frozen_manifest_has_exactly_94_unique_names() {
     let names = expected_netlib_names();
-    assert_eq!(names.len(), 94, "the reviewed P36 manifest must remain exact");
+    assert_eq!(
+        names.len(),
+        94,
+        "the reviewed P36 manifest must remain exact"
+    );
     assert!(names.iter().all(|name| name.ends_with(".mps")));
 }
 
