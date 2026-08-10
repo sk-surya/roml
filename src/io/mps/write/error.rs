@@ -39,6 +39,10 @@ pub enum MpsWriteErrorKind {
     /// A referenced canonical entity is stale or no longer available.
     StaleEntity,
     /// An internal canonical invariant was violated.
+    ///
+    /// During Wave 0 only, the writer's not-yet-implemented seam also uses
+    /// this kind as a transitional stub. That placeholder is not a runtime
+    /// qualification outcome and must be removed before writer qualification.
     InternalInvariant,
 }
 
@@ -246,8 +250,7 @@ enum MpsWriteInternalKind {
     NotYetImplemented,
 }
 
-const WAVE_0_STUB_MESSAGE: &str =
-    "MPS write projection and path transaction are not implemented in this slice";
+const WAVE_0_STUB_MESSAGE: &str = "Wave 0-only transitional stub: MPS write projection and path transaction are not implemented; this is not a runtime qualification outcome";
 
 impl MpsWriteError {
     /// Creates an error with a top-level kind and structured context.
@@ -287,7 +290,9 @@ impl MpsWriteError {
         Self::with_source(MpsWriteErrorKind::Io, context, cause)
     }
 
-    /// Creates the typed transitional error used by the Wave 0 writer stubs.
+    /// Creates the typed transitional error used only by the Wave 0 writer
+    /// stubs. It is not a runtime qualification outcome and must be replaced
+    /// before the writer implementation is qualified.
     pub(crate) fn not_yet_implemented(context: MpsWriteContext) -> Self {
         Self {
             kind: MpsWriteErrorKind::InternalInvariant,
