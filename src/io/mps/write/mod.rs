@@ -236,6 +236,13 @@ fn normalize_document(
     let columns = bounds::encode_columns(&semantic.variables, entries_by_variable, report)?;
     let bounds = bounds::encode_bounds(&semantic.variables, report)?;
 
+    report.nonzeros = columns
+        .iter()
+        .filter_map(|column| match column {
+            MpsColumnRecord::Entries { entries, .. } => Some(entries.len()),
+            MpsColumnRecord::Marker { .. } => None,
+        })
+        .sum();
     report.rhs_vector = (!rhs_entries.is_empty()).then(|| "RHS1".to_owned());
     report.ranges_vector = (!range_entries.is_empty()).then(|| "RNG1".to_owned());
     report.bounds_vector = (!bounds.is_empty()).then(|| "BND1".to_owned());
