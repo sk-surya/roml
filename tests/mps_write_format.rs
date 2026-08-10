@@ -8,8 +8,8 @@
 mod format;
 
 use format::{
-    format_document, MpsBoundKind, MpsBoundRecord, MpsColumnRecord, MpsEntry, MpsMarkerKind,
-    MpsObjectiveSense, MpsRowKind, MpsRowRecord, MpsWriteDocument,
+    format_document, MpsBoundKind, MpsBoundRecord, MpsColumnRecord, MpsEntry, MpsFormatError,
+    MpsMarkerKind, MpsObjectiveSense, MpsRowKind, MpsRowRecord, MpsWriteDocument,
 };
 
 fn golden_document() -> MpsWriteDocument {
@@ -211,4 +211,30 @@ fn rejects_non_finite_values_before_emitting_bytes() {
 
     let error = format_document(&document).expect_err("non-finite values are rejected");
     assert_eq!(error.to_string(), "non-finite MPS numeric value");
+}
+
+#[test]
+fn rejects_duplicate_matrix_cells_across_column_records() {
+    let mut document = MpsWriteDocument::minimal("DUPLICATE");
+    document.columns = vec![
+        MpsColumnRecord::Entries {
+            name: "X".to_owned(),
+            entries: vec![MpsEntry {
+                row: "OBJ".to_owned(),
+                value: 1.0,
+            }],
+        },
+        MpsColumnRecord::Entries {
+            name: "X".to_owned(),
+            entries: vec![MpsEntry {
+                row: "OBJ".to_owned(),
+                value: 2.0,
+            }],
+        },
+    ];
+
+    assert_eq!(
+        format_document(&document).expect_err("duplicate matrix cells are rejected"),
+        MpsFormatError::DuplicateMatrixCell
+    );
 }
