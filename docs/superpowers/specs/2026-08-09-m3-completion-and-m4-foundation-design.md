@@ -1,235 +1,225 @@
 # ROML M3 Completion and M4 Foundation Design
 
-**Status:** owner-approved architecture translated into program design
-**Planning base:** `main` after P35 merge and P29 design-record merge
-**Execution order:** P36 -> P30 -> P31 -> P34 -> M4 planning
+**Status:** written-spec remediation after independent review; production implementation is not authorized until this packet is accepted and merged.  
+**Planning base:** `main@4467797f002c93a1baab638b5e65976fb8492505`.  
+**Execution order:** PR #45 merge -> P36 -> P30 -> P31 -> P34 -> M4 design gate.
 
-## 1. Objective
+## 1. Program objective
 
-Close the current MILP milestone as a coherent research/production system rather than continuing horizontal feature accumulation. The next work must convert the capabilities already built into closed loops:
-
-1. external model -> ROML -> external model;
-2. infeasible model -> semantic IIS -> controlled repair;
-3. multi-criteria model -> deterministic staged solve;
-4. full M3 -> qualified public capability set;
-5. only then extend the semantic function/compiler architecture toward quadratic and nonlinear optimization.
-
-The program optimizes for semantic correctness, provenance, differential evidence, and production failure semantics. It explicitly rejects feature-count-driven expansion.
-
-## 2. Program sequence
+Close M3 as a coherent LP/MILP research/production system rather than continue horizontal feature accumulation. Remaining work closes four loops:
 
 ```text
-P35 MPS import + corpus qualification [COMPLETE]
-        |
-        v
-P36 MPS deterministic write-back + round-trip qualification
-        |
-        v
-P30 Soft constraints + solve-scoped feasibility relaxation
-        |
-        v
-P31 Objective policies + portable lexicographic orchestration
-        |
-        v
-P34 M3 integration / qualification / docs / NLP-readiness
-        |
-        v
-M4 Quadratic + nonlinear semantic foundation [PLAN ONLY after P34]
+external model -> ROML -> external model
+infeasible model -> semantic IIS -> controlled repair
+multi-criteria model -> deterministic staged solve
+all M3 capabilities -> independent integrated qualification
 ```
 
-P30 and P31 are architecturally independent after P28, but they will execute sequentially here because review/integration capacity is the active bottleneck. P31 consumes P30's objective-priority integration and P34 qualifies their interaction.
+Only after those loops are qualified does ROML design quadratic/nonlinear production support.
 
-## 3. Binding program invariants
+## 2. Routing and authorization
 
-### 3.1 Semantic authority
-
-Canonical ROML state is the semantic authority. File formats, backend objects, native helper APIs, and compiled representations are projections. None may silently redefine model semantics.
-
-### 3.2 Exact-state authority
-
-`ModelLineageId`, `ModelInstanceId`, revision, and exact opaque `CompilationId` retain their established meanings. Deterministic hashes are evidence/cache keys only.
-
-### 3.3 Native versus portable
-
-Backend-native functionality is used only when its documented semantics match ROML's declared contract. Otherwise ROML uses a proven portable formulation/executor or returns typed `Unsupported`. Native support is an optimization/capability, never the definition of a ROML feature.
-
-### 3.4 No silent loss
-
-Serialization, softening, relaxation, objective orchestration, and future nonlinear compilation must either preserve declared semantics or fail with a typed, actionable error. There is no best-effort mode hidden behind defaults.
-
-### 3.5 Transactional solve-scoped state
-
-Feasibility relaxation, lexicographic objective locks, starts, hints, temporary fixings, and other solve-scoped artifacts use the existing overlay/session transaction semantics. They never become accidental canonical mutations.
-
-### 3.6 Origin preservation
-
-Generated variables, rows, bounds, objective locks, relaxation artifacts, and imported/exported source mappings retain enough provenance to render explanations in original semantic terms.
-
-### 3.7 One active implementation phase
-
-Only one of P36/P30/P31/P34 is active at a time. A later phase may be researched or reviewed, but implementation does not start until the prior phase is accepted and merged.
-
-## 4. P36 — deterministic MPS write-back
-
-### 4.1 Goal
-
-Any linear LP/MILP representable by the supported P35 semantic surface can be deterministically serialized to free MPS, read independently by HiGHS, and round-tripped without changing the normalized mathematical model or bounded solve result.
-
-### 4.2 Architecture
-
-Add a writer beside the existing reader:
+P36 is the **planned routing target**, not an active implementation while this planning PR is open.
 
 ```text
-Model / canonical snapshot
-        |
-        v
-MpsWriteProjection
-  - representability validation
-  - deterministic names/order
-  - objective/vector selection
-  - canonical coefficient stream
-        |
-        v
-MpsWriter<W: Write>
-        |
-        +--> bytes / file
-        |
-        +--> HiGHS readModel differential oracle
-        |
-        +--> ROML MpsReader semantic round trip
+PR #45 accepted + merged
+  -> authorize P36 production branch/worktree
+  -> P36 accepted + merged
+  -> authorize P30
+  -> P30 accepted + merged
+  -> authorize P31
+  -> P31 accepted + merged
+  -> authorize P34
+  -> P34 accepted + merged
+  -> M3 complete
+  -> M4 design gate only
 ```
 
-The writer serializes the mathematical model, not source-file layout. P35 source ordering, comments, duplicate records, and original fixed-column layout are not preserved.
+P36 is an explicit program dependency for P30. Although P30's original mathematical prerequisites existed after P28, the owner-selected completion sequence deliberately closes MPS interchange before resuming solve-semantics work.
 
-### 4.3 V1 dialect
+The root `.planning/STATE.md` explicit authorization flag is authoritative. A phase number/roadmap position alone never authorizes production code.
 
-Default and only required P36 output is deterministic free MPS for linear LP/MILP:
+## 3. Shared semantic contracts
 
-- `NAME`
-- `OBJSENSE`
-- `OBJNAME`
-- `ROWS`
-- `COLUMNS`
-- `RHS`
-- `RANGES`
-- `BOUNDS`
-- `INTORG` / `INTEND` markers when appropriate
-- `ENDATA`
+The detailed binding definitions are in `.planning/milestones/M3-semantic-modeling-workflows/SHARED-CONTRACTS.md`. The remaining phases do not independently redefine them.
 
-Quadratic, conic, SOS, indicator, PWL, and vendor-specific semantic extensions are not emitted in P36. High-level ROML constructs must already have a mathematically equivalent linear/MILP canonical/backend projection if the writer is asked to export the compiled formulation; otherwise semantic-model export returns typed `Unrepresentable`.
+### 3.1 Identity
 
-### 4.4 Two explicit export targets
+- `ModelLineageId`: family compatibility across related clones; clone preserves lineage; exact opaque equality only; not canonical-state or cross-process authority.
+- `ModelInstanceId`: one concrete model object; every clone receives a new instance ID.
+- `ModelRevision`: monotone semantic version within one instance; exact canonical-state key is `(ModelInstanceId, ModelRevision)`.
+- `CompilationId`: exact opaque identity of a compiled backend state; results/origins/overlays/IIS/analysis compose only with exact matching identity.
+- fingerprints/hashes are evidence/cache aids, never stale-state authority.
 
-Do not overload one API with ambiguous semantics:
+### 3.2 Solve-scoped transactions
+
+Temporary restrictions/objectives/relaxations never commit into canonical state. Apply/rollback uses receipts; rollback success means the expected base compiled state is verified. Uncertainty forces `RequiresRebuild`. Primary operation and cleanup/rollback/rebuild errors are all preserved; a mathematically successful solve followed by failed cleanup is an operational error, not a reusable success result.
+
+### 3.3 Parameterized export
+
+MPS stores numbers, not ROML symbolic parameter graphs. P36 exports one evaluated mathematical snapshot identified by exact model instance/revision and reports every consumed parameter value deterministically. Round-trip equality compares that evaluated mathematics, not parameter identity/dependency mutability.
+
+### 3.4 Deterministic naming
+
+Writer bytes never contain raw slot/generation/debug IDs. Default naming preserves valid unique user names or generates export-local deterministic ordinal names such as `X000001`/`R000001`; collision decisions are deterministic and reported.
+
+### 3.5 Objective degradation locks
+
+For reference stage value `z*`, absolute tolerance `a >= 0`, relative tolerance `r >= 0`:
+
+```text
+scale = abs(z*)
+delta = a + r * scale
+```
+
+Min stage: `f(x) <= z* + delta`.  
+Max stage: `f(x) >= z* - delta`.
+
+At zero, relative tolerance contributes zero. Negative optima use positive magnitude `|z*|`. No hidden `max(1, |z*|)` scale is permitted.
+
+### 3.6 Objective ownership
+
+P31 is the sole owner of canonical `ObjectivePolicy` and the one shared `ObjectivePriority(u32)`, with priority 0 highest. P30 does not ship a decorative priority target; P31 adds that variant when the executor exists.
+
+## 4. P36 — deterministic semantic MPS write-back
+
+### 4.1 Scope
+
+P36 has one public semantic meaning:
+
+```text
+current canonical/evaluated primitive linear LP/MILP
+    -> deterministic free MPS
+```
+
+There is no P36 `CompiledLinearFormulation` option. If compiled-formulation export is later needed, it receives a separate design because its identity/provenance/backend-IR contract is different.
+
+P36 output dialect is deterministic free MPS with canonical section/order/vector/float/line-ending choices. P35 continues reading fixed and free MPS.
+
+### 4.2 Writer API contract
+
+`MpsWriteOptions` exposes only options that govern actual P36 behavior:
 
 ```rust
-pub enum MpsWriteTarget {
-    SemanticModel,
-    CompiledLinearFormulation,
+pub struct MpsWriteOptions {
+    pub name_policy: MpsNamePolicy,
+    pub destination_policy: MpsDestinationPolicy,
 }
 ```
 
-- `SemanticModel` writes only concepts directly representable in standard linear MPS from canonical model state. Unsupported semantic constructs return a typed representability error.
-- `CompiledLinearFormulation` is an advanced path that exports an exact compiled linear/MILP snapshot plus generated names/origin metadata. It requires an exact compilation artifact and is clearly labeled as formulation export, not source-model export.
+Defaults:
 
-P36 acceptance requires `SemanticModel`; compiled-formulation export may be implemented if the current backend IR makes it small and exact, but must not delay P36 unless needed for corpus coverage.
+```text
+name_policy = PreserveOrGenerate
+destination_policy = AtomicReplace
+free MPS / LF / canonical finite f64 formatting
+```
 
-### 4.5 Determinism
+`MpsWriteReport` records exact model lineage/instance/revision, evaluated parameter values, dimensions/counts, integer count, objective/vector presence/names, deterministic name map, exact semantic lowerings, and inactive omission counts.
 
-For a fixed canonical model state and write options, bytes are deterministic across repeated runs on the same ROML version:
+The full error taxonomy and representability matrix are frozen in `.planning/phases/36-mps-writeback/36-CONTRACT.md`.
 
-- variables sorted by stable semantic ID unless explicit deterministic name policy says otherwise;
-- constraints sorted by stable semantic ID;
-- each COLUMNS coefficient emitted once from the canonical cell;
-- one deterministic RHS/RANGES/BOUNDS vector name;
-- deterministic contiguous integer-marker regions;
-- locale-independent floating formatting;
-- `-0.0` normalized to `0`;
-- non-finite coefficients/offsets rejected before any partial output is committed.
+### 4.3 Representability policy
 
-The public `write_path` implementation writes to a temporary sibling and atomically replaces only after successful serialization where the platform permits; stream writes return an error after partial bytes are possible and document that distinction.
+Supported: active primitive linear rows; continuous/integer/binary domains including free/fixed/custom bounds; active single/no objective; parameterized supported numeric state after evaluation.
 
-### 4.6 Round-trip gates
+Exact semantic lowering: persistent fixing may emit effective equal bounds; report records that fixing provenance itself will not be reconstructed by MPS.
 
-Four independent gates:
+Rejected: active high-level constructs requiring compiler-generated formulations, semi-continuous/semi-integer domains, weighted/lexicographic objective policy, nonfinite/unbound numeric state, and any unsupported feature. Inactive non-mathematical entities may be omitted only under the frozen matrix/report rules.
 
-1. **ROML semantic round trip**: `Model -> MPS -> MpsReader -> normalized model`.
-2. **HiGHS structure**: `Model -> MPS -> Highs_readModel` versus direct ROML->HiGHS projection.
-3. **Solve equivalence**: bounded selected models agree on termination class and objective under declared tolerances.
-4. **Corpus transcode**: each supported Netlib model `external MPS -> ROML -> deterministic MPS -> ROML/HiGHS` preserves normalized structure; all 94 P35-supported Netlib files are attempted and every exclusion is explicitly classified.
+Source comments/layout/order/rim-vector spellings/parameter graph/fixing provenance are not round-trip claims.
 
-No byte-for-byte equivalence to the input MPS is required.
+### 4.4 Path transaction
+
+`write_path` stages in the destination directory, writes/flushes/syncs before commit, and uses platform-appropriate atomic replacement on supported Linux/macOS/Windows. It never implements replacement by deleting the old destination first. `CreateNew` handles destination races without modifying an existing destination. An internal path-ops seam injects failures at create/write/flush/sync/replace/cleanup and verifies old destination preservation plus composite errors.
+
+### 4.5 Independent oracles
+
+The ROML round-trip oracle is test-local and cannot reuse writer projection/naming/report helpers. It independently extracts normalized objective, variable-domain, row-bound, integrality, and matrix mathematics before and after `read(write(model))`.
+
+The HiGHS oracle independently compares direct ROML->HiGHS with ROML->MPS->native `readModel` on full structure, normalized status, and paired optimal objective.
+
+Frozen comparison rules/dispositions live in `36-CONTRACT.md`; HiGHS is evidence, not semantic authority.
+
+### 4.6 Exact corpus gate
+
+`36-NETLIB-MANIFEST.md` freezes exactly 94 `.mps` paths at `sk-surya/lp-data-netlib@56257eea85b433ce6aa67d26156b36385318fd6f`.
+
+Every file must exist and pass:
+
+```text
+P35 read
+ -> P36 write
+ -> deterministic second write
+ -> P35 re-read + independent ROML structure compare
+ -> native HiGHS structure compare
+```
+
+Missing corpus/file, manifest drift, parser failure, writer rejection, or unresolved mismatch is failure. P36 does not get to classify a frozen-manifest writer rejection as a successful exclusion.
+
+### 4.7 Execution waves
+
+```text
+Wave 0 serial: contract + manifest + public seam
+Wave 1 parallel: projection | formatter | path API (disjoint files)
+Wave 2 parallel: bounds/markers | objective/RHS/RANGES | independent ROML oracle | native HiGHS oracle
+Wave 3 serial: exact 94-model corpus qualification
+Wave 4 serial: docs/package/full review/exact-head evidence/closure
+```
+
+P36 closes only after all MPS-W01–W14 and the positive predicate in `36-PLAN.md` pass and owner merge completes.
 
 ## 5. P30 — soft constraints and feasibility relaxation
 
-### 5.1 Goal
+### 5.1 Persistent softening
 
-Turn infeasibility diagnosis into a repair workflow while maintaining a hard distinction between persistent model semantics and solve-scoped analysis.
+Persistent soft constraints are canonical semantic constructs and advance model revision. Upper/lower violation roles are distinct with complete origins.
 
 ```text
-solve -> infeasible -> IIS -> choose relaxable semantic restrictions
-     -> feasibility relaxation -> violation report -> optional model edit
+upper f(x) <= u -> f(x) - v_up <= u, v_up >= 0
+lower f(x) >= l -> f(x) + v_lo >= l, v_lo >= 0
+equality/range  -> distinct lower + upper violation roles
 ```
 
-### 5.2 Persistent soft constraints
+Finite nonnegative caps are explicit. Signed correction remains a separate API.
 
-`Model::soften(...)` creates a canonical semantic construct. It is a model change and advances revision. The original constraint identity remains the reporting anchor.
+### 5.2 Penalties
 
-For a linear function `f(x)`:
+P30 implements only `PenaltyTarget::{None,Objective}`. The weight uses the existing parameter-aware numeric expression contract and is evaluated to a finite nonnegative number before compilation/backend mutation. P31 later adds `Priority(ObjectivePriority)` and closes that subpart of SM-10.6.
 
-- upper `f(x) <= u`: `f(x) <= u + v_up`, `v_up >= 0`;
-- lower `f(x) >= l`: `f(x) >= l - v_lo`, `v_lo >= 0`;
-- equality `f(x) = b`: lower and upper violations are distinct stable auxiliaries;
-- ranged `l <= f(x) <= u`: lower and upper violations remain distinct;
-- maximum violation, when supplied, is finite, nonnegative, and enforced as an auxiliary bound.
+### 5.3 Solve-scoped repair
 
-A signed correction API is separate and uses positive/negative parts. It is never inferred from ordinary softening.
+P30 defines its own provider policy:
 
-### 5.3 Penalty policy
-
-Penalty is not embedded as a magical objective mutation. Define explicit semantic policy:
-
-```rust
-pub enum PenaltyTarget {
-    None,
-    Objective(Objective),
-    Priority(LexicographicPriority),
-}
+```text
+PortableOnly | PreferNative | NativeRequired
 ```
 
-Weights are finite, nonnegative, may depend on parameters, and are normalized against objective sense by the objective-policy compiler/executor. P30 may support `Objective` and `None` immediately; `Priority` becomes active with P31 without changing stored soft-constraint semantics.
+The normative portable objective is weighted L1. Mathematical outcomes remain distinct:
 
-### 5.4 Solve-scoped feasibility relaxation
-
-Add an analysis/solve-plan operation distinct from persistent soft constraints. It selects relaxable semantic atoms or original constraints/bounds, constructs temporary violation artifacts through an isolated/overlay session, solves a declared relaxation objective, maps results back to original restrictions, and rolls back.
-
-The default portable relaxation is ROML-owned. A qualified native HiGHS relaxation path may accelerate it only if official semantics can be mapped exactly. Native and portable reports use the same structured result contract.
-
-### 5.5 Relaxation objectives
-
-Initial portable set:
-
-- weighted L1 magnitude: minimize `sum(w_i * v_i)`;
-- weighted violation-count approximation/exact MILP only when explicit binary indicators and valid finite activation bounds are available; this is optional and cannot block P30;
-- no implicit L2/nonlinear relaxation in M3.
-
-### 5.6 IIS integration
-
-P29 and P30 remain separate capabilities, but provide a convenience composition layer:
-
-```rust
-report.relaxation_scope()
+```text
+OptimalRepair
+FeasibleRepair
+NoRepairFound        // proven no permitted repair under scope/caps
+Unknown(reason)      // limit/numerical/interruption/unclassified
 ```
 
-or equivalent that produces a selection of original relaxable restrictions without asserting that relaxing only IIS members is globally optimal. The API must state that an IIS is a diagnostic seed, not a proof of minimum repair.
+Preflight/compile/apply/solve/extract/rollback/rebuild failures are operational errors, not mathematical outcomes. Numerical metadata records objective/bound/gaps/tolerances where honestly available.
 
-## 6. P31 — objective policies and lexicographic solves
+### 5.4 P29 composition
 
-### 6.1 Goal
+IIS-to-relaxation mapping is all-or-error:
+- original/imported row side -> `ConstraintSide`;
+- declared/imported explicit/synthetic variable bound -> `VariableBound`;
+- persistent fixing -> `PersistentFixing`;
+- temporary locks/overlay-only restrictions/grouped semantic constructs/compiler-only members -> explicit unsupported-origin error;
+- stale instance/revision/CompilationId -> stale-analysis rejection before mutation.
 
-Make multi-criteria optimization explicit and deterministic without depending on solver-specific multiobjective semantics.
+No unsupported IIS member is silently dropped, and IIS scoping does not imply a globally minimum repair.
 
-### 6.2 Canonical policy
+## 6. P31 — canonical objective policy and lexicographic execution
+
+P31 introduces one `ObjectivePriority(u32)` and one canonical:
 
 ```rust
 pub enum ObjectivePolicy {
@@ -240,136 +230,86 @@ pub enum ObjectivePolicy {
 }
 ```
 
-Weighted objectives normalize each objective sense before applying finite nonnegative weights. Lexicographic levels carry absolute and relative degradation tolerances and deterministic ordering.
+Weighted levels, stage result, lock report, continuation decision, provider, exact CompilationId, and aggregate result schemas are frozen by `31-PLAN.md`.
 
-### 6.3 Portable executor is normative
-
-The portable algorithm is the semantic reference:
+Portable execution is the semantic reference:
 
 ```text
-for stage in priority order:
-    apply objective override
-    solve
-    require stage qualification according to continuation policy
-    capture objective values + exact CompilationId
-    add temporary objective lock derived from stage result and tolerances
-continue
-finally rollback every stage artifact
+validate exact policy/base
+for priority ascending:
+  apply normalized temporary objective
+  solve stage
+  extract all objective values + scalar stage value
+  classify continuation
+  create exact |z*|-scaled degradation lock if another stage runs
+finally rollback and verify base
+return result only after cleanup verification
 ```
 
-Default continuation requires an optimal stage. Explicit `BestFeasible` continuation is separately named and recorded.
+Default continuation requires optimal. `BestFeasible` is explicit and may descend only from a valid feasible incumbent; reports never imply optimality.
 
-### 6.4 Correct lock formulas
+Before priority execution, any P30 parameterized penalty weights are evaluated/validated numerically. A missing priority rejects before mutation.
 
-The implementation must derive degradation locks from objective sense and the actual stage optimum; formulas must be valid for positive, zero, and negative optima. Relative tolerance is based on a documented scale rule rather than naive multiplication that changes direction around zero.
+Native multiobjective is selected only if priorities, weights, abs/rel tolerances, zero/negative optimum scaling, continuation/status, and objective constants match the ROML contract.
 
-### 6.5 Native multiobjective
+## 7. P34 — final M3 qualification
 
-Use only if a backend's ordering, weight, tolerance, continuation, and status semantics match ROML. Otherwise support level is `Unsupported` or ROML portable. Native/portable equivalence is a P31 gate when any native implementation is declared.
+P34 is governed by `34-QUALIFICATION-CONTRACT.md`; it does not invent features to make M3 appear broader.
 
-### 6.6 P30 composition
+### 7.1 Leaf traceability
 
-Soft-constraint penalties can occupy a lexicographic priority without custom executor paths. Example production pattern:
+One ledger row for every `SM-xx.y`, MPS-W01–W14, M3-C01–C05 records owner phase, implementation evidence, exact qualification command/test, backend/OS scope, review disposition, residual risk, and PASS/BLOCKED. Aggregate SM rows do not substitute for leaf requirements.
 
-```text
-priority 0: minimize violations
-priority 1: maximize economics
-priority 2: minimize deviation/churn
-```
+### 7.2 Executable fault matrix
 
-This interaction receives direct integration tests before P31 acceptance.
+The frozen matrix covers canonical validation, compile/delta/rebuild, overlay apply/solve/extract/rollback/verification, P29 unknown/final verify, P30 relaxation, P31 stage/lock/final cleanup, and P36 path failure boundaries. Every row asserts canonical revision, backend health, exact-state trust, cleanup, and error composition.
 
-## 7. P34 — M3 closure
+### 7.3 Native/portable corpus
 
-### 7.1 Goal
+Q01–Q14 cover primitive parameter deltas, constructs, PWL, overlays, MIP starts, IIS, weighted-L1 relaxation, mixed-sense/zero-optimum lexicographic solves, and parameterized MPS snapshots.
 
-Stop adding M3 features and prove the combined system is coherent, usable, performant, and extensible.
+Required primary matrix includes ReferenceBackend, bundled HiGHS 1.15.0 on Linux/macOS/Windows, and system HiGHS 1.9.0 Linux compatibility floor. Structure and optimal-objective tolerances/discrepancy dispositions are frozen.
 
-### 7.2 Required integrated workflows
+### 7.4 Performance
 
-At minimum:
+Fixture `P34_PRIMITIVE_PARAMETER_UPDATE_V1` is deterministic: 512 variables, 512 rows, 4096 nnz, fixed seed, one parameter affecting 64 cells, 20 warmups and 200 measured release attempts, bundled HiGHS, one thread.
 
-1. build parameterized LP -> incremental solves -> export MPS -> HiGHS read;
-2. import infeasible MPS -> P29 IIS -> P30 feasibility relaxation -> source-aware report;
-3. MILP with starts + overlay + semantic constructs + P31 lexicographic objective;
-4. PWL/construct bridge -> formulation report -> solve -> deterministic export classification;
-5. failure injection across compile/apply/solve/rollback/analysis stages;
-6. fresh consumer using packed `roml` + `roml-highs` only.
+Historical baseline: `main@4d111cceafce17aea44a6e396a838d1cc9ef255d` (pre-P25 M3 implementation). Candidate median may exceed baseline by at most `max(5% baseline median, 50us)` unless profiling evidence receives explicit owner-approved exception.
 
-### 7.3 Qualification
+### 7.5 Packed consumers
 
-P34 owns:
+A committed script packages/lists from a clean worktree, verifies no planning/worktree/corpus/git/target/log/machine leakage, then creates fresh `/tmp/p34-consumer-{core,highs,mps,iis-relax,lexicographic}` projects using only packed/extracted dependency sources. The known pre-publication `roml-highs` inability to resolve unpublished `roml` is the only eligible packaging limitation and must match its exact diagnostic; all other packaging failures block closure.
 
-- complete SM requirement traceability;
-- OS/MSRV/backend-version CI matrix;
-- public API diff and semver review;
-- package/fresh-consumer checks;
-- documentation/examples/migration consistency;
-- primitive incremental performance regression gate already specified by M3;
-- targeted P29/P30/P31 analysis/orchestration benchmarks;
-- native/portable equivalence evidence;
-- stale-state/rollback failure matrix;
-- no P0/P1 findings at merge.
+### 7.6 NLP readiness
 
-### 7.4 Stop condition
+Review concrete shapes:
+- N1 convex QP objective;
+- N2 convex quadratic constraint;
+- N3 nonconvex bilinear objective/function;
+- N4 smooth nonlinear parameterized objective/constraint.
 
-After P34 is accepted, M3 is closed. New MILP convenience features are parked unless they repair a demonstrated usability/correctness gap. The next milestone starts from an explicit semantic-extension design review.
+For every shape and every major M3 component, verdict is `READY_ADDITIVE`, `READY_WITH_BOUNDED_M4_AMENDMENT`, or `BLOCKED_REPLACEMENT_REQUIRED`. Any replacement-required verdict blocks closure unless the owner explicitly revises the architectural goal through reviewed decision.
 
-## 8. M4 — quadratic and nonlinear semantic foundation
+### 7.7 Positive closure
 
-M4 is deliberately **not** an implementation continuation of P34. P34 first certifies that the existing extension seams are real.
+M3 closes only if every conjunction in `34-QUALIFICATION-CONTRACT.md` §7 has affirmative evidence, independent reviews have no unresolved P0/P1, exact-head mandatory CI passes, and P34 is owner-merged.
 
-### 8.1 Initial architectural direction
+## 8. M4 direction after closure
 
-Extend rather than replace:
+M4 begins with design, not automatic code. It must extend rather than replace the M3 function-in-set, identities, provenance, compiler/backend IR, capabilities, SolvePlan/overlays, objective policies, and reporting boundaries.
 
-```rust
-pub enum ScalarFunction {
-    Linear(LinearFunction),
-    Quadratic(QuadraticFunction),
-    // Later: expression graph / callback-backed differentiable function
-}
-```
+Proposed design questions include quadratic canonical terms, convexity proof/metadata, QP/QCQP backend IR, nonconvex semantics without fake MILP exactness, smooth nonlinear evaluation/derivative interfaces, and local-vs-global diagnostic guarantees.
 
-The next design must address:
+## 9. Non-goals before P34 closure
 
-- canonical quadratic term representation and duplicate-cell authority;
-- convexity metadata versus proof;
-- QP/QCQP objective/constraint sets;
-- backend IR extensions for quadratic primitives;
-- native versus portable policy (no fake linearization);
-- derivative/evaluation interfaces for future NLP;
-- exact identity/provenance across nonlinear compilation;
-- local versus global solve/feasibility claims;
-- nonlinear infeasibility diagnostics that never label local restoration failure as IIS;
-- MINLP as a later composition, not an initial M4 requirement.
-
-### 8.2 Proposed M4 sequence
-
-```text
-M4-P0  quadratic semantic IR + evaluator
-M4-P1  QP objective compilation + HiGHS/qualified backend
-M4-P2  quadratic constraints + convexity/capability contract
-M4-P3  nonlinear expression/evaluation interface design
-M4-P4  first smooth NLP backend qualification
-M4-P5  nonlinear diagnostics / warm starts / integration
-```
-
-Exact numbering is intentionally deferred until P34's NLP-readiness review validates the extension seams.
-
-## 9. Explicit non-goals of this program
-
-Before P34 closure, do not start:
-
-- LP-format parser/writer solely for format breadth;
-- JSON/YAML model serialization;
-- SMPS;
-- nonlinear or quadratic production implementation;
-- generalized distributed solve orchestration;
-- new commercial-solver adapters solely for feature parity;
+Do not start:
+- fixed MPS writer or compiled-formulation MPS export;
+- LP/JSON/SMPS breadth;
+- generalized new solver adapters solely for parity;
 - minimum-cardinality IIS research;
-- release/publication work not already covered by separate owner gates.
+- quadratic/nonlinear production implementation;
+- publication/tag/release without a separate explicit owner gate.
 
-## 10. Program acceptance
+## 10. Planning packet acceptance
 
-This design is complete when the repository contains implementation-ready phase plans, one active phase (P36), explicit deferred work, and GSD routing that cannot accidentally start P30/P31/P34 out of order.
+This written design is accepted only after independent re-review finds zero unresolved P0/P1 contradictions/gaps across routing, shared contracts, P36/P30/P31 interfaces, P34 closure protocol, and requirement numbering. Only its merge authorizes the P36 production phase.
