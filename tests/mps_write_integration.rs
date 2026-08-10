@@ -10,10 +10,7 @@ use std::{
 
 use roml::{
     continuous, integer,
-    io::mps::{
-        MpsDestinationPolicy, MpsReader, MpsWriteErrorKind, MpsWriteOptions,
-        MpsWriter,
-    },
+    io::mps::{MpsDestinationPolicy, MpsReader, MpsWriteErrorKind, MpsWriteOptions, MpsWriter},
     model::{ConstraintBounds, Sense},
     parameter, ConstraintExprExt, Model, ValueExpr,
 };
@@ -246,7 +243,10 @@ fn write_path_model_validation_failure_is_preflight_only() {
     let directory = test_directory();
     let destination = directory.join("model.mps");
     let mut model = Model::with_name("invalid");
-    model.add_empty_constraint(ConstraintBounds { lower: 5.0, upper: 1.0 });
+    model.add_empty_constraint(ConstraintBounds {
+        lower: 5.0,
+        upper: 1.0,
+    });
 
     let error = MpsWriter::new()
         .write_path(&model, &destination)

@@ -62,8 +62,7 @@ fn generated_names_do_not_change_unnamed_duplicate_or_invalid_math() {
     let unnamed_row = model.add_empty_constraint(ConstraintBounds::le(20.0));
     let duplicate_row_a = model
         .add_constraint(
-            ConstraintSpec::new(LinExpr::new(), ConstraintBounds::ge(-3.0))
-                .named("duplicate"),
+            ConstraintSpec::new(LinExpr::new(), ConstraintBounds::ge(-3.0)).named("duplicate"),
         )
         .expect("valid first duplicate row");
     let duplicate_row_b = model

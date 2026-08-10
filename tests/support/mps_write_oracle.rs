@@ -267,7 +267,10 @@ fn structural_orders(
         row_labels = next_row_labels;
     }
 
-    (order_by_label(&variable_labels), order_by_label(&row_labels))
+    (
+        order_by_label(&variable_labels),
+        order_by_label(&row_labels),
+    )
 }
 
 fn canonical_labels(signatures: &[String]) -> Vec<usize> {
