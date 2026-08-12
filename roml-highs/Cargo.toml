@@ -23,7 +23,7 @@ roml = { version = "0.1.0", path = ".." }
 
 [dev-dependencies]
 rustix = { version = "1.1", features = ["fs", "std"] }
-sevenz-rust = "0.6.1"
+sevenz-rust2 = { version = "0.20.2", default-features = false }
 sha2 = "0.10"
 
 [features]
