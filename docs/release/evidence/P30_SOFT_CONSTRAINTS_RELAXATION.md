@@ -39,7 +39,8 @@ cargo test -p roml-highs --all-targets                PASS (native HiGHS 1.15.0)
 cargo clippy -p roml --all-targets -- -D warnings    PASS
 cargo clippy -p roml-highs --all-targets -- -D warnings PASS
 RUSTDOCFLAGS='-D warnings' cargo doc -p roml -p roml-highs --no-deps PASS
-cargo package --list -p roml                         PASS
+cargo package --list -p roml                         PASS (179 files)
+cargo package --list -p roml-highs                   PASS (51 files)
 bash scripts/test-quality-policy.sh                  PASS (4 policy tests)
 git diff --check                                     PASS
 ```
