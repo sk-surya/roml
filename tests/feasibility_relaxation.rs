@@ -242,6 +242,35 @@ fn portable_repair_reports_exact_identity_and_preserves_base() {
 }
 
 #[test]
+fn portable_repair_ignores_inactive_compiled_candidate() {
+    let mut model = Model::new();
+    let inactive = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    model.set_variable_active(inactive, false).unwrap();
+    let active = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let constraint = model.add_constraint(active.ge(2.0)).unwrap();
+
+    let report = SolverSession::new(ReferenceSolveSession::new())
+        .solve_feasibility_relaxation(
+            &mut model,
+            FeasibilityRelaxationPlan {
+                scope: roml::solver::RelaxationScope::Explicit(vec![
+                    roml::solver::RelaxationRestriction::ConstraintSide {
+                        constraint,
+                        side: roml::solver::infeasibility::BoundSide::Lower,
+                    },
+                ]),
+                ..Default::default()
+            },
+        )
+        .expect("inactive compiled candidates must not invalidate repair");
+
+    assert_eq!(report.outcome, RelaxationOutcome::OptimalRepair);
+    assert_eq!(report.members.len(), 1);
+    assert!((report.total_weighted_violation - 2.0).abs() < 1e-7);
+    assert_eq!(report.solution.values().get(&active), Some(&0.0));
+}
+
+#[test]
 fn native_required_rejects_before_backend_synchronization() {
     let mut model = Model::new();
     let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
