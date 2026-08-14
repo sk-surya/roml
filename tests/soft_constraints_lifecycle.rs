@@ -1,9 +1,31 @@
 //! P30-01 canonical lifecycle and atomic validation regressions.
 
+use roml::advanced::{
+    BackendCapabilitySet, BackendFeature, CompilationPolicy, CompilationSession, CompileError,
+    FeatureSupport,
+};
 use roml::construct::{PenaltyPolicy, PenaltyTarget, ViolationPolicy};
 use roml::id::{ConId, Generation};
+use roml::model::coefficient::CoefficientTarget;
 use roml::value_expr::ValueExpr;
 use roml::{ConstraintExprExt, Model, ModelError};
+
+fn incremental_soft_caps() -> BackendCapabilitySet {
+    let mut caps = BackendCapabilitySet::new();
+    for feature in [
+        BackendFeature::Lp,
+        BackendFeature::IncrementalBounds,
+        BackendFeature::IncrementalRows,
+        BackendFeature::IncrementalCoefficients,
+    ] {
+        caps.set(feature, FeatureSupport::native(Default::default()));
+    }
+    caps.set(
+        BackendFeature::SoftConstraint,
+        FeatureSupport::bridge(Default::default()),
+    );
+    caps
+}
 
 fn softened_model() -> (Model, roml::Constraint, roml::SoftConstraint) {
     let mut model = Model::new();
@@ -124,4 +146,133 @@ fn invalid_softening_inputs_are_atomic_and_typed() {
         )
         .unwrap_err();
     assert_eq!(error, ModelError::ParameterNotFound(missing));
+}
+
+#[test]
+fn changing_an_original_coefficient_requires_rebuilding_soft_rows() {
+    let mut model = Model::new();
+    let x = model.add_variable(roml::continuous()).unwrap();
+    let constraint = model.add_constraint(x.le(1.0)).unwrap();
+    model
+        .soften_constraint(
+            constraint,
+            ViolationPolicy::default(),
+            PenaltyPolicy::default(),
+        )
+        .unwrap();
+    model.commit().unwrap();
+
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &incremental_soft_caps(),
+        )
+        .unwrap();
+
+    model
+        .set_coefficient(CoefficientTarget::Constraint(constraint), x, 2.0)
+        .unwrap();
+    model.commit().unwrap();
+    let deltas = model.deltas_since(snapshot.revision).unwrap();
+    let delta = deltas.last().unwrap();
+    let error = session
+        .compile_delta(
+            delta,
+            base.compilation_id,
+            model.instance(),
+            &CompilationPolicy::Auto,
+            &incremental_soft_caps(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, CompileError::RebuildRequired(_)));
+}
+
+#[test]
+fn changing_a_parameterized_original_coefficient_requires_rebuilding_soft_rows() {
+    let mut model = Model::new();
+    let x = model.add_variable(roml::continuous()).unwrap();
+    let parameter = model.add_parameter(1.0).unwrap();
+    let constraint = model.add_constraint(x.le(1.0)).unwrap();
+    model
+        .add_constraint_coefficient(constraint, x, ValueExpr::from(parameter))
+        .unwrap();
+    model
+        .soften_constraint(
+            constraint,
+            ViolationPolicy::default(),
+            PenaltyPolicy::default(),
+        )
+        .unwrap();
+    model.commit().unwrap();
+
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &incremental_soft_caps(),
+        )
+        .unwrap();
+
+    model.set_parameter(parameter, 2.0).unwrap();
+    model.commit().unwrap();
+    let deltas = model.deltas_since(snapshot.revision).unwrap();
+    let delta = deltas.last().unwrap();
+    let error = session
+        .compile_delta(
+            delta,
+            base.compilation_id,
+            model.instance(),
+            &CompilationPolicy::Auto,
+            &incremental_soft_caps(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, CompileError::RebuildRequired(_)));
+}
+
+#[test]
+fn removing_a_referenced_variable_requires_rebuilding_soft_rows() {
+    let mut model = Model::new();
+    let x = model.add_variable(roml::continuous()).unwrap();
+    let constraint = model.add_constraint(x.le(1.0)).unwrap();
+    model
+        .soften_constraint(
+            constraint,
+            ViolationPolicy::default(),
+            PenaltyPolicy::default(),
+        )
+        .unwrap();
+    model.commit().unwrap();
+
+    let snapshot = model.take_snapshot().unwrap();
+    let mut session = CompilationSession::new();
+    let base = session
+        .compile_snapshot(
+            model.instance(),
+            &snapshot,
+            &CompilationPolicy::Auto,
+            &incremental_soft_caps(),
+        )
+        .unwrap();
+
+    model.remove_variable(x).unwrap();
+    model.commit().unwrap();
+    let deltas = model.deltas_since(snapshot.revision).unwrap();
+    let delta = deltas.last().unwrap();
+    let error = session
+        .compile_delta(
+            delta,
+            base.compilation_id,
+            model.instance(),
+            &CompilationPolicy::Auto,
+            &incremental_soft_caps(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, CompileError::RebuildRequired(_)));
 }

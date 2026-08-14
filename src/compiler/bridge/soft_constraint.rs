@@ -83,6 +83,17 @@ pub(crate) fn compile(
     let coefficients = original_coefficients(ctx, payload.original_constraint)?;
     let mut finalizer = BridgeFinalizer::new(ctx.construct, next_variable_index, next_row_index);
     finalizer.add_dependency(BridgeDependency::Construct(ctx.construct));
+    finalizer.add_dependency(BridgeDependency::Constraint(payload.original_constraint));
+    for cell in &ctx.snapshot.cells {
+        if let CoefficientTarget::Constraint(constraint) = cell.cell_key.0 {
+            if constraint == payload.original_constraint {
+                finalizer.add_dependency(BridgeDependency::Variable(cell.cell_key.1));
+                for parameter in &cell.dependencies {
+                    finalizer.add_dependency(BridgeDependency::Parameter(*parameter));
+                }
+            }
+        }
+    }
     finalizer.add_decision(FormulationDecision {
         decision: "soft_constraint.path".to_string(),
         selection: "exact portable weighted-violation bridge".to_string(),

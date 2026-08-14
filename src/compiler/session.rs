@@ -100,11 +100,12 @@ struct CurrentCompilation {
     /// The bridge dependency graph of the active constructs (F1).
     ///
     /// Every active construct's generated bridge artifact depends on a set of
-    /// user variables and parameters (recorded by the bridges as
-    /// [`BridgeDependency`] and completed centrally here). A dependency-
-    /// affecting delta (`SetParameter`, `SetVariableBounds`,
-    /// `RemoveVariable`, variable type/activity changes) forces a
-    /// `RebuildRequired` — the construct artifact can go stale otherwise.
+    /// user constraints, variables, and parameters (recorded by the bridges
+    /// as [`BridgeDependency`] and completed centrally here). A
+    /// dependency-affecting delta (`SetParameter`, `SetVariableBounds`,
+    /// `SetConstraintBounds`, coefficient-cell changes, `RemoveVariable`, or
+    /// variable type/activity changes) forces a `RebuildRequired` — the
+    /// construct artifact can go stale otherwise.
     construct_dependencies: Vec<BridgeDependency>,
 }
 
@@ -393,7 +394,7 @@ impl CompilationSession {
             let id = CompiledConstraintId(index as u32);
             // Activity is folded into bounds: inactive -> unbounded.
             let bounds = if c.active {
-                c.bounds
+                softened_row_bounds(snapshot, c.id, c.bounds)
             } else {
                 ConstraintBounds::range(f64::NEG_INFINITY, f64::INFINITY)
             };
@@ -936,6 +937,13 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveConstraint { con } => {
+                    if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
+                    {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "RemoveConstraint for {con:?} touches a soft-constraint bridge; a \
+                             generated row would otherwise retain a dangling reference (F1)"
+                        )));
+                    }
                     let id = *w.row_ids.get(con).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "RemoveConstraint for unknown compiled row ({con:?})"
@@ -947,6 +955,13 @@ impl CompilationSession {
                 }
 
                 ModelOp::SetConstraintBounds { con, bounds } => {
+                    if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
+                    {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetConstraintBounds for {con:?} touches a soft-constraint bridge; \
+                             generated side rows require a fresh snapshot (F1)"
+                        )));
+                    }
                     // SM-04.4 (WR-3): an unqualified feature is rejected, never
                     // silently compiled.
                     require_feature(
@@ -980,6 +995,17 @@ impl CompilationSession {
                     evaluated_value,
                     ..
                 } => {
+                    if let CoefficientTarget::Constraint(con) = cell_key.0 {
+                        if Self::construct_depends_on_constraint(
+                            &current.construct_dependencies,
+                            con,
+                        ) {
+                            return Err(CompileError::RebuildRequired(format!(
+                                "SetCell for soft constraint {con:?} touches a generated side \
+                                 row; a fresh snapshot is required (F1)"
+                            )));
+                        }
+                    }
                     // SM-04.4 (WR-3): coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
                     require_feature(
@@ -1023,6 +1049,17 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveCell { cell_key } => {
+                    if let CoefficientTarget::Constraint(con) = cell_key.0 {
+                        if Self::construct_depends_on_constraint(
+                            &current.construct_dependencies,
+                            con,
+                        ) {
+                            return Err(CompileError::RebuildRequired(format!(
+                                "RemoveCell for soft constraint {con:?} touches a generated \
+                                 side row; a fresh snapshot is required (F1)"
+                            )));
+                        }
+                    }
                     // SM-04.4 (WR-3): coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
                     require_feature(
@@ -1299,6 +1336,17 @@ impl CompilationSession {
             .iter()
             .any(|d| matches!(d, BridgeDependency::Parameter(p) if *p == param))
     }
+
+    /// Whether any active construct's bridge artifact depends on an original
+    /// user constraint's bounds or coefficient cells (F1).
+    fn construct_depends_on_constraint(
+        dependencies: &[BridgeDependency],
+        constraint: ConId,
+    ) -> bool {
+        dependencies
+            .iter()
+            .any(|d| matches!(d, BridgeDependency::Constraint(c) if *c == constraint))
+    }
 }
 
 // ===========================================================================
@@ -1563,4 +1611,41 @@ fn preflight_constructs(
         validate_construct_finiteness(&entry.kind, entry.id, parameter_values)?;
     }
     Ok(())
+}
+
+/// Widen the finite sides owned by an active persistent soft constraint.
+///
+/// The original primitive row remains in the compiled snapshot for stable
+/// identity, but softened sides must not remain hard there. The generated
+/// signed side rows emitted by the soft bridge are the authoritative relaxed
+/// constraints for those sides.
+fn softened_row_bounds(
+    snapshot: &ModelSnapshot,
+    constraint: ConId,
+    bounds: ConstraintBounds,
+) -> ConstraintBounds {
+    let softened = snapshot.constructs.iter().any(|entry| {
+        entry.active
+            && matches!(
+                &entry.kind,
+                ConstructKind::SoftConstraint(payload)
+                    if payload.original_constraint == constraint
+            )
+    });
+    if !softened {
+        return bounds;
+    }
+
+    ConstraintBounds::range(
+        if bounds.lower.is_finite() {
+            f64::NEG_INFINITY
+        } else {
+            bounds.lower
+        },
+        if bounds.upper.is_finite() {
+            f64::INFINITY
+        } else {
+            bounds.upper
+        },
+    )
 }
