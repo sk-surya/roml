@@ -26,6 +26,16 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Persistent soft constraints and portable feasibility repair (P30)
+- Added revisioned persistent soft-constraint handles with exact lower/upper
+  violation rows, finite caps, parameterized nonnegative weights, and explicit
+  `None`/`Objective` penalty targets.
+- Added solve-scoped portable weighted-L1 feasibility relaxation with exact
+  base/overlay identities, typed outcomes, acceptance policy, provider
+  fallback metadata, P29 origin mapping, and cleanup/rebuild error retention.
+- Objective-priority, lexicographic execution, and unqualified native
+  feasibility-relaxation calls remain outside this phase.
+
 #### MPS write-back qualification (P36)
 - `MpsWriteReport::nonzeros` now counts only mathematically nonzero emitted coefficients; explicit and synthetic zero entries remain in the MPS output but are excluded from the report.
 - Added deterministic solver-free free-MPS writing for representable linear
