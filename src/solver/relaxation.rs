@@ -47,18 +47,13 @@ pub enum RelaxationRestriction {
 }
 
 /// Scope of eligible relaxation restrictions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum RelaxationScope {
     /// Include every eligible finite constraint side and variable bound.
+    #[default]
     AllEligible,
     /// Include exactly the listed restrictions.
     Explicit(Vec<RelaxationRestriction>),
-}
-
-impl Default for RelaxationScope {
-    fn default() -> Self {
-        Self::AllEligible
-    }
 }
 
 /// Objective used by the portable repair formulation.

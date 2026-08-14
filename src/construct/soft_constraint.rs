@@ -83,18 +83,10 @@ impl ViolationRole {
 }
 
 /// Validation policy for generated violation variables.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViolationPolicy {
     /// Optional finite non-negative upper bound for each generated violation.
     pub max_violation: Option<f64>,
-}
-
-impl Default for ViolationPolicy {
-    fn default() -> Self {
-        Self {
-            max_violation: None,
-        }
-    }
 }
 
 /// Where a persistent violation penalty is placed.
