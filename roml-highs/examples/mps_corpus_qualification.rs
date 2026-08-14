@@ -34,7 +34,7 @@ use roml_highs::{
     observe_mps_solve_differential, HighsSession, MPS_STRUCTURAL_ABS_TOLERANCE,
     MPS_STRUCTURAL_REL_TOLERANCE,
 };
-use sevenz_rust::{Password, SevenZReader};
+use sevenz_rust2::{ArchiveEntry, ArchiveReader, Password};
 use sha2::{Digest, Sha256};
 
 const CHINNECK_COMMIT: &str = "97a936498e5240d44adaf7dcfe84877fa34ce301";
@@ -162,7 +162,7 @@ fn materialize_selected_chinneck_archives(
         let cache_key = CorpusCacheKey::new(CHINNECK_COMMIT, archive_name, &archive_hash)?;
         let expected = read_7z_inventory(&archive_path)?;
         materialize_chinneck_archive_stream(&cache_root, &cache_key, &expected, |emit| {
-            let mut archive = SevenZReader::open(&archive_path, Password::empty())
+            let mut archive = ArchiveReader::open(&archive_path, Password::empty())
                 .map_err(|error| materializer_error(&archive_path, error))?;
             archive
                 .for_each_entries(|entry, reader| {
@@ -185,21 +185,25 @@ fn materialize_selected_chinneck_archives(
 }
 
 fn read_7z_inventory(path: &Path) -> Result<ExpectedArchiveInventory, Box<dyn Error>> {
-    let mut archive = SevenZReader::open(path, Password::empty())?;
+    let mut archive = ArchiveReader::open(path, Password::empty())?;
     let mut files = Vec::new();
     archive.for_each_entries(|entry, reader| {
-        let kind = seven_z_entry_kind(entry).map_err(sevenz_rust::Error::other)?;
+        let kind =
+            seven_z_entry_kind(entry).map_err(|error| sevenz_rust2::Error::Other(error.into()))?;
         if kind == ArchiveEntryKind::RegularFile {
             let mut limited = reader.take(entry.size());
             let mut digest = Sha256::new();
-            let copied = io::copy(&mut limited, &mut digest).map_err(sevenz_rust::Error::io)?;
+            let copied = io::copy(&mut limited, &mut digest).map_err(sevenz_rust2::Error::from)?;
             if copied != entry.size() {
-                return Err(sevenz_rust::Error::other(format!(
-                    "archive entry {} ended at {} bytes, expected {}",
-                    entry.name(),
-                    copied,
-                    entry.size()
-                )));
+                return Err(sevenz_rust2::Error::Other(
+                    format!(
+                        "archive entry {} ended at {} bytes, expected {}",
+                        entry.name(),
+                        copied,
+                        entry.size()
+                    )
+                    .into(),
+                ));
             }
             files.push((entry.name().to_owned(), format!("{:x}", digest.finalize())));
         }
@@ -208,7 +212,7 @@ fn read_7z_inventory(path: &Path) -> Result<ExpectedArchiveInventory, Box<dyn Er
     Ok(ExpectedArchiveInventory::new(files)?)
 }
 
-fn seven_z_entry_kind(entry: &sevenz_rust::SevenZArchiveEntry) -> Result<ArchiveEntryKind, String> {
+fn seven_z_entry_kind(entry: &ArchiveEntry) -> Result<ArchiveEntryKind, String> {
     if entry.is_anti_item() {
         return Err(format!("anti-item entry {} is not accepted", entry.name()));
     }
@@ -239,8 +243,8 @@ fn seven_z_entry_kind(entry: &sevenz_rust::SevenZArchiveEntry) -> Result<Archive
     ))
 }
 
-fn seven_z_archive_error(path: &Path, error: impl std::fmt::Display) -> sevenz_rust::Error {
-    sevenz_rust::Error::other(format!("cannot materialize {}: {error}", path.display()))
+fn seven_z_archive_error(path: &Path, error: impl std::fmt::Display) -> sevenz_rust2::Error {
+    sevenz_rust2::Error::Other(format!("cannot materialize {}: {error}", path.display()).into())
 }
 
 fn materializer_error(path: &Path, error: impl std::fmt::Display) -> MaterializationError {

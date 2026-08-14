@@ -12,12 +12,14 @@ use std::{
 
 use roml::model::coefficient::CoefficientTarget;
 use roml::{
+    compiler::{capability::CompilationPolicy, session::CompilationSession},
     io::mps::{MpsDiagnostic, MpsError, MpsErrorKind},
     Model,
 };
 
 use crate::{
     bindings,
+    compiler::rebuild_from_backend_snapshot,
     error::{check_highs_status, from_native_status},
     lifecycle::HighsSession,
     solution::map_termination_status,
@@ -63,8 +65,12 @@ pub struct HighsMpsSummary {
     pub objective_offset: f64,
     /// Native columns keyed by their MPS names.
     pub column_semantics: BTreeMap<String, MpsColumnSemantics>,
+    /// Native column names in the order returned by HiGHS.
+    pub column_order: Vec<String>,
     /// Native rows keyed by their MPS names.
     pub row_semantics: BTreeMap<String, MpsRowSemantics>,
+    /// Native row names in the order returned by HiGHS.
+    pub row_order: Vec<String>,
     /// Native constraint coefficients keyed by `(row, column)` names.
     pub matrix: BTreeMap<(String, String), f64>,
 }
@@ -158,6 +164,65 @@ pub enum MpsDifferentialDisposition {
 }
 
 impl HighsSession {
+    /// Build the direct ROML-to-HiGHS observation used by P36 qualification.
+    ///
+    /// This path compiles the canonical model through the existing HiGHS
+    /// backend projection and observes the resulting native model without
+    /// passing through MPS. It is intentionally separate from the writer and
+    /// from the P35 reader oracle.
+    pub fn observe_model_structure(model: &Model) -> Result<HighsMpsSummary, HighsError> {
+        let mut session = Self::try_new()?;
+        let snapshot = model.take_snapshot().map_err(|error| {
+            BackendError::new(
+                format!("cannot snapshot model for direct HiGHS observation: {error}"),
+                ErrorCategory::InvalidInput,
+                HealthEffect::Recoverable,
+            )
+        })?;
+        let mut compiler = CompilationSession::new();
+        let compiled = compiler
+            .compile_snapshot(
+                model.instance(),
+                &snapshot,
+                &CompilationPolicy::Auto,
+                &session.typed_capabilities,
+            )
+            .map_err(|error| {
+                BackendError::new(
+                    format!("cannot compile model for direct HiGHS observation: {error}"),
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::Recoverable,
+                )
+            })?;
+        compiled.validate().map_err(|error| {
+            BackendError::new(
+                format!("compiled model failed direct HiGHS observation validation: {error}"),
+                ErrorCategory::Internal,
+                HealthEffect::Recoverable,
+            )
+        })?;
+        rebuild_from_backend_snapshot(
+            session.raw,
+            &compiled,
+            &mut session.col_map,
+            &mut session.row_map,
+            &mut session.compiled_to_user_variable,
+            &mut session.compiled_to_user_constraint,
+            &mut session.compiled_to_user_objective,
+            session.inf,
+            &mut session.var_bounds,
+            &mut session.con_bounds,
+            &mut session.obj_costs,
+            &mut session.obj_senses,
+            &mut session.obj_offsets,
+            &mut session.active_obj,
+        )?;
+        // The direct compiler path does not assign user-facing native names.
+        // Use observation-local ordinals rather than asking HiGHS for names
+        // that do not exist; the P36 test compares normalized positions.
+        session.summarize_loaded_model(true)
+    }
+
     /// Read an MPS path with native HiGHS and return structural observations.
     ///
     /// This method does not mutate any ROML model or interpret the result as
@@ -312,7 +377,158 @@ impl HighsSession {
             objective_sense,
             objective_offset,
             column_semantics,
+            column_order: column_names,
             row_semantics,
+            row_order: row_names,
+            matrix,
+        })
+    }
+
+    fn summarize_loaded_model(
+        &mut self,
+        use_observation_names: bool,
+    ) -> Result<HighsMpsSummary, HighsError> {
+        let columns = checked_count(unsafe { bindings::Highs_getNumCol(self.raw) }, "columns")?;
+        let rows = checked_count(unsafe { bindings::Highs_getNumRow(self.raw) }, "rows")?;
+        let nonzeros = checked_count(unsafe { bindings::Highs_getNumNz(self.raw) }, "nonzeros")?;
+        let mut objective_sense = 0;
+        let status = unsafe { bindings::Highs_getObjectiveSense(self.raw, &mut objective_sense) };
+        check_highs_status(status, self.raw, "Highs_getObjectiveSense")?;
+        let mut objective_offset = 0.0;
+        let status = unsafe { bindings::Highs_getObjectiveOffset(self.raw, &mut objective_offset) };
+        check_highs_status(status, self.raw, "Highs_getObjectiveOffset")?;
+
+        let column_count = columns;
+        let row_count = rows;
+        let nonzero_count = nonzeros;
+        let mut native_columns = highs_int(column_count, "columns")?;
+        let mut native_rows = highs_int(row_count, "rows")?;
+        let mut native_nonzeros = highs_int(nonzero_count, "nonzeros")?;
+        let mut sense = objective_sense;
+        let mut offset = objective_offset;
+        let mut costs = vec![0.0; column_count];
+        let infinity = unsafe { bindings::Highs_getInfinity(self.raw) };
+        let mut column_lower = vec![0.0; column_count];
+        let mut column_upper = vec![0.0; column_count];
+        let mut row_lower = vec![0.0; row_count];
+        let mut row_upper = vec![0.0; row_count];
+        let mut starts = vec![0; column_count];
+        let mut indices = vec![0; nonzero_count];
+        let mut values = vec![0.0; nonzero_count];
+        let mut integrality = vec![bindings::kHighsVarTypeContinuous; column_count];
+        let status = unsafe {
+            bindings::Highs_getLp(
+                self.raw,
+                bindings::kHighsMatrixFormatColwise,
+                &mut native_columns as *mut _,
+                &mut native_rows as *mut _,
+                &mut native_nonzeros as *mut _,
+                &mut sense as *mut _,
+                &mut offset as *mut _,
+                costs.as_mut_ptr(),
+                column_lower.as_mut_ptr(),
+                column_upper.as_mut_ptr(),
+                row_lower.as_mut_ptr(),
+                row_upper.as_mut_ptr(),
+                starts.as_mut_ptr(),
+                indices.as_mut_ptr(),
+                values.as_mut_ptr(),
+                integrality.as_mut_ptr(),
+            )
+        };
+        check_highs_status(status, self.raw, "Highs_getLp")?;
+        let native_columns = checked_count(native_columns, "columns")?;
+        let native_rows = checked_count(native_rows, "rows")?;
+        let native_nonzeros = checked_count(native_nonzeros, "nonzeros")?;
+        if native_columns != column_count
+            || native_rows != row_count
+            || native_nonzeros != nonzero_count
+        {
+            return Err(BackendError::new(
+                "HiGHS changed model dimensions while returning the LP observation",
+                ErrorCategory::Internal,
+                HealthEffect::Recoverable,
+            ));
+        }
+        let column_names = if use_observation_names {
+            observation_names(native_columns, "DIRECT_COL")
+        } else {
+            native_names(self.raw, native_columns, true)?
+        };
+        let row_names = if use_observation_names {
+            observation_names(native_rows, "DIRECT_ROW")
+        } else {
+            native_names(self.raw, native_rows, false)?
+        };
+        let column_semantics = column_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                (
+                    name.clone(),
+                    MpsColumnSemantics {
+                        cost: costs[index],
+                        lower: normalize_bound(column_lower[index], infinity),
+                        upper: normalize_bound(column_upper[index], infinity),
+                        integrality: integrality[index],
+                    },
+                )
+            })
+            .collect();
+        let row_semantics = row_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                (
+                    name.clone(),
+                    MpsRowSemantics {
+                        lower: normalize_bound(row_lower[index], infinity),
+                        upper: normalize_bound(row_upper[index], infinity),
+                    },
+                )
+            })
+            .collect();
+        let mut matrix = BTreeMap::new();
+        for (column_index, column_name) in column_names.iter().enumerate() {
+            let start = checked_index(starts[column_index], "matrix start")?;
+            let end = if column_index + 1 < starts.len() {
+                checked_index(starts[column_index + 1], "matrix end")?
+            } else {
+                native_nonzeros
+            };
+            if end > native_nonzeros || start > end {
+                return Err(BackendError::new(
+                    "HiGHS returned invalid compressed matrix bounds",
+                    ErrorCategory::Internal,
+                    HealthEffect::Recoverable,
+                ));
+            }
+            for matrix_index in start..end {
+                let row_index = checked_index(indices[matrix_index], "matrix row index")?;
+                let Some(row_name) = row_names.get(row_index) else {
+                    return Err(BackendError::new(
+                        "HiGHS returned a matrix row index outside the observed rows",
+                        ErrorCategory::Internal,
+                        HealthEffect::Recoverable,
+                    ));
+                };
+                matrix.insert(
+                    (row_name.clone(), column_name.clone()),
+                    values[matrix_index],
+                );
+            }
+        }
+
+        Ok(HighsMpsSummary {
+            columns,
+            rows,
+            nonzeros,
+            objective_sense,
+            objective_offset,
+            column_semantics,
+            column_order: column_names,
+            row_semantics,
+            row_order: row_names,
             matrix,
         })
     }
@@ -596,6 +812,12 @@ fn native_names(
         names.push(name);
     }
     Ok(names)
+}
+
+fn observation_names(count: usize, prefix: &str) -> Vec<String> {
+    (0..count)
+        .map(|index| format!("{prefix}_{index:06}"))
+        .collect()
 }
 
 fn normalize_bound(value: f64, infinity: f64) -> f64 {

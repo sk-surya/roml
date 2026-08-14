@@ -4,13 +4,14 @@
 
 ## Routing state
 
-**Planned target:** P36.  
-**Production implementation active now:** none while PR #45 is under written-spec review.  
-**Activation:** accepted + merged PR #45 authorizes an isolated P36 implementation branch/worktree.
+**Current target:** P36 implementation accepted and pending merge in PR #46.
+**Production implementation active now:** P36 is complete on exact head `86ee71c685435510be8598337e7ecf8da20b1efd`; only governance closure and owner-authorized merge remain.
+**Planning prerequisite:** PR #45 was accepted and merged as `48fab4db347522cebc786393e5afcbdbcea98f33`.
 
 ```text
-PR #45 merge
-  -> P36 MPS write-back merge
+PR #45 merged (`48fab4db`)
+  -> P36 implementation accepted / PR #46 pending merge
+  -> P36 merge
   -> P30 soft constraints / relaxation merge
   -> P31 objective policies / lexicographic merge
   -> P34 final qualification merge
@@ -35,7 +36,7 @@ P36 is an explicit program dependency for P30. The completion program deliberate
 | P33 | PWL/bounds | complete | no new work | accepted evidence |
 | P34 | M3 qualification | planned | false | P31 accepted + merged |
 | P35 | MPS import | complete | no new work | PR #44/P35 evidence |
-| P36 | MPS write-back | planning review | false until PR #45 merges | written-spec clearance |
+| P36 | MPS write-back | implementation accepted / pending merge | true for closure only | exact-head closure artifacts, final CI/re-review, owner-authorized PR #46 merge |
 
 ## P36 requirement ownership — MPS-W01 through MPS-W14
 
@@ -60,7 +61,7 @@ The detailed text in `COMPLETION-REQUIREMENTS.md` is authoritative. No W01–W08
 
 ### P36 gate
 
-P36 must satisfy `36-CONTRACT.md`, `36-NETLIB-MANIFEST.md`, and all MPS-W01–W14. The exact pinned manifest must produce 94/94 deterministic writer + independent ROML structure + native HiGHS structure PASS. Missing corpus/file, manifest drift, or writer rejection is failure, not a classified skip. Required solve subset obeys frozen status/objective tolerances/dispositions. Exact-head mandatory CI, independent review, and owner merge are required before P30 activates.
+P36 must satisfy `36-CONTRACT.md`, `36-NETLIB-MANIFEST.md`, and all MPS-W01–W14. The exact pinned manifest must produce 94/94 deterministic writer + independent ROML structure + native HiGHS structure PASS. Missing corpus/file, manifest drift, or writer rejection is failure, not a classified skip. Required solve subset obeys frozen status/objective tolerances/dispositions. The implementation is accepted on PR #46; exact-head closure artifacts and CI must remain green, and owner-authorized merge is required before P30 activates.
 
 ## P30 requirement ownership
 

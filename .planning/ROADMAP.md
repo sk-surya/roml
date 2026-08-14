@@ -5,9 +5,9 @@ This root file is the concise GSD routing projection. Historical milestone desig
 ## Current routing gate
 
 ```text
-written-spec PR #45 under review
-  -> merge accepted completion packet
-  -> P36 MPS write-back
+PR #45 merged (`48fab4db`)
+  -> P36 implementation accepted / PR #46 pending merge
+  -> P36 merge
   -> P30 soft constraints / feasibility relaxation
   -> P31 objective policies / lexicographic solves
   -> P34 integrated M3 qualification / NLP readiness
@@ -15,8 +15,8 @@ written-spec PR #45 under review
   -> M4 design gate only
 ```
 
-**Planned routing target:** P36.  
-**Active production implementation:** none until PR #45 is accepted and merged.  
+**Current routing target:** P36 pending merge.
+**Active production implementation:** P36 implementation accepted on PR #46 exact head `86ee71c685435510be8598337e7ecf8da20b1efd`; only governance closure and owner-authorized merge remain.
 **Hard rule:** `current_phase`/roadmap position is not authorization to create production code. `.planning/STATE.md` carries the explicit authorization flag.
 
 P36 is an owner-selected **program dependency** of P30. P30 may have had its mathematical prerequisites after P28, but the active completion program deliberately requires P36 to merge first so the MPS interchange/differential loop is closed before solve-semantics work resumes.
@@ -36,7 +36,7 @@ P36 is an owner-selected **program dependency** of P30. P30 may have had its mat
 | P33 | PWL / bound analysis | complete | none |
 | P34 | M3 final qualification | planned, inactive | P31 merge |
 | P35 | MPS import / corpus qualification | complete | residual broad Chinneck work is nonblocking |
-| P36 | deterministic MPS write-back | planning review | PR #45 acceptance + merge |
+| P36 | deterministic MPS write-back | implementation accepted / pending merge | exact-head closure artifacts, CI/re-review, then owner-authorized PR #46 merge |
 
 ## Binding authorities
 

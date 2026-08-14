@@ -4,8 +4,8 @@ milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
 current_phase: 36
 current_phase_name: MPS write-back and round-trip qualification
-status: planning_review
-implementation_authorized: false
+status: pending_merge
+implementation_authorized: true
 ---
 
 # ROML Active State — M3 Completion
@@ -14,12 +14,12 @@ This file is the root GSD routing authority. Detailed contracts live under `.pla
 
 ## Routing versus execution
 
-**Planned routing target:** P36 — deterministic MPS write-back and round-trip qualification.  
-**Active production implementation:** **none** while completion-planning PR #45 is unmerged.  
-**Activation predicate:** PR #45 is independently accepted and merged to `main`; only then may an isolated `phase-roml-P36-mps-writeback` production branch/worktree begin.  
-**Later production phases:** P30, P31, P34 remain inactive until their explicit predecessor merges.
+**Current routing target:** P36 — deterministic MPS write-back and round-trip qualification, implementation accepted and pending merge in PR #46.
+**Active production implementation:** P36 is complete on the exact candidate head; only closure/merge administration remains. No further Rust, solver, test, dependency, or implementation work is authorized for P36.
+**Planning prerequisite:** completion-planning PR #45 merged to `main` as `48fab4db347522cebc786393e5afcbdbcea98f33`.
+**Later production phases:** P30, P31, and P34 remain inactive until their explicit predecessor merges; in particular, P30 remains gated until P36/PR #46 actually merges.
 
-A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. `implementation_authorized: false` is a hard stop for production code.
+A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. The current authorization is limited to P36 closure/merge administration; P30, P31, and P34 remain unauthorized.
 
 ## Accepted state
 
@@ -28,15 +28,15 @@ A `current_phase` value identifies the next GSD routing target; it is **not** im
 - P35 MPS import: complete, merged via PR #44 as `7159fad8830b32f5a9377174e6e57bb24f99de95`.
 - P29 design record: merged via PR #38 as `4467797f002c93a1baab638b5e65976fb8492505`.
 - P30/P31/P34: planned only.
-- P36: planned routing target, written-spec review in progress.
+- P36: implementation accepted, pending merge via PR #46 at exact head `86ee71c685435510be8598337e7ecf8da20b1efd`; required closure artifacts are present in this docs-only follow-up.
 - M4 quadratic/nonlinear foundation: preview/design gate only; no production implementation authorization.
 
 ## Binding completion sequence
 
 ```text
-PR #45 written-spec acceptance + merge
-  -> activate P36 implementation
-  -> P36 accepted + merged
+PR #45 written-spec acceptance + merge (`48fab4db`)
+  -> P36 implementation accepted / pending merge (PR #46)
+  -> P36 actually merged
   -> activate P30
   -> P30 accepted + merged
   -> activate P31
@@ -77,13 +77,14 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 | P33 | complete | no new work | accepted evidence |
 | P34 | planned | **false** | P31 accepted + merged |
 | P35 | complete | no new work | PR #44 / P35 evidence |
-| P36 | planning review | **false** | PR #45 accepted + merged |
+| P36 | implementation accepted / pending merge | **true (closure only)** | PR #46 exact-head evidence, independent review, hosted CI, and owner-authorized merge |
 
 ## WIP and update rules
 
 - One production phase at a time.
 - Research/review may be prepared ahead; production code may not.
-- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated on `main`.
+- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated on `main`. P36 has passed that prerequisite; its implementation is accepted and awaiting merge.
 - Completion requires exact-head evidence, independent review, hosted mandatory CI, and owner-authorized merge.
+- P30 remains unauthorized until the P36 merge is complete and this state is updated again.
 - A skipped mandatory check never counts as pass.
 - Publication/tag/release remain separate owner gates and are not implied by M3 completion.
