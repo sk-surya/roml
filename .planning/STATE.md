@@ -2,9 +2,17 @@
 gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
+status: active
+stopped_at: Completed 30-04-PLAN.md
+last_updated: "2026-08-14T16:04:52.212Z"
+progress:
+  total_phases: 17
+  completed_phases: 12
+  total_plans: 29
+  completed_plans: 18
+  percent: 62
 current_phase: 30
 current_phase_name: Soft constraints and feasibility relaxation
-status: active
 implementation_authorized: true
 ---
 
@@ -87,3 +95,26 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 - P31 and P34 remain unauthorized until their predecessor merge gates are complete and this state is updated again.
 - A skipped mandatory check never counts as pass.
 - Publication/tag/release remain separate owner gates and are not implied by M3 completion.
+
+## P30 Execution Position
+
+- Plans complete: 30-01, 30-02, 30-03, and 30-04 (4 of 4).
+- Phase status: implementation and exact-head evidence complete; owner review/merge remains the gate before P31.
+- P31 status: planned and inactive; no transition was performed.
+
+## Performance Metrics
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 30 P04 | 0 | 10 tasks | 27 files |
+
+## Decisions
+
+- [Phase ?]: P30 portable weighted-L1 repair is solve-scoped, exact-identity, and rollback-verified; P31 priorities remain deferred.
+- [Phase ?]: Supported P29 primitive/imported sides and persistent fixings map all-or-error with exact identity and source provenance.
+
+## Session
+
+**Last session:** 2026-08-14T16:04:52.205Z
+**Stopped at:** Completed 30-04-PLAN.md
+**Resume file:** None
