@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on implementation candidate `e412cb45b83750f61510765432087895a8bcb94c` in the isolated `agent-p30-execute` worktree. The candidate is based on the owner-approved P30 decisions D-01 through D-15; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on reviewed implementation head `ef69c2a5ab99264a4e9600bf895594a5fc75984a` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, and inactive-variable evidence handling; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -31,21 +31,21 @@ All commands ran at the candidate head above with Rust `1.97.1` and Cargo
 cargo fmt --all -- --check                         PASS
 cargo test -p roml --test feasibility_relaxation \
   --test feasibility_relaxation_faults \
-  --test relaxation_provider_policy -- --nocapture   PASS (11 tests)
-cargo test -p roml --test feasibility_relaxation_p29 \
-  --test soft_constraints_qualification -- --nocapture PASS (5 tests)
-cargo test -p roml --all-targets                      PASS (all targets)
-cargo test -p roml-highs --all-targets                PASS (native HiGHS 1.15.0)
-cargo clippy -p roml --all-targets -- -D warnings    PASS
-cargo clippy -p roml-highs --all-targets -- -D warnings PASS
-RUSTDOCFLAGS='-D warnings' cargo doc -p roml -p roml-highs --no-deps PASS
+  --test relaxation_provider_policy \
+  --test feasibility_relaxation_p29 \
+  --test soft_constraints_qualification --quiet       PASS (19 tests)
+cargo test -p roml --all-targets --locked --quiet       PASS (293 library tests; all targets)
+cargo test -p roml-highs --all-targets --locked --quiet PASS (native HiGHS 1.15.0)
+cargo clippy -p roml --all-targets --locked -- -D warnings PASS
+cargo clippy -p roml-highs --all-targets --locked -- -D warnings PASS
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps --locked PASS
 cargo package --list -p roml                         PASS (179 files)
 cargo package --list -p roml-highs                   PASS (51 files)
 bash scripts/test-quality-policy.sh                  PASS (4 policy tests)
 git diff --check                                     PASS
 ```
 
-The final full core run completed 285 library tests and all integration targets. The
+The final full core run completed 293 library tests and all integration targets. The
 HiGHS run completed its native adapter and integration matrix. Native license,
 MOSEK, and Xpress qualification were not required by P30 and were not claimed
 as passes.
