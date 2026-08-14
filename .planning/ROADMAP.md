@@ -54,6 +54,7 @@ P36 was an owner-selected **program dependency** of P30. That dependency is now 
 **Binding requirements:** MPS-W01–MPS-W14.
 
 **Frozen artifacts:**
+
 - `.planning/phases/36-mps-writeback/36-CONTRACT.md`
 - `.planning/phases/36-mps-writeback/36-NETLIB-MANIFEST.md`
 - `.planning/phases/36-mps-writeback/36-PLAN.md`
@@ -67,6 +68,15 @@ P36 was an owner-selected **program dependency** of P30. That dependency is now 
 **Ownership:** SM-10.1–SM-10.5, SM-10.7–SM-10.9 and the `None`/`Objective` portion of SM-10.6. P31 closes priority targeting.
 
 **Gate to P31:** portable algebra/outcomes/provenance, P29 supported-origin mapping, parameterized weights, fault cleanup/error composition, exact-head qualification/review/merge.
+
+**Plans:** 4 plans
+
+Plans:
+
+- [x] 30-01-PLAN.md — freeze the persistent soft-constraint API and canonical lifecycle
+- [x] 30-02-PLAN.md — compile exact algebra, penalties, origins, and violation accessors
+- [x] 30-03-PLAN.md — execute portable weighted-L1 repair with outcome and cleanup semantics
+- [x] 30-04-PLAN.md — compose P29 origins and complete qualification/evidence handoff
 
 ## P31 — objective policies and lexicographic solves
 
@@ -91,6 +101,7 @@ Quadratic/nonlinear production implementation is forbidden before P34 closes. M4
 ## Deferred, noncritical work
 
 Unless a correctness/user blocker emerges, keep these outside M3's critical path:
+
 - fixed-format MPS writer;
 - compiled-formulation MPS export;
 - LP/JSON/SMPS format breadth;
