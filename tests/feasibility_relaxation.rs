@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use roml::advanced::{
-    BackendCapabilitySet, BackendFeature, BackendSnapshot, CompiledVariableId, EntityOrigin,
-    FeatureSupport, OverlayApplyReceipt, OverlayRollbackOutcome, OverlaySession, Synchronization,
+    BackendCapabilitySet, BackendFeature, BackendOp, BackendSnapshot, CompiledVariableId,
+    EntityOrigin, FeatureSupport, OverlayApplyReceipt, OverlayRollbackOutcome, OverlaySession,
+    Synchronization,
 };
 use roml::solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
@@ -112,6 +113,15 @@ impl BackendSession for ReferenceSolveSession {
                 self.revision = snapshot.source_revision;
             }
             Synchronization::CompiledDeltaBatch(batch) => {
+                for operation in &batch.operations {
+                    if let BackendOp::AddVariable(variable) = operation {
+                        if let Some(EntityOrigin::UserVariable(user)) =
+                            batch.origin_additions.variable_origin(variable.id)
+                        {
+                            self.user_variables.insert(variable.id, *user);
+                        }
+                    }
+                }
                 self.inner.apply_compiled_delta(&batch).map_err(|e| {
                     BackendError::new(
                         e.to_string(),
@@ -140,12 +150,19 @@ impl BackendSession for ReferenceSolveSession {
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
         let values = self.candidate_values();
+        let objective_value = self
+            .inner
+            .compiled_rows
+            .values()
+            .filter_map(|(bounds, _)| bounds.lower.is_finite().then_some(bounds.lower))
+            .max_by(f64::total_cmp)
+            .unwrap_or(0.0);
         Ok(SolveResult {
             effective_configuration: EffectiveConfig::default(),
             termination: TerminationStatus::Optimal,
             solution: Some(SolveSolution {
                 variable_values: values,
-                objective_value: Some(1.0),
+                objective_value: Some(objective_value),
                 dual_values: None,
                 reduced_costs: None,
             }),

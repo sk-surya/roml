@@ -19,6 +19,7 @@ use roml::{continuous, ConstraintExprExt, Model};
 #[derive(Clone, Copy)]
 enum FailurePoint {
     Apply,
+    PartialApplyRollback,
     Solve,
     Rollback,
     Verify,
@@ -150,6 +151,14 @@ impl OverlaySession for FaultBackend {
                 HealthEffect::RequiresRebuild,
             ));
         }
+        if matches!(self.failure, Some(FailurePoint::PartialApplyRollback)) {
+            let _receipt = self.inner.apply_overlay(overlay)?;
+            return Err(BackendError::new(
+                "injected apply failure after mutation",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
         self.inner.apply_overlay(overlay)
     }
 
@@ -157,7 +166,10 @@ impl OverlaySession for FaultBackend {
         &mut self,
         _receipt: &OverlayApplyReceipt,
     ) -> Result<roml::advanced::OverlayRollbackOutcome, BackendError> {
-        if matches!(self.failure, Some(FailurePoint::Rollback)) {
+        if matches!(
+            self.failure,
+            Some(FailurePoint::Rollback | FailurePoint::PartialApplyRollback)
+        ) {
             return Err(BackendError::new(
                 "injected rollback failure",
                 ErrorCategory::Internal,
@@ -260,11 +272,33 @@ fn injected_apply_failure_forces_rebuild_before_next_plain_solve() {
     let plan = request_plan(&mut model);
     let mut session = SolverSession::new(FaultBackend::new(Some(FailurePoint::Apply)));
     let result = session.solve_feasibility_relaxation(&mut model, plan);
-    assert!(
-        matches!(result, Err(FeasibilityRelaxationError::Backend(message)) if message.contains("apply"))
-    );
+    assert!(matches!(
+        result,
+        Err(FeasibilityRelaxationError::Cleanup {
+            primary,
+            requires_rebuild: true,
+            ..
+        }) if primary.contains("apply")
+    ));
     // The injected backend keeps the canonical compiled state, but the façade
     // resets its compiler so the next ordinary solve must rebuild it. The
     // solve itself is allowed to return an empty optimal reference solution.
     assert!(session.solve(&mut model).is_ok());
+}
+
+#[test]
+fn partial_apply_failure_composes_primary_and_cleanup_errors() {
+    let mut model = Model::new();
+    let plan = request_plan(&mut model);
+    let result = SolverSession::new(FaultBackend::new(Some(FailurePoint::PartialApplyRollback)))
+        .solve_feasibility_relaxation(&mut model, plan);
+
+    assert!(matches!(
+        result,
+        Err(FeasibilityRelaxationError::Cleanup {
+            primary,
+            cleanup,
+            requires_rebuild: true,
+        }) if primary.contains("apply failure after mutation") && cleanup.contains("rollback failure")
+    ));
 }
