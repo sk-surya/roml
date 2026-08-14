@@ -768,9 +768,6 @@ pub(crate) fn report_members(
                 variable: candidate,
                 side,
             } if candidate == variable => *side == BoundSide::Lower,
-            RelaxationRestriction::PersistentFixing {
-                variable: candidate,
-            } if candidate == variable => true,
             _ => false,
         });
         let relax_upper = weighted.iter().any(|(restriction, _)| match restriction {
@@ -778,9 +775,6 @@ pub(crate) fn report_members(
                 variable: candidate,
                 side,
             } if candidate == variable => *side == BoundSide::Upper,
-            RelaxationRestriction::PersistentFixing {
-                variable: candidate,
-            } if candidate == variable => true,
             _ => false,
         });
         let bounds = if weighted.iter().any(|(restriction, _)| {

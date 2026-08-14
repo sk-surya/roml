@@ -8,7 +8,7 @@ use roml::solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
 use roml::solver::reference::ReferenceBackend;
-use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult};
+use roml::solver::request::{EffectiveConfig, SolveRequest, SolveResult, SolveSolution};
 use roml::solver::session::{BackendMetadata, BackendSession, SessionHealth, SyncReceipt};
 use roml::solver::{
     FeasibilityRelaxationError, FeasibilityRelaxationPlan, RelaxationRestriction, SolverSession,
@@ -20,6 +20,7 @@ use roml::{continuous, ConstraintExprExt, Model};
 enum FailurePoint {
     Apply,
     PartialApplyRollback,
+    OutOfDomainCandidate,
     Solve,
     Rollback,
     Verify,
@@ -30,6 +31,7 @@ struct FaultBackend {
     caps: BackendCapabilitySet,
     revision: roml::ModelRevision,
     failure: Option<FailurePoint>,
+    candidate_variable: Option<roml::VarId>,
     rebuilds: usize,
 }
 
@@ -50,6 +52,7 @@ impl FaultBackend {
             caps,
             revision: roml::ModelRevision::ZERO,
             failure,
+            candidate_variable: None,
             rebuilds: 0,
         }
     }
@@ -118,6 +121,24 @@ impl BackendSession for FaultBackend {
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
+        if matches!(self.failure, Some(FailurePoint::OutOfDomainCandidate)) {
+            return Ok(SolveResult {
+                effective_configuration: EffectiveConfig::default(),
+                termination: TerminationStatus::Optimal,
+                solution: Some(SolveSolution {
+                    variable_values: vec![(
+                        self.candidate_variable
+                            .expect("out-of-domain candidate test supplies a variable"),
+                        -100.0,
+                    )],
+                    objective_value: Some(105.0),
+                    dual_values: None,
+                    reduced_costs: None,
+                }),
+                compilation_id: self.inner.current_compilation,
+                overlay_id: None,
+            });
+        }
         if matches!(self.failure, Some(FailurePoint::Solve)) {
             return Err(BackendError::new(
                 "injected solve failure",
@@ -301,4 +322,30 @@ fn partial_apply_failure_composes_primary_and_cleanup_errors() {
             requires_rebuild: true,
         }) if primary.contains("apply failure after mutation") && cleanup.contains("rollback failure")
     ));
+}
+
+#[test]
+fn injected_out_of_domain_persistent_fixing_candidate_is_rejected() {
+    let mut model = Model::new();
+    let variable = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.fix(variable, 5.0).unwrap();
+    let plan = FeasibilityRelaxationPlan {
+        scope: roml::solver::RelaxationScope::Explicit(vec![
+            RelaxationRestriction::PersistentFixing { variable },
+        ]),
+        ..Default::default()
+    };
+
+    let mut backend = FaultBackend::new(Some(FailurePoint::OutOfDomainCandidate));
+    backend.candidate_variable = Some(variable);
+    let result = SolverSession::new(backend).solve_feasibility_relaxation(&mut model, plan);
+
+    assert!(
+        matches!(
+            result,
+            Err(FeasibilityRelaxationError::Numerical(ref message))
+                if message.contains("violates domain")
+        ),
+        "got {result:?}"
+    );
 }
