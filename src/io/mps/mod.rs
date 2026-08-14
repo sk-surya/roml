@@ -27,6 +27,15 @@ mod semantic;
 #[allow(dead_code)]
 mod state;
 
+/// Solver-free MPS write-back contract and writer entry point.
+pub mod write;
+
+pub use write::{
+    MpsDestinationPolicy, MpsEntityKind, MpsEvaluatedParameter, MpsNamePolicy, MpsPathStage,
+    MpsWriteContext, MpsWriteDiagnostic, MpsWriteError, MpsWriteErrorKind, MpsWriteLowering,
+    MpsWriteName, MpsWriteNameMap, MpsWriteOptions, MpsWriteReport, MpsWriter,
+};
+
 /// Selects the lexical layout used to interpret an MPS input.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MpsFormat {
