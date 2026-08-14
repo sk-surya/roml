@@ -47,8 +47,9 @@ and P31 scope fences.
   side/cap/weight qualification fixtures.
 - Added the persistent-softening versus isolated-repair example and changelog
   behavior entry.
-- Recorded full core/HiGHS test, lint, rustdoc, package, and quality-policy
-  outcomes in `docs/release/evidence/P30_SOFT_CONSTRAINTS_RELAXATION.md`.
+- Recorded full core/HiGHS test, lint, rustdoc, package, quality-policy, and
+  injected cleanup-fault outcomes in
+  `docs/release/evidence/P30_SOFT_CONSTRAINTS_RELAXATION.md`.
 
 ## Deviations from Plan
 
@@ -73,8 +74,8 @@ and P31 scope fences.
 
 ## Verification
 
-Evidence ledger commands all pass at the recorded candidate head. Native MOSEK,
-Xpress, native relaxation, license, publication, and tag actions were not
+Evidence ledger commands all pass at recorded candidate head `e412cb4`. Native
+MOSEK, Xpress, native relaxation, license, publication, and tag actions were not
 required and were not represented as passes.
 
 ## Next Phase Readiness
@@ -86,4 +87,4 @@ objective-priority or lexicographic implementation is included here.
 
 - All four plan summaries and the exact-head evidence file exist.
 - All listed task and closure commits resolve in git history.
-- Final required verification commands passed at `eb85fc0`.
+- Final required verification commands passed at `e412cb4`.
