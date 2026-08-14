@@ -132,12 +132,38 @@ pub struct CompiledOverlay {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
 pub enum OverlayOp {
+    /// Add a temporary compiled variable for a solve-scoped formulation.
+    AddTemporaryVariable {
+        /// The generated variable.
+        variable: crate::compiler::backend_ir::CompiledVariable,
+    },
+    /// Add a temporary compiled objective used by an isolated solve.
+    AddTemporaryObjective {
+        /// The generated objective.
+        objective: crate::compiler::backend_ir::CompiledObjective,
+    },
     /// Temporarily set a compiled variable's bounds.
     SetTemporaryVariableBounds {
         /// The compiled variable.
         variable: CompiledVariableId,
         /// The temporary bounds.
         bounds: Bounds,
+    },
+    /// Add a temporary objective coefficient cell.
+    SetTemporaryObjectiveCoefficient {
+        /// The compiled objective.
+        objective: CompiledObjectiveId,
+        /// The temporary compiled variable.
+        variable: CompiledVariableId,
+        /// The coefficient value.
+        value: f64,
+    },
+    /// Temporarily widen one side of an existing compiled row.
+    SetTemporaryRowBounds {
+        /// Existing compiled row.
+        constraint: CompiledConstraintId,
+        /// Temporary row bounds.
+        bounds: ConstraintBounds,
     },
     /// Add a temporary compiled row (objective-lock or cutoff).
     AddTemporaryRow {
@@ -231,10 +257,68 @@ impl CompiledOverlay {
         let mut present = existing.clone();
         for op in &self.operations {
             match op {
+                OverlayOp::AddTemporaryVariable { variable } => {
+                    if !present.variables.insert(variable.id) {
+                        return Err(CompileError::DuplicateEntity {
+                            entity: CompiledEntityRef::Variable(variable.id),
+                        });
+                    }
+                    if self.origin_additions.variable_origin(variable.id).is_none() {
+                        return Err(CompileError::MissingOrigin {
+                            entity: CompiledEntityRef::Variable(variable.id),
+                        });
+                    }
+                }
                 OverlayOp::SetTemporaryVariableBounds { variable, .. } => {
                     if !present.variables.contains(variable) {
                         return Err(CompileError::InvalidReference {
                             entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                OverlayOp::AddTemporaryObjective { objective } => {
+                    if !present.objectives.insert(objective.id) {
+                        return Err(CompileError::DuplicateEntity {
+                            entity: CompiledEntityRef::Objective(objective.id),
+                        });
+                    }
+                    if self
+                        .origin_additions
+                        .objective_origin(objective.id)
+                        .is_none()
+                    {
+                        return Err(CompileError::MissingOrigin {
+                            entity: CompiledEntityRef::Objective(objective.id),
+                        });
+                    }
+                    for (variable, _) in &objective.coefficients {
+                        if !present.variables.contains(variable) {
+                            return Err(CompileError::InvalidReference {
+                                entity: CompiledEntityRef::Variable(*variable),
+                            });
+                        }
+                    }
+                }
+                OverlayOp::SetTemporaryObjectiveCoefficient {
+                    objective,
+                    variable,
+                    ..
+                } => {
+                    if !present.objectives.contains(objective) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*objective),
+                        });
+                    }
+                    if !present.variables.contains(variable) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Variable(*variable),
+                        });
+                    }
+                }
+                OverlayOp::SetTemporaryRowBounds { constraint, .. } => {
+                    if !present.rows.contains(constraint) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Constraint(*constraint),
                         });
                     }
                 }

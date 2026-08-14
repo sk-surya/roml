@@ -204,6 +204,23 @@ impl CompilationSession {
             .and_then(|c| c.variable_ids.get(&v).copied())
     }
 
+    /// Resolve a user constraint to its compiled row id in the current base.
+    pub(crate) fn compiled_row_id(&self, c: ConId) -> Option<CompiledConstraintId> {
+        self.current
+            .as_ref()
+            .and_then(|current| current.row_ids.get(&c).copied())
+    }
+
+    /// The next dense compiled variable index in the current base.
+    pub(crate) fn next_variable_index(&self) -> Option<u32> {
+        self.current.as_ref().map(|c| c.next_variable_index)
+    }
+
+    /// The next dense compiled objective index in the current base.
+    pub(crate) fn next_objective_index(&self) -> Option<u32> {
+        self.current.as_ref().map(|c| c.next_objective_index)
+    }
+
     /// Resolve a user objective to its compiled objective id in the current
     /// compiled base (P27 Task 9 overlay compiler; additive, no behavior
     /// change).
