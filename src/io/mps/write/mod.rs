@@ -239,10 +239,12 @@ fn normalize_document(
     report.nonzeros = columns
         .iter()
         .filter_map(|column| match column {
-            MpsColumnRecord::Entries { entries, .. } => Some(entries.len()),
+            MpsColumnRecord::Entries { entries, .. } => Some(entries),
             MpsColumnRecord::Marker { .. } => None,
         })
-        .sum();
+        .flatten()
+        .filter(|entry| entry.value != 0.0)
+        .count();
     report.rhs_vector = (!rhs_entries.is_empty()).then(|| "RHS1".to_owned());
     report.ranges_vector = (!range_entries.is_empty()).then(|| "RNG1".to_owned());
     report.bounds_vector = (!bounds.is_empty()).then(|| "BND1".to_owned());

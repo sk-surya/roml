@@ -8,7 +8,7 @@ use roml::{
 };
 
 #[test]
-fn nonzeros_counts_normalized_columns_entries_including_zero_cells() {
+fn nonzeros_counts_only_mathematical_nonzero_cells() {
     let mut model = Model::with_name("report-accounting");
     let _synthetic = model
         .add_variable(continuous().named("synthetic"))
@@ -40,7 +40,7 @@ fn nonzeros_counts_normalized_columns_entries_including_zero_cells() {
 
     assert_eq!(report.columns, 3);
     assert_eq!(report.rows, 1);
-    assert_eq!(report.nonzeros, 3);
+    assert_eq!(report.nonzeros, 0);
 
     let output = String::from_utf8(bytes).expect("MPS output is UTF-8");
     assert!(output.contains("synthetic objective 0"));

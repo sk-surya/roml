@@ -27,6 +27,7 @@ before/after migration is in `MIGRATION.md`.
 ### Added
 
 #### MPS write-back qualification (P36)
+- `MpsWriteReport::nonzeros` now counts only mathematically nonzero emitted coefficients; explicit and synthetic zero entries remain in the MPS output but are excluded from the report.
 - Added deterministic solver-free free-MPS writing for representable linear
   LP/MILP models, including evaluated parameter snapshots, objective offsets,
   RHS/RANGES rows, variable domains, integer markers, typed errors, and
