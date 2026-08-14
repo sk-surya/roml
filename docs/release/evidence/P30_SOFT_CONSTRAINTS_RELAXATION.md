@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on implementation candidate `eb85fc09a451390092810bb0cfc13660bf0133c9` in the isolated `agent-p30-execute` worktree. The candidate is based on the owner-approved P30 decisions D-01 through D-15; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on implementation candidate `e412cb45b83750f61510765432087895a8bcb94c` in the isolated `agent-p30-execute` worktree. The candidate is based on the owner-approved P30 decisions D-01 through D-15; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -31,7 +31,7 @@ All commands ran at the candidate head above with Rust `1.97.1` and Cargo
 cargo fmt --all -- --check                         PASS
 cargo test -p roml --test feasibility_relaxation \
   --test feasibility_relaxation_faults \
-  --test relaxation_provider_policy -- --nocapture   PASS (8 tests)
+  --test relaxation_provider_policy -- --nocapture   PASS (11 tests)
 cargo test -p roml --test feasibility_relaxation_p29 \
   --test soft_constraints_qualification -- --nocapture PASS (5 tests)
 cargo test -p roml --all-targets                      PASS (all targets)

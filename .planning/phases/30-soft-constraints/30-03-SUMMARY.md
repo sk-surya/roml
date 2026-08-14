@@ -10,7 +10,7 @@ affects: [30-04, 31-lexicographic-objectives]
 actuals:
   tokens: 35400
   tasks: 2
-  commits: 4
+  commits: 5
 tech-stack:
   added: []
   patterns: [solve-scoped compiled objective, transactional rollback, composite operational errors]
@@ -48,7 +48,8 @@ and cannot emit a successful report until cleanup is verified.
   ReferenceBackend apply/rollback support.
 - Added preflight validation, cap/weight evaluation, exact compilation checks,
   fallback metadata, and composite cleanup/rebuild errors.
-- Added end-to-end tracer, provider, and cleanup contract tests.
+- Added end-to-end tracer, provider, cleanup, injected backend-fault, and
+  rebuild contract tests.
 
 ## Deviations from Plan
 
@@ -73,9 +74,9 @@ and cannot emit a successful report until cleanup is verified.
 
 ## Verification
 
-Portable relaxation focused tests passed (8 tests across tracer, provider, and
-cleanup files). Full core and HiGHS matrices, denied-warning clippy, rustdoc,
-package, and policy checks passed at closure.
+Portable relaxation focused tests passed (11 tests across tracer, provider, and
+cleanup/fault files). Full core and HiGHS matrices, denied-warning clippy,
+rustdoc, package, and policy checks passed at closure.
 
 ## Next Phase Readiness
 
