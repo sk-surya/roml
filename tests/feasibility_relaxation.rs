@@ -271,3 +271,34 @@ fn feasible_acceptance_is_not_promoted_to_optimality() {
     plan.acceptance = RelaxationAcceptance::AcceptFeasible;
     assert_eq!(plan.acceptance, RelaxationAcceptance::AcceptFeasible);
 }
+
+#[test]
+fn prefer_native_records_explicit_portable_fallback() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let constraint = model.add_constraint((x).ge(0.0)).unwrap();
+    let report = SolverSession::new(ReferenceSolveSession::new())
+        .solve_feasibility_relaxation(
+            &mut model,
+            FeasibilityRelaxationPlan {
+                scope: roml::solver::RelaxationScope::Explicit(vec![
+                    roml::solver::RelaxationRestriction::ConstraintSide {
+                        constraint,
+                        side: roml::solver::infeasibility::BoundSide::Lower,
+                    },
+                ]),
+                provider_policy: RelaxationProviderPolicy::PreferNative,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        report.metadata.provider,
+        roml::solver::RelaxationExecutionProvider::PortableRoml
+    );
+    assert!(report
+        .metadata
+        .provider_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("portable ROML")));
+}
