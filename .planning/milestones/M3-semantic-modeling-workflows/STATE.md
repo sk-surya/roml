@@ -3,15 +3,15 @@
 ## Routing state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** completion planning under review  
-**Planned routing target:** P36 — MPS write-back  
-**Active production implementation:** **none** until PR #45 is accepted and merged  
-**Implementation authorization:** false  
-**Current authoritative main for this planning branch:** `main@4467797f002c93a1baab638b5e65976fb8492505`  
+**Status:** P36 implementation accepted; pending merge
+**Current routing target:** P36 — MPS write-back, pending owner-authorized merge of PR #46
+**Active production implementation:** P36 is complete on the exact candidate head; only closure/merge administration remains.
+**Implementation authorization:** true for P36 closure only; P30, P31, and P34 remain unauthorized.
+**Planning prerequisite:** PR #45 merged to `main` as `48fab4db347522cebc786393e5afcbdbcea98f33`.
 **Completion roadmap:** `COMPLETION-ROADMAP.md`  
 **Shared contracts:** `SHARED-CONTRACTS.md`
 
-`Planned routing target` means the phase GSD should activate next after its planning gate. It does **not** mean a production branch may exist yet.
+`Current routing target` identifies the phase at the active merge/authorization gate. It does **not** authorize a successor phase before its predecessor actually merges.
 
 ## Accepted phases
 
@@ -28,14 +28,14 @@
 | P33 | PWL / bound analysis | complete | accepted P33 evidence |
 | P34 | integrated M3 qualification | planned, inactive | SM-15 + P34 qualification contract; gated by P31 merge |
 | P35 | MPS import / corpus qualification | complete | PR #44 merge `7159fad8830b32f5a9377174e6e57bb24f99de95` |
-| P36 | MPS write-back / round trip | planning review | gated by acceptance + merge of PR #45 |
+| P36 | MPS write-back / round trip | implementation accepted / pending merge | PR #46 exact-head closure evidence and owner-authorized merge |
 
 ## Binding completion sequence
 
 ```text
-PR #45 accepted + merged
-  -> P36 implementation active
-  -> P36 accepted + merged
+PR #45 accepted + merged (`48fab4db`)
+  -> P36 implementation accepted / pending merge (PR #46)
+  -> P36 actually merged
   -> P30 implementation active
   -> P30 accepted + merged
   -> P31 implementation active
@@ -87,7 +87,7 @@ P31 owns canonical `ObjectivePolicy` and `ObjectivePriority`; objective locks us
 
 - One production phase active at a time.
 - A planning/review branch may coexist with one production phase only when it does not authorize or accumulate future production code.
-- While PR #45 is unmerged, **zero** P36/P30/P31/P34 production phases are active.
+- P36 implementation is accepted and pending merge; P30, P31, and P34 remain inactive until their explicit predecessor merge gates are satisfied.
 - P34 starts only after all feature phases are merged and cross-phase contracts are stable.
 
 ## Evidence/update protocol
@@ -100,6 +100,7 @@ For each phase:
 5. require exact-head independent review and hosted mandatory CI;
 6. owner-authorized merge;
 7. only then update root/milestone state to authorize the next phase.
+8. Keep P30 gated until P36's implementation PR is actually merged; acceptance alone does not activate the successor.
 
 ## M3 stop condition
 
