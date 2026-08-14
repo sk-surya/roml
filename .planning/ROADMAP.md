@@ -6,8 +6,7 @@ This root file is the concise GSD routing projection. Historical milestone desig
 
 ```text
 PR #45 merged (`48fab4db`)
-  -> P36 implementation accepted / PR #46 pending merge
-  -> P36 merge
+  -> P36 merged via PR #46 (`8838effe`)
   -> P30 soft constraints / feasibility relaxation
   -> P31 objective policies / lexicographic solves
   -> P34 integrated M3 qualification / NLP readiness
@@ -15,11 +14,11 @@ PR #45 merged (`48fab4db`)
   -> M4 design gate only
 ```
 
-**Current routing target:** P36 pending merge.
-**Active production implementation:** P36 implementation accepted on PR #46 exact head `86ee71c685435510be8598337e7ecf8da20b1efd`; only governance closure and owner-authorized merge remain.
+**Current routing target:** P30 — soft constraints and feasibility relaxation.
+**Active production implementation:** P30 is authorized. P36 merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248` after exact-head qualification and review.
 **Hard rule:** `current_phase`/roadmap position is not authorization to create production code. `.planning/STATE.md` carries the explicit authorization flag.
 
-P36 is an owner-selected **program dependency** of P30. P30 may have had its mathematical prerequisites after P28, but the active completion program deliberately requires P36 to merge first so the MPS interchange/differential loop is closed before solve-semantics work resumes.
+P36 was an owner-selected **program dependency** of P30. That dependency is now satisfied, so solve-semantics work may resume at P30.
 
 ## Phase status
 
@@ -30,13 +29,13 @@ P36 is an owner-selected **program dependency** of P30. P30 may have had its mat
 | P27 | fixing / locks / overlays | complete | none |
 | P28 | SolvePlan / starts / hints | complete | none |
 | P29 | IIS / conflict analysis | complete | follow-up native/perf work is nonblocking |
-| P30 | soft constraints / relaxation | planned, inactive | P36 merge |
+| P30 | soft constraints / relaxation | active | P36 merged |
 | P31 | objective policies / lexicographic | planned, inactive | P30 merge |
 | P32 | semantic constructs | complete | none |
 | P33 | PWL / bound analysis | complete | none |
 | P34 | M3 final qualification | planned, inactive | P31 merge |
 | P35 | MPS import / corpus qualification | complete | residual broad Chinneck work is nonblocking |
-| P36 | deterministic MPS write-back | implementation accepted / pending merge | exact-head closure artifacts, CI/re-review, then owner-authorized PR #46 merge |
+| P36 | deterministic MPS write-back | complete | PR #46 merged; exact-head evidence retained |
 
 ## Binding authorities
 
