@@ -1121,6 +1121,55 @@ where
         })
     }
 
+    /// Run a repair over a complete P29 report selection and carry its source
+    /// declarations into the resulting P30 members.
+    ///
+    /// The session must already hold the exact compiled base named by the
+    /// report. Requiring that identity before entering the lifecycle keeps a
+    /// stale P29 selection from causing any backend mutation.
+    pub fn solve_feasibility_relaxation_from_p29(
+        &mut self,
+        model: &mut Model,
+        plan: FeasibilityRelaxationPlan,
+        report: &crate::solver::infeasibility::InfeasibilityReport,
+    ) -> Result<FeasibilityRelaxationReport, FeasibilityRelaxationError> {
+        if report.model_instance != model.instance()
+            || report.model_revision != model.current_revision()
+        {
+            return Err(FeasibilityRelaxationError::StaleIdentity(
+                "P29 report model identity/revision does not match the repair model".into(),
+            ));
+        }
+        let base = self.compiler.current_compilation().ok_or_else(|| {
+            FeasibilityRelaxationError::StaleIdentity(
+                "P29 repair requires an already synchronized exact base compilation".into(),
+            )
+        })?;
+        let mapped = crate::solver::relaxation::map_p29_members(
+            report,
+            model.instance(),
+            model.current_revision(),
+            base,
+        )?;
+        let mut plan = plan;
+        plan.scope = crate::solver::relaxation::RelaxationScope::Explicit(
+            mapped
+                .iter()
+                .map(|member| member.restriction.clone())
+                .collect(),
+        );
+        let mut result = self.solve_feasibility_relaxation(model, plan)?;
+        for member in &mut result.members {
+            if let Some(mapped_member) = mapped
+                .iter()
+                .find(|mapped| mapped.restriction == member.restriction)
+            {
+                member.source_provenance = mapped_member.source_provenance.clone();
+            }
+        }
+        Ok(result)
+    }
+
     fn rollback_relaxation(
         &mut self,
         receipt: &OverlayApplyReceipt,
