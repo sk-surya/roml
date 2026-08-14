@@ -70,8 +70,8 @@ pub use model::{
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
 pub use solution::{
-    metadata::SolveMetadata, metadata::SynchronizationMode, Solution, SolutionBuilder,
-    SolutionStore,
+    metadata::SolveMetadata, metadata::SynchronizationMode, ConstraintViolation, SignedCorrection,
+    Solution, SolutionBuilder, SolutionStore, ViolationError, ViolationPresentation,
 };
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,

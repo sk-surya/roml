@@ -61,7 +61,7 @@ use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::metadata::{EntityMetadata, EntityRef};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
-use crate::solution::Solution;
+use crate::solution::{SignedCorrection, Solution};
 // Options are now supplied via SolveRequest at the BackendSession boundary.
 // Legacy import removed.
 
@@ -3262,6 +3262,34 @@ impl Model {
         let expr = self.constraint_expression(con)?;
         let lhs = expr.evaluate(solution.as_var_lookup(), self.parameters.as_lookup());
         Ok((lhs - bounds.lower, bounds.upper - lhs))
+    }
+
+    /// Build explicit signed correction parts for a candidate left-hand value.
+    /// This operation is independent of persistent softening: it accepts a
+    /// value directly and never reads generated violation variables.
+    pub fn signed_correction(
+        &self,
+        con: ConId,
+        value: f64,
+    ) -> Result<SignedCorrection, ModelError> {
+        let bounds = self
+            .constraint_bounds(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?;
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("signed correction value"));
+        }
+        Ok(SignedCorrection {
+            positive: if bounds.lower.is_finite() {
+                (bounds.lower - value).max(0.0)
+            } else {
+                0.0
+            },
+            negative: if bounds.upper.is_finite() {
+                (value - bounds.upper).max(0.0)
+            } else {
+                0.0
+            },
+        })
     }
 
     /// Iterate over active constraints that are violated by the given solution.
