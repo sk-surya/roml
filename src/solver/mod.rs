@@ -37,10 +37,11 @@ pub use plan::{
     UnsupportedFeaturePolicy, VariableHint, VariableHints,
 };
 pub use relaxation::{
-    FeasibilityRelaxationError, FeasibilityRelaxationPlan, FeasibilityRelaxationReport,
-    RelaxationAcceptance, RelaxationExecutionProvider, RelaxationMetadata, RelaxationNumerics,
-    RelaxationObjective, RelaxationOutcome, RelaxationProviderPolicy, RelaxationRestriction,
-    RelaxationScope, RelaxationUnknownReason, RelaxedRestriction,
+    map_p29_members, FeasibilityRelaxationError, FeasibilityRelaxationPlan,
+    FeasibilityRelaxationReport, RelaxationAcceptance, RelaxationExecutionProvider,
+    RelaxationMappedRestriction, RelaxationMetadata, RelaxationNumerics, RelaxationObjective,
+    RelaxationOutcome, RelaxationProviderPolicy, RelaxationRestriction, RelaxationScope,
+    RelaxationUnknownReason, RelaxedRestriction,
 };
 
 /// Error type for solver operations.

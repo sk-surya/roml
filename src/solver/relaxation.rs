@@ -18,6 +18,7 @@ use crate::revision::ModelRevision;
 use crate::solution::Solution;
 use crate::solver::backend::TerminationStatus;
 use crate::solver::infeasibility::BoundSide;
+use crate::solver::infeasibility::{ConflictOrigin, InfeasibilityReport};
 use crate::solver::overlay::{CompiledOverlay, OverlayOp};
 use crate::solver::SolveStatus;
 
@@ -164,6 +165,16 @@ pub struct RelaxedRestriction {
     pub source_provenance: Option<String>,
 }
 
+/// A P29 restriction selected for repair, retaining imported/source-aware
+/// declaration metadata before it enters the solve-scoped overlay.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelaxationMappedRestriction {
+    /// Supported portable restriction.
+    pub restriction: RelaxationRestriction,
+    /// Source row/bound identity from the conflict declaration, when present.
+    pub source_provenance: Option<String>,
+}
+
 /// Identity and provider metadata for one repair report.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RelaxationMetadata {
@@ -234,6 +245,10 @@ pub enum FeasibilityRelaxationError {
     Preflight(String),
     /// No qualified native provider exists under `NativeRequired`.
     NativeProviderRequired,
+    /// A P29 member belongs to a semantic origin P30 does not relax.
+    UnsupportedOrigin(String),
+    /// A P29 report was not produced for the exact model/base requested.
+    StaleIdentity(String),
     /// Compiler/overlay construction failed before backend mutation.
     Compile(String),
     /// Backend apply/solve/extraction failure.
@@ -258,6 +273,68 @@ impl std::fmt::Display for FeasibilityRelaxationError {
 }
 
 impl std::error::Error for FeasibilityRelaxationError {}
+
+/// Convert a complete P29 report into P30 restrictions without filtering.
+///
+/// The identity tuple is checked before any member is converted. If one
+/// member has an unsupported semantic origin, the entire conversion fails;
+/// callers never receive a silently narrowed repair scope.
+pub fn map_p29_members(
+    report: &InfeasibilityReport,
+    model_instance: crate::identity::ModelInstanceId,
+    model_revision: ModelRevision,
+    compilation_id: CompilationId,
+) -> Result<Vec<RelaxationMappedRestriction>, FeasibilityRelaxationError> {
+    if report.model_instance != model_instance
+        || report.model_revision != model_revision
+        || report.compilation_id != compilation_id
+    {
+        return Err(FeasibilityRelaxationError::StaleIdentity(format!(
+            "P29 report identity ({:?}, {}, {:?}) does not match requested ({:?}, {}, {:?})",
+            report.model_instance,
+            report.model_revision,
+            report.compilation_id,
+            model_instance,
+            model_revision,
+            compilation_id
+        )));
+    }
+    report
+        .members
+        .iter()
+        .map(|member| {
+            let restriction = match &member.declaration.origin {
+                ConflictOrigin::ConstraintSide { constraint, side } => {
+                    RelaxationRestriction::ConstraintSide {
+                        constraint: *constraint,
+                        side: *side,
+                    }
+                }
+                ConflictOrigin::VariableBound { variable, side } => {
+                    RelaxationRestriction::VariableBound {
+                        variable: *variable,
+                        side: *side,
+                    }
+                }
+                ConflictOrigin::PersistentFixing { variable } => {
+                    RelaxationRestriction::PersistentFixing {
+                        variable: *variable,
+                    }
+                }
+                ref unsupported => {
+                    return Err(FeasibilityRelaxationError::UnsupportedOrigin(format!(
+                        "P29 conflict member {:?} is not a P30 portable restriction",
+                        unsupported
+                    )))
+                }
+            };
+            Ok(RelaxationMappedRestriction {
+                restriction,
+                source_provenance: member.declaration.name.clone(),
+            })
+        })
+        .collect()
+}
 
 /// Convert a regular solve status into the frozen unknown reason.
 pub(crate) fn unknown_reason(status: SolveStatus) -> RelaxationUnknownReason {
