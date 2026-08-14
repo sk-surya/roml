@@ -48,8 +48,10 @@ pub use construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
     ExtrapolationPolicy, FormulationPreference, IndicatorConstraint, IndicatorDirection,
-    MinMaxConstraint, MinMaxRelation, MinMaxSense, PiecewiseLinearConstraint, ProductOperand,
-    PwlCurvature, PwlPoint, PwlRelation, ReificationConstraint,
+    MinMaxConstraint, MinMaxRelation, MinMaxSense, PenaltyPolicy, PenaltyTarget,
+    PiecewiseLinearConstraint, ProductOperand, PwlCurvature, PwlPoint, PwlRelation,
+    ReificationConstraint, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
+    ViolationRole, ViolationSide,
 };
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
