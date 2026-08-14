@@ -736,6 +736,7 @@ pub(crate) fn report_members(
     let snapshot = model
         .take_snapshot()
         .map_err(|error| FeasibilityRelaxationError::Numerical(error.to_string()))?;
+    let mut seen_candidates = BTreeMap::new();
     let mut candidate_values = BTreeMap::new();
     for (variable, candidate) in values {
         if !candidate.is_finite() {
@@ -752,7 +753,7 @@ pub(crate) fn report_members(
                     "provider returned a candidate for unknown variable {variable:?}"
                 ))
             })?;
-        if candidate_values.insert(*variable, *candidate).is_some() {
+        if seen_candidates.insert(*variable, *candidate).is_some() {
             return Err(FeasibilityRelaxationError::Numerical(format!(
                 "provider returned duplicate candidate value for {variable:?}"
             )));
@@ -760,6 +761,7 @@ pub(crate) fn report_members(
         if !entry.active {
             continue;
         }
+        candidate_values.insert(*variable, *candidate);
 
         let domain = model.variable_domain(*variable).ok_or_else(|| {
             FeasibilityRelaxationError::Numerical(format!(
@@ -839,6 +841,25 @@ pub(crate) fn report_members(
             "model feasibility tolerance is non-finite or negative".into(),
         ));
     }
+    let value = |variable: VarId| {
+        let entry = snapshot
+            .variables
+            .iter()
+            .find(|entry| entry.id == variable)
+            .ok_or_else(|| {
+                FeasibilityRelaxationError::Numerical(format!(
+                    "missing candidate value for unknown variable {variable:?}"
+                ))
+            })?;
+        if !entry.active {
+            return Ok(0.0);
+        }
+        candidate_values.get(&variable).copied().ok_or_else(|| {
+            FeasibilityRelaxationError::Numerical(format!(
+                "missing candidate value for {variable:?}"
+            ))
+        })
+    };
     for entry in snapshot.constraints.iter().filter(|entry| entry.active) {
         let mut expression = 0.0;
         for cell in snapshot.cells.iter().filter(|cell| {
@@ -856,13 +877,7 @@ pub(crate) fn report_members(
                 )));
             }
             let variable = cell.cell_key.1;
-            let candidate = candidate_values.get(&variable).ok_or_else(|| {
-                FeasibilityRelaxationError::Numerical(format!(
-                    "missing candidate value for constraint {:?} variable {:?}",
-                    entry.id, variable
-                ))
-            })?;
-            expression += coefficient * candidate;
+            expression += coefficient * value(variable)?;
         }
         if !expression.is_finite() {
             return Err(FeasibilityRelaxationError::Numerical(format!(
@@ -898,13 +913,6 @@ pub(crate) fn report_members(
         }
     }
 
-    let value = |variable: VarId| {
-        candidate_values.get(&variable).copied().ok_or_else(|| {
-            FeasibilityRelaxationError::Numerical(format!(
-                "missing candidate value for {variable:?}"
-            ))
-        })
-    };
     let mut members = Vec::with_capacity(weighted.len());
     let mut total = 0.0;
     for (restriction, weight) in weighted {

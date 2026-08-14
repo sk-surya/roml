@@ -25,6 +25,7 @@ struct ReferenceSolveSession {
     revision: roml::ModelRevision,
     health: AdapterHealth,
     user_variables: HashMap<CompiledVariableId, roml::VarId>,
+    candidate_overrides: HashMap<roml::VarId, f64>,
     capabilities: BackendCapabilitySet,
 }
 
@@ -49,8 +50,13 @@ impl ReferenceSolveSession {
             revision: roml::ModelRevision::ZERO,
             health: AdapterHealth::Ready,
             user_variables: HashMap::new(),
+            candidate_overrides: HashMap::new(),
             capabilities: capabilities(),
         }
+    }
+
+    fn inject_candidate(&mut self, variable: roml::VarId, value: f64) {
+        self.candidate_overrides.insert(variable, value);
     }
 
     fn project_origins(&mut self, snapshot: &BackendSnapshot) {
@@ -71,7 +77,15 @@ impl ReferenceSolveSession {
                 self.inner
                     .compiled_variables
                     .get(compiled)
-                    .map(|(bounds, _)| (*user, bounds.lower))
+                    .map(|(bounds, _)| {
+                        (
+                            *user,
+                            self.candidate_overrides
+                                .get(user)
+                                .copied()
+                                .unwrap_or(bounds.lower),
+                        )
+                    })
             })
             .collect()
     }
@@ -268,6 +282,37 @@ fn portable_repair_ignores_inactive_compiled_candidate() {
     assert_eq!(report.members.len(), 1);
     assert!((report.total_weighted_violation - 2.0).abs() < 1e-7);
     assert_eq!(report.solution.values().get(&active), Some(&0.0));
+}
+
+#[test]
+fn portable_repair_treats_inactive_constraint_terms_as_zero() {
+    let mut model = Model::new();
+    let inactive = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let active = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let constraint = model.add_constraint((inactive + active).ge(2.0)).unwrap();
+    model.set_variable_active(inactive, false).unwrap();
+
+    let mut backend = ReferenceSolveSession::new();
+    backend.inject_candidate(inactive, 2.0);
+    let report = SolverSession::new(backend)
+        .solve_feasibility_relaxation(
+            &mut model,
+            FeasibilityRelaxationPlan {
+                scope: roml::solver::RelaxationScope::Explicit(vec![
+                    roml::solver::RelaxationRestriction::ConstraintSide {
+                        constraint,
+                        side: roml::solver::infeasibility::BoundSide::Lower,
+                    },
+                ]),
+                ..Default::default()
+            },
+        )
+        .expect("inactive terms must use their canonical zero value");
+
+    assert_eq!(report.outcome, RelaxationOutcome::OptimalRepair);
+    assert_eq!(report.members.len(), 1);
+    assert!((report.members[0].violation - 2.0).abs() < 1e-7);
+    assert!((report.total_weighted_violation - 2.0).abs() < 1e-7);
 }
 
 #[test]
