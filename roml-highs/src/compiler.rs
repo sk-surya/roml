@@ -78,7 +78,7 @@ pub(crate) fn missing_variable(id: CompiledVariableId) -> BackendError {
 
 /// F5: a typed error for an op referencing a compiled row not present in the
 /// held native state (no silent skip).
-fn missing_row(id: CompiledConstraintId) -> BackendError {
+pub(crate) fn missing_row(id: CompiledConstraintId) -> BackendError {
     BackendError::new(
         format!("compiled row {id:?} is not present in the held native state"),
         ErrorCategory::InvalidInput,
@@ -88,7 +88,7 @@ fn missing_row(id: CompiledConstraintId) -> BackendError {
 
 /// F5: a typed error for an op referencing a compiled objective not present in
 /// the held native state (no silent skip).
-fn missing_objective(id: CompiledObjectiveId) -> BackendError {
+pub(crate) fn missing_objective(id: CompiledObjectiveId) -> BackendError {
     BackendError::new(
         format!("compiled objective {id:?} is not present in the held native state"),
         ErrorCategory::InvalidInput,
@@ -98,7 +98,7 @@ fn missing_objective(id: CompiledObjectiveId) -> BackendError {
 
 /// Clear all column costs to zero (used before projecting an active
 /// objective, so stale costs from a previous objective never blend in).
-unsafe fn clear_all_costs(raw: *mut c_void) -> Result<(), BackendError> {
+pub(crate) unsafe fn clear_all_costs(raw: *mut c_void) -> Result<(), BackendError> {
     let num_cols = Highs_getNumCol(raw);
     if num_cols > 0 {
         let zeros = vec![0.0_f64; num_cols as usize];
@@ -200,6 +200,64 @@ pub(crate) fn project_objective_policy(
                  projection (P31 compiles it)",
             ));
         }
+    }
+    Ok(())
+}
+
+/// Project a solve-scoped objective that has no user objective identity.
+///
+/// Portable feasibility repair creates an objective whose coefficients refer
+/// to temporary violation columns. Those columns are deliberately absent from
+/// the persistent user-objective maps, so the ordinary policy projector cannot
+/// resolve the objective by `ObjId`. This helper projects the complete
+/// temporary objective directly and leaves ownership/rollback to the overlay
+/// session.
+pub(crate) fn project_temporary_objective(
+    raw: *mut c_void,
+    objective: &roml::advanced::CompiledObjective,
+    col_map: &IndexMap<CompiledVariableId>,
+) -> Result<(), BackendError> {
+    // Resolve every coefficient before changing native costs. A malformed
+    // solve-scoped objective must not clear a persistent objective and then
+    // fail halfway through projection.
+    let mapped_coefficients: Vec<(HighsInt, f64)> = objective
+        .coefficients
+        .iter()
+        .map(|(variable, cost)| {
+            col_map
+                .get(*variable)
+                .map(|col| (col, *cost))
+                .ok_or_else(|| missing_variable(*variable))
+        })
+        .collect::<Result<_, _>>()?;
+
+    // SAFETY: raw is a valid HiGHS instance handle owned by the session.
+    unsafe {
+        clear_all_costs(raw)?;
+    }
+    for (col, cost) in mapped_coefficients {
+        // SAFETY: raw is valid and col was resolved from the live column map.
+        unsafe {
+            check_highs_status(
+                Highs_changeColCost(raw, col, cost),
+                raw,
+                "Highs_changeColCost (temporary objective)",
+            )?;
+        }
+    }
+    // SAFETY: raw is valid; the objective fields were validated by the
+    // portable overlay compiler before reaching this projection.
+    unsafe {
+        check_highs_status(
+            Highs_changeObjectiveSense(raw, sense_to_highs(objective.sense)),
+            raw,
+            "Highs_changeObjectiveSense (temporary objective)",
+        )?;
+        check_highs_status(
+            Highs_changeObjectiveOffset(raw, objective.constant),
+            raw,
+            "Highs_changeObjectiveOffset (temporary objective)",
+        )?;
     }
     Ok(())
 }
