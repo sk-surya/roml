@@ -546,6 +546,10 @@ impl CompilationSession {
                         next_row_index,
                     )?
                 }
+                ConstructKind::SoftConstraint(_) => return Err(CompileError::UnsupportedFeature(
+                    "persistent soft-constraint compilation is not enabled in this compiler slice"
+                        .into(),
+                )),
                 // Test-only crate-private P32 fixture scaffolding is never
                 // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
                 // builds).
@@ -1393,6 +1397,24 @@ fn validate_construct_finiteness(
                         reason: format!("non-finite evaluated point value {value}"),
                     });
                 }
+            }
+            Ok(())
+        }
+        ConstructKind::SoftConstraint(payload) => {
+            let weight = payload
+                .penalty
+                .weight
+                .eval_checked(|parameter| {
+                    parameter_values.get(&parameter).copied().ok_or(parameter)
+                })
+                .map_err(|parameter| CompileError::MissingConstructParameter {
+                    construct,
+                    parameter,
+                })?;
+            if !weight.is_finite() || weight < 0.0 {
+                return Err(CompileError::UnsupportedFeature(format!(
+                    "soft-constraint penalty weight must be finite and non-negative for {construct:?}"
+                )));
             }
             Ok(())
         }
