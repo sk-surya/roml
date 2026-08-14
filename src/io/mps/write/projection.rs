@@ -405,8 +405,14 @@ pub(crate) fn project_snapshot(
         rows: row_name_map,
         objective: objective_name_map.and_then(|mut names| names.pop()),
     };
-    let nonzeros = rows.iter().map(|row| row.cells.len()).sum::<usize>()
-        + objective.as_ref().map_or(0, |obj| obj.cells.len());
+    let nonzeros = rows
+        .iter()
+        .flat_map(|row| row.cells.iter())
+        .filter(|cell| cell.value != 0.0)
+        .count()
+        + objective.as_ref().map_or(0, |obj| {
+            obj.cells.iter().filter(|cell| cell.value != 0.0).count()
+        });
     let ranges_vector = rows
         .iter()
         .any(|row| {
