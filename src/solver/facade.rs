@@ -1007,10 +1007,35 @@ where
         let receipt = match self.backend.apply_overlay(&compiled) {
             Ok(receipt) => receipt,
             Err(error) => {
-                self.force_rebuild_on_next_sync();
-                return Err(FeasibilityRelaxationError::Backend(error.to_string()));
+                // An apply error carries no receipt, but the backend may have
+                // mutated before reporting it. Reconstruct the exact receipt
+                // tuple from the immutable compiled overlay and run the same
+                // rollback/verification path as every later failure. This
+                // preserves both the primary apply error and any cleanup or
+                // rebuild evidence.
+                let possible_receipt = OverlayApplyReceipt {
+                    overlay_id,
+                    base_compilation: compiled.base_compilation,
+                    applied_compilation: compiled.compilation_id,
+                };
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &possible_receipt,
+                );
             }
         };
+        if receipt.overlay_id != overlay_id
+            || receipt.base_compilation != compiled.base_compilation
+            || receipt.applied_compilation != relaxation_compilation_id
+        {
+            return self.relaxation_failure(
+                FeasibilityRelaxationError::Backend(format!(
+                    "relaxation apply returned mismatched receipt: {:?}",
+                    receipt
+                )),
+                &receipt,
+            );
+        }
 
         let result = match self.backend.solve(&request) {
             Ok(result) => result,
@@ -1047,11 +1072,6 @@ where
                 &receipt,
             );
         }
-        let candidate_values = result
-            .solution
-            .as_ref()
-            .map(|solution| solution.variable_values.as_slice())
-            .unwrap_or(&[]);
         if matches!(status, SolveStatus::Optimal | SolveStatus::Feasible)
             && result.solution.is_none()
         {
@@ -1062,11 +1082,41 @@ where
                 &receipt,
             );
         }
-        let (members, total_weighted_violation) =
-            match report_members(model, &weighted, candidate_values) {
+        let (members, total_weighted_violation) = if let Some(candidate) = &result.solution {
+            let evidence = match report_members(model, &weighted, &candidate.variable_values) {
                 Ok(evidence) => evidence,
                 Err(error) => return self.relaxation_failure(error, &receipt),
             };
+            if matches!(status, SolveStatus::Optimal | SolveStatus::Feasible)
+                && !candidate
+                    .objective_value
+                    .is_some_and(|objective| objective.is_finite())
+            {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Numerical(
+                        "repair provider returned a missing or non-finite objective value".into(),
+                    ),
+                    &receipt,
+                );
+            }
+            if let Some(objective) = candidate.objective_value {
+                if !objective.is_finite()
+                    || (objective - evidence.1).abs()
+                        > 1e-7 * objective.abs().max(evidence.1.abs()).max(1.0)
+                {
+                    return self.relaxation_failure(
+                        FeasibilityRelaxationError::Numerical(format!(
+                            "repair objective {objective} is inconsistent with evidence {}",
+                            evidence.1
+                        )),
+                        &receipt,
+                    );
+                }
+            }
+            evidence
+        } else {
+            (Vec::new(), 0.0)
+        };
         let outcome = match status {
             SolveStatus::Optimal => RelaxationOutcome::OptimalRepair,
             SolveStatus::Feasible => match plan.acceptance {

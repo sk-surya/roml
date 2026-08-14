@@ -263,7 +263,18 @@ impl CompiledOverlay {
                             entity: CompiledEntityRef::Variable(variable.id),
                         });
                     }
-                    if self.origin_additions.variable_origin(variable.id).is_none() {
+                    // P2-01: a temporary variable is valid only when its
+                    // origin identifies this exact overlay and the role
+                    // assigned to the relaxation variable family. Merely
+                    // recording some origin would permit cross-overlay or
+                    // row/objective provenance to be misapplied.
+                    let origin_matches = matches!(
+                        self.origin_additions.variable_origin(variable.id),
+                        Some(EntityOrigin::SolveOverlay { overlay, role })
+                            if *overlay == self.overlay_id
+                                && *role == GeneratedRole::FeasibilityRelaxationViolationVariable
+                    );
+                    if !origin_matches {
                         return Err(CompileError::MissingOrigin {
                             entity: CompiledEntityRef::Variable(variable.id),
                         });
@@ -282,11 +293,17 @@ impl CompiledOverlay {
                             entity: CompiledEntityRef::Objective(objective.id),
                         });
                     }
-                    if self
-                        .origin_additions
-                        .objective_origin(objective.id)
-                        .is_none()
-                    {
+                    // The core compiler has no separate objective role for
+                    // this solve-scoped formulation. `Bridge` is the
+                    // explicit solver-overlay marker for the generated
+                    // weighted-L1 objective; exact overlay identity remains
+                    // mandatory here.
+                    let origin_matches = matches!(
+                        self.origin_additions.objective_origin(objective.id),
+                        Some(EntityOrigin::SolveOverlay { overlay, role })
+                            if *overlay == self.overlay_id && *role == GeneratedRole::Bridge
+                    );
+                    if !origin_matches {
                         return Err(CompileError::MissingOrigin {
                             entity: CompiledEntityRef::Objective(objective.id),
                         });
@@ -837,4 +854,144 @@ fn objective_compiled_terms(
         .ok_or(OverlayError::ObjectiveNotFound(objective))?;
     coefficients.sort_by_key(|(id, _)| *id);
     Ok((coefficients, constant))
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use crate::compiler::backend_ir::{
+        CompilationId, CompiledEntityRegistry, CompiledObjective, CompiledVariable,
+    };
+    use crate::compiler::origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId};
+    use crate::model::{Bounds, Sense, VarType};
+
+    fn envelope() -> (CompilationId, CompilationId, OverlayId) {
+        (
+            CompilationId::allocate().unwrap(),
+            CompilationId::allocate().unwrap(),
+            OverlayId::allocate().unwrap(),
+        )
+    }
+
+    #[test]
+    fn validate_rejects_temporary_variable_from_wrong_overlay_or_role() {
+        let (base, compiled, overlay) = envelope();
+        let variable = CompiledVariableId(0);
+        let mut origins = OriginMap::new();
+        origins.insert_variable(
+            variable,
+            EntityOrigin::SolveOverlay {
+                overlay,
+                role: GeneratedRole::FeasibilityRelaxationViolationRow,
+            },
+        );
+        let packet = CompiledOverlay {
+            base_compilation: base,
+            compilation_id: compiled,
+            overlay_id: overlay,
+            operations: vec![OverlayOp::AddTemporaryVariable {
+                variable: CompiledVariable {
+                    id: variable,
+                    bounds: Bounds::NON_NEGATIVE,
+                    var_type: VarType::Continuous,
+                    name: None,
+                },
+            }],
+            origin_additions: origins,
+            objective_policy_override: None,
+        };
+
+        assert!(matches!(
+            packet.validate(&CompiledEntityRegistry::default()),
+            Err(CompileError::MissingOrigin { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_temporary_variable_from_another_overlay() {
+        let (base, compiled, overlay) = envelope();
+        let variable = CompiledVariableId(0);
+        let other_overlay = OverlayId::allocate().unwrap();
+        let mut origins = OriginMap::new();
+        origins.insert_variable(
+            variable,
+            EntityOrigin::SolveOverlay {
+                overlay: other_overlay,
+                role: GeneratedRole::FeasibilityRelaxationViolationVariable,
+            },
+        );
+        let packet = CompiledOverlay {
+            base_compilation: base,
+            compilation_id: compiled,
+            overlay_id: overlay,
+            operations: vec![OverlayOp::AddTemporaryVariable {
+                variable: CompiledVariable {
+                    id: variable,
+                    bounds: Bounds::NON_NEGATIVE,
+                    var_type: VarType::Continuous,
+                    name: None,
+                },
+            }],
+            origin_additions: origins,
+            objective_policy_override: None,
+        };
+
+        assert!(matches!(
+            packet.validate(&CompiledEntityRegistry::default()),
+            Err(CompileError::MissingOrigin { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_temporary_objective_without_exact_relaxation_origin() {
+        let (base, compiled, overlay) = envelope();
+        let variable = CompiledVariableId(0);
+        let objective = CompiledObjectiveId(0);
+        let mut origins = OriginMap::new();
+        origins.insert_variable(
+            variable,
+            EntityOrigin::SolveOverlay {
+                overlay,
+                role: GeneratedRole::FeasibilityRelaxationViolationVariable,
+            },
+        );
+        origins.insert_objective(
+            objective,
+            EntityOrigin::SolveOverlay {
+                overlay,
+                role: GeneratedRole::FeasibilityRelaxationViolationRow,
+            },
+        );
+        let packet = CompiledOverlay {
+            base_compilation: base,
+            compilation_id: compiled,
+            overlay_id: overlay,
+            operations: vec![
+                OverlayOp::AddTemporaryVariable {
+                    variable: CompiledVariable {
+                        id: variable,
+                        bounds: Bounds::NON_NEGATIVE,
+                        var_type: VarType::Continuous,
+                        name: None,
+                    },
+                },
+                OverlayOp::AddTemporaryObjective {
+                    objective: CompiledObjective {
+                        id: objective,
+                        sense: Sense::Minimize,
+                        coefficients: vec![(variable, 1.0)],
+                        constant: 0.0,
+                        name: None,
+                    },
+                },
+            ],
+            origin_additions: origins,
+            objective_policy_override: None,
+        };
+
+        assert!(matches!(
+            packet.validate(&CompiledEntityRegistry::default()),
+            Err(CompileError::MissingOrigin { .. })
+        ));
+    }
 }

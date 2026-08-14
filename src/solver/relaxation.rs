@@ -4,6 +4,8 @@
 //! types in this module describe one weighted-L1 repair attempt; they do not
 //! add objective-priority or lexicographic semantics owned by P31.
 
+use std::collections::BTreeMap;
+
 use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::backend_ir::{
     CompiledConstraintId, CompiledLinearRow, CompiledObjective, CompiledObjectiveId,
@@ -606,7 +608,10 @@ pub(crate) fn compile_portable_overlay(
         objective_id,
         EntityOrigin::SolveOverlay {
             overlay: overlay_id,
-            role: GeneratedRole::FeasibilityRelaxationViolationRow,
+            // `Bridge` is the explicit solver-local role for the generated
+            // weighted-L1 objective; the core compiler role set is owned by
+            // another phase and cannot be extended here.
+            role: GeneratedRole::Bridge,
         },
     );
     operations.push(OverlayOp::AddTemporaryObjective {
@@ -731,11 +736,177 @@ pub(crate) fn report_members(
     let snapshot = model
         .take_snapshot()
         .map_err(|error| FeasibilityRelaxationError::Numerical(error.to_string()))?;
-    let value = |variable: VarId| {
-        values
+    let mut candidate_values = BTreeMap::new();
+    for (variable, candidate) in values {
+        if !candidate.is_finite() {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "provider returned non-finite candidate value {candidate} for {variable:?}"
+            )));
+        }
+        if !snapshot
+            .variables
             .iter()
-            .find_map(|(candidate, value)| (*candidate == variable).then_some(*value))
-            .unwrap_or(0.0)
+            .any(|entry| entry.id == *variable && entry.active)
+        {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "provider returned a candidate for unknown or inactive variable {variable:?}"
+            )));
+        }
+        if candidate_values.insert(*variable, *candidate).is_some() {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "provider returned duplicate candidate value for {variable:?}"
+            )));
+        }
+
+        let domain = model.variable_domain(*variable).ok_or_else(|| {
+            FeasibilityRelaxationError::Numerical(format!(
+                "candidate variable {variable:?} is stale"
+            ))
+        })?;
+        let relax_lower = weighted.iter().any(|(restriction, _)| match restriction {
+            RelaxationRestriction::VariableBound {
+                variable: candidate,
+                side,
+            } if candidate == variable => *side == BoundSide::Lower,
+            RelaxationRestriction::PersistentFixing {
+                variable: candidate,
+            } if candidate == variable => true,
+            _ => false,
+        });
+        let relax_upper = weighted.iter().any(|(restriction, _)| match restriction {
+            RelaxationRestriction::VariableBound {
+                variable: candidate,
+                side,
+            } if candidate == variable => *side == BoundSide::Upper,
+            RelaxationRestriction::PersistentFixing {
+                variable: candidate,
+            } if candidate == variable => true,
+            _ => false,
+        });
+        let bounds = if weighted.iter().any(|(restriction, _)| {
+            matches!(
+                restriction,
+                RelaxationRestriction::PersistentFixing { variable: candidate }
+                    if candidate == variable
+            )
+        }) {
+            domain.bounds
+        } else {
+            model.effective_bounds(*variable).ok_or_else(|| {
+                FeasibilityRelaxationError::Numerical(format!(
+                    "candidate variable {variable:?} is stale"
+                ))
+            })?
+        };
+        if (!relax_lower && *candidate < bounds.lower)
+            || (!relax_upper && *candidate > bounds.upper)
+        {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "candidate value {candidate} violates domain of {variable:?}"
+            )));
+        }
+        if matches!(
+            domain.var_type,
+            crate::model::VarType::Integer | crate::model::VarType::Binary
+        ) && (candidate - candidate.round()).abs() > model.integrality_tolerance()
+        {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "candidate value {candidate} is non-integral for {variable:?}"
+            )));
+        }
+        if let Some(nonzero_lower) = snapshot
+            .variables
+            .iter()
+            .find(|entry| entry.id == *variable)
+            .and_then(|entry| entry.semicontinuous_lower)
+        {
+            if *candidate != 0.0 && *candidate < nonzero_lower {
+                return Err(FeasibilityRelaxationError::Numerical(format!(
+                    "candidate value {candidate} violates semi-continuous domain of {variable:?}"
+                )));
+            }
+        }
+    }
+    for entry in snapshot.variables.iter().filter(|entry| entry.active) {
+        if !candidate_values.contains_key(&entry.id) {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "provider omitted required candidate value for {:?}",
+                entry.id
+            )));
+        }
+    }
+
+    let tolerance = model.constants.feasibility_tolerance;
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(FeasibilityRelaxationError::Numerical(
+            "model feasibility tolerance is non-finite or negative".into(),
+        ));
+    }
+    for entry in snapshot.constraints.iter().filter(|entry| entry.active) {
+        let mut expression = 0.0;
+        for cell in snapshot.cells.iter().filter(|cell| {
+            matches!(
+                cell.cell_key.0,
+                crate::model::coefficient::CoefficientTarget::Constraint(candidate)
+                    if candidate == entry.id
+            )
+        }) {
+            let coefficient = cell.evaluated_value;
+            if !coefficient.is_finite() {
+                return Err(FeasibilityRelaxationError::Numerical(format!(
+                    "non-finite coefficient while validating constraint {:?}",
+                    entry.id
+                )));
+            }
+            let variable = cell.cell_key.1;
+            let candidate = candidate_values.get(&variable).ok_or_else(|| {
+                FeasibilityRelaxationError::Numerical(format!(
+                    "missing candidate value for constraint {:?} variable {:?}",
+                    entry.id, variable
+                ))
+            })?;
+            expression += coefficient * candidate;
+        }
+        if !expression.is_finite() {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "non-finite candidate expression for constraint {:?}",
+                entry.id
+            )));
+        }
+        let lower_relaxed = weighted.iter().any(|(restriction, _)| {
+            matches!(
+                restriction,
+                RelaxationRestriction::ConstraintSide { constraint, side: BoundSide::Lower }
+                    if *constraint == entry.id
+            )
+        });
+        let upper_relaxed = weighted.iter().any(|(restriction, _)| {
+            matches!(
+                restriction,
+                RelaxationRestriction::ConstraintSide { constraint, side: BoundSide::Upper }
+                    if *constraint == entry.id
+            )
+        });
+        if (!lower_relaxed
+            && entry.bounds.lower.is_finite()
+            && expression < entry.bounds.lower - tolerance)
+            || (!upper_relaxed
+                && entry.bounds.upper.is_finite()
+                && expression > entry.bounds.upper + tolerance)
+        {
+            return Err(FeasibilityRelaxationError::Numerical(format!(
+                "candidate violates non-relaxed base constraint {:?}",
+                entry.id
+            )));
+        }
+    }
+
+    let value = |variable: VarId| {
+        candidate_values.get(&variable).copied().ok_or_else(|| {
+            FeasibilityRelaxationError::Numerical(format!(
+                "missing candidate value for {variable:?}"
+            ))
+        })
     };
     let mut members = Vec::with_capacity(weighted.len());
     let mut total = 0.0;
@@ -758,11 +929,20 @@ pub(crate) fn report_members(
                         crate::model::coefficient::CoefficientTarget::Constraint(candidate)
                             if candidate == *constraint =>
                         {
-                            Some(cell.evaluated_value * value(cell.cell_key.1))
+                            Some((cell, cell.cell_key.1))
                         }
                         _ => None,
                     })
-                    .sum::<f64>();
+                    .try_fold(0.0, |sum, (cell, variable)| {
+                        let candidate = value(variable)?;
+                        let term = cell.evaluated_value * candidate;
+                        if !term.is_finite() {
+                            return Err(FeasibilityRelaxationError::Numerical(
+                                "non-finite candidate constraint term".into(),
+                            ));
+                        }
+                        Ok(sum + term)
+                    })?;
                 match side {
                     BoundSide::Lower => (entry.bounds.lower - expression).max(0.0),
                     BoundSide::Upper => (expression - entry.bounds.upper).max(0.0),
@@ -779,8 +959,8 @@ pub(crate) fn report_members(
                         ))
                     })?;
                 match side {
-                    BoundSide::Lower => (entry.bounds.lower - value(*variable)).max(0.0),
-                    BoundSide::Upper => (value(*variable) - entry.bounds.upper).max(0.0),
+                    BoundSide::Lower => (entry.bounds.lower - value(*variable)?).max(0.0),
+                    BoundSide::Upper => (value(*variable)? - entry.bounds.upper).max(0.0),
                 }
             }
             RelaxationRestriction::PersistentFixing { variable } => {
@@ -802,13 +982,24 @@ pub(crate) fn report_members(
                         ))
                     })?
                     .value;
-                (value(*variable) - fixed).abs()
+                (value(*variable)? - fixed).abs()
             }
         };
         if !violation.is_finite() || !weight.is_finite() {
             return Err(FeasibilityRelaxationError::Numerical(
                 "provider returned non-finite relaxation evidence".into(),
             ));
+        }
+        if let Some(cap) = restriction_cap(model, restriction).map_err(|error| {
+            FeasibilityRelaxationError::Numerical(format!(
+                "invalid temporary violation cap: {error}"
+            ))
+        })? {
+            if violation > cap + tolerance {
+                return Err(FeasibilityRelaxationError::Numerical(format!(
+                    "candidate violation {violation} exceeds temporary row cap {cap}"
+                )));
+            }
         }
         let weighted_violation = violation * *weight;
         total += weighted_violation;
@@ -1055,3 +1246,44 @@ fn _termination_status(status: TerminationStatus) -> SolveStatus {
 // aliases in the core model.
 #[allow(dead_code)]
 fn _typed_ids(_: ConId, _: VarId, _: Objective) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::ConstraintExprExt;
+    use crate::model::{continuous, Model};
+
+    #[test]
+    fn report_members_rejects_missing_candidate_values() {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        let constraint = model.add_constraint(x.ge(1.0)).unwrap();
+        let weighted = vec![(
+            RelaxationRestriction::ConstraintSide {
+                constraint,
+                side: BoundSide::Lower,
+            },
+            1.0,
+        )];
+
+        let error = report_members(&model, &weighted, &[]).unwrap_err();
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message)
+                if message.contains("candidate")
+        ));
+    }
+
+    #[test]
+    fn report_members_rejects_nonfinite_candidate_values_even_without_evidence() {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+
+        let error = report_members(&model, &[], &[(x, f64::NAN)]).unwrap_err();
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message)
+                if message.contains("non-finite candidate value")
+        ));
+    }
+}
