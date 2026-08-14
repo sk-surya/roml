@@ -46,7 +46,8 @@ fn characterize_highs_flat_capabilities() {
 
 /// The HiGHS typed capability set declares the M2-native features `Native`,
 /// the P28-qualified MIP start features `Native` (SM-08.7), and every
-/// remaining unqualified M3 feature `Unsupported` (SM-04.2/SM-04.4).
+/// remaining unqualified M3 feature `Unsupported`, while P30's portable
+/// repair and soft-constraint surfaces are explicit bridges (SM-04.2/SM-04.4).
 #[test]
 fn highs_typed_capability_set_native_and_unsupported() {
     let set = highs_capability_set(1, 15, 0);
@@ -80,7 +81,6 @@ fn highs_typed_capability_set_native_and_unsupported() {
         BackendFeature::MultipleMipStarts,
         BackendFeature::VariableHints,
         BackendFeature::InitialBasis,
-        BackendFeature::FeasibilityRelaxation,
         BackendFeature::Indicator,
         BackendFeature::Sos1,
         BackendFeature::Sos2,
@@ -91,6 +91,21 @@ fn highs_typed_capability_set_native_and_unsupported() {
         assert!(
             !set.supports(feature),
             "M3 feature {:?} must be Unsupported",
+            feature
+        );
+    }
+    for feature in [
+        BackendFeature::FeasibilityRelaxation,
+        BackendFeature::SoftConstraint,
+    ] {
+        assert!(
+            set.is_bridge(feature),
+            "P30 feature {:?} must be declared as a portable bridge",
+            feature
+        );
+        assert!(
+            !set.supports(feature),
+            "P30 feature {:?} must not claim native support",
             feature
         );
     }
