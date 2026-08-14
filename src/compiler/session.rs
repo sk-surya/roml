@@ -41,7 +41,7 @@ use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
 use crate::construct::{
     derive_parameter_dependencies, derive_variable_dependencies, Construct, ConstructKind,
-    FormulationPreference, ProductOperand,
+    FormulationPreference, PenaltyTarget, ProductOperand, SoftConstraintConstraint,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -49,7 +49,7 @@ use crate::function::{ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::identity::ModelInstanceId;
 use crate::model::coefficient::CoefficientTarget;
-use crate::model::{Bounds, ConstraintBounds, VarType};
+use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::value_expr::ValueExpr;
@@ -546,10 +546,14 @@ impl CompilationSession {
                         next_row_index,
                     )?
                 }
-                ConstructKind::SoftConstraint(_) => return Err(CompileError::UnsupportedFeature(
-                    "persistent soft-constraint compilation is not enabled in this compiler slice"
-                        .into(),
-                )),
+                ConstructKind::SoftConstraint(payload) => {
+                    crate::compiler::bridge::soft_constraint::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
                 // Test-only crate-private P32 fixture scaffolding is never
                 // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
                 // builds).
@@ -579,6 +583,29 @@ impl CompilationSession {
             construct_rows.extend(output.rows);
             construct_origins.merge(output.origin_map);
             construct_decisions.extend(output.decisions);
+        }
+
+        // Persistent soft penalties are ordinary objective cells in the
+        // solver-neutral IR.  Apply the sense normalization here, after the
+        // bridge has allocated stable violation variables and before the
+        // snapshot builder can be observed by a backend.
+        for entry in &snapshot.constructs {
+            if !entry.active {
+                continue;
+            }
+            if let ConstructKind::SoftConstraint(payload) = &entry.kind {
+                add_soft_penalty_objective(
+                    payload,
+                    entry.id,
+                    &construct_origins,
+                    &objective_ids,
+                    &mut objectives,
+                    &parameter_values,
+                )?;
+            }
+        }
+        for objective in &objectives {
+            compiled_objective_coefficients.insert(objective.id, objective.coefficients.clone());
         }
 
         // WR-02: construct-generated binaries (exact minmax/abs/clamp selector
@@ -1421,6 +1448,66 @@ fn validate_construct_finiteness(
         #[cfg(test)]
         ConstructKind::Fixture(_) => Ok(()),
     }
+}
+
+/// Add persistent soft violation variables to their explicitly selected
+/// canonical objective.  This stays in the identity compiler rather than in
+/// the bridge so the bridge remains a portable row/variable formulation and
+/// objective sense normalization is performed against the compiled objective
+/// that will actually reach the backend.
+fn add_soft_penalty_objective(
+    payload: &SoftConstraintConstraint,
+    construct: Construct,
+    origins: &OriginMap,
+    objective_ids: &HashMap<ObjId, CompiledObjectiveId>,
+    objectives: &mut [CompiledObjective],
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    let target = match payload.penalty.target {
+        PenaltyTarget::None => return Ok(()),
+        PenaltyTarget::Objective(objective) => objective,
+    };
+    let compiled_objective = objective_ids.get(&target).copied().ok_or_else(|| {
+        CompileError::UnsupportedFeature(format!(
+            "soft constraint {construct:?} targets objective {target:?} absent from snapshot"
+        ))
+    })?;
+    let weight = payload
+        .penalty
+        .weight
+        .eval_checked(|parameter| parameter_values.get(&parameter).copied().ok_or(parameter))
+        .map_err(|parameter| CompileError::MissingConstructParameter {
+            construct,
+            parameter,
+        })?;
+    if !weight.is_finite() || weight < 0.0 {
+        return Err(CompileError::UnsupportedFeature(format!(
+            "soft-constraint penalty weight must be finite and non-negative for {construct:?}"
+        )));
+    }
+    let objective = objectives
+        .iter_mut()
+        .find(|objective| objective.id == compiled_objective)
+        .ok_or_else(|| CompileError::UnsupportedFeature(format!(
+            "compiled objective {compiled_objective:?} is not present for soft constraint {construct:?}"
+        )))?;
+    let signed_weight = match objective.sense {
+        Sense::Minimize => weight,
+        Sense::Maximize => -weight,
+    };
+    for role in [
+        crate::compiler::origin::GeneratedRole::SoftConstraintLowerViolationVariable,
+        crate::compiler::origin::GeneratedRole::SoftConstraintUpperViolationVariable,
+    ] {
+        let origin = EntityOrigin::Construct { construct, role };
+        for variable in origins.variables_for_origin(&origin) {
+            objective.coefficients.push((variable, signed_weight));
+        }
+    }
+    objective
+        .coefficients
+        .sort_by_key(|(variable, _)| *variable);
+    Ok(())
 }
 
 /// F5: preflight every ACTIVE construct's variable and parameter references
