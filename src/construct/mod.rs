@@ -335,6 +335,9 @@ pub(crate) fn derive_variable_dependencies(kind: &ConstructKind) -> Vec<VarId> {
             v.extend(lin_expr_variables(&payload.argument));
             v
         }
+        // The referenced constraint's cells are snapshot-dependent rather
+        // than payload-owned. The soft bridge captures those constraint,
+        // variable, and parameter edges from the snapshot when it compiles.
         ConstructKind::SoftConstraint(_) => Vec::new(),
         #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
