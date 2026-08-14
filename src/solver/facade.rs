@@ -1030,8 +1030,15 @@ where
                 &receipt,
             );
         }
-        let status = SolveStatus::from_termination(result.termination)
-            .map_err(|error| FeasibilityRelaxationError::Backend(error.to_string()))?;
+        let status = match SolveStatus::from_termination(result.termination) {
+            Ok(status) => status,
+            Err(error) => {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &receipt,
+                )
+            }
+        };
         if status == SolveStatus::Error || status == SolveStatus::Unknown {
             return self.relaxation_failure(
                 FeasibilityRelaxationError::Backend(format!(
@@ -1056,7 +1063,10 @@ where
             );
         }
         let (members, total_weighted_violation) =
-            report_members(model, &weighted, candidate_values)?;
+            match report_members(model, &weighted, candidate_values) {
+                Ok(evidence) => evidence,
+                Err(error) => return self.relaxation_failure(error, &receipt),
+            };
         let outcome = match status {
             SolveStatus::Optimal => RelaxationOutcome::OptimalRepair,
             SolveStatus::Feasible => match plan.acceptance {
@@ -1068,7 +1078,7 @@ where
             SolveStatus::Infeasible => RelaxationOutcome::NoRepairFound,
             other => RelaxationOutcome::Unknown(unknown_reason(other)),
         };
-        let solution = normalize_result(
+        let solution = match normalize_result(
             &result,
             committed,
             None,
@@ -1079,8 +1089,15 @@ where
             model.instance(),
             result.compilation_id,
             Some(overlay_id),
-        )
-        .map_err(|error| FeasibilityRelaxationError::Backend(error.to_string()))?;
+        ) {
+            Ok(solution) => solution,
+            Err(error) => {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &receipt,
+                )
+            }
+        };
         self.rollback_relaxation(&receipt)?;
         Ok(FeasibilityRelaxationReport {
             outcome,
