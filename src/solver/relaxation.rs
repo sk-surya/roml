@@ -743,19 +743,22 @@ pub(crate) fn report_members(
                 "provider returned non-finite candidate value {candidate} for {variable:?}"
             )));
         }
-        if !snapshot
+        let entry = snapshot
             .variables
             .iter()
-            .any(|entry| entry.id == *variable && entry.active)
-        {
-            return Err(FeasibilityRelaxationError::Numerical(format!(
-                "provider returned a candidate for unknown or inactive variable {variable:?}"
-            )));
-        }
+            .find(|entry| entry.id == *variable)
+            .ok_or_else(|| {
+                FeasibilityRelaxationError::Numerical(format!(
+                    "provider returned a candidate for unknown variable {variable:?}"
+                ))
+            })?;
         if candidate_values.insert(*variable, *candidate).is_some() {
             return Err(FeasibilityRelaxationError::Numerical(format!(
                 "provider returned duplicate candidate value for {variable:?}"
             )));
+        }
+        if !entry.active {
+            continue;
         }
 
         let domain = model.variable_domain(*variable).ok_or_else(|| {
