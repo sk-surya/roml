@@ -20,6 +20,7 @@ pub mod overlay;
 pub mod plan;
 pub mod reducer;
 pub mod reference;
+pub mod relaxation;
 pub mod render;
 pub mod request;
 pub mod session;
@@ -34,6 +35,12 @@ pub use options::SolveOptions;
 pub use plan::{
     HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
     UnsupportedFeaturePolicy, VariableHint, VariableHints,
+};
+pub use relaxation::{
+    FeasibilityRelaxationError, FeasibilityRelaxationPlan, FeasibilityRelaxationReport,
+    RelaxationAcceptance, RelaxationExecutionProvider, RelaxationMetadata, RelaxationNumerics,
+    RelaxationObjective, RelaxationOutcome, RelaxationProviderPolicy, RelaxationRestriction,
+    RelaxationScope, RelaxationUnknownReason, RelaxedRestriction,
 };
 
 /// Error type for solver operations.

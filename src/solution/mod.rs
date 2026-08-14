@@ -99,7 +99,7 @@ impl SignedCorrection {
 ///
 /// Contains variable values, objective value, solver status, and solve
 /// metadata. Solutions are immutable once created.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Solution {
     /// Variable values.
     values: HashMap<VarId, f64>,

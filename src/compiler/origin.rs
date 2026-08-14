@@ -150,6 +150,10 @@ pub enum GeneratedRole {
     SoftConstraintUpperViolationVariable,
     /// The exact upper-side soft constraint row (`f(x) - v_up <= u`).
     SoftConstraintUpperViolationRow,
+    /// A solve-scoped weighted-L1 relaxation violation variable.
+    FeasibilityRelaxationViolationVariable,
+    /// A solve-scoped weighted-L1 relaxation row.
+    FeasibilityRelaxationViolationRow,
     /// A temporary row added for an [`ObjectiveLock`](crate::solver::overlay::ObjectiveLock)
     /// (P27 Task 9).
     ObjectiveLockRow,

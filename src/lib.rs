@@ -79,6 +79,7 @@ pub use solver::backend::{
 pub use solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
 };
+pub use solver::infeasibility::BoundSide;
 pub use solver::infeasibility::ConflictAtomId;
 pub use solver::infeasibility::{
     AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord,
@@ -95,6 +96,12 @@ pub use solver::overlay::{
 pub use solver::plan::{
     HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
     UnsupportedFeaturePolicy, VariableHint, VariableHints,
+};
+pub use solver::relaxation::{
+    FeasibilityRelaxationError, FeasibilityRelaxationPlan, FeasibilityRelaxationReport,
+    RelaxationAcceptance, RelaxationExecutionProvider, RelaxationMetadata, RelaxationNumerics,
+    RelaxationObjective, RelaxationOutcome, RelaxationProviderPolicy, RelaxationRestriction,
+    RelaxationScope, RelaxationUnknownReason, RelaxedRestriction,
 };
 pub use solver::request::{
     ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult, SolveSolution,
