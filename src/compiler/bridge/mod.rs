@@ -21,6 +21,7 @@ pub(crate) mod minmax;
 pub(crate) mod piecewise_linear;
 pub(crate) mod product;
 pub(crate) mod reification;
+pub(crate) mod soft_constraint;
 
 use std::collections::HashMap;
 
