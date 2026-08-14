@@ -2036,6 +2036,23 @@ impl Model {
             return Err(ModelError::ConstraintNotFound(con));
         }
 
+        // Persistent softening is semantically anchored to its original
+        // primitive constraint.  Remove those constructs first so deleting a
+        // row cannot leave violation roles pointing at a dead constraint.
+        let anchored_soft_constraints: Vec<_> = self
+            .constructs
+            .iter()
+            .filter_map(|(id, data)| match &data.entry.kind {
+                ConstructKind::SoftConstraint(payload) if payload.original_constraint == con => {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .collect();
+        for construct in anchored_soft_constraints {
+            self.remove_construct(construct)?;
+        }
+
         // Remove all coefficients for this constraint
         let coeffs: Vec<_> = self.coefficients.for_constraint(con).collect();
         for coeff_id in coeffs {
