@@ -14,6 +14,10 @@ use roml::solver::{map_p29_members, FeasibilityRelaxationError, RelaxationRestri
 use roml::{continuous, ConstraintExprExt, Model};
 
 fn report(model: &Model, member: ConflictMember) -> InfeasibilityReport {
+    report_with_members(model, vec![member])
+}
+
+fn report_with_members(model: &Model, members: Vec<ConflictMember>) -> InfeasibilityReport {
     let mut compiler = CompilationSession::new();
     let snapshot = model.take_snapshot().unwrap();
     let mut caps = BackendCapabilitySet::new();
@@ -36,7 +40,7 @@ fn report(model: &Model, member: ConflictMember) -> InfeasibilityReport {
         provider_chain: Vec::new(),
         scope: InfeasibilityScope::OriginalLp,
         candidate_universe: CandidateUniverseSummary {
-            atom_count: 1,
+            atom_count: members.len(),
             grouping: ConflictGrouping::Individual,
         },
         outcome: InfeasibilityOutcome::Conflict,
@@ -44,7 +48,7 @@ fn report(model: &Model, member: ConflictMember) -> InfeasibilityReport {
         guarantee: ConflictGuarantee::InfeasibleSubsystem,
         oracle_strength: FeasibilityProofStrength::Proven,
         numerical_policy: AnalysisNumericalPolicy::default(),
-        members: vec![member],
+        members,
         native_evidence: None,
         statistics: InfeasibilityStatistics::default(),
         warnings: Vec::new(),
@@ -52,8 +56,12 @@ fn report(model: &Model, member: ConflictMember) -> InfeasibilityReport {
 }
 
 fn member(origin: ConflictOrigin, name: Option<&str>) -> ConflictMember {
+    member_with_id(1, origin, name)
+}
+
+fn member_with_id(atom_id: u64, origin: ConflictOrigin, name: Option<&str>) -> ConflictMember {
     ConflictMember {
-        atom_id: ConflictAtomId(1),
+        atom_id: ConflictAtomId(atom_id),
         declaration: ConflictMemberSnapshot {
             origin,
             name: name.map(str::to_owned),
@@ -61,6 +69,81 @@ fn member(origin: ConflictOrigin, name: Option<&str>) -> ConflictMember {
         },
         compiled_evidence: Vec::new(),
     }
+}
+
+#[test]
+fn p29_declared_bound_on_fixed_variable_maps_and_composes_with_fixing() {
+    let mut model = Model::new();
+    let variable = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.fix(variable, 5.0).unwrap();
+    model.commit().unwrap();
+
+    assert_eq!(
+        model.variable_bounds(variable),
+        Some(roml::Bounds::new(0.0, 10.0))
+    );
+    assert_eq!(
+        model.effective_bounds(variable),
+        Some(roml::Bounds::new(5.0, 5.0))
+    );
+
+    let report = report_with_members(
+        &model,
+        vec![
+            member_with_id(
+                1,
+                ConflictOrigin::VariableBound {
+                    variable,
+                    side: roml::solver::infeasibility::BoundSide::Lower,
+                },
+                Some("mps:BOUND_LO"),
+            ),
+            member_with_id(
+                2,
+                ConflictOrigin::PersistentFixing { variable },
+                Some("model:FIX_X"),
+            ),
+        ],
+    );
+    let mapped = map_p29_members(
+        &report,
+        model.instance(),
+        model.current_revision(),
+        report.compilation_id,
+    )
+    .unwrap();
+
+    assert_eq!(mapped.len(), 2);
+    assert_eq!(mapped[0].source_provenance.as_deref(), Some("mps:BOUND_LO"));
+    assert_eq!(mapped[1].source_provenance.as_deref(), Some("model:FIX_X"));
+    assert_eq!(
+        mapped[0].restriction,
+        RelaxationRestriction::VariableBound {
+            variable,
+            side: roml::solver::infeasibility::BoundSide::Lower,
+        }
+    );
+    assert_eq!(
+        mapped[1].restriction,
+        RelaxationRestriction::PersistentFixing { variable }
+    );
+
+    let p30_scope = roml::solver::RelaxationScope::Explicit(
+        mapped
+            .into_iter()
+            .map(|mapped| mapped.restriction)
+            .collect(),
+    );
+    assert_eq!(
+        p30_scope,
+        roml::solver::RelaxationScope::Explicit(vec![
+            RelaxationRestriction::VariableBound {
+                variable,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+            RelaxationRestriction::PersistentFixing { variable },
+        ])
+    );
 }
 
 #[test]
