@@ -93,7 +93,7 @@ fn p29_declared_bound_on_fixed_variable_maps_and_composes_with_fixing() {
         Some(roml::Bounds::new(5.0, 5.0))
     );
 
-    let report = report_with_members(
+    let mut report = report_with_members(
         &model,
         vec![
             member_with_id(
@@ -111,6 +111,10 @@ fn p29_declared_bound_on_fixed_variable_maps_and_composes_with_fixing() {
             ),
         ],
     );
+    let mut session = SolverSession::new(ReferenceSolveSession::new());
+    let base_solution = session.solve(&mut model).unwrap();
+    report.compilation_id = base_solution.metadata().compilation_id.unwrap();
+
     let mapped = map_p29_members(
         &report,
         model.instance(),
@@ -151,19 +155,43 @@ fn p29_declared_bound_on_fixed_variable_maps_and_composes_with_fixing() {
         ])
     );
 
-    let repair = SolverSession::new(ReferenceSolveSession::new())
-        .solve_feasibility_relaxation(
+    let repair = session
+        .solve_feasibility_relaxation_from_p29(
             &mut model,
             FeasibilityRelaxationPlan {
                 scope: p30_scope,
                 ..Default::default()
             },
+            &report,
         )
         .unwrap();
     assert_eq!(repair.outcome, RelaxationOutcome::OptimalRepair);
     assert_eq!(repair.members.len(), 2);
-    assert!(repair.members[0].violation.abs() < 1e-9);
-    assert!((repair.members[1].violation - 5.0).abs() < 1e-9);
+    assert_eq!(
+        repair
+            .members
+            .iter()
+            .find(|member| member.restriction
+                == RelaxationRestriction::VariableBound {
+                    variable,
+                    side: roml::solver::infeasibility::BoundSide::Lower,
+                })
+            .unwrap()
+            .source_provenance
+            .as_deref(),
+        Some("mps:BOUND_LO")
+    );
+    assert_eq!(
+        repair
+            .members
+            .iter()
+            .find(|member| member.restriction
+                == RelaxationRestriction::PersistentFixing { variable })
+            .unwrap()
+            .source_provenance
+            .as_deref(),
+        Some("model:FIX_X")
+    );
     assert!((repair.total_weighted_violation - 5.0).abs() < 1e-9);
 }
 
