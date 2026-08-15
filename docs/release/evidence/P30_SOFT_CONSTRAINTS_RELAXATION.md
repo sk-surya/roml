@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on remediation head `ccbd89a4bc0f6da501e5821894e853aa932a2d23` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, and actual-Feasible acceptance coverage; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on test-remediation head `25fdda17d53d0107d75edca7b4a7f6f1de26c15d` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, actual-Feasible acceptance coverage, the P29 fixed-variable bound seam regression, and the paired feasible-acceptance outcome regression; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -33,7 +33,7 @@ cargo test -p roml --test feasibility_relaxation \
   --test feasibility_relaxation_faults \
   --test relaxation_provider_policy \
   --test feasibility_relaxation_p29 \
-  --test soft_constraints_qualification --quiet       PASS (25 tests)
+  --test soft_constraints_qualification --quiet       PASS (27 tests)
 cargo test -p roml --all-targets --locked --quiet       PASS (293 library tests; all targets)
 cargo test -p roml-highs --all-targets --locked --quiet PASS (native HiGHS 1.15.0)
 cargo clippy -p roml --all-targets --locked -- -D warnings PASS
@@ -45,7 +45,8 @@ bash scripts/test-quality-policy.sh                  PASS (4 policy tests)
 git diff --check                                     PASS
 ```
 
-The final full core run completed 293 library tests and all integration targets. The
+The final full core run completed 293 library tests and all integration targets,
+including the new P29 and outcome-contract tests. The
 HiGHS run completed its native adapter and integration matrix, including real
 lower-side violations with both row sides and both variable bounds selected.
 Native license,
@@ -70,17 +71,16 @@ as passes.
 ## Review and residual risk
 
 The implementation was reviewed against AGENTS.md, SHARED-CONTRACTS.md, and
-locked P30 decisions. Core and HiGHS automated gates pass locally and all five
-hosted exact-head workflows pass at `ccbd89a4bc0f6da501e5821894e853aa932a2d23`.
-The prior review at `ef69c2a5ab99264a4e9600bf895594a5fc75984a` is superseded;
-independent final review `30-CODE-REVIEW-6.md` is CLEAR TO MERGE. Residual risks are
+locked P30 decisions. Core and HiGHS automated gates pass locally. The prior
+reviews are superseded for this test-remediation head; independent final review
+and hosted exact-head CI remain required. Residual risks are
 limited to deferred backend qualification (MOSEK/Xpress/native relaxation and
 license-specific runs) and the planned P31 priority/lexicographic layer. No
 crate was published, no tag was created, and no release action was taken.
 
 ## Closure disposition
 
-P30 is implementation- and evidence-complete at the remediation head and is
-CLEAR TO MERGE. Owner merge remains pending. P31 must not be activated by this
-phase's state update; its work may start only after the owner accepts this
-evidence and the P31 plan is executed.
+P30 is locally implementation- and evidence-complete at the test-remediation
+head, pending independent final review and hosted exact-head CI. P31 must not
+be activated by this phase's state update; its work may start only after the
+owner accepts this evidence and the P31 plan is executed.
