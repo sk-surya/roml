@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on test-remediation head `25fdda17d53d0107d75edca7b4a7f6f1de26c15d` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, actual-Feasible acceptance coverage, the P29 fixed-variable bound seam regression, and the paired feasible-acceptance outcome regression; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on test-remediation head `4c6f796` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, actual-Feasible acceptance coverage, the end-to-end P29 fixed-variable bound seam regression, and the paired feasible-acceptance outcome regression; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -46,7 +46,7 @@ git diff --check                                     PASS
 ```
 
 The final full core run completed 293 library tests and all integration targets,
-including the new P29 and outcome-contract tests. The
+including the new end-to-end P29 and outcome-contract tests. The
 HiGHS run completed its native adapter and integration matrix, including real
 lower-side violations with both row sides and both variable bounds selected.
 Native license,
