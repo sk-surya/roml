@@ -3,7 +3,7 @@
 ## Scope
 
 - Tested code head: `c5200fd84836e3a5d0b435368860538235cce330`
-- Current PR head reviewed before this artifact: `c80db68a17182419442002a702fba7bf0d192fc5`
+- Current PR branch is a documentation-only continuation of the tested head.
 - Review type: independent final remediation review
 
 ## Findings

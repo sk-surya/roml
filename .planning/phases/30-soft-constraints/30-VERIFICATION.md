@@ -1,7 +1,7 @@
 ---
 phase: 30-soft-constraints
 status: passed-local-remediation-review-pending
-head: c5200fd84836e3a5d0b435368860538235cce330
+head: "implementation/test head c5200fd84836e3a5d0b435368860538235cce330; current PR head is a docs-only continuation"
 base: 5fe8f5b0f60831b438364a73300b4306dfa6d195
 review: 30-CODE-REVIEW-7.md
 ---
@@ -9,7 +9,8 @@ review: 30-CODE-REVIEW-7.md
 # P30 Verification
 
 The P30 implementation and review remediation are locally qualified at
-`c5200fd84836e3a5d0b435368860538235cce330`. This head fixes two-sided
+The implementation/test head `c5200fd84836e3a5d0b435368860538235cce330`
+fixes two-sided
 replacement-bound composition, keeps declared variable bounds independent from
 persistent fixing, applies feasibility tolerance to candidate-domain checks,
 and exercises acceptance of an actual `TerminationStatus::Feasible` result.
