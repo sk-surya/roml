@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on remediation head `5b81ac5eb5917497be090485c86715a7c5091914` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, and actual-Feasible acceptance coverage; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on remediation head `ccbd89a4bc0f6da501e5821894e853aa932a2d23` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, and actual-Feasible acceptance coverage; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -70,17 +70,17 @@ as passes.
 ## Review and residual risk
 
 The implementation was reviewed against AGENTS.md, SHARED-CONTRACTS.md, and
-locked P30 decisions. Core and HiGHS automated gates pass locally. The prior
-review at `ef69c2a5ab99264a4e9600bf895594a5fc75984a` is superseded for this
-remediation head; independent re-review and hosted exact-head CI remain
-required. Residual risks are
+locked P30 decisions. Core and HiGHS automated gates pass locally and all five
+hosted exact-head workflows pass at `ccbd89a4bc0f6da501e5821894e853aa932a2d23`.
+The prior review at `ef69c2a5ab99264a4e9600bf895594a5fc75984a` is superseded;
+independent final review `30-CODE-REVIEW-6.md` is CLEAR TO MERGE. Residual risks are
 limited to deferred backend qualification (MOSEK/Xpress/native relaxation and
 license-specific runs) and the planned P31 priority/lexicographic layer. No
 crate was published, no tag was created, and no release action was taken.
 
 ## Closure disposition
 
-P30 is locally implementation- and evidence-complete at the remediation head,
-pending independent re-review and hosted exact-head CI. P31 must not be
-activated by this phase's state update; its work may start only after the owner
-accepts this evidence and the P31 plan is executed.
+P30 is implementation- and evidence-complete at the remediation head and is
+CLEAR TO MERGE. Owner merge remains pending. P31 must not be activated by this
+phase's state update; its work may start only after the owner accepts this
+evidence and the P31 plan is executed.
