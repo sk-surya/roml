@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on reviewed implementation head `ef69c2a5ab99264a4e9600bf895594a5fc75984a` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, and inactive-variable evidence handling; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on remediation head `5b81ac5eb5917497be090485c86715a7c5091914` in the isolated `agent-p30-execute` worktree. The head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, and actual-Feasible acceptance coverage; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -14,7 +14,7 @@ Evidence was collected on reviewed implementation head `ef69c2a5ab99264a4e9600bf
 | SM-10.6 portable weighted-L1 repair contract | `feasibility_relaxation`, `relaxation_provider_policy` | pass |
 | SM-10.7 outcome/acceptance/provider semantics | `feasibility_relaxation`, provider policy implementation | pass |
 | SM-10.8 overlay cleanup and rebuild boundary | existing overlay fault corpus plus P30 cleanup tests; extraction paths preserve cleanup | pass |
-| SM-10.9 P29 composition and qualification evidence | `feasibility_relaxation_p29`, this ledger | pass |
+| SM-10.9 P29 composition and qualification evidence | `feasibility_relaxation_p29`, `feasibility_relaxation`, real HiGHS differential tests, this ledger | pass |
 
 The portable repair report records model lineage/instance/revision, distinct
 base and relaxation compilation identities, provider, termination, numeric
@@ -33,7 +33,7 @@ cargo test -p roml --test feasibility_relaxation \
   --test feasibility_relaxation_faults \
   --test relaxation_provider_policy \
   --test feasibility_relaxation_p29 \
-  --test soft_constraints_qualification --quiet       PASS (19 tests)
+  --test soft_constraints_qualification --quiet       PASS (25 tests)
 cargo test -p roml --all-targets --locked --quiet       PASS (293 library tests; all targets)
 cargo test -p roml-highs --all-targets --locked --quiet PASS (native HiGHS 1.15.0)
 cargo clippy -p roml --all-targets --locked -- -D warnings PASS
@@ -46,7 +46,9 @@ git diff --check                                     PASS
 ```
 
 The final full core run completed 293 library tests and all integration targets. The
-HiGHS run completed its native adapter and integration matrix. Native license,
+HiGHS run completed its native adapter and integration matrix, including real
+lower-side violations with both row sides and both variable bounds selected.
+Native license,
 MOSEK, and Xpress qualification were not required by P30 and were not claimed
 as passes.
 
@@ -68,13 +70,17 @@ as passes.
 ## Review and residual risk
 
 The implementation was reviewed against AGENTS.md, SHARED-CONTRACTS.md, and
-locked P30 decisions. Core and HiGHS automated gates pass. Residual risks are
+locked P30 decisions. Core and HiGHS automated gates pass locally. The prior
+review at `ef69c2a5ab99264a4e9600bf895594a5fc75984a` is superseded for this
+remediation head; independent re-review and hosted exact-head CI remain
+required. Residual risks are
 limited to deferred backend qualification (MOSEK/Xpress/native relaxation and
 license-specific runs) and the planned P31 priority/lexicographic layer. No
 crate was published, no tag was created, and no release action was taken.
 
 ## Closure disposition
 
-P30 is implementation- and evidence-complete and is ready for owner review and
-merge. P31 must not be activated by this phase's state update; its work may
-start only after the owner accepts this evidence and the P31 plan is executed.
+P30 is locally implementation- and evidence-complete at the remediation head,
+pending independent re-review and hosted exact-head CI. P31 must not be
+activated by this phase's state update; its work may start only after the owner
+accepts this evidence and the P31 plan is executed.
