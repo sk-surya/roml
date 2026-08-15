@@ -394,6 +394,34 @@ fn feasible_acceptance_accepts_an_actual_feasible_termination() {
 }
 
 #[test]
+fn optimal_acceptance_does_not_accept_an_unproven_feasible_termination() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    let constraint = model.add_constraint((x).ge(0.0)).unwrap();
+    let plan = FeasibilityRelaxationPlan {
+        scope: roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+        ]),
+        acceptance: RelaxationAcceptance::RequireOptimal,
+        ..Default::default()
+    };
+    let report = SolverSession::new(
+        ReferenceSolveSession::new().with_termination(TerminationStatus::Feasible),
+    )
+    .solve_feasibility_relaxation(&mut model, plan)
+    .unwrap();
+
+    assert_eq!(
+        report.outcome,
+        RelaxationOutcome::Unknown(roml::solver::relaxation::RelaxationUnknownReason::Unclassified)
+    );
+    assert_eq!(report.metadata.termination, roml::SolveStatus::Feasible);
+}
+
+#[test]
 fn two_sided_ranged_and_equality_rows_keep_both_declared_sides_widened() {
     let mut model = Model::new();
     let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
