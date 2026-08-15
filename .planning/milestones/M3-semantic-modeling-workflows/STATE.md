@@ -3,7 +3,7 @@
 ## Routing state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P30 review-ready; owner merge pending
+**Status:** P30 remediation-review-pending; owner merge pending
 **Current routing target:** P30 — soft constraints and feasibility relaxation
 **Active production implementation:** P30 is authorized; P36 is complete and merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248`.
 **Implementation authorization:** true for P30 only; P31 and P34 remain unauthorized.
@@ -22,7 +22,7 @@
 | P27 | fixing / assignments / locks / overlays | complete | accepted P27 evidence |
 | P28 | SolvePlan / starts / hints | complete | accepted P28 evidence |
 | P29 | IIS/conflict analysis | complete | PR #39 + `P29_IIS_QUALIFICATION.md` |
-| P30 | soft constraints / feasibility relaxation | review-ready | exact-head evidence + independent review; owner merge pending |
+| P30 | soft constraints / feasibility relaxation | remediation-review-pending | final exact-head evidence + independent review; owner merge pending |
 | P31 | objective policies / lexicographic execution | planned, inactive | SM-11 + `31-PLAN.md`; gated by P30 merge |
 | P32 | common semantic constructs | complete | accepted P32 evidence |
 | P33 | PWL / bound analysis | complete | accepted P33 evidence |
@@ -86,7 +86,7 @@ P31 owns canonical `ObjectivePolicy` and `ObjectivePriority`; objective locks us
 
 - One production phase active at a time.
 - A planning/review branch may coexist with one production phase only when it does not authorize or accumulate future production code.
-- P30 is review-ready after the P36 merge; P31 and P34 remain inactive until their explicit predecessor merge gates are satisfied.
+- P30 is awaiting final remediation-head evidence and independent review after the P36 merge; P31 and P34 remain inactive until their explicit predecessor merge gates are satisfied.
 - P34 starts only after all feature phases are merged and cross-phase contracts are stable.
 
 ## Evidence/update protocol
