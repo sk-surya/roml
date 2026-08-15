@@ -1,7 +1,7 @@
 ---
 phase: 30-soft-constraints
 status: passed-local-remediation-review-pending
-head: "implementation/test head c5200fd84836e3a5d0b435368860538235cce330; current PR head is a docs-only continuation"
+head: "implementation/test head c5200fd84836e3a5d0b435368860538235cce330; current PR head is a documentation/formatting-only continuation"
 base: 5fe8f5b0f60831b438364a73300b4306dfa6d195
 review: 30-CODE-REVIEW-7.md
 ---
