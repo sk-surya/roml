@@ -1,11 +1,13 @@
 //! End-to-end portable P30 repair tests using a deterministic reference session.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use roml::advanced::{
     BackendCapabilitySet, BackendFeature, BackendOp, BackendSnapshot, CompiledVariableId,
-    EntityOrigin, FeatureSupport, OverlayApplyReceipt, OverlayRollbackOutcome, OverlaySession,
-    Synchronization,
+    EntityOrigin, FeatureSupport, OverlayApplyReceipt, OverlayOp, OverlayRollbackOutcome,
+    OverlaySession, Synchronization,
 };
 use roml::solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
@@ -27,6 +29,8 @@ struct ReferenceSolveSession {
     user_variables: HashMap<CompiledVariableId, roml::VarId>,
     candidate_overrides: HashMap<roml::VarId, f64>,
     capabilities: BackendCapabilitySet,
+    observed_overlay: Option<Rc<RefCell<Option<Vec<OverlayOp>>>>>,
+    termination: TerminationStatus,
 }
 
 fn capabilities() -> BackendCapabilitySet {
@@ -52,7 +56,19 @@ impl ReferenceSolveSession {
             user_variables: HashMap::new(),
             candidate_overrides: HashMap::new(),
             capabilities: capabilities(),
+            observed_overlay: None,
+            termination: TerminationStatus::Optimal,
         }
+    }
+
+    fn observing_overlay(mut self, observed_overlay: Rc<RefCell<Option<Vec<OverlayOp>>>>) -> Self {
+        self.observed_overlay = Some(observed_overlay);
+        self
+    }
+
+    fn with_termination(mut self, termination: TerminationStatus) -> Self {
+        self.termination = termination;
+        self
     }
 
     fn inject_candidate(&mut self, variable: roml::VarId, value: f64) {
@@ -83,7 +99,15 @@ impl ReferenceSolveSession {
                             self.candidate_overrides
                                 .get(user)
                                 .copied()
-                                .unwrap_or(bounds.lower),
+                                .unwrap_or_else(|| {
+                                    if bounds.lower.is_finite() {
+                                        bounds.lower
+                                    } else if bounds.upper.is_finite() {
+                                        bounds.upper
+                                    } else {
+                                        0.0
+                                    }
+                                }),
                         )
                     })
             })
@@ -173,7 +197,7 @@ impl BackendSession for ReferenceSolveSession {
             .unwrap_or(0.0);
         Ok(SolveResult {
             effective_configuration: EffectiveConfig::default(),
-            termination: TerminationStatus::Optimal,
+            termination: self.termination,
             solution: Some(SolveSolution {
                 variable_values: values,
                 objective_value: Some(objective_value),
@@ -195,6 +219,9 @@ impl OverlaySession for ReferenceSolveSession {
         &mut self,
         overlay: &roml::advanced::CompiledOverlay,
     ) -> Result<OverlayApplyReceipt, BackendError> {
+        if let Some(observed_overlay) = &self.observed_overlay {
+            *observed_overlay.borrow_mut() = Some(overlay.operations.clone());
+        }
         self.inner.apply_overlay(overlay)
     }
 
@@ -342,25 +369,241 @@ fn native_required_rejects_before_backend_synchronization() {
 }
 
 #[test]
-fn feasible_acceptance_is_not_promoted_to_optimality() {
+fn feasible_acceptance_accepts_an_actual_feasible_termination() {
     let mut model = Model::new();
     let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
     let constraint = model.add_constraint((x).ge(0.0)).unwrap();
-    let mut plan = FeasibilityRelaxationPlan {
+    let plan = FeasibilityRelaxationPlan {
         scope: roml::solver::RelaxationScope::Explicit(vec![
             roml::solver::RelaxationRestriction::ConstraintSide {
                 constraint,
                 side: roml::solver::infeasibility::BoundSide::Lower,
             },
         ]),
-        acceptance: RelaxationAcceptance::RequireOptimal,
+        acceptance: RelaxationAcceptance::AcceptFeasible,
         ..Default::default()
     };
-    // The deterministic reference provider reports an optimal proof; this
-    // test still locks the acceptance field into the public request corpus.
-    assert_eq!(plan.acceptance, RelaxationAcceptance::RequireOptimal);
-    plan.acceptance = RelaxationAcceptance::AcceptFeasible;
-    assert_eq!(plan.acceptance, RelaxationAcceptance::AcceptFeasible);
+    let report = SolverSession::new(
+        ReferenceSolveSession::new().with_termination(TerminationStatus::Feasible),
+    )
+    .solve_feasibility_relaxation(&mut model, plan)
+    .unwrap();
+
+    assert_eq!(report.outcome, RelaxationOutcome::FeasibleRepair);
+    assert_eq!(report.metadata.termination, roml::SolveStatus::Feasible);
+}
+
+#[test]
+fn two_sided_ranged_and_equality_rows_keep_both_declared_sides_widened() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    // The reference seam supplies the declared lower bound as its candidate;
+    // choose row sides that are already satisfied so this test isolates the
+    // temporary-bound replacement shape rather than objective calculation.
+    let ranged = model.add_constraint(x.between(0.0, 8.0)).unwrap();
+    let equality = model.add_constraint(x.eq(0.0)).unwrap();
+    let observed = Rc::new(RefCell::new(None));
+    let plan = FeasibilityRelaxationPlan {
+        scope: roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: ranged,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: ranged,
+                side: roml::solver::infeasibility::BoundSide::Upper,
+            },
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: equality,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: equality,
+                side: roml::solver::infeasibility::BoundSide::Upper,
+            },
+        ]),
+        ..Default::default()
+    };
+
+    SolverSession::new(ReferenceSolveSession::new().observing_overlay(observed.clone()))
+        .solve_feasibility_relaxation(&mut model, plan)
+        .unwrap();
+
+    let bounds = observed
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .iter()
+        .filter_map(|operation| match operation {
+            OverlayOp::SetTemporaryRowBounds { constraint, bounds } => Some((*constraint, *bounds)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bounds.len(), 2, "one final replacement per original row");
+    assert!(bounds
+        .iter()
+        .all(|(_, bounds)| bounds.lower == f64::NEG_INFINITY && bounds.upper == f64::INFINITY));
+}
+
+#[test]
+fn two_sided_variable_bound_relaxation_keeps_both_declared_sides_widened() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 3.0)).unwrap();
+    let observed = Rc::new(RefCell::new(None));
+    let plan = FeasibilityRelaxationPlan {
+        scope: roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::VariableBound {
+                variable: x,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+            roml::solver::RelaxationRestriction::VariableBound {
+                variable: x,
+                side: roml::solver::infeasibility::BoundSide::Upper,
+            },
+        ]),
+        ..Default::default()
+    };
+
+    SolverSession::new(ReferenceSolveSession::new().observing_overlay(observed.clone()))
+        .solve_feasibility_relaxation(&mut model, plan)
+        .unwrap();
+
+    let bounds = observed
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .iter()
+        .filter_map(|operation| match operation {
+            OverlayOp::SetTemporaryVariableBounds { bounds, .. } => Some(*bounds),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bounds.len(),
+        1,
+        "one final replacement per original variable"
+    );
+    assert_eq!(bounds[0].lower, f64::NEG_INFINITY);
+    assert_eq!(bounds[0].upper, f64::INFINITY);
+}
+
+#[test]
+fn fixing_and_declared_bound_restrictions_are_independent_and_compose() {
+    let cases = [
+        // Declared-bound-only relaxation without a fixing.
+        (
+            true,
+            false,
+            false,
+            roml::model::Bounds::new(f64::NEG_INFINITY, 10.0),
+            1,
+            1,
+        ),
+        // Fixing-only relaxation leaves the declared bounds hard.
+        (false, true, true, roml::model::Bounds::new(0.0, 10.0), 2, 1),
+        // Declared-bound-only relaxation leaves the fixing hard.
+        (true, false, true, roml::model::Bounds::new(5.0, 5.0), 1, 1),
+        // Selecting both restrictions removes neither semantic contribution.
+        (
+            true,
+            true,
+            true,
+            roml::model::Bounds::new(f64::NEG_INFINITY, 10.0),
+            3,
+            2,
+        ),
+    ];
+
+    for (
+        relax_bound,
+        relax_fixing,
+        with_fixing,
+        expected_bounds,
+        expected_rows,
+        expected_members,
+    ) in cases
+    {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        if with_fixing {
+            model.fix(x, 5.0).unwrap();
+        }
+        let observed = Rc::new(RefCell::new(None));
+        let mut restrictions = Vec::new();
+        if relax_bound {
+            restrictions.push(roml::solver::RelaxationRestriction::VariableBound {
+                variable: x,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            });
+        }
+        if relax_fixing {
+            restrictions
+                .push(roml::solver::RelaxationRestriction::PersistentFixing { variable: x });
+        }
+        let report =
+            SolverSession::new(ReferenceSolveSession::new().observing_overlay(observed.clone()))
+                .solve_feasibility_relaxation(
+                    &mut model,
+                    FeasibilityRelaxationPlan {
+                        scope: roml::solver::RelaxationScope::Explicit(restrictions),
+                        ..Default::default()
+                    },
+                );
+
+        let report = report.unwrap();
+        let operations = observed.borrow();
+        let bounds = operations
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find_map(|operation| match operation {
+                OverlayOp::SetTemporaryVariableBounds { bounds, .. } => Some(*bounds),
+                _ => None,
+            })
+            .unwrap();
+        let rows = operations
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|operation| matches!(operation, OverlayOp::AddTemporaryRow { .. }))
+            .count();
+        assert_eq!(bounds, expected_bounds);
+        assert_eq!(rows, expected_rows);
+        assert_eq!(report.members.len(), expected_members);
+    }
+}
+
+#[test]
+fn all_eligible_includes_declared_bounds_alongside_persistent_fixing() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    model.fix(x, 5.0).unwrap();
+    let observed = Rc::new(RefCell::new(None));
+
+    SolverSession::new(ReferenceSolveSession::new().observing_overlay(observed.clone()))
+        .solve_feasibility_relaxation(&mut model, FeasibilityRelaxationPlan::default())
+        .unwrap();
+
+    let operations = observed.borrow();
+    let bounds = operations
+        .as_ref()
+        .unwrap()
+        .iter()
+        .filter_map(|operation| match operation {
+            OverlayOp::SetTemporaryVariableBounds { bounds, .. } => Some(*bounds),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bounds, vec![roml::model::Bounds::UNBOUNDED]);
+    assert_eq!(
+        operations
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|operation| matches!(operation, OverlayOp::AddTemporaryRow { .. }))
+            .count(),
+        4
+    );
 }
 
 #[test]
