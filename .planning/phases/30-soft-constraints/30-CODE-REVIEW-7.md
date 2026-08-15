@@ -8,7 +8,7 @@
 
 ## Findings
 
-- No P0, P1, or P3 implementation findings.
+- No P0, P1, P2, or P3 implementation findings.
 - The P29 regression now invokes `solve_feasibility_relaxation_from_p29`
   against the exact synchronized compilation and verifies final member source
   provenance for both mapped restrictions.

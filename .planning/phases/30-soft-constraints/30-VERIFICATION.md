@@ -9,7 +9,7 @@ review: 30-CODE-REVIEW-7.md
 # P30 Verification
 
 The P30 implementation and review remediation are locally qualified at
-The implementation/test head `c5200fd84836e3a5d0b435368860538235cce330`
+implementation/test head `c5200fd84836e3a5d0b435368860538235cce330`, which
 fixes two-sided
 replacement-bound composition, keeps declared variable bounds independent from
 persistent fixing, applies feasibility tolerance to candidate-domain checks,
