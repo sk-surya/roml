@@ -1,5 +1,8 @@
 //! P29 conflict-origin composition tests for the P30 relaxation mapper.
 
+#[path = "support/p30_reference_session.rs"]
+mod p30_reference_session;
+
 use roml::advanced::{
     BackendCapabilitySet, BackendFeature, BackendIdentity, CompilationPolicy, CompilationSession,
     FeatureSupport,
@@ -10,8 +13,11 @@ use roml::solver::infeasibility::{
     FeasibilityProofStrength, InfeasibilityOutcome, InfeasibilityReport, InfeasibilityScope,
     InfeasibilityStatistics,
 };
+use roml::solver::relaxation::{FeasibilityRelaxationPlan, RelaxationOutcome};
 use roml::solver::{map_p29_members, FeasibilityRelaxationError, RelaxationRestriction};
-use roml::{continuous, ConstraintExprExt, Model};
+use roml::{continuous, ConstraintExprExt, Model, SolverSession};
+
+use p30_reference_session::ReferenceSolveSession;
 
 fn report(model: &Model, member: ConflictMember) -> InfeasibilityReport {
     report_with_members(model, vec![member])
@@ -144,6 +150,21 @@ fn p29_declared_bound_on_fixed_variable_maps_and_composes_with_fixing() {
             RelaxationRestriction::PersistentFixing { variable },
         ])
     );
+
+    let repair = SolverSession::new(ReferenceSolveSession::new())
+        .solve_feasibility_relaxation(
+            &mut model,
+            FeasibilityRelaxationPlan {
+                scope: p30_scope,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(repair.outcome, RelaxationOutcome::OptimalRepair);
+    assert_eq!(repair.members.len(), 2);
+    assert!(repair.members[0].violation.abs() < 1e-9);
+    assert!((repair.members[1].violation - 5.0).abs() < 1e-9);
+    assert!((repair.total_weighted_violation - 5.0).abs() < 1e-9);
 }
 
 #[test]
