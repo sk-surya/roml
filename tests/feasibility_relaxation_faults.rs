@@ -21,6 +21,7 @@ enum FailurePoint {
     Apply,
     PartialApplyRollback,
     OutOfDomainCandidate,
+    NearDomainBoundaryCandidate,
     Solve,
     Rollback,
     Verify,
@@ -32,6 +33,8 @@ struct FaultBackend {
     revision: roml::ModelRevision,
     failure: Option<FailurePoint>,
     candidate_variable: Option<roml::VarId>,
+    candidate_value: Option<f64>,
+    candidate_objective: Option<f64>,
     rebuilds: usize,
 }
 
@@ -53,6 +56,8 @@ impl FaultBackend {
             revision: roml::ModelRevision::ZERO,
             failure,
             candidate_variable: None,
+            candidate_value: None,
+            candidate_objective: None,
             rebuilds: 0,
         }
     }
@@ -132,6 +137,28 @@ impl BackendSession for FaultBackend {
                         -100.0,
                     )],
                     objective_value: Some(105.0),
+                    dual_values: None,
+                    reduced_costs: None,
+                }),
+                compilation_id: self.inner.current_compilation,
+                overlay_id: None,
+            });
+        }
+        if matches!(
+            self.failure,
+            Some(FailurePoint::NearDomainBoundaryCandidate)
+        ) {
+            return Ok(SolveResult {
+                effective_configuration: EffectiveConfig::default(),
+                termination: TerminationStatus::Optimal,
+                solution: Some(SolveSolution {
+                    variable_values: vec![(
+                        self.candidate_variable
+                            .expect("boundary candidate test supplies a variable"),
+                        self.candidate_value
+                            .expect("boundary candidate test supplies a value"),
+                    )],
+                    objective_value: self.candidate_objective,
                     dual_values: None,
                     reduced_costs: None,
                 }),
@@ -348,4 +375,45 @@ fn injected_out_of_domain_persistent_fixing_candidate_is_rejected() {
         ),
         "got {result:?}"
     );
+}
+
+#[test]
+fn candidate_bounds_use_model_feasibility_tolerance_at_both_sides() {
+    let tolerance = 1e-6;
+    for (side, candidate, violation) in [
+        (
+            roml::advanced::BoundSide::Lower,
+            -0.5 * tolerance,
+            0.5 * tolerance,
+        ),
+        (
+            roml::advanced::BoundSide::Upper,
+            1.0 + 0.5 * tolerance,
+            0.5 * tolerance,
+        ),
+    ] {
+        let mut model = Model::new();
+        model.constants.feasibility_tolerance = tolerance;
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        let constraint = match side {
+            roml::advanced::BoundSide::Lower => model.add_constraint(x.ge(0.0)).unwrap(),
+            roml::advanced::BoundSide::Upper => model.add_constraint(x.le(1.0)).unwrap(),
+        };
+        let plan = FeasibilityRelaxationPlan {
+            scope: roml::solver::RelaxationScope::Explicit(vec![
+                RelaxationRestriction::ConstraintSide { constraint, side },
+            ]),
+            ..Default::default()
+        };
+        let mut backend = FaultBackend::new(Some(FailurePoint::NearDomainBoundaryCandidate));
+        backend.candidate_variable = Some(x);
+        backend.candidate_value = Some(candidate);
+        backend.candidate_objective = Some(violation);
+
+        let result = SolverSession::new(backend).solve_feasibility_relaxation(&mut model, plan);
+        assert!(
+            result.is_ok(),
+            "candidate {candidate} at {side:?}: {result:?}"
+        );
+    }
 }

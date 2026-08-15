@@ -15,7 +15,7 @@ use crate::compiler::origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId}
 use crate::compiler::session::CompilationSession;
 use crate::id::{ConId, VarId};
 use crate::identity::{ModelInstanceId, ModelLineageId};
-use crate::model::{Constraint, Objective, Variable};
+use crate::model::{Bounds, Constraint, Objective, Variable};
 use crate::revision::ModelRevision;
 use crate::solution::Solution;
 use crate::solver::backend::TerminationStatus;
@@ -390,23 +390,22 @@ pub(crate) fn compile_portable_overlay(
                 if !variable.active {
                     continue;
                 }
+                if variable.bounds.lower.is_finite() {
+                    items.push(RelaxationRestriction::VariableBound {
+                        variable: variable.id,
+                        side: BoundSide::Lower,
+                    });
+                }
+                if variable.bounds.upper.is_finite() {
+                    items.push(RelaxationRestriction::VariableBound {
+                        variable: variable.id,
+                        side: BoundSide::Upper,
+                    });
+                }
                 if variable.fixing.is_some() {
                     items.push(RelaxationRestriction::PersistentFixing {
                         variable: variable.id,
                     });
-                } else {
-                    if variable.bounds.lower.is_finite() {
-                        items.push(RelaxationRestriction::VariableBound {
-                            variable: variable.id,
-                            side: BoundSide::Lower,
-                        });
-                    }
-                    if variable.bounds.upper.is_finite() {
-                        items.push(RelaxationRestriction::VariableBound {
-                            variable: variable.id,
-                            side: BoundSide::Upper,
-                        });
-                    }
                 }
             }
             items
@@ -439,6 +438,83 @@ pub(crate) fn compile_portable_overlay(
     let mut objective_coefficients = Vec::new();
     let mut evaluated_weights = Vec::new();
 
+    // `SetTemporary*Bounds` is a replacement operation. Collect every
+    // selected side first so selecting both sides of one original restriction
+    // produces one final state that preserves both widenings. The generated
+    // violation row remains per selected side below.
+    let mut row_sides: BTreeMap<ConId, (bool, bool)> = BTreeMap::new();
+    let mut variable_sides: BTreeMap<VarId, (bool, bool, bool)> = BTreeMap::new();
+    for restriction in &restrictions {
+        match restriction {
+            RelaxationRestriction::ConstraintSide { constraint, side } => {
+                let sides = row_sides.entry(*constraint).or_default();
+                match side {
+                    BoundSide::Lower => sides.0 = true,
+                    BoundSide::Upper => sides.1 = true,
+                }
+            }
+            RelaxationRestriction::VariableBound { variable, side } => {
+                let sides = variable_sides.entry(*variable).or_default();
+                match side {
+                    BoundSide::Lower => sides.0 = true,
+                    BoundSide::Upper => sides.1 = true,
+                }
+            }
+            RelaxationRestriction::PersistentFixing { variable } => {
+                variable_sides.entry(*variable).or_default().2 = true;
+            }
+        }
+    }
+
+    for (constraint, (relax_lower, relax_upper)) in &row_sides {
+        let entry = snapshot
+            .constraints
+            .iter()
+            .find(|entry| entry.id == *constraint)
+            .ok_or_else(|| {
+                FeasibilityRelaxationError::Preflight(format!("unknown constraint {constraint:?}"))
+            })?;
+        let row = compiler.compiled_row_id(*constraint).ok_or_else(|| {
+            FeasibilityRelaxationError::Preflight(format!(
+                "constraint {constraint:?} has no compiled row"
+            ))
+        })?;
+        operations.push(OverlayOp::SetTemporaryRowBounds {
+            constraint: row,
+            bounds: widened_row_bounds(entry.bounds, *relax_lower, *relax_upper),
+        });
+    }
+
+    for (variable, (relax_lower, relax_upper, relax_fixing)) in &variable_sides {
+        let entry = snapshot
+            .variables
+            .iter()
+            .find(|entry| entry.id == *variable)
+            .ok_or_else(|| {
+                FeasibilityRelaxationError::Preflight(format!("unknown variable {variable:?}"))
+            })?;
+        let compiled_variable = compiler.compiled_variable_id(*variable).ok_or_else(|| {
+            FeasibilityRelaxationError::Preflight(format!(
+                "variable {variable:?} has no compiled id"
+            ))
+        })?;
+        let bounds = if *relax_fixing {
+            widened_variable_bounds(entry.bounds, *relax_lower, *relax_upper)
+        } else if let Some(fixing) = &entry.fixing {
+            // A persistent fixing is an independent hard restriction unless it
+            // is explicitly selected. Intersecting it after a declared-bound
+            // widening keeps the fixing hard while retaining the one final
+            // replacement state required by the overlay protocol.
+            Bounds::new(fixing.value, fixing.value)
+        } else {
+            widened_variable_bounds(entry.bounds, *relax_lower, *relax_upper)
+        };
+        operations.push(OverlayOp::SetTemporaryVariableBounds {
+            variable: compiled_variable,
+            bounds,
+        });
+    }
+
     for restriction in &restrictions {
         let weight = restriction_weight(model, restriction)?;
         evaluated_weights.push((restriction.clone(), weight));
@@ -453,11 +529,6 @@ pub(crate) fn compile_portable_overlay(
                             "unknown constraint {constraint:?}"
                         ))
                     })?;
-                let row = compiler.compiled_row_id(*constraint).ok_or_else(|| {
-                    FeasibilityRelaxationError::Preflight(format!(
-                        "constraint {constraint:?} has no compiled row"
-                    ))
-                })?;
                 let variable = add_violation_variable(
                     &mut operations,
                     &mut origins,
@@ -466,10 +537,6 @@ pub(crate) fn compile_portable_overlay(
                     restriction_cap(model, restriction)?,
                 );
                 objective_coefficients.push((variable, weight));
-                operations.push(OverlayOp::SetTemporaryRowBounds {
-                    constraint: row,
-                    bounds: widened_row_bounds(entry.bounds, *side),
-                });
                 let mut coefficients = constraint_coefficients(&snapshot, compiler, *constraint)?;
                 coefficients.push((variable, side_sign(*side)));
                 coefficients.sort_by_key(|(id, _)| *id);
@@ -515,10 +582,6 @@ pub(crate) fn compile_portable_overlay(
                     restriction_cap(model, restriction)?,
                 );
                 objective_coefficients.push((violation, weight));
-                operations.push(OverlayOp::SetTemporaryVariableBounds {
-                    variable: compiled_variable,
-                    bounds: widened_variable_bounds(entry.bounds, *side),
-                });
                 let row = CompiledConstraintId(next_row);
                 next_row += 1;
                 origins.insert_constraint(
@@ -561,10 +624,6 @@ pub(crate) fn compile_portable_overlay(
                             "variable {variable:?} has no compiled id"
                         ))
                     })?;
-                operations.push(OverlayOp::SetTemporaryVariableBounds {
-                    variable: compiled_variable,
-                    bounds: entry.bounds,
-                });
                 for side in [BoundSide::Lower, BoundSide::Upper] {
                     let violation = add_violation_variable(
                         &mut operations,
@@ -692,7 +751,6 @@ pub(crate) fn validate_plan_preflight(
                             ))
                         })?;
                     if !entry.active
-                        || entry.fixing.is_some()
                         || match side {
                             BoundSide::Lower => !entry.bounds.lower.is_finite(),
                             BoundSide::Upper => !entry.bounds.upper.is_finite(),
@@ -738,6 +796,12 @@ pub(crate) fn report_members(
         .map_err(|error| FeasibilityRelaxationError::Numerical(error.to_string()))?;
     let mut seen_candidates = BTreeMap::new();
     let mut candidate_values = BTreeMap::new();
+    let tolerance = model.constants.feasibility_tolerance;
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(FeasibilityRelaxationError::Numerical(
+            "model feasibility tolerance is non-finite or negative".into(),
+        ));
+    }
     for (variable, candidate) in values {
         if !candidate.is_finite() {
             return Err(FeasibilityRelaxationError::Numerical(format!(
@@ -797,8 +861,8 @@ pub(crate) fn report_members(
                 ))
             })?
         };
-        if (!relax_lower && *candidate < bounds.lower)
-            || (!relax_upper && *candidate > bounds.upper)
+        if (!relax_lower && *candidate < bounds.lower - tolerance)
+            || (!relax_upper && *candidate > bounds.upper + tolerance)
         {
             return Err(FeasibilityRelaxationError::Numerical(format!(
                 "candidate value {candidate} violates domain of {variable:?}"
@@ -819,7 +883,7 @@ pub(crate) fn report_members(
             .find(|entry| entry.id == *variable)
             .and_then(|entry| entry.semicontinuous_lower)
         {
-            if *candidate != 0.0 && *candidate < nonzero_lower {
+            if *candidate != 0.0 && *candidate < nonzero_lower - tolerance {
                 return Err(FeasibilityRelaxationError::Numerical(format!(
                     "candidate value {candidate} violates semi-continuous domain of {variable:?}"
                 )));
@@ -835,12 +899,6 @@ pub(crate) fn report_members(
         }
     }
 
-    let tolerance = model.constants.feasibility_tolerance;
-    if !tolerance.is_finite() || tolerance < 0.0 {
-        return Err(FeasibilityRelaxationError::Numerical(
-            "model feasibility tolerance is non-finite or negative".into(),
-        ));
-    }
     let value = |variable: VarId| {
         let entry = snapshot
             .variables
@@ -1087,19 +1145,40 @@ fn variable_side_bounds(
 
 fn widened_row_bounds(
     bounds: crate::model::ConstraintBounds,
-    side: BoundSide,
+    relax_lower: bool,
+    relax_upper: bool,
 ) -> crate::model::ConstraintBounds {
-    match side {
-        BoundSide::Lower => crate::model::ConstraintBounds::range(f64::NEG_INFINITY, bounds.upper),
-        BoundSide::Upper => crate::model::ConstraintBounds::range(bounds.lower, f64::INFINITY),
-    }
+    crate::model::ConstraintBounds::range(
+        if relax_lower {
+            f64::NEG_INFINITY
+        } else {
+            bounds.lower
+        },
+        if relax_upper {
+            f64::INFINITY
+        } else {
+            bounds.upper
+        },
+    )
 }
 
-fn widened_variable_bounds(bounds: crate::model::Bounds, side: BoundSide) -> crate::model::Bounds {
-    match side {
-        BoundSide::Lower => crate::model::Bounds::new(f64::NEG_INFINITY, bounds.upper),
-        BoundSide::Upper => crate::model::Bounds::new(bounds.lower, f64::INFINITY),
-    }
+fn widened_variable_bounds(
+    bounds: crate::model::Bounds,
+    relax_lower: bool,
+    relax_upper: bool,
+) -> crate::model::Bounds {
+    crate::model::Bounds::new(
+        if relax_lower {
+            f64::NEG_INFINITY
+        } else {
+            bounds.lower
+        },
+        if relax_upper {
+            f64::INFINITY
+        } else {
+            bounds.upper
+        },
+    )
 }
 
 fn add_violation_variable(
