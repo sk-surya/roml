@@ -185,8 +185,9 @@ fn p29_declared_bound_on_fixed_variable_maps_and_composes_with_fixing() {
         repair
             .members
             .iter()
-            .find(|member| member.restriction
-                == RelaxationRestriction::PersistentFixing { variable })
+            .find(
+                |member| member.restriction == RelaxationRestriction::PersistentFixing { variable }
+            )
             .unwrap()
             .source_provenance
             .as_deref(),
