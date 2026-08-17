@@ -3,7 +3,7 @@
 ## Scope
 
 - Tested code head: `c5200fd84836e3a5d0b435368860538235cce330`
-- Current PR branch is a documentation/formatting-only continuation of the tested head.
+- Reviewed PR head was `c5c1c33ed3d7fd5e994c5b4f4f974b197c9b0667`; the closure commit following it is documentation/state/evidence-only.
 - Review type: independent final remediation review
 
 ## Findings
@@ -15,11 +15,13 @@
 - The paired outcome tests execute both `AcceptFeasible → FeasibleRepair` and
   `RequireOptimal → Unknown` for `TerminationStatus::Feasible`.
 - The only traceability issue identified was the absence of this review
-  artifact; this file resolves that documentation gap. Final hosted exact-head
-  CI and re-review of the resulting documentation head remain pending.
+  artifact; this file resolves that documentation gap. Exact-head hosted CI
+  passed for Core, HiGHS Backend, Coverage, Quality, and Policy, and review
+  #4955405004 independently confirmed the final disposition at `c5c1c33`.
 
 ## Disposition
 
-Implementation is technically clear in the reviewed scope. Owner merge remains
-blocked only until the resulting exact-head hosted workflows and final
-independent review are green. P31 remains inactive.
+Implementation is technically clear in the reviewed scope. The reviewed exact-head
+hosted workflows and independent review are green; the closure commit is
+documentation/state/evidence-only. P30 is CLEAR TO MERGE; owner merge remains
+pending. P31 remains inactive until P30 merges.
