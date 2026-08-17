@@ -31,6 +31,7 @@ pub mod minmax;
 pub mod piecewise_linear;
 pub mod product;
 pub mod reification;
+pub mod soft_constraint;
 
 use std::collections::HashMap;
 
@@ -51,6 +52,10 @@ pub use piecewise_linear::{
 };
 pub use product::{BinaryProductConstraint, ProductOperand};
 pub use reification::ReificationConstraint;
+pub use soft_constraint::{
+    PenaltyPolicy, PenaltyTarget, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
+    ViolationRole, ViolationSide,
+};
 
 /// A canonical semantic construct handle (design §7).
 pub type Construct = ConstructId;
@@ -86,6 +91,8 @@ pub enum ConstructKind {
     /// Piecewise-linear: epigraph/hypograph/exact-graph over finite strictly
     /// increasing breakpoints (design §17, P33 Task 1).
     PiecewiseLinear(PiecewiseLinearConstraint),
+    /// Persistent canonical softening of one primitive constraint.
+    SoftConstraint(SoftConstraintConstraint),
     /// Test-only crate-private fixture payload used by the in-crate construct
     /// lifecycle tests (A30 — `#[cfg(test)]`-gated, so the variant is ABSENT
     /// from the public API surface in non-test builds).
@@ -328,6 +335,10 @@ pub(crate) fn derive_variable_dependencies(kind: &ConstructKind) -> Vec<VarId> {
             v.extend(lin_expr_variables(&payload.argument));
             v
         }
+        // The referenced constraint's cells are snapshot-dependent rather
+        // than payload-owned. The soft bridge captures those constraint,
+        // variable, and parameter edges from the snapshot when it compiles.
+        ConstructKind::SoftConstraint(_) => Vec::new(),
         #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
     };
@@ -351,6 +362,7 @@ pub(crate) fn derive_parameter_dependencies(kind: &ConstructKind) -> Vec<ParamId
         ConstructKind::AbsoluteValue(payload) => payload.parameter_dependencies(),
         ConstructKind::BinaryProduct(payload) => payload.parameter_dependencies(),
         ConstructKind::PiecewiseLinear(payload) => payload.parameter_dependencies(),
+        ConstructKind::SoftConstraint(payload) => payload.parameter_dependencies(),
         #[cfg(test)]
         ConstructKind::Fixture(_) => Vec::new(),
     }

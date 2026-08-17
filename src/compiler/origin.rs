@@ -142,6 +142,18 @@ pub enum GeneratedRole {
     /// The binary-times-linear product's bound row (`w >= L·b` / `w <= U·b`,
     /// P32 Task 17c).
     BinaryProductBoundRow,
+    /// A persistent soft constraint's lower-side nonnegative violation.
+    SoftConstraintLowerViolationVariable,
+    /// The exact lower-side soft constraint row (`f(x) + v_lo >= l`).
+    SoftConstraintLowerViolationRow,
+    /// A persistent soft constraint's upper-side nonnegative violation.
+    SoftConstraintUpperViolationVariable,
+    /// The exact upper-side soft constraint row (`f(x) - v_up <= u`).
+    SoftConstraintUpperViolationRow,
+    /// A solve-scoped weighted-L1 relaxation violation variable.
+    FeasibilityRelaxationViolationVariable,
+    /// A solve-scoped weighted-L1 relaxation row.
+    FeasibilityRelaxationViolationRow,
     /// A temporary row added for an [`ObjectiveLock`](crate::solver::overlay::ObjectiveLock)
     /// (P27 Task 9).
     ObjectiveLockRow,

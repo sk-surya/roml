@@ -21,6 +21,7 @@ pub(crate) mod minmax;
 pub(crate) mod piecewise_linear;
 pub(crate) mod product;
 pub(crate) mod reification;
+pub(crate) mod soft_constraint;
 
 use std::collections::HashMap;
 
@@ -35,7 +36,7 @@ use crate::compiler::CompileError;
 use crate::construct::Construct;
 use crate::expr::TermCoeff;
 use crate::function::ScalarFunction;
-use crate::id::{ParamId, VarId};
+use crate::id::{ConId, ParamId, VarId};
 use crate::model::{Bounds, ConstraintBounds, VarType};
 use crate::snapshot::ModelSnapshot;
 use crate::value_expr::ValueExpr;
@@ -56,6 +57,9 @@ pub enum BridgeRepresentation {
 pub enum BridgeDependency {
     /// The generated entities originate from this construct.
     Construct(Construct),
+    /// The generated entities depend on an original user constraint's bounds
+    /// and coefficient cells.
+    Constraint(ConId),
     /// The generated entities reference a user variable's domain.
     Variable(VarId),
     /// The generated entities depend on a parameter value.

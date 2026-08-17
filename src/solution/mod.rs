@@ -18,16 +18,118 @@ use std::collections::{BTreeMap, HashMap};
 pub mod metadata;
 
 use crate::assignment::PrimalAssignment;
+use crate::compiler::backend_ir::CompilationId;
+use crate::compiler::origin::OverlayId;
+use crate::construct::SoftConstraint;
 use crate::id::{ConId, ObjId, VarId};
+use crate::model::Model;
 use crate::solver::SolveStatus;
 
 pub use metadata::{SolveMetadata, SynchronizationMode};
+
+/// Typed failures returned by original-constraint violation accessors.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViolationError {
+    /// The solution belongs to another model instance.
+    ModelInstanceMismatch {
+        /// The instance expected by the model.
+        expected: crate::identity::ModelInstanceId,
+        /// The instance recorded by the solution.
+        actual: crate::identity::ModelInstanceId,
+    },
+    /// The solution belongs to an older/newer model revision.
+    StaleRevision {
+        /// The revision expected by the model.
+        expected: crate::revision::ModelRevision,
+        /// The revision recorded by the solution.
+        actual: crate::revision::ModelRevision,
+    },
+    /// The referenced original constraint is absent.
+    ConstraintNotFound(ConId),
+    /// A referenced persistent soft constraint is stale or not a soft
+    /// construct in the supplied model.
+    SoftConstraintNotFound(SoftConstraint),
+    /// A tolerance or evaluated value was not finite/nonnegative.
+    InvalidTolerance(f64),
+    /// The solution did not contain a value for a variable used by the
+    /// requested expression.
+    MissingVariableValue(VarId),
+    /// A candidate variable value was not finite.
+    NonFiniteVariableValue {
+        /// The variable with the invalid value.
+        variable: VarId,
+        /// The invalid value.
+        value: f64,
+    },
+    /// The evaluated constraint expression was not finite.
+    NonFiniteEvaluation(f64),
+    /// The solution was not produced for the exact compiled state requested
+    /// by a solver-derived violation accessor.
+    CompilationMismatch {
+        /// Exact compiled state requested by the caller.
+        expected: Option<CompilationId>,
+        /// Exact compiled state recorded by the solution.
+        actual: Option<CompilationId>,
+    },
+    /// The solution was not produced under the exact overlay requested by a
+    /// solver-derived violation accessor.
+    OverlayMismatch {
+        /// Exact overlay requested by the caller.
+        expected: Option<OverlayId>,
+        /// Exact overlay recorded by the solution.
+        actual: Option<OverlayId>,
+    },
+}
+
+/// Raw lower/upper violation magnitudes for one original constraint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConstraintViolation {
+    /// Distance below the finite lower side, or zero when satisfied/absent.
+    pub lower: f64,
+    /// Distance above the finite upper side, or zero when satisfied/absent.
+    pub upper: f64,
+}
+
+impl ConstraintViolation {
+    /// Sum of the independent lower and upper violation magnitudes.
+    pub const fn total(self) -> f64 {
+        self.lower + self.upper
+    }
+}
+
+/// Raw and tolerance-adjusted presentation of a violation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViolationPresentation {
+    /// Mathematical raw values; never tolerance-adjusted.
+    pub raw: ConstraintViolation,
+    /// Values clipped by the requested presentation tolerance.
+    pub adjusted: ConstraintViolation,
+    /// Tolerance used for the presentation only.
+    pub tolerance: f64,
+}
+
+/// Explicit signed correction parts. This type is independent of persistent
+/// soft-constraint violation variables and is never extracted from them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SignedCorrection {
+    /// Upward correction required to reach a finite lower side.
+    pub positive: f64,
+    /// Downward correction required to reach a finite upper side.
+    pub negative: f64,
+}
+
+impl SignedCorrection {
+    /// Signed net correction (`positive - negative`).
+    pub const fn net(self) -> f64 {
+        self.positive - self.negative
+    }
+}
 
 /// A solution to the optimization problem.
 ///
 /// Contains variable values, objective value, solver status, and solve
 /// metadata. Solutions are immutable once created.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Solution {
     /// Variable values.
     values: HashMap<VarId, f64>,
@@ -180,6 +282,169 @@ impl Solution {
     /// Useful for expression evaluation.
     pub fn as_var_lookup(&self) -> impl Fn(VarId) -> f64 + '_ {
         move |var| self.value_or_zero(var)
+    }
+
+    /// Return raw lower/upper violation magnitudes for an original constraint.
+    /// The solution's model instance and revision are checked before any
+    /// expression evaluation.
+    pub fn constraint_violation(
+        &self,
+        model: &Model,
+        constraint: ConId,
+    ) -> Result<ConstraintViolation, ViolationError> {
+        self.validate_model_identity(model)?;
+        self.evaluate_constraint_violation(model, constraint)
+    }
+
+    /// Return a violation only when this solution carries the exact compiled
+    /// state and overlay identity supplied by the solver session.
+    pub fn constraint_violation_with_identity(
+        &self,
+        model: &Model,
+        constraint: ConId,
+        compilation_id: CompilationId,
+        overlay_id: Option<OverlayId>,
+    ) -> Result<ConstraintViolation, ViolationError> {
+        self.validate_model_identity(model)?;
+        self.validate_solver_identity(compilation_id, overlay_id)?;
+        self.evaluate_constraint_violation(model, constraint)
+    }
+
+    fn evaluate_constraint_violation(
+        &self,
+        model: &Model,
+        constraint: ConId,
+    ) -> Result<ConstraintViolation, ViolationError> {
+        let function = model
+            .constraint_function(constraint)
+            .map_err(|_| ViolationError::ConstraintNotFound(constraint))?;
+        let lhs = match function.function {
+            crate::function::ScalarFunction::Linear(expression) => {
+                for term in expression.terms() {
+                    let value = self
+                        .value(term.var)
+                        .ok_or(ViolationError::MissingVariableValue(term.var))?;
+                    if !value.is_finite() {
+                        return Err(ViolationError::NonFiniteVariableValue {
+                            variable: term.var,
+                            value,
+                        });
+                    }
+                }
+                let lhs = expression.evaluate(
+                    |variable| self.value(variable).unwrap_or(0.0),
+                    |parameter| model.parameter_value(parameter).unwrap_or(f64::NAN),
+                );
+                if !lhs.is_finite() {
+                    return Err(ViolationError::NonFiniteEvaluation(lhs));
+                }
+                lhs
+            }
+        };
+        let bounds = model
+            .constraint_bounds(constraint)
+            .ok_or(ViolationError::ConstraintNotFound(constraint))?;
+        Ok(ConstraintViolation {
+            lower: if bounds.lower.is_finite() {
+                (bounds.lower - lhs).max(0.0)
+            } else {
+                0.0
+            },
+            upper: if bounds.upper.is_finite() {
+                (lhs - bounds.upper).max(0.0)
+            } else {
+                0.0
+            },
+        })
+    }
+
+    /// Return raw violations through a persistent soft-constraint handle.
+    pub fn soft_constraint_violation(
+        &self,
+        model: &Model,
+        soft: SoftConstraint,
+    ) -> Result<ConstraintViolation, ViolationError> {
+        let payload = model
+            .soft_constraint(soft)
+            .map_err(|_| ViolationError::SoftConstraintNotFound(soft))?;
+        self.constraint_violation(model, payload.original_constraint)
+    }
+
+    /// Return a persistent soft-constraint violation with exact solver
+    /// compilation and overlay provenance checks.
+    pub fn soft_constraint_violation_with_identity(
+        &self,
+        model: &Model,
+        soft: SoftConstraint,
+        compilation_id: CompilationId,
+        overlay_id: Option<OverlayId>,
+    ) -> Result<ConstraintViolation, ViolationError> {
+        let payload = model
+            .soft_constraint(soft)
+            .map_err(|_| ViolationError::SoftConstraintNotFound(soft))?;
+        self.constraint_violation_with_identity(
+            model,
+            payload.original_constraint,
+            compilation_id,
+            overlay_id,
+        )
+    }
+
+    /// Return raw values plus a separate tolerance-adjusted presentation.
+    pub fn constraint_violation_with_tolerance(
+        &self,
+        model: &Model,
+        constraint: ConId,
+        tolerance: f64,
+    ) -> Result<ViolationPresentation, ViolationError> {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(ViolationError::InvalidTolerance(tolerance));
+        }
+        let raw = self.constraint_violation(model, constraint)?;
+        Ok(ViolationPresentation {
+            raw,
+            adjusted: ConstraintViolation {
+                lower: (raw.lower - tolerance).max(0.0),
+                upper: (raw.upper - tolerance).max(0.0),
+            },
+            tolerance,
+        })
+    }
+
+    fn validate_model_identity(&self, model: &Model) -> Result<(), ViolationError> {
+        if self.metadata.model_instance != model.instance() {
+            return Err(ViolationError::ModelInstanceMismatch {
+                expected: model.instance(),
+                actual: self.metadata.model_instance,
+            });
+        }
+        if self.metadata.model_revision != model.current_revision() {
+            return Err(ViolationError::StaleRevision {
+                expected: model.current_revision(),
+                actual: self.metadata.model_revision,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_solver_identity(
+        &self,
+        compilation_id: CompilationId,
+        overlay_id: Option<OverlayId>,
+    ) -> Result<(), ViolationError> {
+        if self.metadata.compilation_id != Some(compilation_id) {
+            return Err(ViolationError::CompilationMismatch {
+                expected: Some(compilation_id),
+                actual: self.metadata.compilation_id,
+            });
+        }
+        if self.metadata.overlay_id != overlay_id {
+            return Err(ViolationError::OverlayMismatch {
+                expected: overlay_id,
+                actual: self.metadata.overlay_id,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -349,7 +614,9 @@ impl SolutionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::ConstraintExprExt;
     use crate::id::Generation;
+    use crate::model::{continuous, Model};
     use crate::SolverStatus;
 
     fn make_var(index: u32) -> VarId {
@@ -475,6 +742,95 @@ mod tests {
         map.insert(make_var(0), 1.0);
         let s = Solution::from_values(map, SolverStatus::Optimal);
         assert_eq!(s.metadata().compilation_id, None);
+    }
+
+    #[test]
+    fn constraint_violation_rejects_missing_candidate_value() {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        let constraint = model.add_constraint(x.ge(1.0)).unwrap();
+        let solution = SolutionBuilder::new()
+            .metadata(SolveMetadata {
+                model_instance: model.instance(),
+                model_revision: model.current_revision(),
+                ..SolveMetadata::default()
+            })
+            .build();
+
+        assert!(matches!(
+            solution.constraint_violation(&model, constraint),
+            Err(ViolationError::MissingVariableValue(variable)) if variable == x
+        ));
+    }
+
+    #[test]
+    fn constraint_violation_rejects_nonfinite_candidate_value() {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        let constraint = model.add_constraint(x.ge(1.0)).unwrap();
+        let solution = SolutionBuilder::new()
+            .value(x, f64::NAN)
+            .metadata(SolveMetadata {
+                model_instance: model.instance(),
+                model_revision: model.current_revision(),
+                ..SolveMetadata::default()
+            })
+            .build();
+
+        assert!(matches!(
+            solution.constraint_violation(&model, constraint),
+            Err(ViolationError::NonFiniteVariableValue { variable, .. }) if variable == x
+        ));
+    }
+
+    #[test]
+    fn solver_violation_accessor_requires_exact_compilation_and_overlay_identity() {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        let constraint = model.add_constraint(x.ge(1.0)).unwrap();
+        let compilation_id = CompilationId::allocate().unwrap();
+        let overlay_id = OverlayId::allocate().unwrap();
+        let solution = SolutionBuilder::new()
+            .value(x, 1.0)
+            .metadata(SolveMetadata {
+                model_instance: model.instance(),
+                model_revision: model.current_revision(),
+                compilation_id: Some(compilation_id),
+                overlay_id: Some(overlay_id),
+                ..SolveMetadata::default()
+            })
+            .build();
+
+        assert!(matches!(
+            solution.constraint_violation_with_identity(
+                &model,
+                constraint,
+                CompilationId::allocate().unwrap(),
+                Some(overlay_id),
+            ),
+            Err(ViolationError::CompilationMismatch { .. })
+        ));
+        assert!(matches!(
+            solution.constraint_violation_with_identity(
+                &model,
+                constraint,
+                compilation_id,
+                Some(OverlayId::allocate().unwrap()),
+            ),
+            Err(ViolationError::OverlayMismatch { .. })
+        ));
+        assert_eq!(
+            solution
+                .constraint_violation_with_identity(
+                    &model,
+                    constraint,
+                    compilation_id,
+                    Some(overlay_id),
+                )
+                .unwrap()
+                .total(),
+            0.0
+        );
     }
 
     #[test]

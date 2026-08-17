@@ -7,10 +7,10 @@ primitive LP/MILP model state, with typed rejection of unsupported semantics,
 transactional path policies, independent ROML round-trip checking, and native
 HiGHS structural/solve differential coverage.
 
-The implementation is **accepted and pending merge** in PR #46. The code-bearing
-qualification commit is `0a4e732c8d884b4ccc6d8248290a7e0bf6555f09`; the reviewed
-PR head is `86ee71c685435510be8598337e7ecf8da20b1efd`. The latter contains only
-the evidence refresh after the code-bearing qualification.
+The implementation was accepted and merged in PR #46 as
+`8838effee84eafdcbc2e502fb417df8d09221248`. The code-bearing qualification
+commit is `0a4e732c8d884b4ccc6d8248290a7e0bf6555f09`; the final reviewed PR
+head was `8a8ee7573532c6c9b883249f74afefb477bbb6a1`.
 
 ## Qualification result
 
@@ -20,9 +20,8 @@ the evidence refresh after the code-bearing qualification.
 - Solve subset: `blend.mps`, `fit2d.mps`, and `gfrd-pnc.mps` PASS.
 - Focused ROML and HiGHS oracles: PASS.
 - Hosted exact-head Core, HiGHS, Coverage, Quality, Policy, MSRV, package,
-  documentation, and security/dependency checks: PASS on the reviewed head,
-  including bundled HiGHS on Windows. The closure-only head requires one fresh
-  exact-head read.
+  documentation, and security/dependency checks: PASS on the reviewed merged
+  head, including bundled HiGHS on Windows.
 
 ## Closure state
 
@@ -32,12 +31,10 @@ The required GSD closure artifacts are now present:
 - `36-REVIEW.md` — independent disposition and finding history;
 - `36-SUMMARY.md` — outcome and routing handoff.
 
-Root and milestone state now record PR #45 as merged, P36 as accepted/pending
-merge, and P30 as inactive until P36 actually merges. No merge, release, tag,
-or publication is implied by this summary.
+Root and milestone state record PR #45 and PR #46 as merged, with P30 now
+activated. No release, tag, or publication is implied by this summary.
 
 ## Handoff
 
-After the docs-only push, rerun and inspect mandatory CI at the resulting exact
-PR head, then perform the final read-only governance verification. Once the
-owner authorizes that exact SHA, merge PR #46; only then activate P30.
+PR #46 is merged. The next authorized GSD phase is P30; no further P36
+implementation work is required.
