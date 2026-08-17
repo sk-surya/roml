@@ -3,10 +3,10 @@
 ## Routing state
 
 **Milestone:** M3 — Semantic Modeling and Solve Workflows  
-**Status:** P36 implementation accepted; pending merge
-**Current routing target:** P36 — MPS write-back, pending owner-authorized merge of PR #46
-**Active production implementation:** P36 is complete on the exact candidate head; only closure/merge administration remains.
-**Implementation authorization:** true for P36 closure only; P30, P31, and P34 remain unauthorized.
+**Status:** P30 clear to merge; owner merge pending
+**Current routing target:** P30 — soft constraints and feasibility relaxation
+**Active production implementation:** P30 is authorized; P36 is complete and merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248`.
+**Implementation authorization:** true for P30 only; P31 and P34 remain unauthorized.
 **Planning prerequisite:** PR #45 merged to `main` as `48fab4db347522cebc786393e5afcbdbcea98f33`.
 **Completion roadmap:** `COMPLETION-ROADMAP.md`  
 **Shared contracts:** `SHARED-CONTRACTS.md`
@@ -22,20 +22,19 @@
 | P27 | fixing / assignments / locks / overlays | complete | accepted P27 evidence |
 | P28 | SolvePlan / starts / hints | complete | accepted P28 evidence |
 | P29 | IIS/conflict analysis | complete | PR #39 + `P29_IIS_QUALIFICATION.md` |
-| P30 | soft constraints / feasibility relaxation | planned, inactive | SM-10 + `30-PLAN.md`; gated by P36 merge |
+| P30 | soft constraints / feasibility relaxation | clear to merge; owner merge pending | owner-authorized merge |
 | P31 | objective policies / lexicographic execution | planned, inactive | SM-11 + `31-PLAN.md`; gated by P30 merge |
 | P32 | common semantic constructs | complete | accepted P32 evidence |
 | P33 | PWL / bound analysis | complete | accepted P33 evidence |
 | P34 | integrated M3 qualification | planned, inactive | SM-15 + P34 qualification contract; gated by P31 merge |
 | P35 | MPS import / corpus qualification | complete | PR #44 merge `7159fad8830b32f5a9377174e6e57bb24f99de95` |
-| P36 | MPS write-back / round trip | implementation accepted / pending merge | PR #46 exact-head closure evidence and owner-authorized merge |
+| P36 | MPS write-back / round trip | complete | PR #46 merged as `8838effe`; exact-head closure evidence |
 
 ## Binding completion sequence
 
 ```text
 PR #45 accepted + merged (`48fab4db`)
-  -> P36 implementation accepted / pending merge (PR #46)
-  -> P36 actually merged
+  -> P36 merged via PR #46 (`8838effe`)
   -> P30 implementation active
   -> P30 accepted + merged
   -> P31 implementation active
@@ -87,7 +86,7 @@ P31 owns canonical `ObjectivePolicy` and `ObjectivePriority`; objective locks us
 
 - One production phase active at a time.
 - A planning/review branch may coexist with one production phase only when it does not authorize or accumulate future production code.
-- P36 implementation is accepted and pending merge; P30, P31, and P34 remain inactive until their explicit predecessor merge gates are satisfied.
+- P30 has passed remediation evidence, exact-head hosted CI, and independent review after the P36 merge; it is clear to merge. P31 and P34 remain inactive until their explicit predecessor merge gates are satisfied.
 - P34 starts only after all feature phases are merged and cross-phase contracts are stable.
 
 ## Evidence/update protocol
@@ -100,7 +99,7 @@ For each phase:
 5. require exact-head independent review and hosted mandatory CI;
 6. owner-authorized merge;
 7. only then update root/milestone state to authorize the next phase.
-8. Keep P30 gated until P36's implementation PR is actually merged; acceptance alone does not activate the successor.
+8. Activate exactly one successor after the predecessor implementation PR is actually merged; acceptance alone does not activate a successor.
 
 ## M3 stop condition
 

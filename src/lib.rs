@@ -48,8 +48,10 @@ pub use construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
     ExtrapolationPolicy, FormulationPreference, IndicatorConstraint, IndicatorDirection,
-    MinMaxConstraint, MinMaxRelation, MinMaxSense, PiecewiseLinearConstraint, ProductOperand,
-    PwlCurvature, PwlPoint, PwlRelation, ReificationConstraint,
+    MinMaxConstraint, MinMaxRelation, MinMaxSense, PenaltyPolicy, PenaltyTarget,
+    PiecewiseLinearConstraint, ProductOperand, PwlCurvature, PwlPoint, PwlRelation,
+    ReificationConstraint, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
+    ViolationRole, ViolationSide,
 };
 pub use delta::{DeltaBatch, ModelOp};
 pub use expr::{ConstraintExprExt, ConstraintSpec, LinExpr, ObjectiveExprExt, ObjectiveSpec};
@@ -68,8 +70,8 @@ pub use model::{
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
 pub use solution::{
-    metadata::SolveMetadata, metadata::SynchronizationMode, Solution, SolutionBuilder,
-    SolutionStore,
+    metadata::SolveMetadata, metadata::SynchronizationMode, ConstraintViolation, SignedCorrection,
+    Solution, SolutionBuilder, SolutionStore, ViolationError, ViolationPresentation,
 };
 pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
@@ -77,6 +79,7 @@ pub use solver::backend::{
 pub use solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
 };
+pub use solver::infeasibility::BoundSide;
 pub use solver::infeasibility::ConflictAtomId;
 pub use solver::infeasibility::{
     AnalysisBudget, AnalysisCompletion, AnalysisNumericalPolicy, AnalysisProviderRecord,
@@ -93,6 +96,13 @@ pub use solver::overlay::{
 pub use solver::plan::{
     HintPriority, LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
     UnsupportedFeaturePolicy, VariableHint, VariableHints,
+};
+pub use solver::relaxation::{
+    map_p29_members, FeasibilityRelaxationError, FeasibilityRelaxationPlan,
+    FeasibilityRelaxationReport, RelaxationAcceptance, RelaxationExecutionProvider,
+    RelaxationMappedRestriction, RelaxationMetadata, RelaxationNumerics, RelaxationObjective,
+    RelaxationOutcome, RelaxationProviderPolicy, RelaxationRestriction, RelaxationScope,
+    RelaxationUnknownReason, RelaxedRestriction,
 };
 pub use solver::request::{
     ConfigAdjustment, ConfigRejection, EffectiveConfig, SolveRequest, SolveResult, SolveSolution,

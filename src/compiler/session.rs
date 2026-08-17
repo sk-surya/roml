@@ -41,7 +41,7 @@ use crate::compiler::report::FormulationDecision;
 use crate::compiler::CompileError;
 use crate::construct::{
     derive_parameter_dependencies, derive_variable_dependencies, Construct, ConstructKind,
-    FormulationPreference, ProductOperand,
+    FormulationPreference, PenaltyTarget, ProductOperand, SoftConstraintConstraint,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -49,7 +49,7 @@ use crate::function::{ScalarFunction, ScalarSet};
 use crate::id::{ConId, ObjId, ParamId, VarId};
 use crate::identity::ModelInstanceId;
 use crate::model::coefficient::CoefficientTarget;
-use crate::model::{Bounds, ConstraintBounds, VarType};
+use crate::model::{Bounds, ConstraintBounds, Sense, VarType};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::value_expr::ValueExpr;
@@ -100,11 +100,12 @@ struct CurrentCompilation {
     /// The bridge dependency graph of the active constructs (F1).
     ///
     /// Every active construct's generated bridge artifact depends on a set of
-    /// user variables and parameters (recorded by the bridges as
-    /// [`BridgeDependency`] and completed centrally here). A dependency-
-    /// affecting delta (`SetParameter`, `SetVariableBounds`,
-    /// `RemoveVariable`, variable type/activity changes) forces a
-    /// `RebuildRequired` — the construct artifact can go stale otherwise.
+    /// user constraints, variables, and parameters (recorded by the bridges
+    /// as [`BridgeDependency`] and completed centrally here). A
+    /// dependency-affecting delta (`SetParameter`, `SetVariableBounds`,
+    /// `SetConstraintBounds`, coefficient-cell changes, `RemoveVariable`, or
+    /// variable type/activity changes) forces a `RebuildRequired` — the
+    /// construct artifact can go stale otherwise.
     construct_dependencies: Vec<BridgeDependency>,
 }
 
@@ -202,6 +203,23 @@ impl CompilationSession {
         self.current
             .as_ref()
             .and_then(|c| c.variable_ids.get(&v).copied())
+    }
+
+    /// Resolve a user constraint to its compiled row id in the current base.
+    pub(crate) fn compiled_row_id(&self, c: ConId) -> Option<CompiledConstraintId> {
+        self.current
+            .as_ref()
+            .and_then(|current| current.row_ids.get(&c).copied())
+    }
+
+    /// The next dense compiled variable index in the current base.
+    pub(crate) fn next_variable_index(&self) -> Option<u32> {
+        self.current.as_ref().map(|c| c.next_variable_index)
+    }
+
+    /// The next dense compiled objective index in the current base.
+    pub(crate) fn next_objective_index(&self) -> Option<u32> {
+        self.current.as_ref().map(|c| c.next_objective_index)
     }
 
     /// Resolve a user objective to its compiled objective id in the current
@@ -376,7 +394,7 @@ impl CompilationSession {
             let id = CompiledConstraintId(index as u32);
             // Activity is folded into bounds: inactive -> unbounded.
             let bounds = if c.active {
-                c.bounds
+                softened_row_bounds(snapshot, c.id, c.bounds)
             } else {
                 ConstraintBounds::range(f64::NEG_INFINITY, f64::INFINITY)
             };
@@ -546,6 +564,14 @@ impl CompilationSession {
                         next_row_index,
                     )?
                 }
+                ConstructKind::SoftConstraint(payload) => {
+                    crate::compiler::bridge::soft_constraint::compile(
+                        payload,
+                        &ctx,
+                        next_variable_index,
+                        next_row_index,
+                    )?
+                }
                 // Test-only crate-private P32 fixture scaffolding is never
                 // compiled (A30: `#[cfg(test)]`-gated, absent from non-test
                 // builds).
@@ -575,6 +601,29 @@ impl CompilationSession {
             construct_rows.extend(output.rows);
             construct_origins.merge(output.origin_map);
             construct_decisions.extend(output.decisions);
+        }
+
+        // Persistent soft penalties are ordinary objective cells in the
+        // solver-neutral IR.  Apply the sense normalization here, after the
+        // bridge has allocated stable violation variables and before the
+        // snapshot builder can be observed by a backend.
+        for entry in &snapshot.constructs {
+            if !entry.active {
+                continue;
+            }
+            if let ConstructKind::SoftConstraint(payload) = &entry.kind {
+                add_soft_penalty_objective(
+                    payload,
+                    entry.id,
+                    &construct_origins,
+                    &objective_ids,
+                    &mut objectives,
+                    &parameter_values,
+                )?;
+            }
+        }
+        for objective in &objectives {
+            compiled_objective_coefficients.insert(objective.id, objective.coefficients.clone());
         }
 
         // WR-02: construct-generated binaries (exact minmax/abs/clamp selector
@@ -888,6 +937,13 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveConstraint { con } => {
+                    if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
+                    {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "RemoveConstraint for {con:?} touches a soft-constraint bridge; a \
+                             generated row would otherwise retain a dangling reference (F1)"
+                        )));
+                    }
                     let id = *w.row_ids.get(con).ok_or_else(|| {
                         CompileError::RebuildRequired(format!(
                             "RemoveConstraint for unknown compiled row ({con:?})"
@@ -899,6 +955,13 @@ impl CompilationSession {
                 }
 
                 ModelOp::SetConstraintBounds { con, bounds } => {
+                    if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
+                    {
+                        return Err(CompileError::RebuildRequired(format!(
+                            "SetConstraintBounds for {con:?} touches a soft-constraint bridge; \
+                             generated side rows require a fresh snapshot (F1)"
+                        )));
+                    }
                     // SM-04.4 (WR-3): an unqualified feature is rejected, never
                     // silently compiled.
                     require_feature(
@@ -932,6 +995,17 @@ impl CompilationSession {
                     evaluated_value,
                     ..
                 } => {
+                    if let CoefficientTarget::Constraint(con) = cell_key.0 {
+                        if Self::construct_depends_on_constraint(
+                            &current.construct_dependencies,
+                            con,
+                        ) {
+                            return Err(CompileError::RebuildRequired(format!(
+                                "SetCell for soft constraint {con:?} touches a generated side \
+                                 row; a fresh snapshot is required (F1)"
+                            )));
+                        }
+                    }
                     // SM-04.4 (WR-3): coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
                     require_feature(
@@ -975,6 +1049,17 @@ impl CompilationSession {
                 }
 
                 ModelOp::RemoveCell { cell_key } => {
+                    if let CoefficientTarget::Constraint(con) = cell_key.0 {
+                        if Self::construct_depends_on_constraint(
+                            &current.construct_dependencies,
+                            con,
+                        ) {
+                            return Err(CompileError::RebuildRequired(format!(
+                                "RemoveCell for soft constraint {con:?} touches a generated \
+                                 side row; a fresh snapshot is required (F1)"
+                            )));
+                        }
+                    }
                     // SM-04.4 (WR-3): coefficient changes gate on
                     // `IncrementalCoefficients`, never silently compiled.
                     require_feature(
@@ -1251,6 +1336,17 @@ impl CompilationSession {
             .iter()
             .any(|d| matches!(d, BridgeDependency::Parameter(p) if *p == param))
     }
+
+    /// Whether any active construct's bridge artifact depends on an original
+    /// user constraint's bounds or coefficient cells (F1).
+    fn construct_depends_on_constraint(
+        dependencies: &[BridgeDependency],
+        constraint: ConId,
+    ) -> bool {
+        dependencies
+            .iter()
+            .any(|d| matches!(d, BridgeDependency::Constraint(c) if *c == constraint))
+    }
 }
 
 // ===========================================================================
@@ -1396,9 +1492,87 @@ fn validate_construct_finiteness(
             }
             Ok(())
         }
+        ConstructKind::SoftConstraint(payload) => {
+            let weight = payload
+                .penalty
+                .weight
+                .eval_checked(|parameter| {
+                    parameter_values.get(&parameter).copied().ok_or(parameter)
+                })
+                .map_err(|parameter| CompileError::MissingConstructParameter {
+                    construct,
+                    parameter,
+                })?;
+            if !weight.is_finite() || weight < 0.0 {
+                return Err(CompileError::UnsupportedFeature(format!(
+                    "soft-constraint penalty weight must be finite and non-negative for {construct:?}"
+                )));
+            }
+            Ok(())
+        }
         #[cfg(test)]
         ConstructKind::Fixture(_) => Ok(()),
     }
+}
+
+/// Add persistent soft violation variables to their explicitly selected
+/// canonical objective.  This stays in the identity compiler rather than in
+/// the bridge so the bridge remains a portable row/variable formulation and
+/// objective sense normalization is performed against the compiled objective
+/// that will actually reach the backend.
+fn add_soft_penalty_objective(
+    payload: &SoftConstraintConstraint,
+    construct: Construct,
+    origins: &OriginMap,
+    objective_ids: &HashMap<ObjId, CompiledObjectiveId>,
+    objectives: &mut [CompiledObjective],
+    parameter_values: &HashMap<ParamId, f64>,
+) -> Result<(), CompileError> {
+    let target = match payload.penalty.target {
+        PenaltyTarget::None => return Ok(()),
+        PenaltyTarget::Objective(objective) => objective,
+    };
+    let compiled_objective = objective_ids.get(&target).copied().ok_or_else(|| {
+        CompileError::UnsupportedFeature(format!(
+            "soft constraint {construct:?} targets objective {target:?} absent from snapshot"
+        ))
+    })?;
+    let weight = payload
+        .penalty
+        .weight
+        .eval_checked(|parameter| parameter_values.get(&parameter).copied().ok_or(parameter))
+        .map_err(|parameter| CompileError::MissingConstructParameter {
+            construct,
+            parameter,
+        })?;
+    if !weight.is_finite() || weight < 0.0 {
+        return Err(CompileError::UnsupportedFeature(format!(
+            "soft-constraint penalty weight must be finite and non-negative for {construct:?}"
+        )));
+    }
+    let objective = objectives
+        .iter_mut()
+        .find(|objective| objective.id == compiled_objective)
+        .ok_or_else(|| CompileError::UnsupportedFeature(format!(
+            "compiled objective {compiled_objective:?} is not present for soft constraint {construct:?}"
+        )))?;
+    let signed_weight = match objective.sense {
+        Sense::Minimize => weight,
+        Sense::Maximize => -weight,
+    };
+    for role in [
+        crate::compiler::origin::GeneratedRole::SoftConstraintLowerViolationVariable,
+        crate::compiler::origin::GeneratedRole::SoftConstraintUpperViolationVariable,
+    ] {
+        let origin = EntityOrigin::Construct { construct, role };
+        for variable in origins.variables_for_origin(&origin) {
+            objective.coefficients.push((variable, signed_weight));
+        }
+    }
+    objective
+        .coefficients
+        .sort_by_key(|(variable, _)| *variable);
+    Ok(())
 }
 
 /// F5: preflight every ACTIVE construct's variable and parameter references
@@ -1437,4 +1611,41 @@ fn preflight_constructs(
         validate_construct_finiteness(&entry.kind, entry.id, parameter_values)?;
     }
     Ok(())
+}
+
+/// Widen the finite sides owned by an active persistent soft constraint.
+///
+/// The original primitive row remains in the compiled snapshot for stable
+/// identity, but softened sides must not remain hard there. The generated
+/// signed side rows emitted by the soft bridge are the authoritative relaxed
+/// constraints for those sides.
+fn softened_row_bounds(
+    snapshot: &ModelSnapshot,
+    constraint: ConId,
+    bounds: ConstraintBounds,
+) -> ConstraintBounds {
+    let softened = snapshot.constructs.iter().any(|entry| {
+        entry.active
+            && matches!(
+                &entry.kind,
+                ConstructKind::SoftConstraint(payload)
+                    if payload.original_constraint == constraint
+            )
+    });
+    if !softened {
+        return bounds;
+    }
+
+    ConstraintBounds::range(
+        if bounds.lower.is_finite() {
+            f64::NEG_INFINITY
+        } else {
+            bounds.lower
+        },
+        if bounds.upper.is_finite() {
+            f64::INFINITY
+        } else {
+            bounds.upper
+        },
+    )
 }

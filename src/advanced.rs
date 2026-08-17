@@ -193,6 +193,7 @@ pub use crate::construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, ConstructEntry, ConstructKind,
     ExtrapolationPolicy, IndicatorConstraint, IndicatorDirection, MinMaxConstraint, MinMaxRelation,
-    MinMaxSense, PiecewiseLinearConstraint, ProductOperand, PwlCurvature, PwlPoint, PwlRelation,
-    ReificationConstraint,
+    MinMaxSense, PenaltyPolicy, PenaltyTarget, PiecewiseLinearConstraint, ProductOperand,
+    PwlCurvature, PwlPoint, PwlRelation, ReificationConstraint, SoftConstraint,
+    SoftConstraintConstraint, ViolationPolicy, ViolationRole, ViolationSide,
 };

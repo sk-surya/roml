@@ -34,6 +34,11 @@ use crate::solver::plan::{
     LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
     UnsupportedFeaturePolicy, VariableHints,
 };
+use crate::solver::relaxation::{
+    compile_portable_overlay, report_members, unknown_reason, validate_plan_preflight,
+    FeasibilityRelaxationError, FeasibilityRelaxationPlan, FeasibilityRelaxationReport,
+    RelaxationAcceptance, RelaxationExecutionProvider, RelaxationOutcome, RelaxationProviderPolicy,
+};
 use crate::solver::request::{validate_request, SolveRequest, SolveResult};
 use crate::solver::session::{
     BackendMetadata, BackendSession, OverlaySession, SessionHealth, Synchronization,
@@ -215,6 +220,12 @@ where
         let mut analysis = base;
         for operation in compiled.operations {
             match operation {
+                crate::solver::overlay::OverlayOp::AddTemporaryVariable { variable } => {
+                    analysis.variables.push(variable);
+                }
+                crate::solver::overlay::OverlayOp::AddTemporaryObjective { objective } => {
+                    analysis.objectives.push(objective);
+                }
                 crate::solver::overlay::OverlayOp::SetTemporaryVariableBounds {
                     variable,
                     bounds,
@@ -234,6 +245,37 @@ where
                 }
                 crate::solver::overlay::OverlayOp::AddTemporaryRow { row } => {
                     analysis.linear_rows.push(row);
+                }
+                crate::solver::overlay::OverlayOp::SetTemporaryObjectiveCoefficient {
+                    objective,
+                    variable,
+                    value,
+                } => {
+                    if let Some(target) = analysis
+                        .objectives
+                        .iter_mut()
+                        .find(|entry| entry.id == objective)
+                    {
+                        if let Some(existing) = target
+                            .coefficients
+                            .iter_mut()
+                            .find(|(id, _)| *id == variable)
+                        {
+                            existing.1 = value;
+                        } else {
+                            target.coefficients.push((variable, value));
+                            target.coefficients.sort_by_key(|(id, _)| *id);
+                        }
+                    }
+                }
+                crate::solver::overlay::OverlayOp::SetTemporaryRowBounds { constraint, bounds } => {
+                    if let Some(target) = analysis
+                        .linear_rows
+                        .iter_mut()
+                        .find(|entry| entry.id == constraint)
+                    {
+                        target.bounds = bounds;
+                    }
                 }
                 crate::solver::overlay::OverlayOp::RemoveTemporaryRow { .. }
                 | crate::solver::overlay::OverlayOp::SetObjectivePolicy(_) => {}
@@ -920,6 +962,333 @@ where
             unsupported: UnsupportedFeaturePolicy::Reject,
         };
         self.solve_plan(model, plan)
+    }
+
+    /// Run one isolated portable weighted-L1 feasibility repair.
+    ///
+    /// The canonical model is committed and synchronized to an exact base,
+    /// then the generated violation variables/rows/objective are applied as a
+    /// solve-scoped overlay. The overlay is always rolled back before a report
+    /// can escape. Persistent soft constructs and the canonical revision are
+    /// never changed by this method.
+    pub fn solve_feasibility_relaxation(
+        &mut self,
+        model: &mut Model,
+        plan: FeasibilityRelaxationPlan,
+    ) -> Result<FeasibilityRelaxationReport, FeasibilityRelaxationError> {
+        validate_plan_preflight(model, &plan)?;
+        let (provider, provider_reason) = match plan.provider_policy {
+            RelaxationProviderPolicy::PortableOnly => {
+                (RelaxationExecutionProvider::PortableRoml, None)
+            }
+            RelaxationProviderPolicy::PreferNative => (
+                RelaxationExecutionProvider::PortableRoml,
+                Some(
+                    "no qualified native feasibility-relaxation provider; used portable ROML"
+                        .into(),
+                ),
+            ),
+            RelaxationProviderPolicy::NativeRequired => {
+                return Err(FeasibilityRelaxationError::NativeProviderRequired)
+            }
+        };
+
+        let (request, committed, sync_mode) = self
+            .synchronize_base(model, SolveOptions::default())
+            .map_err(|error| FeasibilityRelaxationError::Backend(error.to_string()))?;
+        let base_compilation = self.compiler.current_compilation().ok_or_else(|| {
+            FeasibilityRelaxationError::Preflight(
+                "synchronization produced no base compilation".into(),
+            )
+        })?;
+        let (compiled, weighted) = compile_portable_overlay(model, &self.compiler, &plan)?;
+        let relaxation_compilation_id = compiled.compilation_id;
+        let overlay_id = compiled.overlay_id;
+        let receipt = match self.backend.apply_overlay(&compiled) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // An apply error carries no receipt, but the backend may have
+                // mutated before reporting it. Reconstruct the exact receipt
+                // tuple from the immutable compiled overlay and run the same
+                // rollback/verification path as every later failure. This
+                // preserves both the primary apply error and any cleanup or
+                // rebuild evidence.
+                let possible_receipt = OverlayApplyReceipt {
+                    overlay_id,
+                    base_compilation: compiled.base_compilation,
+                    applied_compilation: compiled.compilation_id,
+                };
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &possible_receipt,
+                );
+            }
+        };
+        if receipt.overlay_id != overlay_id
+            || receipt.base_compilation != compiled.base_compilation
+            || receipt.applied_compilation != relaxation_compilation_id
+        {
+            return self.relaxation_failure(
+                FeasibilityRelaxationError::Backend(format!(
+                    "relaxation apply returned mismatched receipt: {:?}",
+                    receipt
+                )),
+                &receipt,
+            );
+        }
+
+        let result = match self.backend.solve(&request) {
+            Ok(result) => result,
+            Err(error) => {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &receipt,
+                )
+            }
+        };
+        if result.compilation_id != Some(relaxation_compilation_id) {
+            return self.relaxation_failure(
+                FeasibilityRelaxationError::Backend(format!(
+                    "relaxation solve returned compilation {:?}, expected {:?}",
+                    result.compilation_id, relaxation_compilation_id
+                )),
+                &receipt,
+            );
+        }
+        let status = match SolveStatus::from_termination(result.termination) {
+            Ok(status) => status,
+            Err(error) => {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &receipt,
+                )
+            }
+        };
+        if status == SolveStatus::Error || status == SolveStatus::Unknown {
+            return self.relaxation_failure(
+                FeasibilityRelaxationError::Backend(format!(
+                    "uninterpretable relaxation termination: {status:?}"
+                )),
+                &receipt,
+            );
+        }
+        if matches!(status, SolveStatus::Optimal | SolveStatus::Feasible)
+            && result.solution.is_none()
+        {
+            return self.relaxation_failure(
+                FeasibilityRelaxationError::Numerical(
+                    "repair provider reported a candidate status without a solution".into(),
+                ),
+                &receipt,
+            );
+        }
+        let (members, total_weighted_violation) = if let Some(candidate) = &result.solution {
+            let evidence = match report_members(model, &weighted, &candidate.variable_values) {
+                Ok(evidence) => evidence,
+                Err(error) => return self.relaxation_failure(error, &receipt),
+            };
+            if matches!(status, SolveStatus::Optimal | SolveStatus::Feasible)
+                && !candidate
+                    .objective_value
+                    .is_some_and(|objective| objective.is_finite())
+            {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Numerical(
+                        "repair provider returned a missing or non-finite objective value".into(),
+                    ),
+                    &receipt,
+                );
+            }
+            if let Some(objective) = candidate.objective_value {
+                if !objective.is_finite()
+                    || (objective - evidence.1).abs()
+                        > 1e-7 * objective.abs().max(evidence.1.abs()).max(1.0)
+                {
+                    return self.relaxation_failure(
+                        FeasibilityRelaxationError::Numerical(format!(
+                            "repair objective {objective} is inconsistent with evidence {}",
+                            evidence.1
+                        )),
+                        &receipt,
+                    );
+                }
+            }
+            evidence
+        } else {
+            (Vec::new(), 0.0)
+        };
+        let outcome = match status {
+            SolveStatus::Optimal => RelaxationOutcome::OptimalRepair,
+            SolveStatus::Feasible => match plan.acceptance {
+                RelaxationAcceptance::AcceptFeasible => RelaxationOutcome::FeasibleRepair,
+                RelaxationAcceptance::RequireOptimal => {
+                    RelaxationOutcome::Unknown(unknown_reason(status))
+                }
+            },
+            SolveStatus::Infeasible => RelaxationOutcome::NoRepairFound,
+            other => RelaxationOutcome::Unknown(unknown_reason(other)),
+        };
+        let solution = match normalize_result(
+            &result,
+            committed,
+            None,
+            self.backend.name(),
+            sync_mode,
+            EffectiveSolvePlan::default(),
+            model.lineage(),
+            model.instance(),
+            result.compilation_id,
+            Some(overlay_id),
+        ) {
+            Ok(solution) => solution,
+            Err(error) => {
+                return self.relaxation_failure(
+                    FeasibilityRelaxationError::Backend(error.to_string()),
+                    &receipt,
+                )
+            }
+        };
+        self.rollback_relaxation(&receipt)?;
+        Ok(FeasibilityRelaxationReport {
+            outcome,
+            solution,
+            members,
+            total_weighted_violation,
+            metadata: crate::solver::relaxation::RelaxationMetadata {
+                model_lineage: model.lineage(),
+                model_instance: model.instance(),
+                model_revision: model.current_revision(),
+                base_compilation_id: base_compilation,
+                relaxation_compilation_id,
+                provider,
+                termination: status,
+                numerics: crate::solver::relaxation::RelaxationNumerics {
+                    objective_value: result.solution.as_ref().and_then(|s| s.objective_value),
+                    ..Default::default()
+                },
+                provider_reason,
+            },
+        })
+    }
+
+    /// Run a repair over a complete P29 report selection and carry its source
+    /// declarations into the resulting P30 members.
+    ///
+    /// The session must already hold the exact compiled base named by the
+    /// report. Requiring that identity before entering the lifecycle keeps a
+    /// stale P29 selection from causing any backend mutation.
+    pub fn solve_feasibility_relaxation_from_p29(
+        &mut self,
+        model: &mut Model,
+        plan: FeasibilityRelaxationPlan,
+        report: &crate::solver::infeasibility::InfeasibilityReport,
+    ) -> Result<FeasibilityRelaxationReport, FeasibilityRelaxationError> {
+        if report.model_instance != model.instance()
+            || report.model_revision != model.current_revision()
+        {
+            return Err(FeasibilityRelaxationError::StaleIdentity(
+                "P29 report model identity/revision does not match the repair model".into(),
+            ));
+        }
+        let base = self.compiler.current_compilation().ok_or_else(|| {
+            FeasibilityRelaxationError::StaleIdentity(
+                "P29 repair requires an already synchronized exact base compilation".into(),
+            )
+        })?;
+        let mapped = crate::solver::relaxation::map_p29_members(
+            report,
+            model.instance(),
+            model.current_revision(),
+            base,
+        )?;
+        let mut plan = plan;
+        plan.scope = crate::solver::relaxation::RelaxationScope::Explicit(
+            mapped
+                .iter()
+                .map(|member| member.restriction.clone())
+                .collect(),
+        );
+        let mut result = self.solve_feasibility_relaxation(model, plan)?;
+        for member in &mut result.members {
+            if let Some(mapped_member) = mapped
+                .iter()
+                .find(|mapped| mapped.restriction == member.restriction)
+            {
+                member.source_provenance = mapped_member.source_provenance.clone();
+            }
+        }
+        Ok(result)
+    }
+
+    fn rollback_relaxation(
+        &mut self,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<(), FeasibilityRelaxationError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                if let Err(error) = self.backend.verify_overlay_clean() {
+                    self.force_rebuild_on_next_sync();
+                    return Err(FeasibilityRelaxationError::Cleanup {
+                        primary: "relaxation result was produced".into(),
+                        cleanup: error.to_string(),
+                        requires_rebuild: true,
+                    });
+                }
+                Ok(())
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                self.force_rebuild_on_next_sync();
+                Err(FeasibilityRelaxationError::Cleanup {
+                    primary: "relaxation result was produced".into(),
+                    cleanup: reason,
+                    requires_rebuild: true,
+                })
+            }
+            Err(error) => {
+                self.force_rebuild_on_next_sync();
+                Err(FeasibilityRelaxationError::Cleanup {
+                    primary: "relaxation result was produced".into(),
+                    cleanup: error.to_string(),
+                    requires_rebuild: true,
+                })
+            }
+        }
+    }
+
+    fn relaxation_failure(
+        &mut self,
+        primary: FeasibilityRelaxationError,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<FeasibilityRelaxationReport, FeasibilityRelaxationError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                if let Err(error) = self.backend.verify_overlay_clean() {
+                    self.force_rebuild_on_next_sync();
+                    return Err(FeasibilityRelaxationError::Cleanup {
+                        primary: primary.to_string(),
+                        cleanup: error.to_string(),
+                        requires_rebuild: true,
+                    });
+                }
+                Err(primary)
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                self.force_rebuild_on_next_sync();
+                Err(FeasibilityRelaxationError::Cleanup {
+                    primary: primary.to_string(),
+                    cleanup: reason,
+                    requires_rebuild: true,
+                })
+            }
+            Err(error) => {
+                self.force_rebuild_on_next_sync();
+                Err(FeasibilityRelaxationError::Cleanup {
+                    primary: primary.to_string(),
+                    cleanup: error.to_string(),
+                    requires_rebuild: true,
+                })
+            }
+        }
     }
 
     /// Resolve the plan's starts/hints against the backend's typed

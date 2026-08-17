@@ -49,8 +49,9 @@ use crate::construct::{
     derive_parameter_dependencies, AbsoluteValueConstraint, AbsoluteValueVariant,
     BinaryProductConstraint, BooleanKind, CardinalityKind, Construct, ConstructEntry,
     ConstructKind, ConstructStore, ExtrapolationPolicy, FormulationPreference, IndicatorConstraint,
-    IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense, PiecewiseLinearConstraint,
-    ProductOperand, PwlPoint, PwlRelation, ReificationConstraint,
+    IndicatorDirection, MinMaxConstraint, MinMaxRelation, MinMaxSense, PenaltyPolicy,
+    PenaltyTarget, PiecewiseLinearConstraint, ProductOperand, PwlPoint, PwlRelation,
+    ReificationConstraint, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
 };
 use crate::delta::{DeltaBatch, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
@@ -60,7 +61,7 @@ use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::metadata::{EntityMetadata, EntityRef};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
-use crate::solution::Solution;
+use crate::solution::{SignedCorrection, Solution};
 // Options are now supplied via SolveRequest at the BackendSession boundary.
 // Legacy import removed.
 
@@ -196,6 +197,16 @@ pub enum ModelError {
         /// The previous breakpoint it must exceed.
         previous: f64,
     },
+    /// A constraint is inactive and cannot be softened.
+    InactiveConstraint(ConId),
+    /// A maximum violation cap must be finite and non-negative.
+    InvalidMaxViolation(f64),
+    /// A penalty weight must be finite and non-negative.
+    InvalidPenaltyWeight(f64),
+    /// A constraint has no finite side to soften.
+    UnsupportedSoftConstraint(ConId),
+    /// A primitive constraint may be softened only once.
+    ConstraintAlreadySoftened(ConId),
     /// Revision counter overflow.
     RevisionOverflow,
     /// An opaque identity counter was exhausted (ids never wrap).
@@ -326,6 +337,22 @@ impl std::fmt::Display for ModelError {
                 f,
                 "piecewise-linear breakpoints must be strictly increasing: breakpoint {value} is not > previous {previous} (SM-14.1)"
             ),
+            Self::InactiveConstraint(id) => write!(f, "constraint {id:?} is inactive"),
+            Self::InvalidMaxViolation(value) => write!(
+                f,
+                "maximum soft-constraint violation must be finite and non-negative, got {value}"
+            ),
+            Self::InvalidPenaltyWeight(value) => write!(
+                f,
+                "soft-constraint penalty weight must be finite and non-negative, got {value}"
+            ),
+            Self::UnsupportedSoftConstraint(id) => write!(
+                f,
+                "constraint {id:?} has no finite side and cannot be softened"
+            ),
+            Self::ConstraintAlreadySoftened(id) => {
+                write!(f, "constraint {id:?} is already persistently softened")
+            }
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -669,6 +696,81 @@ impl Model {
             function: ScalarFunction::Linear(expr),
             set: ScalarSet::from(bounds),
         })
+    }
+
+    /// Add persistent canonical softening for one live primitive constraint.
+    ///
+    /// The request is fully validated before a construct identity is
+    /// reserved or a changelog entry is emitted.  The construct itself is
+    /// revisioned through the ordinary model `commit`/delta path; the
+    /// solve-scoped relaxation workflow is deliberately separate.
+    pub fn soften_constraint(
+        &mut self,
+        constraint: Constraint,
+        violation: ViolationPolicy,
+        penalty: PenaltyPolicy,
+    ) -> Result<SoftConstraint, ModelError> {
+        let data = self
+            .constraints
+            .get(constraint)
+            .ok_or(ModelError::ConstraintNotFound(constraint))?;
+        if !data.active {
+            return Err(ModelError::InactiveConstraint(constraint));
+        }
+        if !data.bounds.has_lower() && !data.bounds.has_upper() {
+            return Err(ModelError::UnsupportedSoftConstraint(constraint));
+        }
+        if let Some(max_violation) = violation.max_violation {
+            if !max_violation.is_finite() || max_violation < 0.0 {
+                return Err(ModelError::InvalidMaxViolation(max_violation));
+            }
+        }
+        self.validate_value_expr_parameters(&penalty.weight)?;
+        let weight = penalty
+            .weight
+            .eval_checked(|parameter| self.parameters.get_value(parameter).ok_or(parameter))
+            .map_err(ModelError::ParameterNotFound)?;
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(ModelError::InvalidPenaltyWeight(weight));
+        }
+        if let PenaltyTarget::Objective(objective) = penalty.target {
+            if !self.objectives.contains(objective) {
+                return Err(ModelError::ObjectiveNotFound(objective));
+            }
+        }
+        if self.constructs.iter().any(|(_, data)| {
+            matches!(
+                &data.entry.kind,
+                ConstructKind::SoftConstraint(payload)
+                    if payload.original_constraint == constraint
+            )
+        }) {
+            return Err(ModelError::ConstraintAlreadySoftened(constraint));
+        }
+
+        let construct =
+            crate::identity::ConstructId::allocate().map_err(|_| ModelError::IdentityOverflow)?;
+        let handle = SoftConstraint::new(construct, constraint);
+        let payload = SoftConstraintConstraint {
+            handle,
+            original_constraint: constraint,
+            violation,
+            penalty,
+        };
+        self.add_construct_allocated(construct, ConstructKind::SoftConstraint(payload), None)?;
+        Ok(handle)
+    }
+
+    /// Read the canonical payload for a persistent soft constraint.
+    pub fn soft_constraint(
+        &self,
+        soft: SoftConstraint,
+    ) -> Result<&SoftConstraintConstraint, ModelError> {
+        let entry = self.construct(soft.construct())?;
+        match &entry.kind {
+            ConstructKind::SoftConstraint(payload) if payload.handle == soft => Ok(payload),
+            _ => Err(ModelError::ConstructNotFound(soft.construct())),
+        }
     }
 
     // ========== Construct Operations ==========
@@ -1934,6 +2036,23 @@ impl Model {
             return Err(ModelError::ConstraintNotFound(con));
         }
 
+        // Persistent softening is semantically anchored to its original
+        // primitive constraint.  Remove those constructs first so deleting a
+        // row cannot leave violation roles pointing at a dead constraint.
+        let anchored_soft_constraints: Vec<_> = self
+            .constructs
+            .iter()
+            .filter_map(|(id, data)| match &data.entry.kind {
+                ConstructKind::SoftConstraint(payload) if payload.original_constraint == con => {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .collect();
+        for construct in anchored_soft_constraints {
+            self.remove_construct(construct)?;
+        }
+
         // Remove all coefficients for this constraint
         let coeffs: Vec<_> = self.coefficients.for_constraint(con).collect();
         for coeff_id in coeffs {
@@ -3143,6 +3262,34 @@ impl Model {
         let expr = self.constraint_expression(con)?;
         let lhs = expr.evaluate(solution.as_var_lookup(), self.parameters.as_lookup());
         Ok((lhs - bounds.lower, bounds.upper - lhs))
+    }
+
+    /// Build explicit signed correction parts for a candidate left-hand value.
+    /// This operation is independent of persistent softening: it accepts a
+    /// value directly and never reads generated violation variables.
+    pub fn signed_correction(
+        &self,
+        con: ConId,
+        value: f64,
+    ) -> Result<SignedCorrection, ModelError> {
+        let bounds = self
+            .constraint_bounds(con)
+            .ok_or(ModelError::ConstraintNotFound(con))?;
+        if !value.is_finite() {
+            return Err(ModelError::NonFiniteValue("signed correction value"));
+        }
+        Ok(SignedCorrection {
+            positive: if bounds.lower.is_finite() {
+                (bounds.lower - value).max(0.0)
+            } else {
+                0.0
+            },
+            negative: if bounds.upper.is_finite() {
+                (value - bounds.upper).max(0.0)
+            } else {
+                0.0
+            },
+        })
     }
 
     /// Iterate over active constraints that are violated by the given solution.

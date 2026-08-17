@@ -867,10 +867,23 @@ impl OverlaySession for ReferenceBackend {
         // `CurrentCompilation`.
         let mut staged_variables = self.compiled_variables.clone();
         let mut staged_rows = self.compiled_rows.clone();
+        let mut staged_objectives = self.compiled_objectives.clone();
         let mut staged_policy = self.compiled_objective_policy.clone();
 
         for op in &overlay.operations {
             match op {
+                OverlayOp::AddTemporaryVariable { variable } => {
+                    if staged_variables
+                        .insert(variable.id, (variable.bounds, variable.var_type))
+                        .is_some()
+                    {
+                        return Err(BackendError::new(
+                            format!("overlay variable id {:?} already exists", variable.id),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::RequiresRebuild,
+                        ));
+                    }
+                }
                 OverlayOp::SetTemporaryVariableBounds { variable, bounds } => {
                     let entry = staged_variables.get_mut(variable).ok_or_else(|| {
                         BackendError::new(
@@ -882,6 +895,51 @@ impl OverlaySession for ReferenceBackend {
                     // Record the FIRST prior value only — later overlay ops on
                     // the same variable must not overwrite the base capture.
                     state.prior_bounds.entry(*variable).or_insert(entry.0);
+                    entry.0 = *bounds;
+                }
+                OverlayOp::AddTemporaryObjective { objective } => {
+                    if staged_objectives
+                        .insert(
+                            objective.id,
+                            (
+                                objective.sense,
+                                objective.coefficients.clone(),
+                                objective.constant,
+                            ),
+                        )
+                        .is_some()
+                    {
+                        return Err(BackendError::new(
+                            format!("overlay objective id {:?} already exists", objective.id),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::RequiresRebuild,
+                        ));
+                    }
+                }
+                OverlayOp::SetTemporaryObjectiveCoefficient {
+                    objective,
+                    variable,
+                    value,
+                } => {
+                    let entry = staged_objectives.get(objective).ok_or_else(|| {
+                        BackendError::new(
+                            format!("overlay references unknown objective {objective:?}"),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::RequiresRebuild,
+                        )
+                    })?;
+                    let mut coefficients = entry.1.clone();
+                    upsert_compiled_coefficient(&mut coefficients, *variable, *value);
+                    staged_objectives.insert(*objective, (entry.0, coefficients, entry.2));
+                }
+                OverlayOp::SetTemporaryRowBounds { constraint, bounds } => {
+                    let entry = staged_rows.get_mut(constraint).ok_or_else(|| {
+                        BackendError::new(
+                            format!("overlay references unknown row {constraint:?}"),
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::RequiresRebuild,
+                        )
+                    })?;
                     entry.0 = *bounds;
                 }
                 OverlayOp::AddTemporaryRow { row } => {
@@ -930,6 +988,7 @@ impl OverlaySession for ReferenceBackend {
         // Commit: every op succeeded, so the staged state becomes the held state.
         self.compiled_variables = staged_variables;
         self.compiled_rows = staged_rows;
+        self.compiled_objectives = staged_objectives;
         self.compiled_objective_policy = staged_policy;
         self.current_compilation = Some(overlay.compilation_id);
         self.overlay_state = Some(state);
@@ -980,6 +1039,7 @@ impl OverlaySession for ReferenceBackend {
             });
         }
 
+        let base_view = state.base_view.clone();
         // Restore prior bounds.
         for (variable, bounds) in &state.prior_bounds {
             if let Some(entry) = self.compiled_variables.get_mut(variable) {
@@ -992,6 +1052,28 @@ impl OverlaySession for ReferenceBackend {
         }
         // Restore the base objective policy.
         self.compiled_objective_policy = state.prior_policy.clone();
+
+        // Relaxation overlays may add variables and objective cells. Restore
+        // the complete deterministic base view so rollback cannot accidentally
+        // retain a temporary entity or objective contribution.
+        self.compiled_variables = base_view
+            .variables
+            .iter()
+            .map(|(id, bounds, var_type)| (*id, (*bounds, *var_type)))
+            .collect();
+        self.compiled_rows = base_view
+            .rows
+            .iter()
+            .map(|(id, bounds, coefficients)| (*id, (*bounds, coefficients.clone())))
+            .collect();
+        self.compiled_objectives = base_view
+            .objectives
+            .iter()
+            .map(|(id, sense, coefficients, constant)| {
+                (*id, (*sense, coefficients.clone(), *constant))
+            })
+            .collect();
+        self.compiled_objective_policy = base_view.objective_policy.clone();
 
         let restored = state.base_compilation;
         self.current_compilation = Some(restored);

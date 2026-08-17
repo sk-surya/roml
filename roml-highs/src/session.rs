@@ -36,16 +36,16 @@ use log::{info, warn};
 use crate::bindings::*;
 use crate::callback::{clear_callback, register_callback, CallbackState};
 use crate::compiler::{
-    apply_backend_delta, missing_variable, normalize_bound, project_objective_policy,
-    rebuild_from_backend_snapshot,
+    apply_backend_delta, missing_objective, missing_row, missing_variable, normalize_bound,
+    project_objective_policy, project_temporary_objective, rebuild_from_backend_snapshot,
 };
 use crate::error::{check_highs_status, from_native_status};
 use crate::lifecycle::HighsSession;
 use crate::solution::{extract_solution, map_termination_status};
 use roml::advanced::{
-    CompilationId, CompileError, CompiledConstraintId, CompiledEntityRegistry,
-    CompiledObjectivePolicy, CompiledOverlay, CompiledVariableId, OverlayApplyReceipt, OverlayId,
-    OverlayOp, OverlayRollbackOutcome, OverlaySession,
+    CompilationId, CompileError, CompiledConstraintId, CompiledEntityRegistry, CompiledObjective,
+    CompiledObjectiveId, CompiledObjectivePolicy, CompiledOverlay, CompiledVariableId,
+    OverlayApplyReceipt, OverlayId, OverlayOp, OverlayRollbackOutcome, OverlaySession,
 };
 use roml::compiler::capability::{
     BackendCapabilitySet, BackendFeature, FeatureLimitations, FeatureSupport,
@@ -550,10 +550,13 @@ const M2_NATIVE_FEATURES: [BackendFeature; 5] = [
     BackendFeature::IncrementalCoefficients,
 ];
 
-/// The M3 features P32/P33 qualify as exact ROML **bridge** support for HiGHS
-/// (SM-04.2).
+/// The M3 features P30/P32/P33 qualify as exact ROML **bridge** support for
+/// HiGHS (SM-04.2).
 ///
-/// HiGHS has no qualified native indicator/minmax/abs/product/PWL primitives
+/// P30's persistent soft constraints and solve-scoped weighted-L1 repair use
+/// the same qualified linear-column/row/objective projection implemented by
+/// this adapter; this is portable bridge support, not a native relaxation
+/// claim. HiGHS has no qualified native indicator/minmax/abs/product/PWL primitives
 /// (SM-04.3: no official-header audit), and no native reification/Boolean/
 /// cardinality primitives; P32/P33 declare these as exact ROML portable
 /// formulations (`SupportLevel::Bridge`). `Auto` compilation prefers a
@@ -561,7 +564,9 @@ const M2_NATIVE_FEATURES: [BackendFeature; 5] = [
 /// rejects a bridge-only feature. P33 declares `PiecewiseLinear` Bridge-only
 /// (exact segment binaries) — `Sos2`/`NativePiecewiseLinear` stay Unsupported
 /// (no false native claim — P32 F4 rule).
-const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 8] = [
+const BRIDGE_SUPPORTED_M3_FEATURES: [BackendFeature; 10] = [
+    BackendFeature::FeasibilityRelaxation,
+    BackendFeature::SoftConstraint,
     BackendFeature::Indicator,
     BackendFeature::Reification,
     BackendFeature::Boolean,
@@ -591,11 +596,10 @@ const QUALIFIED_MIP_START_FEATURES: [BackendFeature; 2] =
 /// and `MultipleMipStarts` have no API in the pinned bundled version;
 /// `InitialBasis` has an API (`Highs_setBasis`) but is a separate future
 /// artifact in P28 (SM-08.6).
-const UNQUALIFIED_M3_FEATURES: [BackendFeature; 8] = [
+const UNQUALIFIED_M3_FEATURES: [BackendFeature; 7] = [
     BackendFeature::MultipleMipStarts,
     BackendFeature::VariableHints,
     BackendFeature::InitialBasis,
-    BackendFeature::FeasibilityRelaxation,
     BackendFeature::Sos1,
     BackendFeature::Sos2,
     BackendFeature::NativePiecewiseLinear,
@@ -608,7 +612,8 @@ const UNQUALIFIED_M3_FEATURES: [BackendFeature; 8] = [
 /// The M2-native feature surface is declared `Native` with the runtime version
 /// recorded as the declaration's `minimum_version` (the version the support is
 /// verified against: bundled `highs-sys 1.15.0`, CI system floor 1.9.0). Every
-/// unqualified M3 feature is declared `Unsupported` for P26.
+/// unqualified M3 feature is declared `Unsupported`; P30/P32/P33 bridge
+/// declarations are populated separately above.
 pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabilitySet {
     let version = format!("{}.{}.{}", major, minor, patch);
     let mut set = BackendCapabilitySet::new();
@@ -627,14 +632,19 @@ pub fn highs_capability_set(major: i32, minor: i32, patch: i32) -> BackendCapabi
     }
 
     for feature in BRIDGE_SUPPORTED_M3_FEATURES {
+        let note = if matches!(
+            feature,
+            BackendFeature::FeasibilityRelaxation | BackendFeature::SoftConstraint
+        ) {
+            "P30 qualifies the portable weighted-L1/soft-constraint bridge; this does not claim a native HiGHS relaxation primitive"
+        } else {
+            "P32/P33 declare exact ROML bridge support (no qualified native claim; SM-04.3)"
+        };
         set.set(
             feature,
             FeatureSupport::bridge(FeatureLimitations {
                 minimum_version: Some(version.clone()),
-                notes: vec![
-                    "P32 declares exact ROML bridge support (no qualified native claim; SM-04.3)"
-                        .to_string(),
-                ],
+                notes: vec![note.to_string()],
                 ..FeatureLimitations::default()
             }),
         );
@@ -747,6 +757,10 @@ pub(crate) struct HighsOverlayState {
     /// Prior bounds of every compiled variable the overlay temporarily set
     /// (compiled id -> native (lb, ub)).
     prior_bounds: HashMap<CompiledVariableId, (f64, f64)>,
+    /// Prior bounds of existing rows temporarily widened by the overlay.
+    prior_row_bounds: HashMap<CompiledConstraintId, (f64, f64)>,
+    /// Temporary native columns (compiled id -> native column index).
+    added_columns: Vec<(CompiledVariableId, HighsInt)>,
     /// Temporary native rows added by the overlay (compiled row id -> native
     /// row index).
     added_rows: Vec<(CompiledConstraintId, HighsInt)>,
@@ -759,6 +773,8 @@ pub(crate) struct HighsOverlayState {
     /// (lb, ub)) captured at apply, so `verify_overlay_clean` can prove every
     /// bound (not just the row/col counts) is restored exactly.
     base_var_bounds: HashMap<CompiledVariableId, (f64, f64)>,
+    /// IN-01: the full base native row-bound state captured at apply.
+    base_con_bounds: HashMap<CompiledConstraintId, (f64, f64)>,
     /// IN-01: the base active native objective captured at apply.
     base_active_obj: Option<ObjId>,
 }
@@ -831,6 +847,8 @@ impl OverlaySession for HighsSession {
             base_compilation: overlay.base_compilation,
             applied_compilation: overlay.compilation_id,
             prior_bounds: HashMap::new(),
+            prior_row_bounds: HashMap::new(),
+            added_columns: Vec::new(),
             added_rows: Vec::new(),
             prior_policy: self.compiled_objective_policy.clone(),
             // SAFETY: self.raw is a valid HiGHS instance handle.
@@ -840,11 +858,59 @@ impl OverlaySession for HighsSession {
             // verification can prove the bounds/objective are restored exactly
             // (not just the row/col counts).
             base_var_bounds: self.var_bounds.clone(),
+            base_con_bounds: self.con_bounds.clone(),
             base_active_obj: self.active_obj,
         };
 
+        // Temporary objectives have no user ObjId and therefore must be kept
+        // separate from the persistent objective caches. Their compiled IDs
+        // are still used for exact policy selection within this overlay.
+        let mut temporary_objectives: HashMap<CompiledObjectiveId, CompiledObjective> =
+            HashMap::new();
+
         for op in &overlay.operations {
             match op {
+                OverlayOp::AddTemporaryVariable { variable } => {
+                    if self.col_map.get(variable.id).is_some() {
+                        self.cursor.mark_rebuild();
+                        return Err(missing_variable(variable.id));
+                    }
+                    let lb = normalize_bound(variable.bounds.lower, self.inf);
+                    let ub = normalize_bound(variable.bounds.upper, self.inf);
+                    // SAFETY: raw is valid and the bounds were preflight
+                    // validated by the compiled overlay.
+                    let (col, status) = unsafe {
+                        let col = Highs_getNumCol(self.raw);
+                        let status = Highs_addVar(self.raw, lb, ub);
+                        (col, status)
+                    };
+                    if status != STATUS_OK {
+                        self.cursor.mark_rebuild();
+                        return Err(from_native_status(
+                            status,
+                            "Highs_addVar (overlay variable)",
+                        ));
+                    }
+                    if matches!(
+                        variable.var_type,
+                        roml::model::VarType::Integer | roml::model::VarType::Binary
+                    ) {
+                        // SAFETY: raw is valid and col is the appended column.
+                        unsafe {
+                            if let Err(error) = check_highs_status(
+                                Highs_changeColIntegrality(self.raw, col, VAR_TYPE_INTEGER),
+                                self.raw,
+                                "Highs_changeColIntegrality (overlay variable)",
+                            ) {
+                                self.cursor.mark_rebuild();
+                                return Err(error);
+                            }
+                        }
+                    }
+                    self.col_map.insert(variable.id, col);
+                    self.var_bounds.insert(variable.id, (lb, ub));
+                    state.added_columns.push((variable.id, col));
+                }
                 OverlayOp::SetTemporaryVariableBounds { variable, bounds } => {
                     let idx = match self.col_map.get(*variable) {
                         Some(idx) => idx,
@@ -877,6 +943,83 @@ impl OverlaySession for HighsSession {
                     // the same variable must not overwrite the base capture.
                     state.prior_bounds.entry(*variable).or_insert(prior);
                     self.var_bounds.insert(*variable, (lb, ub));
+                }
+                OverlayOp::SetTemporaryRowBounds { constraint, bounds } => {
+                    let idx = match self.row_map.get(*constraint) {
+                        Some(idx) => idx,
+                        None => {
+                            self.cursor.mark_rebuild();
+                            return Err(missing_row(*constraint));
+                        }
+                    };
+                    let prior = match self.con_bounds.get(constraint).copied() {
+                        Some(prior) => prior,
+                        None => {
+                            self.cursor.mark_rebuild();
+                            return Err(missing_row(*constraint));
+                        }
+                    };
+                    let lb = normalize_bound(bounds.lower, self.inf);
+                    let ub = normalize_bound(bounds.upper, self.inf);
+                    // SAFETY: raw is valid and idx is a live native row.
+                    unsafe {
+                        if let Err(error) = check_highs_status(
+                            Highs_changeRowBounds(self.raw, idx, lb, ub),
+                            self.raw,
+                            "Highs_changeRowBounds (overlay temporary bounds)",
+                        ) {
+                            self.cursor.mark_rebuild();
+                            return Err(error);
+                        }
+                    }
+                    state.prior_row_bounds.entry(*constraint).or_insert(prior);
+                    self.con_bounds.insert(*constraint, (lb, ub));
+                }
+                OverlayOp::AddTemporaryObjective { objective } => {
+                    if temporary_objectives
+                        .insert(objective.id, objective.clone())
+                        .is_some()
+                    {
+                        self.cursor.mark_rebuild();
+                        return Err(missing_objective(objective.id));
+                    }
+                }
+                OverlayOp::SetTemporaryObjectiveCoefficient {
+                    objective,
+                    variable,
+                    value,
+                } => {
+                    let col = match self.col_map.get(*variable) {
+                        Some(col) => col,
+                        None => {
+                            self.cursor.mark_rebuild();
+                            return Err(missing_variable(*variable));
+                        }
+                    };
+                    let temporary = match temporary_objectives.get_mut(objective) {
+                        Some(temporary) => temporary,
+                        None => {
+                            self.cursor.mark_rebuild();
+                            return Err(missing_objective(*objective));
+                        }
+                    };
+                    temporary.coefficients.retain(|(id, _)| id != variable);
+                    temporary.coefficients.push((*variable, *value));
+                    temporary.coefficients.sort_by_key(|(id, _)| *id);
+                    if self.compiled_objective_policy == CompiledObjectivePolicy::Single(*objective)
+                    {
+                        // SAFETY: raw is valid and col is a live native column.
+                        unsafe {
+                            if let Err(error) = check_highs_status(
+                                Highs_changeColCost(self.raw, col, *value),
+                                self.raw,
+                                "Highs_changeColCost (temporary objective coefficient)",
+                            ) {
+                                self.cursor.mark_rebuild();
+                                return Err(error);
+                            }
+                        }
+                    }
                 }
                 OverlayOp::AddTemporaryRow { row } => {
                     let lb = normalize_bound(row.bounds.lower, self.inf);
@@ -931,16 +1074,36 @@ impl OverlaySession for HighsSession {
                     ));
                 }
                 OverlayOp::SetObjectivePolicy(policy) => {
-                    if let Err(e) = project_objective_policy(
-                        self.raw,
-                        policy,
-                        &self.col_map,
-                        &self.compiled_to_user_objective,
-                        &self.obj_costs,
-                        &self.obj_senses,
-                        &self.obj_offsets,
-                        &mut self.active_obj,
-                    ) {
+                    let result = match policy {
+                        CompiledObjectivePolicy::Single(objective) => {
+                            if let Some(temporary) = temporary_objectives.get(objective) {
+                                project_temporary_objective(self.raw, temporary, &self.col_map)
+                                    .map(|()| self.active_obj = None)
+                            } else {
+                                project_objective_policy(
+                                    self.raw,
+                                    policy,
+                                    &self.col_map,
+                                    &self.compiled_to_user_objective,
+                                    &self.obj_costs,
+                                    &self.obj_senses,
+                                    &self.obj_offsets,
+                                    &mut self.active_obj,
+                                )
+                            }
+                        }
+                        _ => project_objective_policy(
+                            self.raw,
+                            policy,
+                            &self.col_map,
+                            &self.compiled_to_user_objective,
+                            &self.obj_costs,
+                            &self.obj_senses,
+                            &self.obj_offsets,
+                            &mut self.active_obj,
+                        ),
+                    };
+                    if let Err(e) = result {
                         self.cursor.mark_rebuild();
                         return Err(e);
                     }
@@ -1037,6 +1200,32 @@ impl OverlaySession for HighsSession {
             self.var_bounds.insert(*variable, (*lb, *ub));
         }
 
+        // Restore bounds widened on existing rows.
+        for (constraint, (lb, ub)) in &state.prior_row_bounds {
+            let idx = match self.row_map.get(*constraint) {
+                Some(idx) => idx,
+                None => {
+                    self.cursor.mark_rebuild();
+                    return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                        reason: format!(
+                            "restoring prior row bounds: compiled row {constraint:?} is absent"
+                        ),
+                    });
+                }
+            };
+            // SAFETY: raw is valid; idx is a live native row.
+            let ret = unsafe { Highs_changeRowBounds(self.raw, idx, *lb, *ub) };
+            if ret != STATUS_OK {
+                self.cursor.mark_rebuild();
+                return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                    reason: format!(
+                        "restoring prior row bounds for {constraint:?} failed (native code {ret})"
+                    ),
+                });
+            }
+            self.con_bounds.insert(*constraint, (*lb, *ub));
+        }
+
         // Delete the added temporary rows (all at the end of the native model).
         if !state.added_rows.is_empty() {
             let indices: Vec<HighsInt> =
@@ -1050,6 +1239,10 @@ impl OverlaySession for HighsSession {
                 return Ok(OverlayRollbackOutcome::RequiresRebuild {
                     reason: format!("deleting overlay rows failed (native code {ret})"),
                 });
+            }
+            for (row, _) in &state.added_rows {
+                self.row_map.remove(*row);
+                self.con_bounds.remove(row);
             }
         }
 
@@ -1070,6 +1263,30 @@ impl OverlaySession for HighsSession {
             });
         }
         self.compiled_objective_policy = state.prior_policy.clone();
+
+        // Temporary columns were appended after every base column, so their
+        // removal leaves all persistent native column indices unchanged.
+        if !state.added_columns.is_empty() {
+            let indices: Vec<HighsInt> = state
+                .added_columns
+                .iter()
+                .map(|(_, native)| *native)
+                .collect();
+            // SAFETY: raw is valid; the set contains live appended columns.
+            let ret = unsafe {
+                Highs_deleteColsBySet(self.raw, indices.len() as HighsInt, indices.as_ptr())
+            };
+            if ret != STATUS_OK {
+                self.cursor.mark_rebuild();
+                return Ok(OverlayRollbackOutcome::RequiresRebuild {
+                    reason: format!("deleting overlay columns failed (native code {ret})"),
+                });
+            }
+            for (variable, _) in &state.added_columns {
+                self.col_map.remove(*variable);
+                self.var_bounds.remove(variable);
+            }
+        }
 
         let restored = state.base_compilation;
         self.current_compilation = Some(restored);
@@ -1102,6 +1319,7 @@ impl OverlaySession for HighsSession {
             || rows != state.base_row_count
             || cols != state.base_col_count
             || self.var_bounds != state.base_var_bounds
+            || self.con_bounds != state.base_con_bounds
             || self.active_obj != state.base_active_obj
             || self.compiled_objective_policy != state.prior_policy
         {
@@ -1414,9 +1632,9 @@ mod tests {
     use super::*;
     use roml::advanced::{
         compile_overlay, BackendDeltaBatch, BackendOp, BackendSnapshot, BackendSnapshotBuilder,
-        CompilationId, CompilationPolicy, CompilationSession, CompiledLinearRow,
+        CompilationId, CompilationPolicy, CompilationSession, CompiledLinearRow, CompiledObjective,
         CompiledObjectiveId, CompiledObjectiveLevel, CompiledObjectivePolicy, CompiledVariable,
-        CompiledVariableId, CompiledWeightedObjective, EntityOrigin, OriginMap,
+        CompiledVariableId, CompiledWeightedObjective, EntityOrigin, GeneratedRole, OriginMap,
     };
     use roml::compiler::capability::SupportLevel;
     use roml::delta::{DeltaBatch, ModelOp};
@@ -2249,6 +2467,149 @@ mod tests {
             Some(base_obj),
             "a solve after rollback must equal the base solve (no overlay leak)"
         );
+    }
+
+    /// P30: temporary violation columns and the weighted objective are mapped
+    /// into the native HiGHS model, then removed on rollback without changing
+    /// the persistent column/row maps.
+    #[test]
+    fn highs_p30_temporary_columns_objective_map_and_rollback() {
+        let caps = full_caps();
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+        model.add_constraint((x).ge(2.0)).unwrap();
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+
+        let mut compiler = CompilationSession::new();
+        let base = compiler
+            .compile_snapshot(model.instance(), &snapshot, &CompilationPolicy::Auto, &caps)
+            .expect("base snapshot must compile");
+        let base_variable = base.variables[0].id;
+        let base_row = base.linear_rows[0].id;
+        let temporary_variable = CompiledVariableId(base.variables.len() as u32);
+        let temporary_row = CompiledConstraintId(base.linear_rows.len() as u32);
+        let temporary_objective = CompiledObjectiveId(base.objectives.len() as u32);
+        // Obtain valid opaque overlay/compilation identities through the
+        // public overlay compiler; their constructors are intentionally
+        // crate-private to the core compiler.
+        let seed_overlay =
+            SolveOverlay::new(std::collections::BTreeMap::new(), vec![], vec![], vec![])
+                .expect("overlay id");
+        let seed_compiled = compile_overlay(&model, &compiler, &seed_overlay, None)
+            .expect("seed overlay compilation");
+        let overlay_id = seed_compiled.overlay_id;
+        let compilation_id = seed_compiled.compilation_id;
+
+        let mut origin_additions = OriginMap::new();
+        origin_additions.insert_variable(
+            temporary_variable,
+            EntityOrigin::SolveOverlay {
+                overlay: overlay_id,
+                role: GeneratedRole::FeasibilityRelaxationViolationVariable,
+            },
+        );
+        origin_additions.insert_constraint(
+            temporary_row,
+            EntityOrigin::SolveOverlay {
+                overlay: overlay_id,
+                role: GeneratedRole::FeasibilityRelaxationViolationRow,
+            },
+        );
+        origin_additions.insert_objective(
+            temporary_objective,
+            EntityOrigin::SolveOverlay {
+                overlay: overlay_id,
+                role: GeneratedRole::Bridge,
+            },
+        );
+
+        let overlay = CompiledOverlay {
+            base_compilation: base.compilation_id,
+            compilation_id,
+            overlay_id,
+            operations: vec![
+                OverlayOp::AddTemporaryVariable {
+                    variable: CompiledVariable {
+                        id: temporary_variable,
+                        bounds: Bounds::new(0.0, f64::INFINITY),
+                        var_type: VarType::Continuous,
+                        name: Some("p30 violation".into()),
+                    },
+                },
+                OverlayOp::SetTemporaryRowBounds {
+                    constraint: base_row,
+                    bounds: ConstraintBounds::range(f64::NEG_INFINITY, f64::INFINITY),
+                },
+                OverlayOp::AddTemporaryRow {
+                    row: CompiledLinearRow {
+                        id: temporary_row,
+                        bounds: ConstraintBounds::ge(2.0),
+                        coefficients: vec![(base_variable, 1.0), (temporary_variable, 1.0)],
+                        name: None,
+                    },
+                },
+                OverlayOp::AddTemporaryObjective {
+                    objective: CompiledObjective {
+                        id: temporary_objective,
+                        sense: roml::model::Sense::Minimize,
+                        coefficients: vec![(temporary_variable, 1.0)],
+                        constant: 0.0,
+                        name: Some("p30 weighted L1".into()),
+                    },
+                },
+                OverlayOp::SetObjectivePolicy(CompiledObjectivePolicy::Single(temporary_objective)),
+            ],
+            origin_additions,
+            objective_policy_override: None,
+        };
+
+        let mut highs = HighsSession::try_new().expect("HiGHS should be available");
+        highs
+            .synchronize(Synchronization::CompiledRebuild(base))
+            .expect("base rebuild must succeed");
+        let base_columns = unsafe { Highs_getNumCol(highs.raw) };
+        let base_rows = unsafe { Highs_getNumRow(highs.raw) };
+
+        let receipt = highs.apply_overlay(&overlay).expect("P30 overlay applies");
+        assert_eq!(
+            unsafe { Highs_getNumCol(highs.raw) },
+            base_columns + 1,
+            "one temporary violation variable must become one native column"
+        );
+        assert_eq!(highs.col_map.get(temporary_variable), Some(base_columns));
+        assert_eq!(
+            unsafe { Highs_getNumRow(highs.raw) },
+            base_rows + 1,
+            "one temporary violation row must become one native row"
+        );
+        let result = highs
+            .solve(&SolveRequest {
+                enable_output: Some(false),
+                ..SolveRequest::new()
+            })
+            .expect("P30 overlay solve must succeed");
+        assert_eq!(
+            result
+                .solution
+                .as_ref()
+                .and_then(|solution| solution.objective_value),
+            Some(1.0),
+            "the temporary weighted objective must minimize the violation to one"
+        );
+
+        assert!(matches!(
+            highs
+                .rollback_overlay(&receipt)
+                .expect("rollback must succeed"),
+            OverlayRollbackOutcome::Clean { .. }
+        ));
+        assert_eq!(highs.col_map.get(temporary_variable), None);
+        assert_eq!(unsafe { Highs_getNumCol(highs.raw) }, base_columns);
+        assert_eq!(unsafe { Highs_getNumRow(highs.raw) }, base_rows);
+        highs
+            .verify_overlay_clean()
+            .expect("rollback must restore the exact base state");
     }
 
     /// A stale overlay apply is rejected BEFORE any native mutation; the

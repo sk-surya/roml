@@ -2,19 +2,17 @@
 
 ## Closure disposition
 
-P36 implementation is accepted and pending merge through PR #46. This artifact
+P36 implementation is complete and merged through PR #46. This artifact
 records the code-bearing qualification candidate, the exact PR head reviewed,
-and the remaining administrative gate. It does not authorize a merge or any
-release.
+and the merge disposition. It does not authorize any release.
 
 - Code-bearing qualification commit: `0a4e732c8d884b4ccc6d8248290a7e0bf6555f09`
-- Exact reviewed PR head before this docs-only closure: `86ee71c685435510be8598337e7ecf8da20b1efd`
+- Exact reviewed PR head before merge: `8a8ee7573532c6c9b883249f74afefb477bbb6a1`
 - Planning packet merge prerequisite: PR #45 merged as `48fab4db347522cebc786393e5afcbdbcea98f33`
-- Pull request: [#46](https://github.com/sk-surya/roml/pull/46), draft, pending owner authorization
+- Pull request: [#46](https://github.com/sk-surya/roml/pull/46), merged as `8838effee84eafdcbc2e502fb417df8d09221248`
 
-The final hosted check run after this closure-only commit must be read against
-the resulting PR head. No production implementation changed after the
-code-bearing qualification commit; `86ee71c` only refreshed evidence.
+No production implementation changed after the code-bearing qualification
+commit; the final reviewed PR head was the governance-closed candidate.
 
 ## Requirement evidence
 
@@ -25,7 +23,7 @@ code-bearing qualification commit; `86ee71c` only refreshed evidence.
 | MPS-W10–W11 | independent native HiGHS structural and solve differential | PASS |
 | MPS-W12 | exact pinned Netlib manifest, 94 regular files, 94/94 writer/determinism/ROML-structure/HiGHS-structure rows | PASS |
 | MPS-W13 | source-layout and parameter-graph identity non-goals documented | PASS |
-| MPS-W14 | solver-free core, package/policy checks, exact-head hosted CI | PASS on reviewed head; rerun required after this docs-only push |
+| MPS-W14 | solver-free core, package/policy checks, exact-head hosted CI | PASS on the reviewed merged head |
 
 ## Frozen corpus qualification
 
@@ -66,14 +64,12 @@ cargo run -p roml-highs --example mps_write_corpus_qualification -- /tmp/roml-p3
 
 ## Hosted exact-head checks
 
-The independent review recorded exact-head Core, HiGHS, Coverage, Quality,
-Policy, package, MSRV, documentation, and security/dependency checks green on
-`86ee71c`, including bundled HiGHS on `windows-latest`. The closure-only push
-intentionally triggers the same mandatory checks again; the final status must
-be verified at the new head before merge.
+The independent review and final hosted checks recorded exact-head Core, HiGHS,
+Coverage, Quality, Policy, package, MSRV, documentation, and security/dependency
+checks green on the reviewed PR head, including bundled HiGHS on
+`windows-latest`.
 
 ## Residual gate
 
-There is no remaining implementation finding. The only open gate is mechanical:
-refresh the hosted exact-head result and then perform the final read-only review
-of the governance state. P30 remains inactive until PR #46 actually merges.
+There is no remaining P36 implementation or governance gate. P30 is activated by
+the authoritative GSD state update after PR #46 merged.

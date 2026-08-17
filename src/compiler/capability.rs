@@ -67,6 +67,9 @@ pub enum BackendFeature {
     /// Piecewise-linear (epigraph / hypograph / exact graph) — P33
     /// bridge-supported (exact segment binaries; no native PWL/SOS2 claim).
     PiecewiseLinear,
+    /// Persistent soft constraints compiled through the exact portable
+    /// weighted-violation bridge (P30; no native relaxation claim).
+    SoftConstraint,
     /// Special ordered set of type 1.
     Sos1,
     /// Special ordered set of type 2.
