@@ -29,7 +29,7 @@ P36 was an owner-selected **program dependency** of P30. That dependency is now 
 | P27 | fixing / locks / overlays | complete | none |
 | P28 | SolvePlan / starts / hints | complete | none |
 | P29 | IIS / conflict analysis | complete | follow-up native/perf work is nonblocking |
-| P30 | soft constraints / relaxation | remediation-review-pending | remediation evidence/review on final head; owner merge |
+| P30 | soft constraints / relaxation | clear to merge; owner merge pending | owner-authorized merge |
 | P31 | objective policies / lexicographic | planned, inactive | P30 merge |
 | P32 | semantic constructs | complete | none |
 | P33 | PWL / bound analysis | complete | none |
