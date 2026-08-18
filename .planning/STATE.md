@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
 status: active
-stopped_at: P30 clear to merge; owner merge pending; P31 remains inactive
-last_updated: "2026-08-17T23:32:45Z"
+stopped_at: P30 merged via PR #47; P31 activated for planning/execution
+last_updated: "2026-08-18T00:00:00Z"
 progress:
   total_phases: 17
-  completed_phases: 12
+  completed_phases: 13
   total_plans: 29
-  completed_plans: 18
-  percent: 62
-current_phase: 30
-current_phase_name: Soft constraints and feasibility relaxation
+  completed_plans: 22
+  percent: 76
+current_phase: 31
+current_phase_name: Lexicographic objectives
 implementation_authorized: true
 ---
 
@@ -22,12 +22,12 @@ This file is the root GSD routing authority. Detailed contracts live under `.pla
 
 ## Routing versus execution
 
-**Current routing target:** P30 — soft constraints and feasibility relaxation.
-**Active production implementation:** P30 is now authorized. P36 is complete and merged via PR #46 at merge commit `8838effee84eafdcbc2e502fb417df8d09221248`.
+**Current routing target:** P31 — lexicographic objectives.
+**Active production implementation:** P31 is now authorized after P30 merged via PR #47 at merge commit `28a019e83a40f2c7df637290c48ad23d7d568ec9`. P36 is complete and merged via PR #46 at merge commit `8838effee84eafdcbc2e502fb417df8d09221248`.
 **Planning prerequisite:** completion-planning PR #45 merged to `main` as `48fab4db347522cebc786393e5afcbdbcea98f33`.
-**Later production phases:** P31 and P34 remain inactive until their explicit predecessor merges.
+**Later production phases:** P34 remains inactive until P31 merges.
 
-A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. The explicit authorization here permits P30 only; P31 and P34 remain unauthorized.
+A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. The explicit authorization here permits P31 only; P34 remains unauthorized.
 
 ## Accepted state
 
@@ -35,7 +35,8 @@ A `current_phase` value identifies the next GSD routing target; it is **not** im
 - P32–P33: complete/accepted.
 - P35 MPS import: complete, merged via PR #44 as `7159fad8830b32f5a9377174e6e57bb24f99de95`.
 - P29 design record: merged via PR #38 as `4467797f002c93a1baab638b5e65976fb8492505`.
-- P30: implementation, remediation tests, exact-head hosted CI, and independent review complete; clear to merge, with owner-authorized merge pending. P31/P34 remain planned and inactive.
+- P30: complete and merged via PR #47 as `28a019e83a40f2c7df637290c48ad23d7d568ec9`; exact-head hosted CI and independent review passed.
+- P31: authorized and active for planning/execution; P34 remains planned and inactive.
 - P36: complete, merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248`; the reviewed implementation head was `8a8ee7573532c6c9b883249f74afefb477bbb6a1`.
 - M4 quadratic/nonlinear foundation: preview/design gate only; no production implementation authorization.
 
@@ -45,8 +46,8 @@ A `current_phase` value identifies the next GSD routing target; it is **not** im
 PR #45 written-spec acceptance + merge (`48fab4db`)
   -> P36 merged via PR #46 (`8838effe`)
   -> activate P30
-  -> P30 accepted + merged
-  -> activate P31
+  -> P30 accepted + merged via PR #47 (`28a019e`)
+  -> P31 active and authorized
   -> P31 accepted + merged
   -> activate P34
   -> P34 accepted + merged
@@ -78,8 +79,8 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 | P27 | complete | no new work | accepted evidence |
 | P28 | complete | no new work | accepted evidence |
 | P29 | complete | no new work | PR #39 / P29 evidence |
-| P30 | clear-to-merge; owner merge pending | **true** | owner-authorized merge |
-| P31 | planned | **false** | P30 accepted + merged |
+| P30 | complete | no new work | PR #47 merged; exact-head evidence retained |
+| P31 | active | **true** | P31 evidence/review and owner merge |
 | P32 | complete | no new work | accepted evidence |
 | P33 | complete | no new work | accepted evidence |
 | P34 | planned | **false** | P31 accepted + merged |
@@ -90,17 +91,17 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 
 - One production phase at a time.
 - Research/review may be prepared ahead; production code may not.
-- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated. P30 has now passed the P36 merge gate.
+- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated. P31 has now passed the P30 merge gate.
 - Completion requires exact-head evidence, independent review, hosted mandatory CI, and owner-authorized merge.
-- P31 and P34 remain unauthorized until their predecessor merge gates are complete and this state is updated again.
+- P34 remains unauthorized until its P31 predecessor merge gate is complete and this state is updated again.
 - A skipped mandatory check never counts as pass.
 - Publication/tag/release remain separate owner gates and are not implied by M3 completion.
 
 ## P30 Execution Position
 
 - Plans complete: 30-01, 30-02, 30-03, and 30-04 (4 of 4).
-- Phase status: implementation, remediation tests, exact-head hosted CI, and independent review complete; clear to merge, with owner merge remaining as the gate before P31.
-- P31 status: planned and inactive; no transition was performed.
+- Phase status: P30 complete and merged via PR #47; closure evidence retained.
+- P31 status: active and authorized; execute only the P31 plan and its explicit gates.
 
 ## Performance Metrics
 
@@ -116,5 +117,5 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 ## Session
 
 **Last session:** 2026-08-14T17:22:00Z
-**Stopped at:** P30 clear to merge; owner merge pending; P31 remains inactive
+**Stopped at:** P30 merged via PR #47; P31 activated for planning/execution
 **Resume file:** None

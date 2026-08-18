@@ -9,7 +9,11 @@
 use std::time::Duration;
 
 use roml::prelude::*;
-use roml_highs::Highs;
+use roml::{
+    BoundSide, FeasibilityRelaxationPlan, RelaxationOutcome, RelaxationRestriction,
+    RelaxationScope, SolverSession,
+};
+use roml_highs::{Highs, HighsSession};
 
 /// Chapter 1 — model and entity definitions.
 #[test]
@@ -201,7 +205,44 @@ fn guide_sparse_cells() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Chapter 15 — validation and common errors.
+/// Chapter 15 — persistent softening and portable feasibility repair.
+#[test]
+fn guide_soft_constraints_and_feasibility_repair() -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = Model::named("repair");
+    let x = model.add_variable(continuous().bounds(0.0, 10.0).named("x"))?;
+    let service = model.add_constraint(x.ge(2.0).named("service"))?;
+    let soft = model.soften_constraint(service, Default::default(), Default::default())?;
+    assert_eq!(soft.original_constraint(), service);
+
+    let lower = model.add_constraint(x.ge(5.0).named("minimum"))?;
+    let upper = model.add_constraint(x.le(3.0).named("capacity"))?;
+    model.commit()?;
+    let revision = model.current_revision();
+
+    let mut session = SolverSession::new(HighsSession::try_new()?);
+    let report = session.solve_feasibility_relaxation(
+        &mut model,
+        FeasibilityRelaxationPlan {
+            scope: RelaxationScope::Explicit(vec![
+                RelaxationRestriction::ConstraintSide {
+                    constraint: lower,
+                    side: BoundSide::Lower,
+                },
+                RelaxationRestriction::ConstraintSide {
+                    constraint: upper,
+                    side: BoundSide::Upper,
+                },
+            ]),
+            ..Default::default()
+        },
+    )?;
+
+    assert_eq!(report.outcome, RelaxationOutcome::OptimalRepair);
+    assert_eq!(model.current_revision(), revision);
+    Ok(())
+}
+
+/// Chapter 16 — validation and common errors.
 #[test]
 fn guide_validation_and_errors() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::new();

@@ -136,6 +136,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Soft constraints and feasibility repair
+
+P30 provides two deliberately separate ways to handle violations:
+
+- `Model::soften_constraint` adds a persistent, revisioned soft-constraint
+  construct with bounded lower/upper violation roles and optional parameterized
+  penalties.
+- `SolverSession::solve_feasibility_relaxation` performs one portable,
+  solve-scoped weighted-L1 repair. It rolls its generated overlay back before
+  returning and reports the exact base/repair identities, outcome, provider,
+  and per-restriction violations.
+
+The repair workflow is an advanced session API because it exposes the full
+portable repair report. The complete runnable example is
+[`roml-highs/examples/feasibility_relaxation.rs`](roml-highs/examples/feasibility_relaxation.rs),
+and the concepts and provider/acceptance policies are described in the
+[`feasibility-relaxation guide`](docs/examples/feasibility_relaxation.md).
+
+P30 supports portable weighted-L1 repair and explicit `AcceptFeasible` versus
+`RequireOptimal` semantics. Objective-priority/lexicographic execution belongs
+to P31, and no native HiGHS feasibility-relaxation provider is claimed.
+
 ## Capabilities
 
 What ROML can express and solve today, and where each capability lives:
@@ -151,11 +173,13 @@ What ROML can express and solve today, and where each capability lives:
 | Effective-plan reporting (applied features, conversions, rejections, exact compilation identity) | ✅ | `Solution::metadata().effective_plan`, `metadata().compilation_id` |
 | Semantic constructs: indicator, boolean, cardinality, min/max, absolute value, binary products | ✅ | `Model::add_indicator` / `add_boolean` / `add_cardinality` / `add_minmax` / `add_absolute_value` / `add_binary_times_linear` — [example](roml-highs/examples/constructs.rs) |
 | Piecewise-linear functions (exact graphs; zero-binary convex epigraph / concave hypograph) | ✅ | `Model::add_piecewise_linear` — [example](roml-highs/examples/pwl_production_planning.rs) |
-| IIS / conflict analysis | 🚧 M3 P29 (in progress) | — |
-| Soft constraints | 🚧 M3 P30 (in progress) | — |
-| Lexicographic / weighted objectives | 🚧 M3 P31 (in progress) | — |
+| IIS / conflict analysis | ✅ M3 P29 — portable LP contract; qualified HiGHS evidence | [`SolverSession::analyze_infeasibility`](docs/examples/infeasibility_analysis.md) |
+| Persistent soft constraints | ✅ M3 P30 — revisioned lower/upper violation roles | `Model::soften_constraint` — [guide](docs/examples/feasibility_relaxation.md) |
+| Portable weighted-L1 feasibility repair | ✅ M3 P30 — solve-scoped overlay with exact outcomes/provenance | `SolverSession::solve_feasibility_relaxation` — [runnable example](roml-highs/examples/feasibility_relaxation.rs) |
+| Lexicographic / weighted objectives | 🛠️ M3 P31 — active phase, not yet qualified | — |
 
-The solve, overlay, warm-start, construct, and piecewise-linear capabilities
+The solve, overlay, warm-start, construct, piecewise-linear, and feasibility-
+repair capabilities
 above are each exercised end-to-end by an example under
 [`roml-highs/examples/`](roml-highs/examples/), all compiled and run by CI.
 (Parameters, boolean/cardinality constructs, and variable hints are covered by
