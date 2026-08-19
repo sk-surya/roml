@@ -1,6 +1,6 @@
 # P30 Soft Constraints and Portable Relaxation Evidence
 
-Evidence was collected on implementation/test head `c5200fd84836e3a5d0b435368860538235cce330` in the isolated `agent-p30-execute` worktree. The current PR branch is a documentation/formatting-only continuation of that tested head; its hosted exact-head status is tracked on PR #47. The implementation/test head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, actual-Feasible acceptance coverage, the end-to-end P29 fixed-variable bound seam regression with preserved provenance, and the paired feasible-acceptance outcome regression; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
+Evidence was collected on implementation/test head `c5200fd84836e3a5d0b435368860538235cce330` in the isolated `agent-p30-execute` worktree. The final governance closure head was `1d11a0b4253ff188ccd967992f72217433e7f7fc`, merged to `main` by PR #47 as `28a019e83a40f2c7df637290c48ad23d7d568ec9`. The implementation/test head includes the owner-approved P30 decisions D-01 through D-15, the audit fixes, inactive-variable evidence handling, two-sided replacement-bound composition, independent declared-bound/persistent-fixing semantics, feasibility-tolerance candidate validation, actual-Feasible acceptance coverage, the end-to-end P29 fixed-variable bound seam regression with preserved provenance, and the paired feasible-acceptance outcome regression; P31 priority/lexicographic execution and unqualified native relaxation remain out of scope.
 
 ## Qualification ledger
 
@@ -71,16 +71,15 @@ as passes.
 ## Review and residual risk
 
 The implementation was reviewed against AGENTS.md, SHARED-CONTRACTS.md, and
-locked P30 decisions. Core and HiGHS automated gates pass locally. The prior
-reviews are superseded for this test-remediation head; independent final review
-and hosted exact-head CI remain required. Residual risks are
+locked P30 decisions. Core and HiGHS automated gates pass locally. Independent
+review #4955405004 and all five hosted exact-head workflows passed on the
+closure head. Residual risks are
 limited to deferred backend qualification (MOSEK/Xpress/native relaxation and
 license-specific runs) and the planned P31 priority/lexicographic layer. No
 crate was published, no tag was created, and no release action was taken.
 
 ## Closure disposition
 
-P30 is locally implementation- and evidence-complete at the test-remediation
-head, pending independent final review and hosted exact-head CI. P31 must not
-be activated by this phase's state update; its work may start only after the
-owner accepts this evidence and the P31 plan is executed.
+P30 is implementation-, evidence-, review-, and hosted-CI-complete and merged
+to `main` through PR #47. P31 is now activated by the milestone routing state;
+its priority/lexicographic implementation remains a separate phase.
