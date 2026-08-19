@@ -414,7 +414,87 @@ a convex tiered cost modeled as an epigraph PWL (zero binaries) plus a
 min/max capacity construct, with the reported cost asserted equal to the exact
 PWL function.
 
-## 15. Migration notes and common errors
+## 15. Soft constraints and portable feasibility repair
+
+Persistent softening and solve-scoped repair are separate operations.
+`Model::soften_constraint` adds a revisioned canonical construct whose lower
+and upper violation roles remain identifiable across model revisions:
+
+```rust
+use roml::{PenaltyPolicy, PenaltyTarget, ValueExpr, ViolationPolicy};
+
+let service = model.add_constraint((x + y).ge(2.0).named("service"))?;
+let soft = model.soften_constraint(
+    service,
+    ViolationPolicy { max_violation: Some(10.0) },
+    PenaltyPolicy {
+        weight: ValueExpr::constant(4.0),
+        target: PenaltyTarget::None,
+    },
+)?;
+assert_eq!(soft.original_constraint(), service);
+```
+
+For one isolated repair attempt, construct an advanced solver session and use
+the portable weighted-L1 workflow. The generated violation variables, rows,
+and objective are a temporary overlay; the canonical model revision is not
+changed by the repair:
+
+```rust
+use roml::advanced::BoundSide;
+use roml::{
+    FeasibilityRelaxationPlan, RelaxationOutcome, RelaxationRestriction,
+    RelaxationScope, SolverSession,
+};
+use roml_highs::HighsSession;
+
+let repair_lower = model.add_constraint(x.ge(5.0).named("minimum"))?;
+let repair_upper = model.add_constraint(x.le(3.0).named("capacity"))?;
+model.commit()?;
+let revision = model.current_revision();
+
+let mut session = SolverSession::new(HighsSession::try_new()?);
+let report = session.solve_feasibility_relaxation(
+    &mut model,
+    FeasibilityRelaxationPlan {
+        scope: RelaxationScope::Explicit(vec![
+            RelaxationRestriction::ConstraintSide {
+                constraint: repair_lower,
+                side: BoundSide::Lower,
+            },
+            RelaxationRestriction::ConstraintSide {
+                constraint: repair_upper,
+                side: BoundSide::Upper,
+            },
+        ]),
+        ..Default::default()
+    },
+)?;
+assert!(matches!(
+    report.outcome,
+    RelaxationOutcome::OptimalRepair
+        | RelaxationOutcome::FeasibleRepair
+        | RelaxationOutcome::NoRepairFound
+        | RelaxationOutcome::Unknown(_)
+));
+assert_eq!(model.current_revision(), revision);
+println!("outcome: {:?}, violations: {:?}", report.outcome, report.members);
+```
+
+`PortableOnly` is the default provider policy. `PreferNative` records an
+explicit portable fallback when no qualified native provider exists, while
+`NativeRequired` rejects before synchronization. `AcceptFeasible` accepts a
+valid feasible incumbent without an optimality proof; `RequireOptimal` reports
+`Unknown` for an unproven feasible termination. IIS membership is diagnostic
+scope input only, not a minimum-cardinality or minimum-weight repair claim.
+Objective-priority and lexicographic execution belong to P31.
+
+The complete runnable workflow is
+[`roml-highs/examples/feasibility_relaxation.rs`](roml-highs/examples/feasibility_relaxation.rs),
+and the standalone conceptual guide is
+[`docs/examples/feasibility_relaxation.md`](docs/examples/feasibility_relaxation.md).
+
+## 16. Migration notes and common errors
 
 The P21–P23 redesign replaced the legacy adapter/macro surface. Migration
 notes, including the pre-1.0 breaking changes and the deprecated-surface

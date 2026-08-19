@@ -14,11 +14,12 @@ PR #45 merged (`48fab4db`)
   -> M4 design gate only
 ```
 
-**Current routing target:** P30 — soft constraints and feasibility relaxation.
-**Active production implementation:** P30 is authorized. P36 merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248` after exact-head qualification and review.
+**Current routing target:** P31 — objective policies and lexicographic solves.
+**Active production implementation:** P31 is authorized after P30 merged via PR #47 as `28a019e83a40f2c7df637290c48ad23d7d568ec9`. P36 merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248` after exact-head qualification and review.
 **Hard rule:** `current_phase`/roadmap position is not authorization to create production code. `.planning/STATE.md` carries the explicit authorization flag.
 
-P36 was an owner-selected **program dependency** of P30. That dependency is now satisfied, so solve-semantics work may resume at P30.
+P36 was an owner-selected **program dependency** of P30. P30 is now merged, so
+the active solve-semantics work is P31.
 
 ## Phase status
 
@@ -29,8 +30,8 @@ P36 was an owner-selected **program dependency** of P30. That dependency is now 
 | P27 | fixing / locks / overlays | complete | none |
 | P28 | SolvePlan / starts / hints | complete | none |
 | P29 | IIS / conflict analysis | complete | follow-up native/perf work is nonblocking |
-| P30 | soft constraints / relaxation | clear to merge; owner merge pending | owner-authorized merge |
-| P31 | objective policies / lexicographic | planned, inactive | P30 merge |
+| P30 | soft constraints / relaxation | complete | PR #47 merged; closure evidence retained |
+| P31 | objective policies / lexicographic | active | P31 plan, review, qualification, owner merge |
 | P32 | semantic constructs | complete | none |
 | P33 | PWL / bound analysis | complete | none |
 | P34 | M3 final qualification | planned, inactive | P31 merge |

@@ -23,5 +23,6 @@
 
 Implementation is technically clear in the reviewed scope. The reviewed exact-head
 hosted workflows and independent review are green; the closure commit is
-documentation/state/evidence-only. P30 is CLEAR TO MERGE; owner merge remains
-pending. P31 remains inactive until P30 merges.
+documentation/state/evidence-only. P30 is CLEAR TO MERGE and was merged by PR
+#47 as `28a019e83a40f2c7df637290c48ad23d7d568ec9`. P31 is now a separate active
+phase under the milestone routing state.
