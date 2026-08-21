@@ -151,6 +151,80 @@ pub enum ObjectiveExecutionProvider {
     },
 }
 
+/// Classification of whether execution may descend to the next lexicographic
+/// stage (design §15.2; SM-11.5, SM-11.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageContinuationDecision {
+    /// The stage proved optimality; descend to the next level.
+    ContinueOptimal,
+    /// The stage produced a valid best-feasible incumbent; descend recording
+    /// the qualification.
+    ContinueBestFeasible,
+    /// The stage did not prove optimality and continuation requires it.
+    StopNotOptimal,
+    /// The stage has no feasible point.
+    StopNoFeasiblePoint,
+    /// The outcome is unknown; do not descend.
+    StopUnknown,
+}
+
+/// Exact canonical degradation lock for a solved normalized stage (design
+/// §15.2; SM-11.2).
+///
+/// Because the normalized stage `g` is always minimized, the lock is
+/// canonically `g(x) <= normalized_upper_bound` with
+/// `delta = absolute_tolerance + relative_tolerance * relative_scale` and
+/// `relative_scale = |z*|`. At `z* = 0` the relative tolerance contributes
+/// zero; negative values use positive magnitude.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectiveLockReport {
+    /// The priority of the stage that produced this lock.
+    pub priority: ObjectivePriority,
+    /// The solved normalized scalar stage value (`z*`).
+    pub reference_value: f64,
+    /// Absolute degradation tolerance.
+    pub absolute_tolerance: f64,
+    /// Relative degradation tolerance (scales with `|z*|`).
+    pub relative_tolerance: f64,
+    /// `|z*|`; the relative-tolerance scale.
+    pub relative_scale: f64,
+    /// `absolute_tolerance + relative_tolerance * relative_scale`.
+    pub allowed_degradation: f64,
+    /// `z* + allowed_degradation`; the canonical `g(x) <=` lock bound.
+    pub normalized_upper_bound: f64,
+}
+
+impl ObjectiveLockReport {
+    /// Compute the exact canonical lock for a solved normalized stage value.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a non-finite `z*` or non-finite/negative tolerances; these
+    /// are rejected by policy validation before execution.
+    pub fn from_stage(
+        priority: ObjectivePriority,
+        stage_value: f64,
+        absolute_tolerance: f64,
+        relative_tolerance: f64,
+    ) -> Self {
+        assert!(stage_value.is_finite(), "stage value must be finite");
+        assert!(absolute_tolerance.is_finite() && absolute_tolerance >= 0.0);
+        assert!(relative_tolerance.is_finite() && relative_tolerance >= 0.0);
+        let relative_scale = stage_value.abs();
+        let allowed_degradation = absolute_tolerance + relative_tolerance * relative_scale;
+        let normalized_upper_bound = stage_value + allowed_degradation;
+        Self {
+            priority,
+            reference_value: stage_value,
+            absolute_tolerance,
+            relative_tolerance,
+            relative_scale,
+            allowed_degradation,
+            normalized_upper_bound,
+        }
+    }
+}
+
 /// Result of validating an objective policy against a model or the frozen
 /// numeric contract (design §19, SM-08.4).
 #[derive(Clone, Debug, PartialEq)]
@@ -553,5 +627,33 @@ mod tests {
             }],
         });
         assert!(lex.validate(None::<fn(Objective) -> bool>).is_ok());
+    }
+
+    #[test]
+    fn exact_lock_math_across_signs_and_tolerances() {
+        let priority = ObjectivePriority::new(0);
+
+        // z* > 0 with abs+rel tolerance.
+        let pos = ObjectiveLockReport::from_stage(priority, 100.0, 1.0, 0.01);
+        assert_eq!(pos.relative_scale, 100.0);
+        assert_eq!(pos.allowed_degradation, 1.0 + 0.01 * 100.0);
+        assert_eq!(pos.normalized_upper_bound, 100.0 + 1.0 + 1.0);
+
+        // z* = 0: relative tolerance contributes zero; only abs applies.
+        let zero = ObjectiveLockReport::from_stage(priority, 0.0, 0.5, 1e9);
+        assert_eq!(zero.relative_scale, 0.0);
+        assert_eq!(zero.allowed_degradation, 0.5);
+        assert_eq!(zero.normalized_upper_bound, 0.5);
+
+        // z* < 0 uses positive magnitude for the relative scale.
+        let neg = ObjectiveLockReport::from_stage(priority, -50.0, 0.0, 0.02);
+        assert_eq!(neg.relative_scale, 50.0);
+        assert_eq!(neg.allowed_degradation, 1.0);
+        assert_eq!(neg.normalized_upper_bound, -50.0 + 1.0);
+
+        // Zero tolerances yield no degradation.
+        let tight = ObjectiveLockReport::from_stage(priority, 10.0, 0.0, 0.0);
+        assert_eq!(tight.allowed_degradation, 0.0);
+        assert_eq!(tight.normalized_upper_bound, 10.0);
     }
 }

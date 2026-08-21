@@ -69,9 +69,9 @@ pub use model::{
     VariableDef, VariableDomain, VariableFixing,
 };
 pub use objective_policy::{
-    LexicographicObjectives, ObjectiveExecutionProvider, ObjectivePolicyError, ObjectivePriority,
-    ObjectiveProviderPolicy, StageContinuation, WeightedObjective, WeightedObjectiveLevel,
-    WeightedObjectives,
+    LexicographicObjectives, ObjectiveExecutionProvider, ObjectiveLockReport, ObjectivePolicyError,
+    ObjectivePriority, ObjectiveProviderPolicy, StageContinuation, StageContinuationDecision,
+    WeightedObjective, WeightedObjectiveLevel, WeightedObjectives,
 };
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
