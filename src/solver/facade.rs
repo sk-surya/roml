@@ -779,10 +779,15 @@ where
         //    inside `synchronize_base`.
         let (request, committed, sync_mode) = self.synchronize_base(model, plan.options)?;
 
-        // The objective override (P28: `ObjectivePolicy::Single` only).
-        let objective_override = plan.objective_override.map(|policy| match policy {
-            ObjectivePolicy::Single(obj) => obj,
-        });
+        // The objective override (P28: `ObjectivePolicy::Single` only). P31's
+        // `Weighted`/`Lexicographic` policies are executed by the portable
+        // objective executor rather than the single-objective override path;
+        // placing a non-single policy here is rejected before mutation.
+        let objective_override = match plan.objective_override {
+            None => None,
+            Some(ObjectivePolicy::Single(obj)) => Some(obj),
+            Some(_) => return Err(SolveError::Plan(PlanError::NonSingleObjectiveOverride)),
+        };
         // SM-04.5 (review P2-04): an applied override is recorded — a consumer
         // reading the effective plan can tell that the objective was replaced.
         if objective_override.is_some() {
