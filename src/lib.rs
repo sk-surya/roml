@@ -32,6 +32,7 @@ pub mod io;
 pub(crate) mod journal;
 pub mod metadata;
 pub mod model;
+pub mod objective_policy;
 pub mod revision;
 pub mod snapshot;
 pub mod solution;
@@ -66,6 +67,11 @@ pub use model::{
     binary, continuous, integer, parameter, Bounds, Constraint, ConstraintBounds, FixingProvenance,
     Model, ModelError, Objective, Parameter, ParameterDef, SemiDomain, Sense, VarType, Variable,
     VariableDef, VariableDomain, VariableFixing,
+};
+pub use objective_policy::{
+    LexicographicObjectives, ObjectiveExecutionProvider, ObjectivePolicyError, ObjectivePriority,
+    ObjectiveProviderPolicy, StageContinuation, WeightedObjective, WeightedObjectiveLevel,
+    WeightedObjectives,
 };
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
