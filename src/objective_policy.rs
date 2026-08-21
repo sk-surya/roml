@@ -77,6 +77,45 @@ pub struct LexicographicObjectives {
     pub levels: Vec<WeightedObjectiveLevel>,
 }
 
+/// Canonical objective policy for one model/solve (design §15; SM-11.1).
+///
+/// P28 forward-declared the [`Single`](Self::Single) variant; P31 adds
+/// [`None`](Self::None), [`Weighted`](Self::Weighted), and
+/// [`Lexicographic`](Self::Lexicographic). The `#[non_exhaustive]` boundary
+/// keeps future extension non-breaking. `Objective` is the model objective
+/// handle.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectivePolicy {
+    /// No active objective.
+    None,
+    /// Solve for a single objective.
+    Single(Objective),
+    /// A single-stage weighted combination.
+    Weighted(WeightedObjectives),
+    /// A lexicographic priority list of weighted levels.
+    Lexicographic(LexicographicObjectives),
+}
+
+impl ObjectivePolicy {
+    /// Atomically validate the policy's structural and numeric contract.
+    /// `objective_exists` may be `None` to defer stale-reference checking.
+    pub fn validate(
+        &self,
+        objective_exists: Option<impl Fn(Objective) -> bool>,
+    ) -> Result<(), ObjectivePolicyError> {
+        let checker = objective_exists
+            .as_ref()
+            .map(|f| f as &dyn Fn(Objective) -> bool);
+        match self {
+            ObjectivePolicy::None => Ok(()),
+            ObjectivePolicy::Single(_) => Ok(()),
+            ObjectivePolicy::Weighted(w) => w.validate(checker),
+            ObjectivePolicy::Lexicographic(l) => l.validate(checker),
+        }
+    }
+}
+
 /// Stage continuation semantics (design §15.2; SM-11.5, SM-11.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StageContinuation {
@@ -484,5 +523,35 @@ mod tests {
             ],
         };
         assert!(policy.validate(None::<fn(Objective) -> bool>).is_ok());
+    }
+
+    #[test]
+    fn objective_policy_variants_validate() {
+        let none = ObjectivePolicy::None;
+        assert!(none.validate(None::<fn(Objective) -> bool>).is_ok());
+
+        let single = ObjectivePolicy::Single(obj(1));
+        assert!(single.validate(None::<fn(Objective) -> bool>).is_ok());
+
+        let weighted = ObjectivePolicy::Weighted(WeightedObjectives {
+            objectives: vec![WeightedObjective {
+                objective: obj(1),
+                weight: 1.0,
+            }],
+        });
+        assert!(weighted.validate(None::<fn(Objective) -> bool>).is_ok());
+
+        let lex = ObjectivePolicy::Lexicographic(LexicographicObjectives {
+            levels: vec![WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: obj(1),
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 1e-6,
+                relative_tolerance: 1e-9,
+            }],
+        });
+        assert!(lex.validate(None::<fn(Objective) -> bool>).is_ok());
     }
 }
