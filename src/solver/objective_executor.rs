@@ -23,18 +23,7 @@ use crate::objective_policy::{
 use crate::solver::infeasibility::BoundSide;
 use crate::solver::objective_combine::{combine_stage, CombinedStage};
 use crate::solver::overlay::OverlayOp;
-
-/// Immutable model/compiler context shared across one stage's overlay build.
-pub(crate) struct StageContext<'a> {
-    model: &'a Model,
-    compiler: &'a CompilationSession,
-}
-
-impl<'a> StageContext<'a> {
-    pub(crate) fn new(model: &'a Model, compiler: &'a CompilationSession) -> Self {
-        Self { model, compiler }
-    }
-}
+use crate::solver::SolveStatus;
 
 /// Mutable overlay-assembly state (operations, origins, and allocation
 /// cursors) used while building one stage's overlay.
@@ -94,10 +83,43 @@ pub enum ObjectiveExecutionError {
 /// A prior stage's degradation lock: the normalized scalar function whose
 /// upper bound is fixed for all later stages.
 pub(crate) struct PriorLock {
-    /// The normalized scalar stage function.
-    pub stage: CombinedStage,
+    /// The priority of the stage that produced this lock.
+    pub priority: ObjectivePriority,
+    /// The full stage scalar (canonical combination + priority penalties).
+    pub stage: StageScalar,
     /// The exact lock computed from that stage's `z*`.
     pub lock: ObjectiveLockReport,
+}
+
+/// One priority-targeted P30 penalty attached to a lexicographic stage.
+///
+/// The penalty contributes `weight * v` to the stage scalar, where `v` is the
+/// generated violation variable for each finite side of the softened
+/// constraint. The weight is the numerically evaluated parameterized penalty
+/// weight from the current parameter snapshot.
+pub(crate) struct PriorityPenalty {
+    /// The evaluated finite nonnegative weight.
+    pub weight: f64,
+    /// Optional cap on each generated violation variable.
+    pub max_violation: Option<f64>,
+    /// The softened constraint's bounds (drives which sides are finite).
+    pub bounds: ConstraintBounds,
+    /// The constraint's row coefficients in compiled-variable order.
+    pub row: Vec<(CompiledVariableId, f64)>,
+}
+
+/// The full normalized stage scalar: the canonical weighted combination plus
+/// every priority-targeted penalty folded into this priority level.
+///
+/// This single value is what the backend minimizes, what is reported as
+/// `scalar_stage_value`, and what later stages degrade against. Prior stages
+/// re-materialize their penalties into each later overlay so every
+/// degradation lock always includes them.
+pub(crate) struct StageScalar {
+    /// The canonical weighted objective combination for this level.
+    pub canonical: CombinedStage,
+    /// Priority penalties folded into this level.
+    pub penalties: Vec<PriorityPenalty>,
 }
 
 /// Build the solve-scoped overlay for one stage.
@@ -105,24 +127,37 @@ pub(crate) struct PriorLock {
 /// `locks` carries every prior stage's normalized scalar and its exact
 /// degradation bound (all remain active). `current` is the stage to optimize.
 pub(crate) fn build_stage_overlay(
-    ctx: &StageContext,
     base_compilation: CompilationId,
     overlay_id: OverlayId,
     assembly: &mut OverlayAssembly,
     locks: &[PriorLock],
-    current: &CombinedStage,
+    current: &StageScalar,
     priority: ObjectivePriority,
 ) -> Result<Box<crate::solver::overlay::CompiledOverlay>, ObjectiveExecutionError> {
-    let mut objective_coefficients = current.coefficients.clone();
-    fold_priority_penalties(
-        ctx,
+    // Backend objective: canonical coefficients + this stage's priority
+    // penalties. Every penalty violation variable/row is materialized in this
+    // overlay before the objective is emitted.
+    let mut objective_coefficients = current.canonical.coefficients.clone();
+    materialize_penalties(
         priority,
         overlay_id,
         assembly,
+        &current.penalties,
         &mut objective_coefficients,
     )?;
 
+    // Prior-stage degradation locks: each later stage re-materializes the
+    // prior stage's penalties into THIS overlay so the lock row references
+    // valid violation variables and therefore includes the penalties.
     for prior in locks {
+        let mut lock_coefficients = prior.stage.canonical.coefficients.clone();
+        materialize_penalties(
+            prior.priority,
+            overlay_id,
+            assembly,
+            &prior.stage.penalties,
+            &mut lock_coefficients,
+        )?;
         let row_id = CompiledConstraintId(assembly.next_row);
         assembly.next_row += 1;
         assembly.origins.insert_constraint(
@@ -132,12 +167,12 @@ pub(crate) fn build_stage_overlay(
                 role: GeneratedRole::ObjectiveLockRow,
             },
         );
-        let rhs = prior.lock.normalized_upper_bound - prior.stage.constant;
+        let rhs = prior.lock.normalized_upper_bound - prior.stage.canonical.constant;
         assembly.operations.push(OverlayOp::AddTemporaryRow {
             row: CompiledLinearRow {
                 id: row_id,
                 bounds: ConstraintBounds::le(rhs),
-                coefficients: prior.stage.coefficients.clone(),
+                coefficients: lock_coefficients,
                 name: Some(format!("p31 degradation lock priority {:?}", priority)),
             },
         });
@@ -157,7 +192,7 @@ pub(crate) fn build_stage_overlay(
             id: objective_id,
             sense: Sense::Minimize,
             coefficients: objective_coefficients,
-            constant: current.constant,
+            constant: current.canonical.constant,
             name: Some(format!("p31 combined objective priority {:?}", priority)),
         },
     });
@@ -178,17 +213,72 @@ pub(crate) fn build_stage_overlay(
     }))
 }
 
-fn fold_priority_penalties(
-    ctx: &StageContext,
+/// Fold a stage's priority penalties into an output coefficient list by
+/// materializing each penalty's violation variables/rows in the given overlay.
+fn materialize_penalties(
     priority: ObjectivePriority,
     overlay_id: OverlayId,
     assembly: &mut OverlayAssembly,
-    objective_coefficients: &mut Vec<(CompiledVariableId, f64)>,
+    penalties: &[PriorityPenalty],
+    out_coefficients: &mut Vec<(CompiledVariableId, f64)>,
 ) -> Result<(), ObjectiveExecutionError> {
-    let snapshot = ctx
-        .model
+    for penalty in penalties {
+        for side in violation_sides(penalty.bounds) {
+            let violation = add_violation_variable(assembly, overlay_id, penalty.max_violation);
+            out_coefficients.push((violation, penalty.weight));
+            let row_id = CompiledConstraintId(assembly.next_row);
+            assembly.next_row += 1;
+            assembly.origins.insert_constraint(
+                row_id,
+                EntityOrigin::SolveOverlay {
+                    overlay: overlay_id,
+                    role: GeneratedRole::FeasibilityRelaxationViolationRow,
+                },
+            );
+            let mut coefficients = penalty.row.clone();
+            coefficients.push((violation, side_sign(side)));
+            coefficients.sort_by_key(|(id, _)| *id);
+            assembly.operations.push(OverlayOp::AddTemporaryRow {
+                row: CompiledLinearRow {
+                    id: row_id,
+                    bounds: side_bounds(penalty.bounds, side),
+                    coefficients,
+                    name: Some(format!("p31 priority penalty row {:?}", priority)),
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Build the full stage scalar (canonical combination + resolved priority
+/// penalties) for one level from the current parameter snapshot.
+pub(crate) fn stage_scalar(
+    compiler: &CompilationSession,
+    model: &Model,
+    priority: ObjectivePriority,
+    objectives: &[WeightedObjective],
+) -> Result<StageScalar, ObjectiveExecutionError> {
+    let canonical = combine_stage(compiler, model, priority, objectives)
+        .map_err(|e| ObjectiveExecutionError::Combine(format!("{e:?}")))?;
+    let penalties = resolve_priority_penalties(model, compiler, priority)?;
+    Ok(StageScalar {
+        canonical,
+        penalties,
+    })
+}
+
+/// Enumerate and numerically resolve every priority-targeted penalty for one
+/// level from the current parameter snapshot, before any backend mutation.
+fn resolve_priority_penalties(
+    model: &Model,
+    compiler: &CompilationSession,
+    priority: ObjectivePriority,
+) -> Result<Vec<PriorityPenalty>, ObjectiveExecutionError> {
+    let snapshot = model
         .take_snapshot()
         .map_err(|e| ObjectiveExecutionError::Compile(format!("snapshot failed: {e}")))?;
+    let mut out = Vec::new();
     for construct in &snapshot.constructs {
         let (payload, target) = match &construct.kind {
             ConstructKind::SoftConstraint(payload) => (payload, payload.penalty.target),
@@ -232,35 +322,15 @@ fn fold_priority_penalties(
                     payload.original_constraint
                 ))
             })?;
-        let row_coefficients =
-            constraint_coefficients(&snapshot, ctx.compiler, payload.original_constraint)?;
-        for side in violation_sides(constraint.bounds) {
-            let violation =
-                add_violation_variable(assembly, overlay_id, payload.violation.max_violation);
-            objective_coefficients.push((violation, weight));
-            let row_id = CompiledConstraintId(assembly.next_row);
-            assembly.next_row += 1;
-            assembly.origins.insert_constraint(
-                row_id,
-                EntityOrigin::SolveOverlay {
-                    overlay: overlay_id,
-                    role: GeneratedRole::FeasibilityRelaxationViolationRow,
-                },
-            );
-            let mut coefficients = row_coefficients.clone();
-            coefficients.push((violation, side_sign(side)));
-            coefficients.sort_by_key(|(id, _)| *id);
-            assembly.operations.push(OverlayOp::AddTemporaryRow {
-                row: CompiledLinearRow {
-                    id: row_id,
-                    bounds: side_bounds(constraint.bounds, side),
-                    coefficients,
-                    name: Some(format!("p31 priority penalty row {:?}", priority)),
-                },
-            });
-        }
+        let row = constraint_coefficients(&snapshot, compiler, payload.original_constraint)?;
+        out.push(PriorityPenalty {
+            weight,
+            max_violation: payload.violation.max_violation,
+            bounds: constraint.bounds,
+            row,
+        });
     }
-    Ok(())
+    Ok(out)
 }
 
 pub(crate) fn validate_priority_targets(
@@ -362,6 +432,49 @@ fn constraint_coefficients(
     Ok(coefficients)
 }
 
+/// Evaluate the full stage scalar (canonical + priority penalties) at a
+/// solution's canonical variable values.
+///
+/// Priority penalties are evaluated as a pure function of the solution:
+/// `weight * max(0, lower - expr)` for a lower-side violation and
+/// `weight * max(0, expr - upper)` for an upper-side violation, using the
+/// softened constraint's row coefficients resolved against the solution.
+pub(crate) fn evaluate_stage_scalar(
+    compiler: &CompilationSession,
+    scalar: &StageScalar,
+    values: &[(VarId, f64)],
+) -> f64 {
+    let mut value = evaluate_combined(compiler, &scalar.canonical, values);
+    for penalty in &scalar.penalties {
+        let expr = evaluate_constraint_row(compiler, &penalty.row, values);
+        for side in violation_sides(penalty.bounds) {
+            let violation = match side {
+                BoundSide::Lower => (penalty.bounds.lower - expr).max(0.0),
+                BoundSide::Upper => (expr - penalty.bounds.upper).max(0.0),
+            };
+            value += penalty.weight * violation;
+        }
+    }
+    value
+}
+
+/// Evaluate a constraint row (compiled coefficients) at canonical values.
+fn evaluate_constraint_row(
+    compiler: &CompilationSession,
+    coefficients: &[(CompiledVariableId, f64)],
+    values: &[(VarId, f64)],
+) -> f64 {
+    let mut value = 0.0;
+    for (cid, coef) in coefficients {
+        if let Some(var) = compiler.user_variable(*cid) {
+            if let Some(v) = lookup(values, var) {
+                value += coef * v;
+            }
+        }
+    }
+    value
+}
+
 /// Evaluate a combined scalar stage at a solution's variable values.
 pub(crate) fn evaluate_combined(
     compiler: &CompilationSession,
@@ -424,13 +537,35 @@ fn lookup(values: &[(VarId, f64)], var: VarId) -> Option<f64> {
     values.iter().find(|(v, _)| *v == var).map(|(_, val)| *val)
 }
 
-/// Resolve the current stage's combined scalar.
-pub(crate) fn first_combined(
-    compiler: &CompilationSession,
-    model: &Model,
-    priority: ObjectivePriority,
-    objectives: &[WeightedObjective],
-) -> Result<CombinedStage, ObjectiveExecutionError> {
-    combine_stage(compiler, model, priority, objectives)
-        .map_err(|e| ObjectiveExecutionError::Combine(format!("{e:?}")))
+/// Map a backend termination status into a [`SolveStatus`] for the objective
+/// executor, preserving every legitimate mathematical outcome.
+///
+/// The general [`SolveStatus::from_termination`] treats both `Error` and
+/// `Unknown` as uninterpretable (API-03.3). For a staged lexicographic solve,
+/// `Unknown` is a real solver outcome that must flow through continuation
+/// classification (`StopNotOptimal` under `RequireOptimal`, `StopUnknown`
+/// under `BestFeasible`) and be recorded in the stage result — never silently
+/// forced into a `Backend` error. Only `Error` is an operational failure.
+pub(crate) fn objective_status_from_termination(
+    termination: crate::solver::backend::TerminationStatus,
+) -> SolveStatus {
+    use crate::solver::backend::TerminationStatus::{
+        Error, Feasible, Infeasible, InfeasibleOrUnbounded, Interrupted, IterationLimit, NodeLimit,
+        NumericalIssue, Optimal, TimeLimit, Unbounded, Unknown,
+    };
+    match termination {
+        Optimal => SolveStatus::Optimal,
+        Feasible => SolveStatus::Feasible,
+        Infeasible => SolveStatus::Infeasible,
+        Unbounded => SolveStatus::Unbounded,
+        InfeasibleOrUnbounded => SolveStatus::InfeasibleOrUnbounded,
+        TimeLimit => SolveStatus::TimeLimit,
+        IterationLimit => SolveStatus::IterationLimit,
+        NodeLimit => SolveStatus::NodeLimit,
+        Interrupted => SolveStatus::Interrupted,
+        NumericalIssue => SolveStatus::Numerical,
+        // `Error` is an operational failure; the caller rejects it below.
+        Error => SolveStatus::Error,
+        Unknown => SolveStatus::Unknown,
+    }
 }

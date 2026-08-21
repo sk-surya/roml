@@ -2,7 +2,7 @@
 phase: 31-lexicographic-objectives
 status: implementation-verified-review-pending
 base: "9db2ec2997dee17e796b80bc8897399c676e1bd9"
-head: "377562b (code/test/evidence head); hosted CI green on this head; independent review pending"
+head: "remediation commits addressing review #4989778702 P1s + P2 (two-sided priority-penalty lock, Unknown preservation, rollback-safe extraction, Single stale check); independent re-review pending"
 plan: 31-PLAN.md
 ---
 
@@ -19,8 +19,8 @@ targeting).
 Base is `main@9db2ec2` (P30 merged, P31 authorized). The implementation/test
 head is `377562b` (the evidence-doc commit follows the code/test head
 `9839ab4`). **Hosted mandatory CI is green on `377562b`; independent exact-head
-code review has not yet been completed on this head.** This document must not
-be treated as cleared-to-merge.
+code review has not yet been completed on the remediation head.** This document
+must not be treated as cleared-to-merge.
 
 ## Committed change set (10 commits, base 9db2ec2 -> head 9839ab4)
 
@@ -35,7 +35,53 @@ be treated as cleared-to-merge.
 - `c4f9320` objective-executor fault matrix + continuation semantics (Task 31-05)
 - `9839ab4` same-objective-different-priority legality + provider-policy behavior (Tasks 31-06/31-08)
 
-## Fresh local checks at head 377562b (code/test commits through 9839ab4)
+## Remediation after review #4989778702 (2 P1 + 1 P2)
+
+Independent review of PR #49 at exact head `8a1fedb` found one P1 production
+defect not covered by the original test set, two lifecycle/termination P1s, and
+one validation P2. The following remediation is applied and verified:
+
+1. **Priority penalties are part of `z*` and every later degradation lock.**
+   The executor now resolves the full `StageScalar` (canonical combination +
+   numerically evaluated priority penalties) before backend mutation. Every
+   later stage re-materializes each prior stage's penalty rows into its own
+   overlay, so a later stage cannot degrade a priority-0 penalty that is
+   absent from the canonical objective. Regression: a two-level real-HiGHS
+   lexicographic model where priority 0 pins `x = 6` via a priority-targeted
+   penalty and priority 1 minimizes `x` (incentive to reintroduce the
+   violation) — `x` must remain at 6. A second regression proves `z* = 0`
+   relative-only tolerance yields an exact lock (`allowed_degradation = 0`)
+   that keeps a satisfiable `x <= 2` penalty from being reintroduced.
+2. **`Unknown` is a mathematical stage outcome, not a backend error.** The
+   objective executor now maps terminations leniently (only `Error` is an
+   operational failure); `Unknown` flows through
+   `classify_continuation` → `StopUnknown` (BestFeasible) / `StopNotOptimal`
+   (RequireOptimal) and is recorded on the stage result. A controlled-backend
+   regression asserts a `TerminationStatus::Unknown` yields a staged result
+   with `StopUnknown`, not a `Backend` error.
+3. **Post-solve extraction failures roll back.** `objective_values(...)` now
+   routes through `rollback_objective` on failure (a controlled foreign/absent
+   compilation id verifies rollback + no leaked `MultiObjectiveResult` + a
+   clean follow-up solve).
+4. **`ObjectivePolicy::Single` stale validation (P2).** `Single` now consults
+   the supplied existence checker like `Weighted`/`Lexicographic`, and the
+   facade passes a real checker (`model.objective_sense(...).is_some()`) for
+   atomic pre-mutation rejection. Regression both at unit level and in the
+   objective-policy fault matrix.
+
+## Fresh local checks at remediation time
+
+- `cargo test -p roml --all-targets` — all pass.
+- `cargo test -p roml --test objective_policy_faults` — 10 passed (previous 7
+  plus `Unknown`-preservation, post-solve extraction rollback, and stale
+  `Single` regressions).
+- `cargo test -p roml-highs --test objective_policy` — 7 passed (previous 5
+  plus two-level priority-penalty lock and `z*=0` relative-only exact-lock
+  real-HiGHS regressions).
+- `cargo test -p roml-highs --all-targets` — all pass with bundled HiGHS.
+- `cargo fmt --all -- --check`, `cargo clippy -p roml -p roml-highs --all-targets -- -D warnings`, and `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` — clean.
+
+## Fresh local checks at pre-remediation head 377562b (kept for audit trail)
 
 - `cargo test -p roml --all-targets` — all pass (313 library tests; all integration targets).
 - `cargo test -p roml --lib objective_policy` — 13 passed (priority ordering,
@@ -92,8 +138,10 @@ failures.)
 
 ## Residuals / not yet claimed
 
-- Independent exact-head code review on `377562b` has not been completed and
-  is required before any CLEAR status.
+- Independent exact-head code re-review on the remediation head has not been
+  completed and is required before any CLEAR status.
+- Hosted exact-head CI must be re-run on the remediation head (the prior green
+  CI was on `377562b`/`8a1fedb`, before the remediation commits).
 - MOSEK/Xpress native multiobjective audit: HiGHS provides no qualified native
   normalized-`|z*|` multiobjective path, so the portable path is normative and
   `PreferNative`/`NativeRequired` behave accordingly; a full documented native
@@ -102,6 +150,7 @@ failures.)
 
 ## Required next steps
 
-1. Complete exact-head independent code review with no unresolved P0/P1 (PR #49 open, draft).
-2. Owner-authorized merge of PR #49.
-3. Update the milestone routing state to authorize P34 after the P31 merge.
+1. Push the remediation commits to PR #49 and confirm exact-head hosted CI.
+2. Complete exact-head independent re-review with no unresolved P0/P1 (PR #49 open, draft).
+3. Owner-authorized merge of PR #49.
+4. Update the milestone routing state to authorize P34 after the P31 merge.

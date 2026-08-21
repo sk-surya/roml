@@ -33,8 +33,9 @@ use crate::solver::effective_plan::{
 };
 use crate::solver::objective_combine::classify_continuation;
 use crate::solver::objective_executor::{
-    build_stage_overlay, evaluate_combined, first_combined, objective_values,
-    validate_priority_targets, ObjectiveExecutionError, OverlayAssembly, PriorLock, StageContext,
+    build_stage_overlay, evaluate_stage_scalar, objective_status_from_termination,
+    objective_values, stage_scalar, validate_priority_targets, ObjectiveExecutionError,
+    OverlayAssembly, PriorLock,
 };
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
@@ -83,7 +84,43 @@ pub fn normalize_result(
     overlay_id: Option<OverlayId>,
 ) -> Result<Solution, SolveError> {
     let status = SolveStatus::from_termination(result.termination)?;
+    normalize_result_with_status(
+        result,
+        status,
+        model_revision,
+        active_objective,
+        backend_name,
+        synchronization,
+        effective_plan,
+        model_lineage,
+        model_instance,
+        compilation_id,
+        overlay_id,
+    )
+}
 
+/// Build a [`Solution`] from a solve result using an already-classified
+/// [`SolveStatus`].
+///
+/// The public [`normalize_result`] derives the status via the strict
+/// [`SolveStatus::from_termination`] (which rejects `Unknown`/`Error` per
+/// API-03.3). The P31 objective executor instead keeps `Unknown` as a
+/// legitimate mathematical stage outcome, so it supplies the leniently-mapped
+/// status here while preserving the identical metadata/normalization rules.
+#[allow(clippy::too_many_arguments)]
+fn normalize_result_with_status(
+    result: &SolveResult,
+    status: SolveStatus,
+    model_revision: ModelRevision,
+    active_objective: Option<ObjId>,
+    backend_name: &str,
+    synchronization: SynchronizationMode,
+    effective_plan: EffectiveSolvePlan,
+    model_lineage: ModelLineageId,
+    model_instance: ModelInstanceId,
+    compilation_id: Option<CompilationId>,
+    overlay_id: Option<OverlayId>,
+) -> Result<Solution, SolveError> {
     let mut builder = SolutionBuilder::new()
         .status(status)
         .metadata(SolveMetadata {
@@ -995,8 +1032,10 @@ where
         provider: ObjectiveProviderPolicy,
         continuation: StageContinuation,
     ) -> Result<MultiObjectiveResult, ObjectiveExecutionError> {
+        // Atomically reject a stale objective reference in ANY policy variant
+        // (including Single) before backend mutation.
         policy
-            .validate(None::<fn(ObjId) -> bool>)
+            .validate(Some(|obj: ObjId| model.objective_sense(obj).is_some()))
             .map_err(|e| ObjectiveExecutionError::Preflight(format!("invalid policy: {e}")))?;
         let execution_provider = match provider {
             ObjectiveProviderPolicy::PortableOnly | ObjectiveProviderPolicy::PreferNative => {
@@ -1050,15 +1089,14 @@ where
         let mut final_solution: Option<Solution> = None;
 
         for level in &levels {
-            let combined =
-                first_combined(&self.compiler, model, level.priority, &level.objectives)?;
+            // Resolve the full stage scalar (canonical combination + priority
+            // penalties) from the current snapshot before any backend mutation.
+            let combined = stage_scalar(&self.compiler, model, level.priority, &level.objectives)?;
             let overlay_id = OverlayId::allocate().map_err(|_| {
                 ObjectiveExecutionError::Compile("overlay identity exhausted".into())
             })?;
-            let ctx = StageContext::new(model, &self.compiler);
             let mut assembly = OverlayAssembly::new(&self.compiler)?;
             let compiled = build_stage_overlay(
-                &ctx,
                 base_compilation,
                 overlay_id,
                 &mut assembly,
@@ -1110,12 +1148,14 @@ where
                     &receipt,
                 );
             }
-            let status = SolveStatus::from_termination(result.termination)
-                .map_err(|e| ObjectiveExecutionError::Backend(e.to_string()))?;
-            if status == SolveStatus::Error || status == SolveStatus::Unknown {
+            let status = objective_status_from_termination(result.termination);
+            // `Error` is an operational failure; `Unknown` is a legitimate
+            // mathematical outcome that flows through continuation and is
+            // recorded (StopNotOptimal / StopUnknown), never a Backend error.
+            if status == SolveStatus::Error {
                 return self.rollback_objective(
                     ObjectiveExecutionError::Backend(format!(
-                        "uninterpretable objective stage termination: {status:?}"
+                        "objective stage termination is an operational error: {status:?}"
                     )),
                     &receipt,
                 );
@@ -1133,18 +1173,21 @@ where
             let decision = classify_continuation(continuation, status);
             let values = result.solution.as_ref().map(|c| c.variable_values.clone());
             let stage_values = if let Some(v) = &values {
-                objective_values(&self.compiler, model, &level.objectives, v)?
+                match objective_values(&self.compiler, model, &level.objectives, v) {
+                    Ok(vals) => vals,
+                    Err(e) => return self.rollback_objective(e, &receipt),
+                }
             } else {
                 Vec::new()
             };
             let scalar = values
                 .as_ref()
-                .map(|v| evaluate_combined(&self.compiler, &combined, v));
+                .map(|v| evaluate_stage_scalar(&self.compiler, &combined, v));
             let lock = match &values {
                 Some(v) => match decision {
                     StageContinuationDecision::ContinueOptimal
                     | StageContinuationDecision::ContinueBestFeasible => {
-                        let z = evaluate_combined(&self.compiler, &combined, v);
+                        let z = evaluate_stage_scalar(&self.compiler, &combined, v);
                         Some(ObjectiveLockReport::from_stage(
                             level.priority,
                             z,
@@ -1168,6 +1211,7 @@ where
             });
             if let Some(lock) = &lock {
                 prior_locks.push(PriorLock {
+                    priority: level.priority,
                     stage: combined,
                     lock: *lock,
                 });
@@ -1176,8 +1220,9 @@ where
             self.rollback_objective_stage(&receipt)?;
             // Build the final solution for the last executed stage.
             final_solution = Some(
-                normalize_result(
+                normalize_result_with_status(
                     &result,
+                    status,
                     committed,
                     None,
                     self.backend.name(),

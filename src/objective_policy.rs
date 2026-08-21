@@ -112,7 +112,14 @@ impl ObjectivePolicy {
             .map(|f| f as &dyn Fn(Objective) -> bool);
         match self {
             ObjectivePolicy::None => Ok(()),
-            ObjectivePolicy::Single(_) => Ok(()),
+            ObjectivePolicy::Single(obj) => {
+                if let Some(exists) = checker {
+                    if !exists(*obj) {
+                        return Err(ObjectivePolicyError::ObjectiveNotFound { objective: *obj });
+                    }
+                }
+                Ok(())
+            }
             ObjectivePolicy::Weighted(w) => w.validate(checker),
             ObjectivePolicy::Lexicographic(l) => l.validate(checker),
         }
@@ -618,6 +625,19 @@ mod tests {
             Err(ObjectivePolicyError::ObjectiveNotFound { .. })
         ));
         // Without a checker the numeric/shape contract still passes.
+        assert!(policy.validate(None::<fn(Objective) -> bool>).is_ok());
+    }
+
+    #[test]
+    fn single_policy_rejects_stale_objective_when_checked() {
+        // `Single` must consult the supplied checker too — before the P2 fix
+        // it ignored it, unlike Weighted/Lexicographic.
+        let policy = ObjectivePolicy::Single(obj(11));
+        assert!(matches!(
+            policy.validate(Some(|o: Objective| o.index() != 11)),
+            Err(ObjectivePolicyError::ObjectiveNotFound { .. })
+        ));
+        // Without a checker it still passes.
         assert!(policy.validate(None::<fn(Objective) -> bool>).is_ok());
     }
 
