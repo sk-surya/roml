@@ -34,7 +34,7 @@ use crate::solver::effective_plan::{
 use crate::solver::objective_combine::classify_continuation;
 use crate::solver::objective_executor::{
     build_stage_overlay, evaluate_combined, first_combined, objective_values,
-    ObjectiveExecutionError, PriorLock,
+    validate_priority_targets, ObjectiveExecutionError, OverlayAssembly, PriorLock, StageContext,
 };
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
@@ -1031,6 +1031,11 @@ where
             ObjectivePolicy::Lexicographic(lex) => lex.levels.clone(),
         };
 
+        // Atomic rejection: every priority-targeted soft penalty's priority
+        // must be present among the policy levels before any backend mutation.
+        let priorities: Vec<_> = levels.iter().map(|l| l.priority).collect();
+        validate_priority_targets(model, &priorities)?;
+
         let (request, committed, sync_mode) = self
             .synchronize_base(model, SolveOptions::default())
             .map_err(|e| ObjectiveExecutionError::Backend(e.to_string()))?;
@@ -1050,17 +1055,13 @@ where
             let overlay_id = OverlayId::allocate().map_err(|_| {
                 ObjectiveExecutionError::Compile("overlay identity exhausted".into())
             })?;
-            let mut row_cursor = self.compiler.next_row_index().ok_or_else(|| {
-                ObjectiveExecutionError::Preflight("base has no row allocation cursor".into())
-            })?;
-            let mut objective_cursor = self.compiler.next_objective_index().ok_or_else(|| {
-                ObjectiveExecutionError::Preflight("base has no objective allocation cursor".into())
-            })?;
+            let ctx = StageContext::new(model, &self.compiler);
+            let mut assembly = OverlayAssembly::new(&self.compiler)?;
             let compiled = build_stage_overlay(
+                &ctx,
                 base_compilation,
                 overlay_id,
-                &mut row_cursor,
-                &mut objective_cursor,
+                &mut assembly,
                 &prior_locks,
                 &combined,
                 level.priority,
