@@ -32,6 +32,7 @@ pub mod io;
 pub(crate) mod journal;
 pub mod metadata;
 pub mod model;
+pub mod objective_policy;
 pub mod revision;
 pub mod snapshot;
 pub mod solution;
@@ -67,6 +68,12 @@ pub use model::{
     Model, ModelError, Objective, Parameter, ParameterDef, SemiDomain, Sense, VarType, Variable,
     VariableDef, VariableDomain, VariableFixing,
 };
+pub use objective_policy::{
+    LexicographicObjectives, MultiObjectiveResult, ObjectiveExecutionProvider, ObjectiveLockReport,
+    ObjectivePolicyError, ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult,
+    ObjectiveValue, StageContinuation, StageContinuationDecision, WeightedObjective,
+    WeightedObjectiveLevel, WeightedObjectives,
+};
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
 pub use solution::{
@@ -77,7 +84,7 @@ pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
 pub use solver::effective_plan::{
-    AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
+    AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
 };
 pub use solver::infeasibility::BoundSide;
 pub use solver::infeasibility::ConflictAtomId;
@@ -112,8 +119,9 @@ pub use solver::session::{
     Synchronization,
 };
 pub use solver::{
-    classify_feasibility, FeasibilityOutcome, InfeasibilityError, LpAlgorithm, SolveError,
-    SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
+    classify_feasibility, objective_executor::ObjectiveExecutionError, FeasibilityOutcome,
+    InfeasibilityError, LpAlgorithm, SolveError, SolveOptions, SolveStatus, SolverError,
+    SolverSession, SolverStatus,
 };
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;

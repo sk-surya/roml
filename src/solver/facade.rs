@@ -15,9 +15,14 @@ use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::OverlayId;
 use crate::compiler::session::CompilationSession;
-use crate::id::ObjId;
+use crate::id::{ObjId, VarId};
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::model::{Model, VarType};
+use crate::objective_policy::{
+    MultiObjectiveResult, ObjectiveExecutionProvider, ObjectiveLockReport, ObjectivePolicy,
+    ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult, ObjectiveValue,
+    StageContinuation, StageContinuationDecision, WeightedObjective, WeightedObjectiveLevel,
+};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
@@ -26,13 +31,19 @@ use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 use crate::solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
 };
+use crate::solver::objective_combine::classify_continuation;
+use crate::solver::objective_executor::{
+    build_stage_overlay, evaluate_objective, evaluate_stage_scalar,
+    objective_status_from_termination, objective_values, stage_scalar, validate_priority_targets,
+    ObjectiveExecutionError, OverlayAssembly, PriorLock,
+};
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
     compile_overlay, OverlayApplyReceipt, OverlayRollbackOutcome, SolveOverlay,
 };
 use crate::solver::plan::{
-    LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
-    UnsupportedFeaturePolicy, VariableHints,
+    LexStagePolicy, MipStart, PlanError, RepairPolicy, SolvePlan, UnsupportedFeaturePolicy,
+    VariableHints,
 };
 use crate::solver::relaxation::{
     compile_portable_overlay, report_members, unknown_reason, validate_plan_preflight,
@@ -73,7 +84,43 @@ pub fn normalize_result(
     overlay_id: Option<OverlayId>,
 ) -> Result<Solution, SolveError> {
     let status = SolveStatus::from_termination(result.termination)?;
+    normalize_result_with_status(
+        result,
+        status,
+        model_revision,
+        active_objective,
+        backend_name,
+        synchronization,
+        effective_plan,
+        model_lineage,
+        model_instance,
+        compilation_id,
+        overlay_id,
+    )
+}
 
+/// Build a [`Solution`] from a solve result using an already-classified
+/// [`SolveStatus`].
+///
+/// The public [`normalize_result`] derives the status via the strict
+/// [`SolveStatus::from_termination`] (which rejects `Unknown`/`Error` per
+/// API-03.3). The P31 objective executor instead keeps `Unknown` as a
+/// legitimate mathematical stage outcome, so it supplies the leniently-mapped
+/// status here while preserving the identical metadata/normalization rules.
+#[allow(clippy::too_many_arguments)]
+fn normalize_result_with_status(
+    result: &SolveResult,
+    status: SolveStatus,
+    model_revision: ModelRevision,
+    active_objective: Option<ObjId>,
+    backend_name: &str,
+    synchronization: SynchronizationMode,
+    effective_plan: EffectiveSolvePlan,
+    model_lineage: ModelLineageId,
+    model_instance: ModelInstanceId,
+    compilation_id: Option<CompilationId>,
+    overlay_id: Option<OverlayId>,
+) -> Result<Solution, SolveError> {
     let mut builder = SolutionBuilder::new()
         .status(status)
         .metadata(SolveMetadata {
@@ -779,10 +826,15 @@ where
         //    inside `synchronize_base`.
         let (request, committed, sync_mode) = self.synchronize_base(model, plan.options)?;
 
-        // The objective override (P28: `ObjectivePolicy::Single` only).
-        let objective_override = plan.objective_override.map(|policy| match policy {
-            ObjectivePolicy::Single(obj) => obj,
-        });
+        // The objective override (P28: `ObjectivePolicy::Single` only). P31's
+        // `Weighted`/`Lexicographic` policies are executed by the portable
+        // objective executor rather than the single-objective override path;
+        // placing a non-single policy here is rejected before mutation.
+        let objective_override = match plan.objective_override {
+            None => None,
+            Some(ObjectivePolicy::Single(obj)) => Some(obj),
+            Some(_) => return Err(SolveError::Plan(PlanError::NonSingleObjectiveOverride)),
+        };
         // SM-04.5 (review P2-04): an applied override is recorded — a consumer
         // reading the effective plan can tell that the objective was replaced.
         if objective_override.is_some() {
@@ -962,6 +1014,396 @@ where
             unsupported: UnsupportedFeaturePolicy::Reject,
         };
         self.solve_plan(model, plan)
+    }
+
+    /// Execute a weighted or lexicographic objective policy (P31; SM-11).
+    ///
+    /// The canonical model is committed and synchronized to an exact base,
+    /// then each weighted stage is solved portably as a single normalized
+    /// minimization scalar with the previous stages' exact degradation locks
+    /// applied as solve-scoped overlay rows. Every temporary artifact is
+    /// always rolled back before a result escapes; canonical model state and
+    /// revision are never changed. Stages execute in ascending
+    /// [`ObjectivePriority`] order.
+    pub fn solve_objective_policy(
+        &mut self,
+        model: &mut Model,
+        policy: ObjectivePolicy,
+        provider: ObjectiveProviderPolicy,
+        continuation: StageContinuation,
+    ) -> Result<MultiObjectiveResult, ObjectiveExecutionError> {
+        // Atomically reject a stale objective reference in ANY policy variant
+        // (including Single) before backend mutation.
+        policy
+            .validate(Some(|obj: ObjId| model.objective_sense(obj).is_some()))
+            .map_err(|e| ObjectiveExecutionError::Preflight(format!("invalid policy: {e}")))?;
+        let execution_provider = match provider {
+            ObjectiveProviderPolicy::PortableOnly | ObjectiveProviderPolicy::PreferNative => {
+                ObjectiveExecutionProvider::PortableSequential
+            }
+            ObjectiveProviderPolicy::NativeRequired => {
+                return Err(ObjectiveExecutionError::NativeProviderRequired)
+            }
+        };
+
+        let levels: Vec<WeightedObjectiveLevel> = match &policy {
+            ObjectivePolicy::None => {
+                return Err(ObjectiveExecutionError::Preflight(
+                    "objective policy None is not an executable solve policy".into(),
+                ))
+            }
+            ObjectivePolicy::Single(obj) => vec![WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: *obj,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            }],
+            ObjectivePolicy::Weighted(weighted) => vec![WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: weighted.objectives.clone(),
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            }],
+            ObjectivePolicy::Lexicographic(lex) => lex.levels.clone(),
+        };
+
+        // Atomic rejection: every priority-targeted soft penalty's priority
+        // must be present among the policy levels before any backend mutation.
+        let priorities: Vec<_> = levels.iter().map(|l| l.priority).collect();
+        validate_priority_targets(model, &priorities)?;
+
+        let (request, committed, sync_mode) = self
+            .synchronize_base(model, SolveOptions::default())
+            .map_err(|e| ObjectiveExecutionError::Backend(e.to_string()))?;
+        let base_compilation = self.compiler.current_compilation().ok_or_else(|| {
+            ObjectiveExecutionError::Preflight(
+                "synchronization produced no base compilation".into(),
+            )
+        })?;
+
+        let mut prior_locks: Vec<PriorLock> = Vec::new();
+        let mut stages: Vec<ObjectiveStageResult> = Vec::new();
+        let mut final_solution: Option<Solution> = None;
+
+        for level in &levels {
+            // Resolve the full stage scalar (canonical combination + priority
+            // penalties) from the current snapshot before any backend mutation.
+            let combined = stage_scalar(&self.compiler, model, level.priority, &level.objectives)?;
+            let overlay_id = OverlayId::allocate().map_err(|_| {
+                ObjectiveExecutionError::Compile("overlay identity exhausted".into())
+            })?;
+            let mut assembly = OverlayAssembly::new(&self.compiler)?;
+            let compiled = build_stage_overlay(
+                base_compilation,
+                overlay_id,
+                &mut assembly,
+                &prior_locks,
+                &combined,
+                level.priority,
+            )?;
+            let compilation_id = compiled.compilation_id;
+            let receipt = match self.backend.apply_overlay(&compiled) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    let possible = OverlayApplyReceipt {
+                        overlay_id,
+                        base_compilation: compiled.base_compilation,
+                        applied_compilation: compiled.compilation_id,
+                    };
+                    return self.rollback_objective(
+                        ObjectiveExecutionError::Backend(error.to_string()),
+                        &possible,
+                    );
+                }
+            };
+            if receipt.overlay_id != overlay_id
+                || receipt.base_compilation != compiled.base_compilation
+                || receipt.applied_compilation != compilation_id
+            {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Backend(format!(
+                        "objective stage apply returned mismatched receipt: {receipt:?}"
+                    )),
+                    &receipt,
+                );
+            }
+            let result = match self.backend.solve(&request) {
+                Ok(result) => result,
+                Err(error) => {
+                    return self.rollback_objective(
+                        ObjectiveExecutionError::Backend(error.to_string()),
+                        &receipt,
+                    )
+                }
+            };
+            if result.compilation_id != Some(compilation_id) {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Backend(format!(
+                        "objective stage solve returned compilation {:?}, expected {compilation_id:?}",
+                        result.compilation_id
+                    )),
+                    &receipt,
+                );
+            }
+            let status = objective_status_from_termination(result.termination);
+            // `Error` is an operational failure; `Unknown` is a legitimate
+            // mathematical outcome that flows through continuation and is
+            // recorded (StopNotOptimal / StopUnknown), never a Backend error.
+            if status == SolveStatus::Error {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Backend(format!(
+                        "objective stage termination is an operational error: {status:?}"
+                    )),
+                    &receipt,
+                );
+            }
+            if matches!(status, SolveStatus::Optimal | SolveStatus::Feasible)
+                && result.solution.is_none()
+            {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Numerical(
+                        "objective provider reported a candidate status without a solution".into(),
+                    ),
+                    &receipt,
+                );
+            }
+            let decision = classify_continuation(continuation, status);
+            let values = result.solution.as_ref().map(|c| c.variable_values.clone());
+            let stage_values = if let Some(v) = &values {
+                match objective_values(&self.compiler, model, &level.objectives, v) {
+                    Ok(vals) => vals,
+                    Err(e) => return self.rollback_objective(e, &receipt),
+                }
+            } else {
+                Vec::new()
+            };
+            // P1 (review #4989892030): the stage scalar and degradation lock
+            // must use the EXACT scalar the backend actually solved, including
+            // generated soft-constraint violation terms (both compiler-folded
+            // `PenaltyTarget::Objective` and the P31 priority-penalty
+            // materializations). Those generated variables are intentionally
+            // absent from `SolveSolution.variable_values`, so recomputing from
+            // primal values silently drops them and yields a wrong `z*`. The
+            // backend's reported objective value IS that exact solved
+            // temporary-objective value. We fall back to the portable
+            // recomputation only when the backend reports no objective value
+            // (e.g. a projection-only harness).
+            let scalar = match &values {
+                Some(_v) => {
+                    let solved = result.solution.as_ref().and_then(|s| s.objective_value);
+                    match solved {
+                        Some(z) => {
+                            if !z.is_finite() {
+                                // A non-finite solved value must become a typed
+                                // Numerical error routed through rollback, never
+                                // a panic inside lock construction while the
+                                // overlay is up.
+                                return self.rollback_objective(
+                                    ObjectiveExecutionError::Numerical(format!(
+                                        "backend-reported solved objective value is not finite: {z}"
+                                    )),
+                                    &receipt,
+                                );
+                            }
+                            Some(z)
+                        }
+                        None => match evaluate_stage_scalar(&self.compiler, &combined, _v) {
+                            Ok(s) => Some(s),
+                            Err(e) => return self.rollback_objective(e, &receipt),
+                        },
+                    }
+                }
+                None => None,
+            };
+            let lock = match (&values, &scalar, decision) {
+                (Some(_), Some(z), StageContinuationDecision::ContinueOptimal)
+                | (Some(_), Some(z), StageContinuationDecision::ContinueBestFeasible) => {
+                    match ObjectiveLockReport::from_stage(
+                        level.priority,
+                        *z,
+                        level.absolute_tolerance,
+                        level.relative_tolerance,
+                    ) {
+                        Ok(lock) => Some(lock),
+                        Err(e) => {
+                            return self.rollback_objective(
+                                ObjectiveExecutionError::Numerical(format!(
+                                    "lock construction failed: {e}"
+                                )),
+                                &receipt,
+                            )
+                        }
+                    }
+                }
+                _ => None,
+            };
+            stages.push(ObjectiveStageResult {
+                priority: level.priority,
+                status,
+                continuation: decision,
+                objective_values: stage_values,
+                scalar_stage_value: scalar,
+                lock,
+                provider: ObjectiveExecutionProvider::PortableSequential,
+                compilation_id,
+            });
+            if let Some(lock) = &lock {
+                prior_locks.push(PriorLock {
+                    priority: level.priority,
+                    stage: combined,
+                    lock: *lock,
+                });
+            }
+            // Always roll back this stage before any further solve.
+            self.rollback_objective_stage(&receipt)?;
+            // Build the final solution for the last executed stage.
+            final_solution = Some(
+                normalize_result_with_status(
+                    &result,
+                    status,
+                    committed,
+                    None,
+                    self.backend.name(),
+                    sync_mode,
+                    EffectiveSolvePlan::default(),
+                    model.lineage(),
+                    model.instance(),
+                    Some(compilation_id),
+                    Some(overlay_id),
+                )
+                .map_err(|error| ObjectiveExecutionError::Backend(error.to_string()))?,
+            );
+            let should_stop = lock.is_none();
+            if should_stop {
+                break;
+            }
+        }
+
+        let final_solution = final_solution.ok_or_else(|| {
+            ObjectiveExecutionError::Numerical(
+                "objective execution produced no final solution".into(),
+            )
+        })?;
+        // Task 31-06: the final solution must expose every canonical policy
+        // objective value at the FINAL point. Each stage records only its own
+        // objectives at its own solution, so recompute the complete distinct
+        // objective vector at the final point and attach it to the last
+        // executed stage.
+        if let Some(last) = stages.last_mut() {
+            let complete = self.complete_objective_values_at(model, &levels, &final_solution)?;
+            if !complete.is_empty() {
+                last.objective_values = complete;
+            }
+        }
+        Ok(MultiObjectiveResult {
+            final_solution,
+            stages,
+            provider: execution_provider,
+        })
+    }
+
+    /// Evaluate every distinct canonical objective referenced by the policy at
+    /// a given solution point, preserving first-seen order across levels.
+    fn complete_objective_values_at(
+        &self,
+        model: &Model,
+        levels: &[WeightedObjectiveLevel],
+        solution: &Solution,
+    ) -> Result<Vec<ObjectiveValue>, ObjectiveExecutionError> {
+        let mut distinct: Vec<ObjId> = Vec::new();
+        for level in levels {
+            for wo in &level.objectives {
+                if !distinct.contains(&wo.objective) {
+                    distinct.push(wo.objective);
+                }
+            }
+        }
+        let values: Vec<(VarId, f64)> = solution.values().iter().map(|(v, x)| (*v, *x)).collect();
+        let mut out = Vec::new();
+        for objective in distinct {
+            out.push(ObjectiveValue {
+                objective,
+                value: evaluate_objective(&self.compiler, model, objective, &values)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Roll back an objective stage overlay and verify the base is restored.
+    fn rollback_objective_stage(
+        &mut self,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<(), ObjectiveExecutionError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                if let Err(error) = self.backend.verify_overlay_clean() {
+                    self.force_rebuild_on_next_sync();
+                    return Err(ObjectiveExecutionError::Cleanup {
+                        primary: "objective stage cleanup".into(),
+                        cleanup: error.to_string(),
+                        requires_rebuild: true,
+                    });
+                }
+                Ok(())
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: "objective stage cleanup".into(),
+                    cleanup: reason,
+                    requires_rebuild: true,
+                })
+            }
+            Err(error) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: "objective stage cleanup".into(),
+                    cleanup: error.to_string(),
+                    requires_rebuild: true,
+                })
+            }
+        }
+    }
+
+    /// Roll back when a primary objective-stage failure occurred, preserving
+    /// both the primary and any cleanup/rebuild evidence (design §19.2.5).
+    fn rollback_objective<T>(
+        &mut self,
+        primary: ObjectiveExecutionError,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<T, ObjectiveExecutionError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                if let Err(error) = self.backend.verify_overlay_clean() {
+                    self.force_rebuild_on_next_sync();
+                    return Err(ObjectiveExecutionError::Cleanup {
+                        primary: format!("{primary:?}"),
+                        cleanup: error.to_string(),
+                        requires_rebuild: true,
+                    });
+                }
+                Err(primary)
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: format!("{primary:?}"),
+                    cleanup: reason,
+                    requires_rebuild: true,
+                })
+            }
+            Err(error) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: format!("{primary:?}"),
+                    cleanup: error.to_string(),
+                    requires_rebuild: true,
+                })
+            }
+        }
     }
 
     /// Run one isolated portable weighted-L1 feasibility repair.

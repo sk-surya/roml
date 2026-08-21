@@ -1531,6 +1531,18 @@ fn add_soft_penalty_objective(
     let target = match payload.penalty.target {
         PenaltyTarget::None => return Ok(()),
         PenaltyTarget::Objective(objective) => objective,
+        PenaltyTarget::Priority(priority) => {
+            // SM-10.6: a priority-targeted penalty contributes nothing to any
+            // canonical single objective. It is resolved numerically by the
+            // P31 objective executor (folded into the matching lexicographic
+            // stage), not folded into a canonical objective here. The
+            // parameterized weight is evaluated against the current snapshot
+            // at execution time. If it is genuinely absent from the solve
+            // policy, the executor rejects it atomically (never silently
+            // drops it).
+            let _ = priority;
+            return Ok(());
+        }
     };
     let compiled_objective = objective_ids.get(&target).copied().ok_or_else(|| {
         CompileError::UnsupportedFeature(format!(

@@ -113,8 +113,20 @@ pub use crate::solver::plan::{
 /// Backend authors consume these when contributing applied/converted/rejected
 /// records to the `EffectiveSolvePlan` the façade returns.
 pub use crate::solver::effective_plan::{
-    AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
+    AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
 };
+
+/// Canonical objective-policy and priority model plus multi-objective results
+/// (P31; design §15). Framework/backend authors consume these when executing
+/// weighted or lexicographic objective policies.
+pub use crate::objective_policy::{
+    LexicographicObjectives, MultiObjectiveResult, ObjectiveExecutionProvider, ObjectiveLockReport,
+    ObjectivePolicyError, ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult,
+    ObjectiveValue, StageContinuation, StageContinuationDecision, WeightedObjective,
+    WeightedObjectiveLevel, WeightedObjectives,
+};
+/// Portable objective execution error (P31).
+pub use crate::solver::objective_executor::ObjectiveExecutionError;
 
 /// LP infeasibility analysis contracts for backend authors.
 pub use crate::solver::infeasibility::{
