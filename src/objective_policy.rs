@@ -204,26 +204,87 @@ pub struct ObjectiveLockReport {
     pub normalized_upper_bound: f64,
 }
 
+/// Error constructing an exact degradation [`ObjectiveLockReport`].
+///
+/// Lock construction is fully fallible: a non-finite stage value or a
+/// degradation bound that overflows must be a typed error that the objective
+/// executor routes through cleanup, never a panic while a stage overlay is
+/// still applied.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectiveLockError {
+    /// The solved normalized stage value (`z*`) is not finite.
+    NonFiniteStageValue {
+        /// The offending stage value.
+        value: f64,
+    },
+    /// One of the degradation tolerances is not finite/negative.
+    NonFiniteTolerance {
+        /// Which tolerance field was invalid (`absolute` or `relative`).
+        field: &'static str,
+        /// The offending tolerance value.
+        value: f64,
+    },
+    /// The computed degradation allowance or lock bound overflowed to
+    /// non-finite.
+    DegradationOverflow {
+        /// The overflowed canonical lock bound.
+        normalized_upper_bound: f64,
+    },
+}
+
+impl std::fmt::Display for ObjectiveLockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFiniteStageValue { value } => {
+                write!(f, "stage value is not finite: {value}")
+            }
+            Self::NonFiniteTolerance { field, value } => {
+                write!(f, "{field} tolerance is not finite or negative: {value}")
+            }
+            Self::DegradationOverflow {
+                normalized_upper_bound,
+            } => write!(
+                f,
+                "degradation lock bound overflowed to non-finite: {normalized_upper_bound}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ObjectiveLockError {}
+
 impl ObjectiveLockReport {
     /// Compute the exact canonical lock for a solved normalized stage value.
-    ///
-    /// # Panics
-    ///
-    /// Panics on a non-finite `z*` or non-finite/negative tolerances; these
-    /// are rejected by policy validation before execution.
     pub fn from_stage(
         priority: ObjectivePriority,
         stage_value: f64,
         absolute_tolerance: f64,
         relative_tolerance: f64,
-    ) -> Self {
-        assert!(stage_value.is_finite(), "stage value must be finite");
-        assert!(absolute_tolerance.is_finite() && absolute_tolerance >= 0.0);
-        assert!(relative_tolerance.is_finite() && relative_tolerance >= 0.0);
+    ) -> Result<Self, ObjectiveLockError> {
+        if !stage_value.is_finite() {
+            return Err(ObjectiveLockError::NonFiniteStageValue { value: stage_value });
+        }
+        if !absolute_tolerance.is_finite() || absolute_tolerance < 0.0 {
+            return Err(ObjectiveLockError::NonFiniteTolerance {
+                field: "absolute",
+                value: absolute_tolerance,
+            });
+        }
+        if !relative_tolerance.is_finite() || relative_tolerance < 0.0 {
+            return Err(ObjectiveLockError::NonFiniteTolerance {
+                field: "relative",
+                value: relative_tolerance,
+            });
+        }
         let relative_scale = stage_value.abs();
         let allowed_degradation = absolute_tolerance + relative_tolerance * relative_scale;
         let normalized_upper_bound = stage_value + allowed_degradation;
-        Self {
+        if !allowed_degradation.is_finite() || !normalized_upper_bound.is_finite() {
+            return Err(ObjectiveLockError::DegradationOverflow {
+                normalized_upper_bound,
+            });
+        }
+        Ok(Self {
             priority,
             reference_value: stage_value,
             absolute_tolerance,
@@ -231,7 +292,7 @@ impl ObjectiveLockReport {
             relative_scale,
             allowed_degradation,
             normalized_upper_bound,
-        }
+        })
     }
 }
 
@@ -725,27 +786,56 @@ mod tests {
         let priority = ObjectivePriority::new(0);
 
         // z* > 0 with abs+rel tolerance.
-        let pos = ObjectiveLockReport::from_stage(priority, 100.0, 1.0, 0.01);
+        let pos = ObjectiveLockReport::from_stage(priority, 100.0, 1.0, 0.01).expect("finite lock");
         assert_eq!(pos.relative_scale, 100.0);
         assert_eq!(pos.allowed_degradation, 1.0 + 0.01 * 100.0);
         assert_eq!(pos.normalized_upper_bound, 100.0 + 1.0 + 1.0);
 
         // z* = 0: relative tolerance contributes zero; only abs applies.
-        let zero = ObjectiveLockReport::from_stage(priority, 0.0, 0.5, 1e9);
+        let zero = ObjectiveLockReport::from_stage(priority, 0.0, 0.5, 1e9).expect("finite lock");
         assert_eq!(zero.relative_scale, 0.0);
         assert_eq!(zero.allowed_degradation, 0.5);
         assert_eq!(zero.normalized_upper_bound, 0.5);
 
         // z* < 0 uses positive magnitude for the relative scale.
-        let neg = ObjectiveLockReport::from_stage(priority, -50.0, 0.0, 0.02);
+        let neg = ObjectiveLockReport::from_stage(priority, -50.0, 0.0, 0.02).expect("finite lock");
         assert_eq!(neg.relative_scale, 50.0);
         assert_eq!(neg.allowed_degradation, 1.0);
         assert_eq!(neg.normalized_upper_bound, -50.0 + 1.0);
 
         // Zero tolerances yield no degradation.
-        let tight = ObjectiveLockReport::from_stage(priority, 10.0, 0.0, 0.0);
+        let tight = ObjectiveLockReport::from_stage(priority, 10.0, 0.0, 0.0).expect("finite lock");
         assert_eq!(tight.allowed_degradation, 0.0);
         assert_eq!(tight.normalized_upper_bound, 10.0);
+    }
+
+    #[test]
+    fn lock_construction_is_fallible_not_panicking() {
+        let priority = ObjectivePriority::new(0);
+        // A non-finite stage value must be a typed error, not a panic.
+        assert!(matches!(
+            ObjectiveLockReport::from_stage(priority, f64::NAN, 0.0, 0.0),
+            Err(ObjectiveLockError::NonFiniteStageValue { .. })
+        ));
+        assert!(matches!(
+            ObjectiveLockReport::from_stage(priority, f64::INFINITY, 0.0, 0.0),
+            Err(ObjectiveLockError::NonFiniteStageValue { .. })
+        ));
+        // Non-finite/negative tolerances are typed errors.
+        assert!(matches!(
+            ObjectiveLockReport::from_stage(priority, 1.0, f64::NAN, 0.0),
+            Err(ObjectiveLockError::NonFiniteTolerance { .. })
+        ));
+        assert!(matches!(
+            ObjectiveLockReport::from_stage(priority, 1.0, 0.0, -0.1),
+            Err(ObjectiveLockError::NonFiniteTolerance { .. })
+        ));
+        // An overflow of the degradation allowance is a typed error, avoiding
+        // an effectively-unbounded lock.
+        assert!(matches!(
+            ObjectiveLockReport::from_stage(priority, f64::MAX, 0.0, f64::MAX),
+            Err(ObjectiveLockError::DegradationOverflow { .. })
+        ));
     }
 
     #[test]
@@ -754,7 +844,7 @@ mod tests {
         use std::collections::HashMap;
 
         let priority = ObjectivePriority::new(0);
-        let lock = ObjectiveLockReport::from_stage(priority, 2.0, 1e-6, 1e-9);
+        let lock = ObjectiveLockReport::from_stage(priority, 2.0, 1e-6, 1e-9).expect("finite lock");
         let stage = ObjectiveStageResult {
             priority,
             status: crate::solver::SolveStatus::Optimal,

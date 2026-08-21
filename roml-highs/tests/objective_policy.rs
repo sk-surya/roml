@@ -109,6 +109,13 @@ fn lexicographic_policy_runs_stages_in_priority_order() {
     assert!(result.stages.iter().all(|s: &ObjectiveStageResult| {
         s.continuation == StageContinuationDecision::ContinueOptimal
     }));
+    // Task 31-06: the last (final-point) stage exposes BOTH distinct canonical
+    // objectives evaluated at the final solution, not only its own objective.
+    let last = result.stages.last().unwrap();
+    let ids: Vec<_> = last.objective_values.iter().map(|v| v.objective).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&obj1));
+    assert!(ids.contains(&obj2));
     let _ = MultiObjectiveResult {
         final_solution: result.final_solution.clone(),
         stages: result.stages.clone(),
