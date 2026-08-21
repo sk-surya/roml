@@ -15,6 +15,8 @@ pub mod effective_plan;
 pub mod error;
 pub mod facade;
 pub mod infeasibility;
+pub(crate) mod objective_combine;
+pub(crate) mod objective_executor;
 pub mod options;
 pub mod overlay;
 pub mod plan;

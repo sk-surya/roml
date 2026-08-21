@@ -125,6 +125,8 @@ pub use crate::objective_policy::{
     ObjectiveValue, StageContinuation, StageContinuationDecision, WeightedObjective,
     WeightedObjectiveLevel, WeightedObjectives,
 };
+/// Portable objective execution error (P31).
+pub use crate::solver::objective_executor::ObjectiveExecutionError;
 
 /// LP infeasibility analysis contracts for backend authors.
 pub use crate::solver::infeasibility::{

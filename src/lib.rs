@@ -119,8 +119,9 @@ pub use solver::session::{
     Synchronization,
 };
 pub use solver::{
-    classify_feasibility, FeasibilityOutcome, InfeasibilityError, LpAlgorithm, SolveError,
-    SolveOptions, SolveStatus, SolverError, SolverSession, SolverStatus,
+    classify_feasibility, objective_executor::ObjectiveExecutionError, FeasibilityOutcome,
+    InfeasibilityError, LpAlgorithm, SolveError, SolveOptions, SolveStatus, SolverError,
+    SolverSession, SolverStatus,
 };
 pub use sync::{AdapterCursor, AdapterHealth, ApplyOutcome};
 pub use value_expr::ValueExpr;

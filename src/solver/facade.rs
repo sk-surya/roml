@@ -18,6 +18,11 @@ use crate::compiler::session::CompilationSession;
 use crate::id::ObjId;
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::model::{Model, VarType};
+use crate::objective_policy::{
+    MultiObjectiveResult, ObjectiveExecutionProvider, ObjectiveLockReport, ObjectivePolicy,
+    ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult, StageContinuation,
+    StageContinuationDecision, WeightedObjective, WeightedObjectiveLevel,
+};
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::metadata::{SolveMetadata, SynchronizationMode};
@@ -26,13 +31,18 @@ use crate::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 use crate::solver::effective_plan::{
     AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
 };
+use crate::solver::objective_combine::classify_continuation;
+use crate::solver::objective_executor::{
+    build_stage_overlay, evaluate_combined, first_combined, objective_values,
+    ObjectiveExecutionError, PriorLock,
+};
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
     compile_overlay, OverlayApplyReceipt, OverlayRollbackOutcome, SolveOverlay,
 };
 use crate::solver::plan::{
-    LexStagePolicy, MipStart, ObjectivePolicy, PlanError, RepairPolicy, SolvePlan,
-    UnsupportedFeaturePolicy, VariableHints,
+    LexStagePolicy, MipStart, PlanError, RepairPolicy, SolvePlan, UnsupportedFeaturePolicy,
+    VariableHints,
 };
 use crate::solver::relaxation::{
     compile_portable_overlay, report_members, unknown_reason, validate_plan_preflight,
@@ -967,6 +977,308 @@ where
             unsupported: UnsupportedFeaturePolicy::Reject,
         };
         self.solve_plan(model, plan)
+    }
+
+    /// Execute a weighted or lexicographic objective policy (P31; SM-11).
+    ///
+    /// The canonical model is committed and synchronized to an exact base,
+    /// then each weighted stage is solved portably as a single normalized
+    /// minimization scalar with the previous stages' exact degradation locks
+    /// applied as solve-scoped overlay rows. Every temporary artifact is
+    /// always rolled back before a result escapes; canonical model state and
+    /// revision are never changed. Stages execute in ascending
+    /// [`ObjectivePriority`] order.
+    pub fn solve_objective_policy(
+        &mut self,
+        model: &mut Model,
+        policy: ObjectivePolicy,
+        provider: ObjectiveProviderPolicy,
+        continuation: StageContinuation,
+    ) -> Result<MultiObjectiveResult, ObjectiveExecutionError> {
+        policy
+            .validate(None::<fn(ObjId) -> bool>)
+            .map_err(|e| ObjectiveExecutionError::Preflight(format!("invalid policy: {e}")))?;
+        let execution_provider = match provider {
+            ObjectiveProviderPolicy::PortableOnly | ObjectiveProviderPolicy::PreferNative => {
+                ObjectiveExecutionProvider::PortableSequential
+            }
+            ObjectiveProviderPolicy::NativeRequired => {
+                return Err(ObjectiveExecutionError::NativeProviderRequired)
+            }
+        };
+
+        let levels: Vec<WeightedObjectiveLevel> = match &policy {
+            ObjectivePolicy::None => {
+                return Err(ObjectiveExecutionError::Preflight(
+                    "objective policy None is not an executable solve policy".into(),
+                ))
+            }
+            ObjectivePolicy::Single(obj) => vec![WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: *obj,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            }],
+            ObjectivePolicy::Weighted(weighted) => vec![WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: weighted.objectives.clone(),
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            }],
+            ObjectivePolicy::Lexicographic(lex) => lex.levels.clone(),
+        };
+
+        let (request, committed, sync_mode) = self
+            .synchronize_base(model, SolveOptions::default())
+            .map_err(|e| ObjectiveExecutionError::Backend(e.to_string()))?;
+        let base_compilation = self.compiler.current_compilation().ok_or_else(|| {
+            ObjectiveExecutionError::Preflight(
+                "synchronization produced no base compilation".into(),
+            )
+        })?;
+
+        let mut prior_locks: Vec<PriorLock> = Vec::new();
+        let mut stages: Vec<ObjectiveStageResult> = Vec::new();
+        let mut final_solution: Option<Solution> = None;
+
+        for level in &levels {
+            let combined =
+                first_combined(&self.compiler, model, level.priority, &level.objectives)?;
+            let overlay_id = OverlayId::allocate().map_err(|_| {
+                ObjectiveExecutionError::Compile("overlay identity exhausted".into())
+            })?;
+            let mut row_cursor = self.compiler.next_row_index().ok_or_else(|| {
+                ObjectiveExecutionError::Preflight("base has no row allocation cursor".into())
+            })?;
+            let mut objective_cursor = self.compiler.next_objective_index().ok_or_else(|| {
+                ObjectiveExecutionError::Preflight("base has no objective allocation cursor".into())
+            })?;
+            let compiled = build_stage_overlay(
+                base_compilation,
+                overlay_id,
+                &mut row_cursor,
+                &mut objective_cursor,
+                &prior_locks,
+                &combined,
+                level.priority,
+            )?;
+            let compilation_id = compiled.compilation_id;
+            let receipt = match self.backend.apply_overlay(&compiled) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    let possible = OverlayApplyReceipt {
+                        overlay_id,
+                        base_compilation: compiled.base_compilation,
+                        applied_compilation: compiled.compilation_id,
+                    };
+                    return self.rollback_objective(
+                        ObjectiveExecutionError::Backend(error.to_string()),
+                        &possible,
+                    );
+                }
+            };
+            if receipt.overlay_id != overlay_id
+                || receipt.base_compilation != compiled.base_compilation
+                || receipt.applied_compilation != compilation_id
+            {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Backend(format!(
+                        "objective stage apply returned mismatched receipt: {receipt:?}"
+                    )),
+                    &receipt,
+                );
+            }
+            let result = match self.backend.solve(&request) {
+                Ok(result) => result,
+                Err(error) => {
+                    return self.rollback_objective(
+                        ObjectiveExecutionError::Backend(error.to_string()),
+                        &receipt,
+                    )
+                }
+            };
+            if result.compilation_id != Some(compilation_id) {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Backend(format!(
+                        "objective stage solve returned compilation {:?}, expected {compilation_id:?}",
+                        result.compilation_id
+                    )),
+                    &receipt,
+                );
+            }
+            let status = SolveStatus::from_termination(result.termination)
+                .map_err(|e| ObjectiveExecutionError::Backend(e.to_string()))?;
+            if status == SolveStatus::Error || status == SolveStatus::Unknown {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Backend(format!(
+                        "uninterpretable objective stage termination: {status:?}"
+                    )),
+                    &receipt,
+                );
+            }
+            if matches!(status, SolveStatus::Optimal | SolveStatus::Feasible)
+                && result.solution.is_none()
+            {
+                return self.rollback_objective(
+                    ObjectiveExecutionError::Numerical(
+                        "objective provider reported a candidate status without a solution".into(),
+                    ),
+                    &receipt,
+                );
+            }
+            let decision = classify_continuation(continuation, status);
+            let values = result.solution.as_ref().map(|c| c.variable_values.clone());
+            let stage_values = if let Some(v) = &values {
+                objective_values(&self.compiler, model, &level.objectives, v)?
+            } else {
+                Vec::new()
+            };
+            let scalar = values
+                .as_ref()
+                .map(|v| evaluate_combined(&self.compiler, &combined, v));
+            let lock = match &values {
+                Some(v) => match decision {
+                    StageContinuationDecision::ContinueOptimal
+                    | StageContinuationDecision::ContinueBestFeasible => {
+                        let z = evaluate_combined(&self.compiler, &combined, v);
+                        Some(ObjectiveLockReport::from_stage(
+                            level.priority,
+                            z,
+                            level.absolute_tolerance,
+                            level.relative_tolerance,
+                        ))
+                    }
+                    _ => None,
+                },
+                None => None,
+            };
+            stages.push(ObjectiveStageResult {
+                priority: level.priority,
+                status,
+                continuation: decision,
+                objective_values: stage_values,
+                scalar_stage_value: scalar,
+                lock,
+                provider: ObjectiveExecutionProvider::PortableSequential,
+                compilation_id,
+            });
+            if let Some(lock) = &lock {
+                prior_locks.push(PriorLock {
+                    stage: combined,
+                    lock: *lock,
+                });
+            }
+            // Always roll back this stage before any further solve.
+            self.rollback_objective_stage(&receipt)?;
+            // Build the final solution for the last executed stage.
+            final_solution = Some(
+                normalize_result(
+                    &result,
+                    committed,
+                    None,
+                    self.backend.name(),
+                    sync_mode,
+                    EffectiveSolvePlan::default(),
+                    model.lineage(),
+                    model.instance(),
+                    Some(compilation_id),
+                    Some(overlay_id),
+                )
+                .map_err(|error| ObjectiveExecutionError::Backend(error.to_string()))?,
+            );
+            let should_stop = lock.is_none();
+            if should_stop {
+                break;
+            }
+        }
+
+        let final_solution = final_solution.ok_or_else(|| {
+            ObjectiveExecutionError::Numerical(
+                "objective execution produced no final solution".into(),
+            )
+        })?;
+        Ok(MultiObjectiveResult {
+            final_solution,
+            stages,
+            provider: execution_provider,
+        })
+    }
+
+    /// Roll back an objective stage overlay and verify the base is restored.
+    fn rollback_objective_stage(
+        &mut self,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<(), ObjectiveExecutionError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                if let Err(error) = self.backend.verify_overlay_clean() {
+                    self.force_rebuild_on_next_sync();
+                    return Err(ObjectiveExecutionError::Cleanup {
+                        primary: "objective stage cleanup".into(),
+                        cleanup: error.to_string(),
+                        requires_rebuild: true,
+                    });
+                }
+                Ok(())
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: "objective stage cleanup".into(),
+                    cleanup: reason,
+                    requires_rebuild: true,
+                })
+            }
+            Err(error) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: "objective stage cleanup".into(),
+                    cleanup: error.to_string(),
+                    requires_rebuild: true,
+                })
+            }
+        }
+    }
+
+    /// Roll back when a primary objective-stage failure occurred, preserving
+    /// both the primary and any cleanup/rebuild evidence (design §19.2.5).
+    fn rollback_objective<T>(
+        &mut self,
+        primary: ObjectiveExecutionError,
+        receipt: &OverlayApplyReceipt,
+    ) -> Result<T, ObjectiveExecutionError> {
+        match self.backend.rollback_overlay(receipt) {
+            Ok(OverlayRollbackOutcome::Clean { .. }) => {
+                if let Err(error) = self.backend.verify_overlay_clean() {
+                    self.force_rebuild_on_next_sync();
+                    return Err(ObjectiveExecutionError::Cleanup {
+                        primary: format!("{primary:?}"),
+                        cleanup: error.to_string(),
+                        requires_rebuild: true,
+                    });
+                }
+                Err(primary)
+            }
+            Ok(OverlayRollbackOutcome::RequiresRebuild { reason }) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: format!("{primary:?}"),
+                    cleanup: reason,
+                    requires_rebuild: true,
+                })
+            }
+            Err(error) => {
+                self.force_rebuild_on_next_sync();
+                Err(ObjectiveExecutionError::Cleanup {
+                    primary: format!("{primary:?}"),
+                    cleanup: error.to_string(),
+                    requires_rebuild: true,
+                })
+            }
+        }
     }
 
     /// Run one isolated portable weighted-L1 feasibility repair.
