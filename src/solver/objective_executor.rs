@@ -467,15 +467,14 @@ fn evaluate_constraint_row(
     let mut value = 0.0;
     for (cid, coef) in coefficients {
         if let Some(var) = compiler.user_variable(*cid) {
-            if let Some(v) = lookup(values, var) {
-                if !v.is_finite() || !coef.is_finite() {
-                    return Err(ObjectiveExecutionError::Numerical(
-                        "solver-derived value or coefficient is not finite in an objective penalty row"
-                            .into(),
-                    ));
-                }
-                value += coef * v;
+            let v = lookup_required(values, var, "objective penalty row")?;
+            if !v.is_finite() || !coef.is_finite() {
+                return Err(ObjectiveExecutionError::Numerical(
+                    "solver-derived value or coefficient is not finite in an objective penalty row"
+                        .into(),
+                ));
             }
+            value += coef * v;
         }
     }
     finite_or_numerical(value)
@@ -490,15 +489,13 @@ pub(crate) fn evaluate_combined(
     let mut value = combined.constant;
     for (cid, coef) in &combined.coefficients {
         if let Some(var) = compiler.user_variable(*cid) {
-            if let Some(v) = lookup(values, var) {
-                if !v.is_finite() || !coef.is_finite() {
-                    return Err(ObjectiveExecutionError::Numerical(
-                        "solver-derived value or coefficient is not finite in a stage scalar"
-                            .into(),
-                    ));
-                }
-                value += coef * v;
+            let v = lookup_required(values, var, "stage scalar")?;
+            if !v.is_finite() || !coef.is_finite() {
+                return Err(ObjectiveExecutionError::Numerical(
+                    "solver-derived value or coefficient is not finite in a stage scalar".into(),
+                ));
             }
+            value += coef * v;
         }
     }
     finite_or_numerical(value)
@@ -519,14 +516,13 @@ pub(crate) fn evaluate_objective(
     let mut value = constant;
     for (cid, coef) in terms {
         if let Some(var) = compiler.user_variable(cid) {
-            if let Some(v) = lookup(values, var) {
-                if !v.is_finite() || !coef.is_finite() {
-                    return Err(ObjectiveExecutionError::Numerical(
-                        "solver-derived value or coefficient is not finite in an objective".into(),
-                    ));
-                }
-                value += coef * v;
+            let v = lookup_required(values, var, "objective")?;
+            if !v.is_finite() || !coef.is_finite() {
+                return Err(ObjectiveExecutionError::Numerical(
+                    "solver-derived value or coefficient is not finite in an objective".into(),
+                ));
             }
+            value += coef * v;
         }
     }
     let _ = model.objective_sense(objective);
@@ -552,6 +548,24 @@ pub(crate) fn objective_values(
 
 fn lookup(values: &[(VarId, f64)], var: VarId) -> Option<f64> {
     values.iter().find(|(v, _)| *v == var).map(|(_, val)| *val)
+}
+
+/// Look up a required user primal value, rejecting a missing value with a
+/// typed [`Numerical`] error rather than silently treating it as zero.
+///
+/// `SolveSolution.variable_values` is not guaranteed by the backend contract
+/// to be complete: a missing required user variable is an extraction defect
+/// that must never be silently folded into an objective/scalar as zero.
+fn lookup_required(
+    values: &[(VarId, f64)],
+    var: VarId,
+    context: &str,
+) -> Result<f64, ObjectiveExecutionError> {
+    lookup(values, var).ok_or_else(|| {
+        ObjectiveExecutionError::Numerical(format!(
+            "required user primal value for variable {var:?} is missing while evaluating {context}"
+        ))
+    })
 }
 
 /// Reject non-finite accumulated numeric evidence with a typed [`Numerical`]
@@ -671,6 +685,38 @@ mod finiteness_tests {
         assert_eq!(
             evaluate_stage_scalar(&compiler, &scalar, &[(x, 2.0)]).unwrap(),
             2.0
+        );
+    }
+
+    /// `SolveSolution.variable_values` is not guaranteed by the backend
+    /// contract to be complete. A missing required user primal value must be a
+    /// typed extraction error, never silently folded in as zero (review
+    /// #4989892030, P1 partial-primal).
+    #[test]
+    fn stage_scalar_rejects_missing_required_user_primal() {
+        let (compiler, model, _x, obj) = compiled_minimize_x();
+        let objectives = vec![WeightedObjective {
+            objective: obj,
+            weight: 1.0,
+        }];
+        let scalar = stage_scalar(&compiler, &model, ObjectivePriority::new(0), &objectives)
+            .expect("canonical stage scalar resolves");
+        assert!(!scalar.canonical.coefficients.is_empty());
+
+        // The objective references x, which is absent from the provided
+        // (empty) primal values: this must error, not evaluate as 0.
+        let err = evaluate_stage_scalar(&compiler, &scalar, &[]).unwrap_err();
+        assert!(
+            matches!(err, ObjectiveExecutionError::Numerical(_)),
+            "expected a Numerical missing-primal error, got {err:?}"
+        );
+
+        // The same applies to the raw objective evaluator used for per-objective
+        // reporting and the final-point vector.
+        let err = evaluate_objective(&compiler, &model, obj, &[]).unwrap_err();
+        assert!(
+            matches!(err, ObjectiveExecutionError::Numerical(_)),
+            "expected a Numerical missing-primal error, got {err:?}"
         );
     }
 }

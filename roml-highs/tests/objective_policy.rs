@@ -393,3 +393,101 @@ fn zero_star_relative_only_penalty_lock_is_exact() {
     // not reintroduce the `x <= 2` violation by driving x above 2.
     assert!(result.final_solution.value(x).unwrap() <= 2.0 + 1e-6);
 }
+
+/// A P30 `PenaltyTarget::Objective` penalty is folded by the compiler directly
+/// into the targeted canonical objective as a coefficient on a generated
+/// soft-constraint violation variable. Those generated variables are NOT
+/// exposed in `SolveSolution.variable_values`, so P31 must use the exact solved
+/// objective value (which includes them) for the stage scalar and degradation
+/// lock — never a primal recomputation that silently drops them.
+///
+/// Here weight w = 0.5 on `x >= 6` (targeting `obj0 = min x`) makes the
+/// priority-0 minimum land at x = 0 with a NONZERO violation, so the true
+/// penalized scalar is g = x + 0.5*max(0, 6-x) = 3.0 at x = 0. A primal
+/// recomputation that skips the generated violation term would report
+/// z* = 0, making the zero-tolerance lock `g <= 0` infeasible for the
+/// stage-0 point and blocking stage 1. Priority 1 maximizes x (an incentive to
+/// move off the penalized optimum), and the zero-tolerance lock must keep the
+/// penalized scalar pinned at exactly 3.0 while both stages remain feasible.
+#[test]
+fn two_level_objective_target_penalty_lock_uses_exact_solved_scalar() {
+    use roml::{ObjectivePriority, PenaltyPolicy, PenaltyTarget, ValueExpr, ViolationPolicy};
+
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    // Soften `x >= 6` with a small weight (0.5) targeting the canonical
+    // objective `obj0`. The penalty is small enough that the priority-0
+    // minimum violates the constraint: minimizing `x + 0.5*max(0,6-x)` lands
+    // at x=0 with g = 3.0.
+    let con = model.add_constraint((x).ge(6.0)).unwrap();
+    let obj0 = model.minimize(x).unwrap();
+    model
+        .soften_constraint(
+            con,
+            ViolationPolicy::default(),
+            PenaltyPolicy {
+                weight: ValueExpr::constant(0.5),
+                target: PenaltyTarget::Objective(obj0),
+            },
+        )
+        .expect("softening an objective-targeted constraint must succeed");
+    // Priority 1 maximizes x: a direct incentive to move x away from the
+    // priority-0 penalized optimum at x = 0 (raising the scalar toward 1.5x).
+    let obj1 = model.maximize(x).unwrap();
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+    let policy = ObjectivePolicy::Lexicographic(roml::LexicographicObjectives {
+        levels: vec![
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: obj0,
+                    weight: 1.0,
+                }],
+                // Zero tolerance: priority 0's solved scalar is locked exactly.
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(1),
+                objectives: vec![WeightedObjective {
+                    objective: obj1,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+        ],
+    });
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::RequireOptimal,
+        )
+        .expect("objective-target penalty lexicographic solve must succeed");
+
+    assert_eq!(result.stages.len(), 2, "stage 1 must remain feasible");
+    let s0 = &result.stages[0];
+    assert_eq!(s0.continuation, StageContinuationDecision::ContinueOptimal);
+    // The locked scalar is the EXACT solved penalized value 3.0 (x=0 plus the
+    // 0.5*6 = 3 violation term), not a primal value that drops the penalty.
+    let z = s0.scalar_stage_value.expect("stage-0 scalar");
+    assert!((z - 3.0).abs() < 1e-6, "expected z*=3.0, got {z}");
+    let lock = s0.lock.expect("stage-0 lock");
+    assert!((lock.reference_value - 3.0).abs() < 1e-6);
+    // Both stages prove optimality and the zero-tolerance lock keeps the
+    // penalized scalar preserved at x = 0.
+    assert!(result
+        .stages
+        .iter()
+        .all(|s| { s.continuation == StageContinuationDecision::ContinueOptimal }));
+    let xf = result.final_solution.value(x).expect("final x");
+    assert!(
+        (xf - 0.0).abs() < 1e-6,
+        "penalized scalar must be preserved at x=0, got {xf}"
+    );
+}
