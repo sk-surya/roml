@@ -622,6 +622,28 @@ mod tests {
     }
 
     #[test]
+    fn same_objective_at_different_priorities_is_legal() {
+        // The frozen contract permits the same canonical objective at two
+        // different priorities (each level owns its own weight/tolerances);
+        // only a duplicate WITHIN a single level is invalid.
+        let level = |priority: u32, weight: f64| WeightedObjectiveLevel {
+            priority: ObjectivePriority::new(priority),
+            objectives: vec![WeightedObjective {
+                objective: obj(1),
+                weight,
+            }],
+            absolute_tolerance: 1e-6,
+            relative_tolerance: 1e-9,
+        };
+        let policy = LexicographicObjectives {
+            levels: vec![level(0, 1.0), level(1, 2.0)],
+        };
+        assert!(policy.validate(None::<fn(Objective) -> bool>).is_ok());
+        assert_eq!(policy.levels[0].objectives[0].weight, 1.0);
+        assert_eq!(policy.levels[1].objectives[0].weight, 2.0);
+    }
+
+    #[test]
     fn valid_two_level_policy_accepts() {
         let policy = LexicographicObjectives {
             levels: vec![
