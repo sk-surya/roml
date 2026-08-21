@@ -1531,6 +1531,13 @@ fn add_soft_penalty_objective(
     let target = match payload.penalty.target {
         PenaltyTarget::None => return Ok(()),
         PenaltyTarget::Objective(objective) => objective,
+        PenaltyTarget::Priority(priority) => {
+            return Err(CompileError::UnsupportedFeature(format!(
+                "soft constraint {construct:?} targets lexicographic priority {priority:?}; \
+                 priority-targeted penalties are resolved numerically by the P31 objective \
+                 executor, not folded into a single canonical objective at compile time"
+            )))
+        }
     };
     let compiled_objective = objective_ids.get(&target).copied().ok_or_else(|| {
         CompileError::UnsupportedFeature(format!(
