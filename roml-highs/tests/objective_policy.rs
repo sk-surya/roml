@@ -115,3 +115,57 @@ fn lexicographic_policy_runs_stages_in_priority_order() {
         provider: result.provider.clone(),
     };
 }
+
+/// A priority-targeted P30 penalty is folded into the matching lexicographic
+/// stage (Task 31-07; SM-10.6), and the live parameterized weight drives the
+/// stage result.
+#[test]
+fn priority_target_penalty_folds_into_stage() {
+    use roml::{ObjectivePriority, PenaltyPolicy, PenaltyTarget, ValueExpr, ViolationPolicy};
+
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    // Soften `x >= 6` with a priority-0-targeted penalty weight of 5.
+    let con = model.add_constraint((x).ge(6.0)).unwrap();
+    model
+        .soften_constraint(
+            con,
+            ViolationPolicy {
+                max_violation: None,
+            },
+            PenaltyPolicy {
+                weight: ValueExpr::constant(5.0),
+                target: PenaltyTarget::Priority(ObjectivePriority::new(0)),
+            },
+        )
+        .expect("softening a priority-targeted constraint must succeed");
+    let obj = model.minimize(x).unwrap();
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+    let policy = ObjectivePolicy::Lexicographic(roml::LexicographicObjectives {
+        levels: vec![roml::WeightedObjectiveLevel {
+            priority: ObjectivePriority::new(0),
+            objectives: vec![WeightedObjective {
+                objective: obj,
+                weight: 1.0,
+            }],
+            absolute_tolerance: 1e-6,
+            relative_tolerance: 1e-9,
+        }],
+    });
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::RequireOptimal,
+        )
+        .expect("priority-penalty portable solve must succeed");
+
+    assert_eq!(result.stages.len(), 1);
+    // Without folding, minimizing x would land at 0; the weight-5 penalty on
+    // violating x >= 6 forces the stage to x = 6.
+    assert_eq!(result.final_solution.value(x), Some(6.0));
+}
