@@ -1180,14 +1180,42 @@ where
             } else {
                 Vec::new()
             };
+            // P1 (review #4989892030): the stage scalar and degradation lock
+            // must use the EXACT scalar the backend actually solved, including
+            // generated soft-constraint violation terms (both compiler-folded
+            // `PenaltyTarget::Objective` and the P31 priority-penalty
+            // materializations). Those generated variables are intentionally
+            // absent from `SolveSolution.variable_values`, so recomputing from
+            // primal values silently drops them and yields a wrong `z*`. The
+            // backend's reported objective value IS that exact solved
+            // temporary-objective value. We fall back to the portable
+            // recomputation only when the backend reports no objective value
+            // (e.g. a projection-only harness).
             let scalar = match &values {
-                Some(v) => match evaluate_stage_scalar(&self.compiler, &combined, v) {
-                    Ok(s) => Some(s),
-                    // A non-finite solver-derived value (NaN/Inf) must become
-                    // a typed Numerical error routed through rollback, never a
-                    // panic inside lock construction while the overlay is up.
-                    Err(e) => return self.rollback_objective(e, &receipt),
-                },
+                Some(_v) => {
+                    let solved = result.solution.as_ref().and_then(|s| s.objective_value);
+                    match solved {
+                        Some(z) => {
+                            if !z.is_finite() {
+                                // A non-finite solved value must become a typed
+                                // Numerical error routed through rollback, never
+                                // a panic inside lock construction while the
+                                // overlay is up.
+                                return self.rollback_objective(
+                                    ObjectiveExecutionError::Numerical(format!(
+                                        "backend-reported solved objective value is not finite: {z}"
+                                    )),
+                                    &receipt,
+                                );
+                            }
+                            Some(z)
+                        }
+                        None => match evaluate_stage_scalar(&self.compiler, &combined, _v) {
+                            Ok(s) => Some(s),
+                            Err(e) => return self.rollback_objective(e, &receipt),
+                        },
+                    }
+                }
                 None => None,
             };
             let lock = match (&values, &scalar, decision) {

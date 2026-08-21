@@ -107,6 +107,55 @@ and fault-matrix completeness.
 No MOSEK/Xpress native multiobjective audit change: HiGHS still has no
 qualified native normalized-`|z*|` path; the portable path remains normative.
 
+## Remediation after review #4989892030 (1 P1)
+
+Independent re-review at exact head `6536506` confirmed all prior remediation
+but found one remaining P1: P30 `PenaltyTarget::Objective` penalties are folded
+by the compiler directly into the targeted canonical objective as coefficients
+on generated soft-constraint violation variables, which are NOT exposed in
+`SolveSolution.variable_values`. Recomputing the stage scalar from primal
+values therefore silently dropped those generated penalty terms, so a stage
+could report and lock a `z*` that did not match the scalar the backend actually
+solved — the same semantic failure class as the earlier priority-penalty defect,
+through the ordinary `PenaltyTarget::Objective` path. The following remediation
+is applied and verified:
+
+1. **The stage scalar/lock is the exact value the backend solved (P1).** The
+   portable executor now prefers `SolveSolution.objective_value` — the value of
+   the temporary stage objective the backend actually minimized, which includes
+   every canonical term, the constant, and all generated soft-constraint
+   violation terms — as the `scalar_stage_value` and the `z*` feeding
+   `ObjectiveLockReport::from_stage`. The primal recomputation is retained only
+   as a fallback when the backend reports no objective value (e.g. a
+   projection-only harness). A non-finite reported value is a typed `Numerical`
+   error routed through `rollback_objective` (never a panic under an applied
+   overlay). Regression: a two-level real-HiGHS model with a `PenaltyTarget::
+   Objective` penalty weight 0.5 on `x >= 6` (targeting `obj0 = min x`). The
+   priority-0 minimum lands at `x = 0` with a nonzero violation, so the true
+   penalized scalar is `3.0`; the test asserts `z* = 3.0`, the lock reference is
+   `3.0`, stage 1 (maximize `x`) remains feasible and both stages prove
+   optimality — proving the zero-tolerance lock preserves the penalized scalar.
+   Under the previous behavior the scalar was reported as `0` and the
+   zero-tolerance lock became infeasible for stage 1.
+2. **Missing required user primal values are rejected (P1).** `SolveSolution.
+   variable_values` is not guaranteed complete by the backend contract.
+   `evaluate_constraint_row`, `evaluate_combined`, and `evaluate_objective` now
+   return a typed `Numerical` error when a user variable required by an
+   objective/row is absent from the supplied primal values, instead of silently
+   treating it as zero. Regression: a real-compiled unit test drives
+   `evaluate_stage_scalar` and `evaluate_objective` with an empty primal set and
+   asserts a `Numerical` missing-primal error.
+
+### Fresh local checks (round 4, after review #4989892030)
+
+- `cargo test -p roml --all-targets` — all pass; includes the new
+  missing-required-primal unit regression.
+- `cargo test -p roml --test objective_policy_faults` — 12 passed.
+- `cargo test -p roml-highs --test objective_policy` — 8 passed (includes the
+  new two-level objective-target-penalty exact-scalar regression).
+- `cargo test -p roml-highs --all-targets` — all pass with bundled HiGHS.
+- `cargo fmt --all -- --check`, `cargo clippy -p roml -p roml-highs --all-targets -- -D warnings`, and `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` — all clean.
+
 ## Fresh local checks at remediation time
 
 - `cargo test -p roml --all-targets` — all pass.
