@@ -169,3 +169,62 @@ fn priority_target_penalty_folds_into_stage() {
     // violating x >= 6 forces the stage to x = 6.
     assert_eq!(result.final_solution.value(x), Some(6.0));
 }
+
+/// When no qualified native provider exists, `PreferNative` must fall back to
+/// the portable path rather than erroring or returning a native provider
+/// (Task 31-08). HiGHS has no qualified native lexicographic path in the
+/// normalized `|z*|` contract, so the observable provider is PortableSequential.
+#[test]
+fn prefer_native_falls_back_to_portable_with_observable_provider() {
+    let (mut model, _x, _y, obj1, _obj2) = two_objective_model();
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+
+    let policy = ObjectivePolicy::Weighted(WeightedObjectives {
+        objectives: vec![WeightedObjective {
+            objective: obj1,
+            weight: 1.0,
+        }],
+    });
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PreferNative,
+            StageContinuation::RequireOptimal,
+        )
+        .expect("PreferNative must fall back to portable");
+    assert_eq!(
+        result.provider,
+        ObjectiveExecutionProvider::PortableSequential
+    );
+    assert_eq!(result.stages.len(), 1);
+    assert!(result.stages[0]
+        .objective_values
+        .iter()
+        .any(|v| v.objective == obj1));
+}
+
+/// `NativeRequired` rejects before mutation when no qualified native provider
+/// is available (Task 31-08). HiGHS has no such provider, so this must not
+/// mutate the canonical model or backend.
+#[test]
+fn native_required_rejects_on_highs_without_mutation() {
+    let (mut model, _x, _y, obj1, _obj2) = two_objective_model();
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+
+    let policy = ObjectivePolicy::Weighted(WeightedObjectives {
+        objectives: vec![WeightedObjective {
+            objective: obj1,
+            weight: 1.0,
+        }],
+    });
+    let result = session.solve_objective_policy(
+        &mut model,
+        policy,
+        ObjectiveProviderPolicy::NativeRequired,
+        StageContinuation::RequireOptimal,
+    );
+    assert!(result.is_err());
+    // Canonical model remains usable by an ordinary solve afterwards.
+    assert!(session.solve(&mut model).is_ok());
+}
