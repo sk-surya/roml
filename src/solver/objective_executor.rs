@@ -443,10 +443,10 @@ pub(crate) fn evaluate_stage_scalar(
     compiler: &CompilationSession,
     scalar: &StageScalar,
     values: &[(VarId, f64)],
-) -> f64 {
-    let mut value = evaluate_combined(compiler, &scalar.canonical, values);
+) -> Result<f64, ObjectiveExecutionError> {
+    let mut value = evaluate_combined(compiler, &scalar.canonical, values)?;
     for penalty in &scalar.penalties {
-        let expr = evaluate_constraint_row(compiler, &penalty.row, values);
+        let expr = evaluate_constraint_row(compiler, &penalty.row, values)?;
         for side in violation_sides(penalty.bounds) {
             let violation = match side {
                 BoundSide::Lower => (penalty.bounds.lower - expr).max(0.0),
@@ -455,7 +455,7 @@ pub(crate) fn evaluate_stage_scalar(
             value += penalty.weight * violation;
         }
     }
-    value
+    finite_or_numerical(value)
 }
 
 /// Evaluate a constraint row (compiled coefficients) at canonical values.
@@ -463,16 +463,22 @@ fn evaluate_constraint_row(
     compiler: &CompilationSession,
     coefficients: &[(CompiledVariableId, f64)],
     values: &[(VarId, f64)],
-) -> f64 {
+) -> Result<f64, ObjectiveExecutionError> {
     let mut value = 0.0;
     for (cid, coef) in coefficients {
         if let Some(var) = compiler.user_variable(*cid) {
             if let Some(v) = lookup(values, var) {
+                if !v.is_finite() || !coef.is_finite() {
+                    return Err(ObjectiveExecutionError::Numerical(
+                        "solver-derived value or coefficient is not finite in an objective penalty row"
+                            .into(),
+                    ));
+                }
                 value += coef * v;
             }
         }
     }
-    value
+    finite_or_numerical(value)
 }
 
 /// Evaluate a combined scalar stage at a solution's variable values.
@@ -480,16 +486,22 @@ pub(crate) fn evaluate_combined(
     compiler: &CompilationSession,
     combined: &CombinedStage,
     values: &[(VarId, f64)],
-) -> f64 {
+) -> Result<f64, ObjectiveExecutionError> {
     let mut value = combined.constant;
     for (cid, coef) in &combined.coefficients {
         if let Some(var) = compiler.user_variable(*cid) {
             if let Some(v) = lookup(values, var) {
+                if !v.is_finite() || !coef.is_finite() {
+                    return Err(ObjectiveExecutionError::Numerical(
+                        "solver-derived value or coefficient is not finite in a stage scalar"
+                            .into(),
+                    ));
+                }
                 value += coef * v;
             }
         }
     }
-    value
+    finite_or_numerical(value)
 }
 
 /// Evaluate one raw (un-normalized) objective at a solution.
@@ -508,12 +520,17 @@ pub(crate) fn evaluate_objective(
     for (cid, coef) in terms {
         if let Some(var) = compiler.user_variable(cid) {
             if let Some(v) = lookup(values, var) {
+                if !v.is_finite() || !coef.is_finite() {
+                    return Err(ObjectiveExecutionError::Numerical(
+                        "solver-derived value or coefficient is not finite in an objective".into(),
+                    ));
+                }
                 value += coef * v;
             }
         }
     }
     let _ = model.objective_sense(objective);
-    Ok(value)
+    finite_or_numerical(value)
 }
 
 /// Compute every referenced objective's value at a solution for a level.
@@ -535,6 +552,18 @@ pub(crate) fn objective_values(
 
 fn lookup(values: &[(VarId, f64)], var: VarId) -> Option<f64> {
     values.iter().find(|(v, _)| *v == var).map(|(_, val)| *val)
+}
+
+/// Reject non-finite accumulated numeric evidence with a typed [`Numerical`]
+/// error rather than letting a `NaN`/infinity reach a lock assertion.
+fn finite_or_numerical(value: f64) -> Result<f64, ObjectiveExecutionError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(ObjectiveExecutionError::Numerical(
+            "stage scalar is not finite (NaN or infinity)".into(),
+        ))
+    }
 }
 
 /// Map a backend termination status into a [`SolveStatus`] for the objective
@@ -567,5 +596,81 @@ pub(crate) fn objective_status_from_termination(
         // `Error` is an operational failure; the caller rejects it below.
         Error => SolveStatus::Error,
         Unknown => SolveStatus::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod finiteness_tests {
+    use super::*;
+    use crate::compiler::capability::{
+        BackendCapabilitySet, BackendFeature, CompilationPolicy, FeatureSupport, SupportLevel,
+    };
+    use crate::model::variable::continuous;
+    use crate::objective_policy::{ObjectivePriority, WeightedObjective};
+
+    fn full_capabilities() -> BackendCapabilitySet {
+        let mut set = BackendCapabilitySet::new();
+        for feature in [
+            BackendFeature::Lp,
+            BackendFeature::Mip,
+            BackendFeature::IncrementalBounds,
+            BackendFeature::IncrementalRows,
+            BackendFeature::IncrementalCoefficients,
+        ] {
+            set.set(
+                feature,
+                FeatureSupport {
+                    level: SupportLevel::Native,
+                    limitations: Default::default(),
+                },
+            );
+        }
+        set
+    }
+
+    fn compiled_minimize_x() -> (CompilationSession, Model, VarId, ObjId) {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let obj = model.minimize(x).unwrap();
+        let mut compiler = CompilationSession::new();
+        let snapshot = model.take_snapshot().expect("snapshot of committed model");
+        compiler
+            .compile_snapshot(
+                model.instance(),
+                &snapshot,
+                &CompilationPolicy::Auto,
+                &full_capabilities(),
+            )
+            .expect("simple minimize-x model compiles");
+        (compiler, model, x, obj)
+    }
+
+    #[test]
+    fn stage_scalar_rejects_non_finite_candidate_values() {
+        let (compiler, model, x, obj) = compiled_minimize_x();
+        let objectives = vec![WeightedObjective {
+            objective: obj,
+            weight: 1.0,
+        }];
+        let scalar = stage_scalar(&compiler, &model, ObjectivePriority::new(0), &objectives)
+            .expect("canonical stage scalar resolves");
+        // Confirm the scalar actually references x (coefficient 1.0), so the
+        // finite check is on the candidate value, not an empty row.
+        assert!(!scalar.canonical.coefficients.is_empty());
+
+        // Non-finite solver-derived values must be typed Numerical errors.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = evaluate_stage_scalar(&compiler, &scalar, &[(x, bad)]).unwrap_err();
+            assert!(
+                matches!(err, ObjectiveExecutionError::Numerical(_)),
+                "expected Numerical error for {bad}, got {err:?}"
+            );
+        }
+
+        // A finite candidate evaluates normally (minimize x => scalar = x).
+        assert_eq!(
+            evaluate_stage_scalar(&compiler, &scalar, &[(x, 2.0)]).unwrap(),
+            2.0
+        );
     }
 }

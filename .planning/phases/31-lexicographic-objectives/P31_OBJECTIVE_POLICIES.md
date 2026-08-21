@@ -2,7 +2,7 @@
 phase: 31-lexicographic-objectives
 status: implementation-verified-review-pending
 base: "9db2ec2997dee17e796b80bc8897399c676e1bd9"
-head: "remediation commits addressing review #4989778702 P1s + P2 (two-sided priority-penalty lock, Unknown preservation, rollback-safe extraction, Single stale check); independent re-review pending"
+head: "remediation addressing review #4989778702 (P1s+P2) and review #4989844497 (lock-construction fallibility, final-point objective vector, rebuild fault); independent re-review pending"
 plan: 31-PLAN.md
 ---
 
@@ -69,6 +69,44 @@ one validation P2. The following remediation is applied and verified:
    atomic pre-mutation rejection. Regression both at unit level and in the
    objective-policy fault matrix.
 
+## Remediation after review #4989844497 (2 P1 + 1 P2)
+
+Independent re-review at exact head `00da659` confirmed the prior remediation
+but found two additional P1s and one P2. The following remediation is applied
+and verified:
+
+1. **Lock construction is fully fallible (P1).** Solver-derived candidate
+   values are now checked for finiteness before any scalar/lock arithmetic:
+   `evaluate_objective`, `evaluate_combined`, `evaluate_constraint_row`, and
+   `evaluate_stage_scalar` all return a typed [`Numerical`] error on a `NaN`/
+   infinity (never a panic while the stage overlay is applied), routed through
+   `rollback_objective`. `ObjectiveLockReport::from_stage` is now fallible too:
+   it rejects non-finite stage values, non-finite/negative tolerances, and a
+   degradation bound that overflows (`DegradationOverflow`), so lock
+   construction can never panic or emit an effectively-unbounded lock.
+   Regressions: a real-compiled unit test drives `evaluate_stage_scalar` with
+   `NaN`/`±Inf`/finite candidates (`Numerical` on the former, normal value on
+   the latter); a unit test asserts `from_stage` returns typed errors for
+   `NaN`/`Inf`/bad tolerances/overflow.
+2. **Task 31-06 final-point objective vector (P1).** The last executed stage's
+   `objective_values` is now recomputed at the FINAL solution point to contain
+   the complete distinct policy objective vector (all canonical objectives),
+   not just that stage's own objective. Regressions: a two-level fault-matrix
+   test asserts the last stage exposes both distinct objectives; the real-HiGHS
+   lexicographic test asserts both `obj1`/`obj2` are reported on the last
+   stage.
+3. **Explicit rebuild-failure fault (P2).** Task 31-05 lifecycle injection now
+   includes the REBUILD boundary. The fault harness injects a one-shot rebuild
+   failure, asserts the error surfaces, and proves a subsequent forced rebuild
+   recovers cleanly.
+
+The `StageScalar` design for priority penalties is retained (no redesign
+indicated); these changes are localized to fallibility, final-point reporting,
+and fault-matrix completeness.
+
+No MOSEK/Xpress native multiobjective audit change: HiGHS still has no
+qualified native normalized-`|z*|` path; the portable path remains normative.
+
 ## Fresh local checks at remediation time
 
 - `cargo test -p roml --all-targets` — all pass.
@@ -80,6 +118,22 @@ one validation P2. The following remediation is applied and verified:
   real-HiGHS regressions).
 - `cargo test -p roml-highs --all-targets` — all pass with bundled HiGHS.
 - `cargo fmt --all -- --check`, `cargo clippy -p roml -p roml-highs --all-targets -- -D warnings`, and `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` — clean.
+
+### Fresh local checks (round 3, after review #4989844497)
+
+- `cargo test -p roml --all-targets` — all pass; includes a new real-compiled
+  `evaluate_stage_scalar` finiteness unit test (`NaN`/`±Inf` → `Numerical`,
+  finite → normal value) and `ObjectiveLockReport::from_stage` fallibility unit
+  tests (`NonFiniteStageValue`, `NonFiniteTolerance`, `DegradationOverflow`).
+- `cargo test -p roml --test objective_policy_faults` — 12 passed (round 2's 10
+  plus explicit rebuild-failure and last-stage-complete-objective-vector
+  regressions).
+- `cargo test -p roml-highs --test objective_policy` — 7 passed, with the
+  lexicographic test now also asserting the final stage reports both distinct
+  canonical objectives at the final point.
+- `cargo test -p roml-highs --all-targets`, `cargo fmt --all -- --check`,
+  `cargo clippy -p roml -p roml-highs --all-targets -- -D warnings`, and
+  `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` — all clean.
 
 ## Fresh local checks at pre-remediation head 377562b (kept for audit trail)
 

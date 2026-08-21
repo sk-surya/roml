@@ -15,13 +15,13 @@ use crate::compiler::backend_ir::CompilationId;
 use crate::compiler::capability::{BackendCapabilitySet, BackendFeature, CompilationPolicy};
 use crate::compiler::origin::OverlayId;
 use crate::compiler::session::CompilationSession;
-use crate::id::ObjId;
+use crate::id::{ObjId, VarId};
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::model::{Model, VarType};
 use crate::objective_policy::{
     MultiObjectiveResult, ObjectiveExecutionProvider, ObjectiveLockReport, ObjectivePolicy,
-    ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult, StageContinuation,
-    StageContinuationDecision, WeightedObjective, WeightedObjectiveLevel,
+    ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult, ObjectiveValue,
+    StageContinuation, StageContinuationDecision, WeightedObjective, WeightedObjectiveLevel,
 };
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
@@ -33,9 +33,9 @@ use crate::solver::effective_plan::{
 };
 use crate::solver::objective_combine::classify_continuation;
 use crate::solver::objective_executor::{
-    build_stage_overlay, evaluate_stage_scalar, objective_status_from_termination,
-    objective_values, stage_scalar, validate_priority_targets, ObjectiveExecutionError,
-    OverlayAssembly, PriorLock,
+    build_stage_overlay, evaluate_objective, evaluate_stage_scalar,
+    objective_status_from_termination, objective_values, stage_scalar, validate_priority_targets,
+    ObjectiveExecutionError, OverlayAssembly, PriorLock,
 };
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
@@ -1180,24 +1180,37 @@ where
             } else {
                 Vec::new()
             };
-            let scalar = values
-                .as_ref()
-                .map(|v| evaluate_stage_scalar(&self.compiler, &combined, v));
-            let lock = match &values {
-                Some(v) => match decision {
-                    StageContinuationDecision::ContinueOptimal
-                    | StageContinuationDecision::ContinueBestFeasible => {
-                        let z = evaluate_stage_scalar(&self.compiler, &combined, v);
-                        Some(ObjectiveLockReport::from_stage(
-                            level.priority,
-                            z,
-                            level.absolute_tolerance,
-                            level.relative_tolerance,
-                        ))
-                    }
-                    _ => None,
+            let scalar = match &values {
+                Some(v) => match evaluate_stage_scalar(&self.compiler, &combined, v) {
+                    Ok(s) => Some(s),
+                    // A non-finite solver-derived value (NaN/Inf) must become
+                    // a typed Numerical error routed through rollback, never a
+                    // panic inside lock construction while the overlay is up.
+                    Err(e) => return self.rollback_objective(e, &receipt),
                 },
                 None => None,
+            };
+            let lock = match (&values, &scalar, decision) {
+                (Some(_), Some(z), StageContinuationDecision::ContinueOptimal)
+                | (Some(_), Some(z), StageContinuationDecision::ContinueBestFeasible) => {
+                    match ObjectiveLockReport::from_stage(
+                        level.priority,
+                        *z,
+                        level.absolute_tolerance,
+                        level.relative_tolerance,
+                    ) {
+                        Ok(lock) => Some(lock),
+                        Err(e) => {
+                            return self.rollback_objective(
+                                ObjectiveExecutionError::Numerical(format!(
+                                    "lock construction failed: {e}"
+                                )),
+                                &receipt,
+                            )
+                        }
+                    }
+                }
+                _ => None,
             };
             stages.push(ObjectiveStageResult {
                 priority: level.priority,
@@ -1246,11 +1259,49 @@ where
                 "objective execution produced no final solution".into(),
             )
         })?;
+        // Task 31-06: the final solution must expose every canonical policy
+        // objective value at the FINAL point. Each stage records only its own
+        // objectives at its own solution, so recompute the complete distinct
+        // objective vector at the final point and attach it to the last
+        // executed stage.
+        if let Some(last) = stages.last_mut() {
+            let complete = self.complete_objective_values_at(model, &levels, &final_solution)?;
+            if !complete.is_empty() {
+                last.objective_values = complete;
+            }
+        }
         Ok(MultiObjectiveResult {
             final_solution,
             stages,
             provider: execution_provider,
         })
+    }
+
+    /// Evaluate every distinct canonical objective referenced by the policy at
+    /// a given solution point, preserving first-seen order across levels.
+    fn complete_objective_values_at(
+        &self,
+        model: &Model,
+        levels: &[WeightedObjectiveLevel],
+        solution: &Solution,
+    ) -> Result<Vec<ObjectiveValue>, ObjectiveExecutionError> {
+        let mut distinct: Vec<ObjId> = Vec::new();
+        for level in levels {
+            for wo in &level.objectives {
+                if !distinct.contains(&wo.objective) {
+                    distinct.push(wo.objective);
+                }
+            }
+        }
+        let values: Vec<(VarId, f64)> = solution.values().iter().map(|(v, x)| (*v, *x)).collect();
+        let mut out = Vec::new();
+        for objective in distinct {
+            out.push(ObjectiveValue {
+                objective,
+                value: evaluate_objective(&self.compiler, model, objective, &values)?,
+            });
+        }
+        Ok(out)
     }
 
     /// Roll back an objective stage overlay and verify the base is restored.

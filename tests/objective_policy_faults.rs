@@ -45,6 +45,7 @@ enum FailurePoint {
     Solve,
     Rollback,
     Verify,
+    Rebuild,
 }
 
 struct FaultBackend {
@@ -116,6 +117,16 @@ impl BackendSession for FaultBackend {
     fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
         match sync {
             Synchronization::CompiledRebuild(snapshot) => {
+                if matches!(self.failure, Some(FailurePoint::Rebuild)) {
+                    // One-shot: after the injected rebuild failure, clear it so
+                    // a subsequent forced rebuild can prove recovery.
+                    self.failure = None;
+                    return Err(BackendError::new(
+                        "injected objective rebuild failure",
+                        ErrorCategory::Internal,
+                        HealthEffect::RequiresRebuild,
+                    ));
+                }
                 self.inner.rebuild_compiled(&snapshot).map_err(|e| {
                     BackendError::new(
                         e.to_string(),
@@ -569,4 +580,61 @@ fn single_policy_rejects_stale_objective_before_mutation() {
     assert!(ObjectivePolicy::Single(obj)
         .validate(None::<fn(Objective) -> bool>)
         .is_ok());
+}
+
+/// Task 31-05 requires injected failures across the full lifecycle including
+/// REBUILD. A rebuild failure must be reported and force a rebuild before a
+/// subsequent solve can succeed.
+#[test]
+fn injected_rebuild_failure_returns_error_and_forces_rebuild() {
+    let (mut model, _x, _y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::new(Some(FailurePoint::Rebuild)));
+    let result = session.solve_objective_policy(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::RequireOptimal,
+    );
+    assert!(result.is_err(), "rebuild failure must surface as an error");
+    // The injected rebuild failure is one-shot; the next ordinary solve forces
+    // a rebuild and succeeds, proving the backend did not leak stale state.
+    assert!(session.solve(&mut model).is_ok());
+}
+
+/// Task 31-06: the final solution must expose ALL canonical objective values at
+/// the final point. The last executed stage's `objective_values` must therefore
+/// contain the complete distinct policy objective vector, not just that stage's
+/// own objective. Here stage 1 (last) must carry BOTH `obj1` and `obj2`.
+#[test]
+fn last_stage_exposes_complete_distinct_objective_vector() {
+    let (mut model, x, y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0), (y, 3.0)],
+        },
+    ));
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            two_level_policy(obj1, obj2),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        )
+        .expect("two-level BestFeasible descent must succeed");
+    assert_eq!(result.stages.len(), 2);
+
+    // The earlier stage still carries only its own objective.
+    assert_eq!(result.stages[0].objective_values.len(), 1);
+    assert!(result.stages[0]
+        .objective_values
+        .iter()
+        .any(|v| v.objective == obj1));
+
+    // The last (final-point) stage exposes the complete distinct vector.
+    let last = result.stages.last().unwrap();
+    let ids: Vec<ObjId> = last.objective_values.iter().map(|v| v.objective).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&obj1));
+    assert!(ids.contains(&obj2));
 }
