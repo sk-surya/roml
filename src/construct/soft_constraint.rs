@@ -10,6 +10,7 @@
 use crate::id::{ConId, ParamId};
 use crate::identity::ConstructId;
 use crate::model::Objective;
+use crate::objective_policy::ObjectivePriority;
 use crate::value_expr::ValueExpr;
 
 /// Stable handle for one persistent soft constraint.
@@ -96,6 +97,11 @@ pub enum PenaltyTarget {
     None,
     /// Add the penalty to this canonical objective.
     Objective(Objective),
+    /// Attach the penalty to a lexicographic priority level (P31). The
+    /// parameterized weight is evaluated numerically before the priority
+    /// stage is constructed; the sole owner of the referenced priority is
+    /// the [`ObjectivePolicy`](crate::objective_policy::ObjectivePolicy).
+    Priority(ObjectivePriority),
 }
 
 /// Penalty weight and target for persistent softening.
@@ -145,5 +151,20 @@ impl SoftConstraintConstraint {
         let mut dependencies: Vec<_> = self.penalty.weight.dependencies().into_iter().collect();
         dependencies.sort();
         dependencies
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn priority_penalty_target_constructs_and_round_trips() {
+        let priority = crate::objective_policy::ObjectivePriority::new(3);
+        let target = PenaltyTarget::Priority(priority);
+        assert!(matches!(target, PenaltyTarget::Priority(p) if p == priority));
+        // Clone/Debug/Eq round-trip.
+        assert_eq!(target.clone(), target);
+        assert_ne!(PenaltyTarget::Priority(priority), PenaltyTarget::None);
     }
 }
