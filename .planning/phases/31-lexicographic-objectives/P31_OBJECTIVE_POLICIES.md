@@ -2,7 +2,7 @@
 phase: 31-lexicographic-objectives
 status: implementation-verified-review-pending
 base: "9db2ec2997dee17e796b80bc8897399c676e1bd9"
-head: "9839ab4 (code/test head); independent review and hosted CI pending for this head"
+head: "377562b (code/test/evidence head); hosted CI green on this head; independent review pending"
 plan: 31-PLAN.md
 ---
 
@@ -16,11 +16,11 @@ deterministic portable weighted/lexicographic executor with exact normalized
 (SM-11.1–SM-11.8, SM-07.7, P27 objective-lock debt, SM-10.6 priority
 targeting).
 
-Base is `main@9db2ec2` (P30 merged, P31 authorized). The implementation and
-test head is `9839ab4`. **Independent exact-head review and the hosted
-mandatory CI matrix have NOT yet been formally passed on this head**; this
-document records implementation/test evidence only and must not be treated as
-cleared-to-merge.
+Base is `main@9db2ec2` (P30 merged, P31 authorized). The implementation/test
+head is `377562b` (the evidence-doc commit follows the code/test head
+`9839ab4`). **Hosted mandatory CI is green on `377562b`; independent exact-head
+code review has not yet been completed on this head.** This document must not
+be treated as cleared-to-merge.
 
 ## Committed change set (10 commits, base 9db2ec2 -> head 9839ab4)
 
@@ -35,7 +35,7 @@ cleared-to-merge.
 - `c4f9320` objective-executor fault matrix + continuation semantics (Task 31-05)
 - `9839ab4` same-objective-different-priority legality + provider-policy behavior (Tasks 31-06/31-08)
 
-## Fresh local checks at head 9839ab4
+## Fresh local checks at head 377562b (code/test commits through 9839ab4)
 
 - `cargo test -p roml --all-targets` — all pass (313 library tests; all integration targets).
 - `cargo test -p roml --lib objective_policy` — 13 passed (priority ordering,
@@ -80,11 +80,20 @@ cleared-to-merge.
   current snapshot, fold into the correct stage, and drive the optimum (HiGHS:
   weight-5 penalty on `x >= 6` pins `x = 6`).
 
+## Hosted CI (exact head 377562b)
+
+PR #49 (`sk-surya/roml`) at head `377562bc78819e46fc736f1fad3fea756f15aab`:
+all mandatory hosted workflows green on that exact head — Code coverage,
+Coverage & policy, Feature exclusivity, Lint + doc (HiGHS), MSRV (HiGHS,
+1.85), MSRV (Linux, 1.85), Package verification, Security audit, License and
+dependency check, Unused dependency, Test (bundled + system) across
+ubuntu/macos/windows. (Update coverage badge and Mutation score are skips, not
+failures.)
+
 ## Residuals / not yet claimed
 
-- Exact-head hosted CI (Core, HiGHS Backend, Coverage, Quality, Policy) on
-  `9839ab4` has not been formally passed and is not asserted here.
-- Independent exact-head code review on `9839ab4` has not been completed.
+- Independent exact-head code review on `377562b` has not been completed and
+  is required before any CLEAR status.
 - MOSEK/Xpress native multiobjective audit: HiGHS provides no qualified native
   normalized-`|z*|` multiobjective path, so the portable path is normative and
   `PreferNative`/`NativeRequired` behave accordingly; a full documented native
@@ -93,7 +102,6 @@ cleared-to-merge.
 
 ## Required next steps
 
-1. Push the branch and open the P31 PR for exact-head independent review (in progress).
-2. Pass exact-head hosted mandatory CI.
-3. Complete independent review with no unresolved P0/P1.
-4. Owner-authorized merge; then activate P34 in the milestone routing state.
+1. Complete exact-head independent code review with no unresolved P0/P1 (PR #49 open, draft).
+2. Owner-authorized merge of PR #49.
+3. Update the milestone routing state to authorize P34 after the P31 merge.
