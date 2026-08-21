@@ -19,7 +19,10 @@
 //! * Stage locks use the canonical `|z*|` scale: `delta = abs_tol + rel_tol *
 //!   |z*|`.
 
+use crate::compiler::backend_ir::CompilationId;
 use crate::model::Objective;
+use crate::solution::Solution;
+use crate::solver::SolveStatus;
 
 /// A lexicographic priority level. `ObjectivePriority(0)` is the highest
 /// priority; levels execute in ascending numeric order (SM-11.1).
@@ -223,6 +226,52 @@ impl ObjectiveLockReport {
             normalized_upper_bound,
         }
     }
+}
+
+/// Value of one objective at a stage's final point (design §15.4; SM-11.7).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectiveValue {
+    /// The objective whose value is reported.
+    pub objective: Objective,
+    /// The objective's evaluated value at the final point.
+    pub value: f64,
+}
+
+/// One executed objective stage (design §15.2, §15.4; SM-11.7).
+///
+/// P28 declared the placeholder stage record; P31 supersedes it with this
+/// richer, mandatory stage result. Every field is populated honestly by the
+/// portable executor; determinants never overstate a `BestFeasible` outcome.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectiveStageResult {
+    /// The priority of this stage.
+    pub priority: ObjectivePriority,
+    /// The stage termination status.
+    pub status: SolveStatus,
+    /// Whether execution may descend to the next level.
+    pub continuation: StageContinuationDecision,
+    /// Every referenced objective's value at the stage's final point.
+    pub objective_values: Vec<ObjectiveValue>,
+    /// The normalized scalar stage value (`z*`), if the solve produced one.
+    pub scalar_stage_value: Option<f64>,
+    /// The exact degradation lock emitted for this stage, if a valid feasible
+    /// outcome allowed descent.
+    pub lock: Option<ObjectiveLockReport>,
+    /// Which provider executed this stage.
+    pub provider: ObjectiveExecutionProvider,
+    /// The exact overlay-compounded compilation id the stage solved against.
+    pub compilation_id: CompilationId,
+}
+
+/// Result of executing a weighted or lexicographic objective policy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultiObjectiveResult {
+    /// The final solution after all executed stages.
+    pub final_solution: Solution,
+    /// Per-stage results in ascending priority order.
+    pub stages: Vec<ObjectiveStageResult>,
+    /// Which provider executed the policy.
+    pub provider: ObjectiveExecutionProvider,
 }
 
 /// Result of validating an objective policy against a model or the frozen
@@ -655,5 +704,43 @@ mod tests {
         let tight = ObjectiveLockReport::from_stage(priority, 10.0, 0.0, 0.0);
         assert_eq!(tight.allowed_degradation, 0.0);
         assert_eq!(tight.normalized_upper_bound, 10.0);
+    }
+
+    #[test]
+    fn stage_and_multi_objective_result_shape() {
+        use crate::solution::SolutionBuilder;
+        use std::collections::HashMap;
+
+        let priority = ObjectivePriority::new(0);
+        let lock = ObjectiveLockReport::from_stage(priority, 2.0, 1e-6, 1e-9);
+        let stage = ObjectiveStageResult {
+            priority,
+            status: crate::solver::SolveStatus::Optimal,
+            continuation: StageContinuationDecision::ContinueOptimal,
+            objective_values: vec![ObjectiveValue {
+                objective: obj(1),
+                value: 2.0,
+            }],
+            scalar_stage_value: Some(2.0),
+            lock: Some(lock),
+            provider: ObjectiveExecutionProvider::PortableSequential,
+            compilation_id: crate::compiler::backend_ir::CompilationId::allocate().unwrap(),
+        };
+        let solution = SolutionBuilder::new()
+            .status(crate::solver::SolveStatus::Optimal)
+            .values(HashMap::new())
+            .objective_value(2.0)
+            .objective_id(obj(1))
+            .build();
+        let multi = MultiObjectiveResult {
+            final_solution: solution,
+            stages: vec![stage],
+            provider: ObjectiveExecutionProvider::PortableSequential,
+        };
+        assert_eq!(multi.stages.len(), 1);
+        assert_eq!(
+            multi.stages[0].continuation,
+            StageContinuationDecision::ContinueOptimal
+        );
     }
 }

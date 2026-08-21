@@ -69,9 +69,10 @@ pub use model::{
     VariableDef, VariableDomain, VariableFixing,
 };
 pub use objective_policy::{
-    LexicographicObjectives, ObjectiveExecutionProvider, ObjectiveLockReport, ObjectivePolicyError,
-    ObjectivePriority, ObjectiveProviderPolicy, StageContinuation, StageContinuationDecision,
-    WeightedObjective, WeightedObjectiveLevel, WeightedObjectives,
+    LexicographicObjectives, MultiObjectiveResult, ObjectiveExecutionProvider, ObjectiveLockReport,
+    ObjectivePolicyError, ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult,
+    ObjectiveValue, StageContinuation, StageContinuationDecision, WeightedObjective,
+    WeightedObjectiveLevel, WeightedObjectives,
 };
 pub use revision::ModelRevision;
 pub use snapshot::ModelSnapshot;
@@ -83,7 +84,7 @@ pub use solver::backend::{
     BackendCapabilities, BackendError, ErrorCategory, HealthEffect, TerminationStatus,
 };
 pub use solver::effective_plan::{
-    AppliedFeature, EffectiveSolvePlan, ObjectiveStageResult, PlanAdjustment, PlanRejection,
+    AppliedFeature, EffectiveSolvePlan, PlanAdjustment, PlanRejection,
 };
 pub use solver::infeasibility::BoundSide;
 pub use solver::infeasibility::ConflictAtomId;
