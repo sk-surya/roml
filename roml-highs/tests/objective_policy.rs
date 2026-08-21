@@ -228,3 +228,161 @@ fn native_required_rejects_on_highs_without_mutation() {
     // Canonical model remains usable by an ordinary solve afterwards.
     assert!(session.solve(&mut model).is_ok());
 }
+
+/// A priority-0 penalty must be part of the degradation lock for ALL later
+/// stages. Priority 0 minimizes `x` with a priority-targeted penalty forcing
+/// `x >= 6`; priority 1 also minimizes `x` (an incentive to drive it toward 0,
+/// i.e. to reintroduce the violation). With zero tolerance, the later stage
+/// must NOT be allowed to push `x` below 6.
+///
+/// This is the two-level real-HiGHS regression for the P1 "priority penalties
+/// not in z*/degradation lock" defect: before the fix the lock contained only
+/// the canonical objective (`x <= 6`), and priority 1 minimizing `x` would
+/// drive it to 0, reintroducing the violation.
+#[test]
+fn two_level_priority_penalty_lock_prevents_reintroduction() {
+    use roml::{ObjectivePriority, PenaltyPolicy, PenaltyTarget, ValueExpr, ViolationPolicy};
+
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    // Soften `x >= 6` with a priority-0-targeted penalty weight of 5.
+    let con = model.add_constraint((x).ge(6.0)).unwrap();
+    model
+        .soften_constraint(
+            con,
+            ViolationPolicy {
+                max_violation: None,
+            },
+            PenaltyPolicy {
+                weight: ValueExpr::constant(5.0),
+                target: PenaltyTarget::Priority(ObjectivePriority::new(0)),
+            },
+        )
+        .expect("softening a priority-targeted constraint must succeed");
+    // Priority 1 also minimizes x: it wants the smallest x and therefore has a
+    // direct incentive to reintroduce the priority-0 violation (x below 6).
+    let obj0 = model.minimize(x).unwrap();
+    // Same canonical objective at a different priority is legal (design §15).
+    let obj1 = model.minimize(x).unwrap();
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+    let policy = ObjectivePolicy::Lexicographic(roml::LexicographicObjectives {
+        levels: vec![
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: obj0,
+                    weight: 1.0,
+                }],
+                // Zero tolerance: priority 0's scalar is locked exactly.
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(1),
+                objectives: vec![WeightedObjective {
+                    objective: obj1,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+        ],
+    });
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::RequireOptimal,
+        )
+        .expect("two-level priority-penalty lexicographic solve must succeed");
+
+    assert_eq!(result.stages.len(), 2);
+    // The priority-0 penalty lock must keep x pinned at 6; priority 1 cannot
+    // reintroduce the violation.
+    for stage in &result.stages {
+        assert!(
+            stage.continuation == StageContinuationDecision::ContinueOptimal,
+            "stage {:?} not optimal: {stage:?}",
+            stage.priority
+        );
+    }
+    assert_eq!(result.final_solution.value(x), Some(6.0));
+}
+
+/// `z* = 0` with only a relative tolerance must allow ZERO degradation, so the
+/// priority-0 feasibility-penalty lock is exact. Priority 0 carries only a
+/// zero-weight objective so its canonical contribution is 0, plus a
+/// priority-targeted penalty on `x <= 2` which is satisfiable in `[0,2]`,
+/// giving a normalized `z* = 0 + 0 = 0`. Priority 1 then maximizes `x`
+/// (incentive to re-violate by pushing `x > 2`). With relative-only tolerance
+/// (`abs=0, rel>0`), `allowed_degradation = rel*|0| = 0`, so the lock is exact
+/// and priority 1 must keep `x <= 2`.
+#[test]
+fn zero_star_relative_only_penalty_lock_is_exact() {
+    use roml::{ObjectivePriority, PenaltyPolicy, PenaltyTarget, ValueExpr, ViolationPolicy};
+
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    let con = model.add_constraint((x).le(2.0)).unwrap();
+    model
+        .soften_constraint(
+            con,
+            ViolationPolicy {
+                max_violation: None,
+            },
+            PenaltyPolicy {
+                weight: ValueExpr::constant(5.0),
+                target: PenaltyTarget::Priority(ObjectivePriority::new(0)),
+            },
+        )
+        .expect("softening a priority-targeted constraint must succeed");
+    // Zero-weight objective: canonical contribution is 0, so z* = penalty
+    // violation = 0 whenever `x <= 2` is satisfied.
+    let obj0 = model.minimize(roml::LinExpr::new()).unwrap();
+    let obj1 = model.maximize(x).unwrap();
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+    let policy = ObjectivePolicy::Lexicographic(roml::LexicographicObjectives {
+        levels: vec![
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: obj0,
+                    weight: 1.0,
+                }],
+                // z* = 0 here; RELATIVE-only tolerance must still allow no
+                // degradation (rel * |0| = 0) and leave the lock exact.
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.5,
+            },
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(1),
+                objectives: vec![WeightedObjective {
+                    objective: obj1,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+        ],
+    });
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::RequireOptimal,
+        )
+        .expect("zero-star relative-only penalty-lock solve must succeed");
+
+    assert_eq!(result.stages.len(), 2);
+    // z*=0 with relative-only tolerance allows no degradation: priority 1 must
+    // not reintroduce the `x <= 2` violation by driving x above 2.
+    assert!(result.final_solution.value(x).unwrap() <= 2.0 + 1e-6);
+}

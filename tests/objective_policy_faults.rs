@@ -34,6 +34,8 @@ enum SolveOutcome {
         values: Vec<(roml::VarId, f64)>,
     },
     Infeasible,
+    /// A legitimate solver `Unknown` mathematical outcome (no solution).
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +53,9 @@ struct FaultBackend {
     revision: roml::ModelRevision,
     failure: Option<FailurePoint>,
     outcome: SolveOutcome,
+    /// When set, `solve` reports a compilation id distinct from the applied
+    /// overlay's, forcing the post-solve extraction/validation failure path.
+    mismatched_compilation: bool,
     rebuilds: usize,
 }
 
@@ -71,12 +76,18 @@ impl FaultBackend {
             revision: roml::ModelRevision::ZERO,
             failure,
             outcome,
+            mismatched_compilation: false,
             rebuilds: 0,
         }
     }
 
     fn new(failure: Option<FailurePoint>) -> Self {
         Self::with_outcome(failure, SolveOutcome::default())
+    }
+
+    fn with_mismatched_compilation(mut self) -> Self {
+        self.mismatched_compilation = true;
+        self
     }
 }
 
@@ -162,12 +173,23 @@ impl BackendSession for FaultBackend {
             ),
             SolveOutcome::Infeasible => (TerminationStatus::Infeasible, None),
             SolveOutcome::Optimal => (TerminationStatus::Optimal, None),
+            SolveOutcome::Unknown => (TerminationStatus::Unknown, None),
+        };
+        // A deliberately stale/foreign compilation id exercises the post-solve
+        // validation branch that must roll the overlay back before escaping.
+        // It is one-shot: after the injected mismatch, subsequent solves (e.g.
+        // an ordinary follow-up) report the true compilation id.
+        let compilation_id = if self.mismatched_compilation {
+            self.mismatched_compilation = false;
+            None
+        } else {
+            self.inner.current_compilation
         };
         Ok(SolveResult {
             effective_configuration: EffectiveConfig::default(),
             termination,
             solution,
-            compilation_id: self.inner.current_compilation,
+            compilation_id,
             overlay_id: None,
         })
     }
@@ -443,4 +465,108 @@ fn require_optimal_infeasible_stage_stops_descent() {
         StageContinuationDecision::StopNoFeasiblePoint
     );
     assert!(result.stages[0].lock.is_none());
+}
+
+/// A legitimate solver `Unknown` outcome is a MATHEMATICAL result, not a
+/// backend error. The stage must be recorded with `StopUnknown` (under
+/// `BestFeasible`), the overlay rolled back, and the session must remain
+/// usable for an ordinary solve.
+///
+/// This is the P1 "Unknown turned into a Backend error" regression: before the
+/// fix, `TerminationStatus::Unknown` was coerced to a `Backend` error and never
+/// surfaced as a stage outcome.
+#[test]
+fn unknown_termination_is_a_mathematical_stage_outcome_not_a_backend_error() {
+    let (mut model, _x, _y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::with_outcome(None, SolveOutcome::Unknown));
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            two_level_policy(obj1, obj2),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        )
+        .expect("an Unknown stage outcome must still yield a staged result, not a Backend error");
+
+    assert_eq!(result.stages.len(), 1);
+    let stage = &result.stages[0];
+    assert_eq!(
+        stage.continuation,
+        StageContinuationDecision::StopUnknown,
+        "Unknown under BestFeasible must classify as StopUnknown"
+    );
+    // No valid solution and therefore no degradation lock is emitted.
+    assert!(stage.lock.is_none());
+    assert!(stage.status != roml::SolveStatus::Error);
+    // The stage overlay was applied and rolled back to produce this result
+    // (an un-rolled-back overlay would have surfaced as a cleanup error).
+    // The general `session.solve` path intentionally rejects `Unknown`
+    // (API-03.3), so it is not a valid rollback probe here.
+}
+
+/// After a successful overlay apply AND solve, a post-solve extraction /
+/// validation failure (here: a foreign/absent compilation id) must route
+/// through cleanup: no `MultiObjectiveResult` escapes, the overlay is rolled
+/// back, and the session is cleanly reusable.
+///
+/// This is the P1 "post-solve extraction must roll back" regression: before
+/// the fix, fallible extraction could return early and leave the overlay
+/// applied.
+#[test]
+fn post_solve_extraction_failure_rolls_back_and_leaks_no_result() {
+    let (mut model, _x, _y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(
+        FaultBackend::with_outcome(None, SolveOutcome::Optimal).with_mismatched_compilation(),
+    );
+    let result = session.solve_objective_policy(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::RequireOptimal,
+    );
+    // The mismatch must surface as the primary error routed through cleanup,
+    // and no MultiObjectiveResult may be produced.
+    assert!(
+        matches!(
+            result,
+            Err(ObjectiveExecutionError::Backend(ref msg))
+                if msg.contains("returned compilation")
+        ),
+        "expected a backend mismatch error, got {result:?}"
+    );
+    // Overlay was rolled back; an ordinary solve works cleanly afterwards.
+    let follow_up = session.solve(&mut model);
+    match follow_up {
+        Ok(_) => {}
+        Err(e) => panic!("follow-up solve failed: {e:?}"),
+    }
+}
+
+/// The stale-objective rejection must apply uniformly to EVERY policy variant,
+/// including `ObjectivePolicy::Single`. Before the P2 fix, `Single` skipped the
+/// supplied checker and only rejected stale references for weighted /
+/// lexicographic policies.
+#[test]
+fn single_policy_rejects_stale_objective_before_mutation() {
+    use roml::Objective;
+
+    // A live objective handle is fine — the point is that the `Single` variant
+    // must consult the supplied checker (exactly like Weighted/Lexicographic)
+    // and reject when it reports the reference stale.
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let obj = model.minimize(x).unwrap();
+    // Report the objective as absent — the checker is authoritative.
+    let validated = ObjectivePolicy::Single(obj).validate(Some(|o: Objective| o != obj));
+    assert!(
+        matches!(
+            validated,
+            Err(roml::ObjectivePolicyError::ObjectiveNotFound { .. })
+        ),
+        "Single must reject a stale objective via the checker: {validated:?}"
+    );
+    // And it must still pass numeric/shape validation when no checker is given.
+    assert!(ObjectivePolicy::Single(obj)
+        .validate(None::<fn(Objective) -> bool>)
+        .is_ok());
 }
