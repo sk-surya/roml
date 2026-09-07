@@ -36,14 +36,21 @@ def build_roml():
     m.add(charge <= POWER * direction, name="charge_mode")
     m.add(discharge <= POWER * (1.0 - direction), name="discharge_mode")
     m.maximize(DT * rm.dot(price, discharge - charge) + TERMINAL_VALUE * energy[-1])
-    return m, price, initial_energy, charge, discharge, energy
+    return m, price, initial_energy, charge, discharge, energy, direction
 
 
-def read_solution(result, charge, discharge, energy):
+def read_solution(result, charge, discharge, energy, direction=None):
     ch = result.values(charge)
     dh = result.values(discharge)
     en = result.values(energy)
-    return np.asarray(ch), np.asarray(dh), np.asarray(en)
+    if direction is None:
+        return np.asarray(ch), np.asarray(dh), np.asarray(en)
+    return (
+        np.asarray(ch),
+        np.asarray(dh),
+        np.asarray(en),
+        np.asarray(result.values(direction)),
+    )
 
 
 def tol(a, b):
@@ -54,16 +61,19 @@ def test_matched_input_equivalence_with_highspy():
     # Identical exogenous inputs to both arms: objectives and feasibility
     # must agree (primal schedules may differ among alternate optima).
     realized = forecast_stream(4)
-    m, price, initial_energy, charge, discharge, energy = build_roml()
+    m, price, initial_energy, charge, discharge, energy, direction = build_roml()
     with rm.Highs(threads=1, time_limit=2.0) as solver:
         for k in range(4):
             forecasts = gate_forecast(realized, k)
             level = 2.0
             m.update(price=forecasts, initial_energy=level)
             result = solver.solve(m)
-            assert result.has_primal
-            ch, dh, en = read_solution(result, charge, discharge, energy)
-            check_physics(en, ch, dh, level)
+            # Both arms prove optimality, so certified bounds equal the
+            # reported objectives; comparison within the LP tolerance is
+            # exact (MIP gap is zero on both sides).
+            assert result.is_optimal
+            ch, dh, en, dr = read_solution(result, charge, discharge, energy, direction)
+            check_physics(en, ch, dh, level, direction=dr)
             ref = solve_gate(forecasts, level)
             assert ref["status"] == "HighsModelStatus.kOptimal"
             assert tol(result.objective, ref["objective"]), (k, result.objective, ref["objective"])
@@ -78,7 +88,7 @@ def test_fresh_rebuild_matches_persistent():
     realized = forecast_stream(2)
     forecasts = gate_forecast(realized, 0)
     with rm.Highs(threads=1, time_limit=2.0) as solver:
-        m, price, initial_energy, charge, discharge, energy = build_roml()
+        m, price, initial_energy, charge, discharge, energy, direction = build_roml()
         m.update(price=forecasts, initial_energy=1.0)
         warm = solver.solve(m)
         assert warm.metadata["sync_mode"] in ("Delta", "Rebuild", "NoChange")
@@ -86,7 +96,7 @@ def test_fresh_rebuild_matches_persistent():
         warm2 = solver.solve(m)
         assert warm2.metadata["sync_mode"] == "NoChange"
         # Fresh model + fresh session, same mathematics.
-        m2, price2, initial2, _, _, _ = build_roml()
+        m2, price2, initial2, _, _, _, _ = build_roml()
         m2.update(price=forecasts, initial_energy=1.0)
         with rm.Highs(threads=1, time_limit=2.0) as fresh:
             cold = fresh.solve(m2)
@@ -98,7 +108,7 @@ def test_causal_rolling_replay_with_own_energy():
     # Includes negative-price gates (forecast stream dips below zero).
     realized = forecast_stream(10)
     assert bool((realized < 0).any()), "fixture must contain negative prices"
-    m, price, initial_energy, charge, discharge, energy = build_roml()
+    m, price, initial_energy, charge, discharge, energy, direction = build_roml()
     level = 2.0
     with rm.Highs(threads=1, time_limit=2.0) as solver:
         for k in range(10):
@@ -106,14 +116,14 @@ def test_causal_rolling_replay_with_own_energy():
             m.update(price=forecasts, initial_energy=level)
             result = solver.solve(m)
             assert result.has_primal, f"gate {k} must stay feasible"
-            ch, dh, en = read_solution(result, charge, discharge, energy)
-            check_physics(en, ch, dh, level)
+            ch, dh, en, dr = read_solution(result, charge, discharge, energy, direction)
+            check_physics(en, ch, dh, level, direction=dr)
             level = float(np.clip(level + DT * (EFF * ch[0] - dh[0] / EFF), 0.0, ENERGY_CAP))
     assert 0.0 <= level <= ENERGY_CAP
 
 
 def test_result_values_are_owned_copies():
-    m, price, initial_energy, charge, discharge, energy = build_roml()
+    m, price, initial_energy, charge, discharge, energy, direction = build_roml()
     with rm.Highs(threads=1) as solver:
         result = solver.solve(m)
         first = result.values(charge)

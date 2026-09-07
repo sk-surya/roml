@@ -29,11 +29,11 @@ def build_model():
     m.add(charge <= POWER * direction, name="charge_mode")
     m.add(discharge <= POWER * (1.0 - direction), name="discharge_mode")
     m.maximize(DT * rm.dot(price, discharge - charge) + TERMINAL_VALUE * energy[-1])
-    return m, price, initial_energy, charge, discharge, energy
+    return m, price, initial_energy, charge, discharge, energy, direction
 
 
 def main(n_gates=10):
-    m, price, initial_energy, charge, discharge, energy = build_model()
+    m, price, initial_energy, charge, discharge, energy, direction = build_model()
     rng = np.random.default_rng(20260907)
     horizon = n_gates + N
     t = np.arange(horizon)
@@ -49,6 +49,8 @@ def main(n_gates=10):
             ch = np.array([result.value(charge[i]) for i in range(N)])
             dh = np.array([result.value(discharge[i]) for i in range(N)])
             en = np.array([result.value(energy[i]) for i in range(N + 1)])
+            dr = np.array([result.value(direction[i]) for i in range(N)])
+            assert all(min(abs(v), abs(v - 1.0)) <= 1e-6 for v in dr)
             assert abs(en[0] - level) <= 1e-6
             for tt in range(N):
                 expect = en[tt] + DT * (EFF * ch[tt] - dh[tt] / EFF)
@@ -59,6 +61,9 @@ def main(n_gates=10):
             step_value = float(DT * np.dot(forecasts, dh - ch) + TERMINAL_VALUE * en[-1])
             total += step_value
             print(f"gate {k}: action={action:+.3f} level={level:.3f} value={step_value:.2f}")
+    # NOTE: this accumulated total prices forecast energy plus per-gate
+    # terminal values; it is a computational smoke signal, not economic
+    # evidence of policy quality.
     print(f"total over {n_gates} gates: {total:.2f}")
 
 

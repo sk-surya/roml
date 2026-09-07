@@ -43,13 +43,15 @@ def check_physics(
     charge,
     discharge,
     initial,
+    direction=None,
     dt=DT,
     eff=EFF,
     cap=ENERGY_CAP,
     power=POWER,
     tol=1e-6,
 ):
-    """Energy recurrence, bounds, and charge/discharge exclusivity."""
+    """Energy recurrence, bounds, charge/discharge exclusivity, and (when
+    direction is given) MIP integrality plus mode-row consistency."""
     assert abs(energy[0] - initial) <= tol, (energy[0], initial)
     for t in range(N):
         expect = energy[t] + dt * (eff * charge[t] - discharge[t] / eff)
@@ -59,6 +61,12 @@ def check_physics(
         assert -tol <= discharge[t] <= power + tol
         assert charge[t] * discharge[t] <= tol
     assert -tol <= energy[N] <= cap + tol
+    if direction is not None:
+        for t in range(N):
+            d = direction[t]
+            assert min(abs(d), abs(d - 1.0)) <= 1e-6, (t, d)
+            assert charge[t] <= power * d + tol, (t, charge[t], d)
+            assert discharge[t] <= power * (1.0 - d) + tol, (t, discharge[t], d)
 
 
 def objective_value(price, charge, discharge, energy, dt=DT, terminal=TERMINAL_VALUE):

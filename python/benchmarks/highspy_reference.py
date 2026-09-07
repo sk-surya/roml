@@ -26,8 +26,8 @@ def build_highs_model(price, initial_energy):
     assert off_b + n_dir == ncols
 
     h = highspy.Highs()
-    h.setOptionValue("output_flag", False)
-    h.setOptionValue("threads", 1)
+    assert h.setOptionValue("output_flag", False) == highspy.HighsStatus.kOk
+    assert h.setOptionValue("threads", 1) == highspy.HighsStatus.kOk
     empty_i = np.zeros(0, dtype=np.int32)
     empty_v = np.zeros(0)
     # Columns: charge, discharge (continuous [0, power]).
@@ -94,6 +94,11 @@ def build_highs_model(price, initial_energy):
     return h, cols
 
 
+def highs_version():
+    h = highspy.Highs()
+    return h.version()
+
+
 def solve_gate(price, initial_energy, time_limit=2.0):
     h, cols = build_highs_model(np.asarray(price), float(initial_energy))
     h.setOptionValue("time_limit", float(time_limit))
@@ -138,9 +143,13 @@ class PersistentHighs:
         )
 
     def solve(self, time_limit=2.0):
-        self.h.setOptionValue("time_limit", float(time_limit))
-        self.h.run()
+        assert (
+            self.h.setOptionValue("time_limit", float(time_limit))
+            == highspy.HighsStatus.kOk
+        )
+        assert self.h.run() == highspy.HighsStatus.kOk
         status = str(self.h.getModelStatus())
+        assert status == "HighsModelStatus.kOptimal", status
         info = self.h.getInfo()
         sol = self.h.getSolution()
         return {

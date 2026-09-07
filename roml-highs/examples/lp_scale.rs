@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut steps = 20usize;
     let mut repeats = 10usize;
     let mut seed = 20260907u64;
+    let mut forecasts_path: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -45,6 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seed = args[i + 1].parse()?;
                 i += 2;
             }
+            "--forecasts" => {
+                forecasts_path = Some(args[i + 1].clone());
+                i += 2;
+            }
             other => panic!("unknown argument {other}"),
         }
     }
@@ -57,14 +62,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rng ^= rng << 17;
         (rng as f64) / (u64::MAX as f64)
     };
-    let mut streams = Vec::with_capacity(steps);
-    for _ in 0..steps {
-        let mut grid = Vec::with_capacity(BATTERIES * PERIODS);
-        for _ in 0..BATTERIES * PERIODS {
-            grid.push(50.0 + 10.0 * (next_rand() - 0.5) * 2.0);
+    // Shared frozen stream when provided (identical numerics across
+    // arms); otherwise the internal recipe (same distribution family).
+    let streams: Vec<Vec<f64>> = match &forecasts_path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)?;
+            let values: Vec<f64> = text
+                .split(|c| c == ',' || c == '\n')
+                .filter_map(|piece| {
+                    let piece = piece.trim();
+                    if piece.is_empty() {
+                        None
+                    } else {
+                        Some(piece.parse::<f64>().expect("forecast value"))
+                    }
+                })
+                .collect();
+            assert!(
+                values.len() >= steps * BATTERIES * PERIODS,
+                "forecast stream too short"
+            );
+            (0..steps)
+                .map(|k| {
+                    values[k * BATTERIES * PERIODS..(k + 1) * BATTERIES * PERIODS].to_vec()
+                })
+                .collect()
         }
-        streams.push(grid);
-    }
+        None => {
+            let mut streams = Vec::with_capacity(steps);
+            for _ in 0..steps {
+                let mut grid = Vec::with_capacity(BATTERIES * PERIODS);
+                for _ in 0..BATTERIES * PERIODS {
+                    grid.push(50.0 + 10.0 * (next_rand() - 0.5) * 2.0);
+                }
+                streams.push(grid);
+            }
+            streams
+        }
+    };
 
     let mut model = Model::named("lp-scale");
     let mut price_of = Vec::with_capacity(BATTERIES * PERIODS);

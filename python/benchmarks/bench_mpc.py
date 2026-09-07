@@ -53,6 +53,29 @@ def build_model(lp=False):
     return m, price, initial_energy, charge, discharge, energy
 
 
+def replay_highspy(steps, realized, time_limit=2.0):
+    from benchmarks.highspy_reference import PersistentHighs, highs_version
+
+    ph = PersistentHighs(realized[0:N], 2.0)
+    samples = []
+    for k in range(steps):
+        forecasts = realized[k : k + N].copy()
+        t0 = time.monotonic()
+        ph.update(forecasts, 2.0)
+        out = ph.solve(time_limit=time_limit)
+        t1 = time.monotonic()
+        check_physics(out["energy"], out["charge"], out["discharge"], 2.0)
+        samples.append(
+            {
+                "gate": k,
+                "wall_ms": (t1 - t0) * 1000.0,
+                "objective": out["objective"],
+                "level": 2.0,
+            }
+        )
+    return samples, highs_version()
+
+
 def replay(steps, seed, fresh_each_gate, mode="closed", realized=None, lp=False):
     if realized is None:
         realized = forecast_stream(steps, seed=seed)
@@ -77,7 +100,8 @@ def replay(steps, seed, fresh_each_gate, mode="closed", realized=None, lp=False)
         dh = np.asarray(result.values(discharge))
         en = np.asarray(result.values(energy))
         check_physics(en, ch, dh, gate_level)
-        level = float(np.clip(level + DT * (EFF * ch[0] - dh[0] / EFF), 0.0, ENERGY_CAP))
+        if mode == "closed":
+            level = float(np.clip(level + DT * (EFF * ch[0] - dh[0] / EFF), 0.0, ENERGY_CAP))
         samples.append(
             {
                 "gate": k,
@@ -99,7 +123,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--workload", default="milp-mpc")
     parser.add_argument("--arm", default="python-persistent",
-                        choices=["python-persistent", "python-fresh"])
+                        choices=["python-persistent", "python-fresh", "highspy-persistent"])
     parser.add_argument("--mode", default="closed", choices=["closed", "matched"])
     parser.add_argument("--lp", action="store_true",
                         help="LP-small: continuous direction relaxation")
@@ -109,20 +133,34 @@ def main():
 
     fresh = args.arm == "python-fresh"
     lp = args.lp
+    use_highspy = args.arm == "highspy-persistent"
+    if use_highspy and (lp or fresh):
+        raise SystemExit("--arm highspy-persistent runs the MILP matched workload only")
     if lp and args.workload == "milp-mpc":
         args.workload = "lp-small"
     realized = None
     if args.import_forecasts is not None:
         realized = np.loadtxt(args.import_forecasts, delimiter=",")
+    # Warmup on the measured stream when provided (identical numerics).
+    warmup_stream = realized
     if args.export_forecasts is not None:
         np.savetxt(args.export_forecasts,
                    forecast_stream(args.steps, seed=args.seed), delimiter=",")
-    # Warmup (not recorded).
-    replay(5, args.seed, fresh, mode=args.mode, realized=None, lp=lp)
+    # Warmup (not recorded): 30 gates per QUALIFICATION protocol.
+    if use_highspy:
+        replay_highspy(30, warmup_stream if warmup_stream is not None else forecast_stream(30, seed=args.seed))
+    else:
+        replay(30, args.seed, fresh, mode=args.mode, realized=warmup_stream, lp=lp)
     repetitions = []
+    native_version = None
+    if use_highspy and realized is None:
+        realized = forecast_stream(args.steps, seed=args.seed)
     for r in range(args.repeats):
-        samples = replay(args.steps, args.seed + r, fresh,
-                         mode=args.mode, realized=realized, lp=lp)
+        if use_highspy:
+            samples, native_version = replay_highspy(args.steps, realized)
+        else:
+            samples = replay(args.steps, args.seed + r, fresh,
+                             mode=args.mode, realized=realized, lp=lp)
         walls = [s["wall_ms"] for s in samples]
         repetitions.append(
             {
@@ -132,6 +170,16 @@ def main():
                 "p99_ms": float(np.percentile(walls, 99)),
                 "mean_objective": float(np.mean([s["objective"] for s in samples])),
                 "final_level": samples[-1]["level"],
+                # Per-gate samples: wall time, objective, level.
+                "samples": [
+                    {
+                        "gate": x["gate"],
+                        "wall_ms": x["wall_ms"],
+                        "objective": x["objective"],
+                        "level": x["level"],
+                    }
+                    for x in samples
+                ],
             }
         )
     report = {
@@ -148,6 +196,7 @@ def main():
             "python": platform.python_version(),
             "numpy": np.__version__,
             "roml": rm.__version__,
+            "highs": native_version,
             "threads": 1,
             "time_limit": 2.0,
         },

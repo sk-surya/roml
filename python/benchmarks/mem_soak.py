@@ -6,8 +6,6 @@ growth <= max(32 MiB, 10% of post-warmup RSS).
 """
 
 import gc
-import os
-import resource
 import time
 
 import numpy as np
@@ -17,7 +15,8 @@ import roml as rm
 
 def rss_mib():
     # Current resident set (ru_maxrss is a monotonic high-water mark and
-    # cannot observe releases).
+    # cannot observe releases). Linux-only (uses /proc); run the soak on
+    # Linux and treat other platforms as unmeasured, never as passed.
     with open("/proc/self/status") as f:
         for line in f:
             if line.startswith("VmRSS:"):
