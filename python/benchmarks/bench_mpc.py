@@ -53,6 +53,12 @@ def build_model(lp=False):
     return m, price, initial_energy, charge, discharge, energy
 
 
+def samples_native_version():
+    probe = build_model()[0]
+    with rm.Highs(threads=1) as solver:
+        return solver.solve(probe).metadata["backend"]
+
+
 def replay_highspy(steps, realized, time_limit=2.0):
     from benchmarks.highspy_reference import PersistentHighs, highs_version
 
@@ -161,6 +167,9 @@ def main():
         else:
             samples = replay(args.steps, args.seed + r, fresh,
                              mode=args.mode, realized=realized, lp=lp)
+        if native_version is None:
+            # Native version from a measured solve's metadata (all arms).
+            native_version = samples_native_version()
         walls = [s["wall_ms"] for s in samples]
         repetitions.append(
             {
