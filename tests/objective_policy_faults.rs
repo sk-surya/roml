@@ -65,6 +65,11 @@ struct FaultBackend {
     /// Every `time_limit_secs` observed on a stage solve request, in order.
     /// Shared with the test so staged-budget propagation is observable.
     pub seen_limits: Rc<RefCell<Vec<Option<f64>>>>,
+    /// Number of overlay applies attempted so far.
+    apply_count: usize,
+    /// When `Some(n)`, the `n`-th overlay apply (zero-based) fails, so a
+    /// later stage carrying prior locks can be faulted specifically.
+    pub fail_apply_at: Option<usize>,
 }
 
 impl FaultBackend {
@@ -93,6 +98,8 @@ impl FaultBackend {
             mismatched_compilation: false,
             rebuilds: 0,
             seen_limits: Rc::new(RefCell::new(Vec::new())),
+            apply_count: 0,
+            fail_apply_at: None,
         }
     }
 
@@ -230,6 +237,15 @@ impl OverlaySession for FaultBackend {
         &mut self,
         overlay: &roml::advanced::CompiledOverlay,
     ) -> Result<OverlayApplyReceipt, BackendError> {
+        if self.fail_apply_at == Some(self.apply_count) {
+            self.apply_count += 1;
+            return Err(BackendError::new(
+                "injected objective apply failure at apply count",
+                ErrorCategory::Internal,
+                HealthEffect::RequiresRebuild,
+            ));
+        }
+        self.apply_count += 1;
         if matches!(self.failure, Some(FailurePoint::Apply)) {
             return Err(BackendError::new(
                 "injected objective apply failure",
@@ -1069,4 +1085,41 @@ fn deactivated_priority_penalty_target_skips_validation() {
             );
         }
     }
+}
+
+/// A lock-carrying later-stage overlay that fails to apply stops descent
+/// with the primary error preserved: stage 0 completes with its lock, stage
+/// 1's apply fails (its overlay carries stage 0's degradation-lock rows), no
+/// later stage executes, and the session recovers for ordinary solves.
+#[test]
+fn later_stage_apply_failure_stops_descent_with_primary_preserved() {
+    let (mut model, x, y, obj1, obj2) = base_objective_model();
+    let mut backend = FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0), (y, 3.0)],
+        },
+    );
+    backend.fail_apply_at = Some(1);
+    let mut session = SolverSession::new(backend);
+    let result = session.solve_objective_policy(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::BestFeasible,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ObjectiveExecutionError::Cleanup {
+                ref primary,
+                requires_rebuild: true,
+                ..
+            }) if primary.contains("apply count")
+        ),
+        "expected a composite cleanup error preserving the primary apply error, got {result:?}"
+    );
+    // No lock was ever treated as active without a receipt, and the failed
+    // stage left nothing behind: an ordinary solve works afterwards.
+    assert!(session.solve(&mut model).is_ok());
 }
