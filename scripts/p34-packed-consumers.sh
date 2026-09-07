@@ -146,6 +146,7 @@ fn main() {
     model.add_constraint((x).ge(2.0)).unwrap();
     let obj = model.minimize(x).unwrap();
     model.set_active_objective(obj).unwrap();
+    model.commit().unwrap();
     let snapshot = model.take_snapshot().unwrap();
     assert_eq!(snapshot.revision, model.current_revision());
     println!("core-ok rev={} vars=1", snapshot.revision);
