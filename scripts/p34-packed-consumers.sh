@@ -59,7 +59,7 @@ else
     while IFS= read -r f; do
         # Generated pack metadata is not present in the working tree.
         case "$f" in
-            .cargo_vcs_info.json | .cargo-checksum.json) continue ;;
+            .cargo_vcs_info.json | .cargo-checksum.json | Cargo.toml.orig) continue ;;
         esac
         mkdir -p "$HIGHS_DIR/$(dirname "$f")"
         cp "$ROOT/$f" "$HIGHS_DIR/$f"
