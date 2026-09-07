@@ -64,7 +64,7 @@ MPC matched MILP (1000 gates x 30 reps, threads=1, limit 2.0s):
 
 | Arm | p50 ms/gate |
 |---|---|
-| Python ROML persistent | 4.52 |
+| Python ROML persistent | 4.45 |
 | Python ROML fresh rebuild | 5.99 (+33%: state-reuse benefit) |
 | Direct highspy persistent | 3.97 |
 | Direct Rust ROML persistent | 3.98 |

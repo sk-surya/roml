@@ -39,7 +39,7 @@ Canonical release-wheel numbers, quiet host (see
 
 | Workload | Arm | p50 |
 |---|---|---|
-| MPC matched MILP | Python persistent | 4.52 ms/gate |
+| MPC matched MILP | Python persistent | 4.45 ms/gate |
 | MPC matched MILP | Python fresh | 5.99 ms/gate (+33%) |
 | MPC matched MILP | highspy persistent | 3.97 ms/gate |
 | MPC matched MILP | Rust persistent | 3.98 ms/gate |
