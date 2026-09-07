@@ -66,15 +66,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut direction = Vec::with_capacity(N);
     for t in 0..N {
         charge.push(model.add_variable(continuous().bounds(0.0, POWER).named(format!("c{t}")))?);
-        discharge.push(
-            model.add_variable(continuous().bounds(0.0, POWER).named(format!("d{t}")))?,
-        );
+        discharge.push(model.add_variable(continuous().bounds(0.0, POWER).named(format!("d{t}")))?);
         direction.push(model.add_variable(binary().named(format!("b{t}")))?);
     }
     for t in 0..=N {
-        energy.push(
-            model.add_variable(continuous().bounds(0.0, ENERGY_CAP).named(format!("e{t}")))?,
-        );
+        energy
+            .push(model.add_variable(continuous().bounds(0.0, ENERGY_CAP).named(format!("e{t}")))?);
     }
     // initial_soc tracks the level parameter: bounds re-applied per gate.
     let initial_soc = model.add_constraint(
@@ -123,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => {
             // Shared frozen stream (one value per line or comma-separated).
             let text = std::fs::read_to_string(path)?;
-            text.split(|c| c == ',' || c == '\n')
+            text.split([',', '\n'])
                 .filter_map(|piece| {
                     let piece = piece.trim();
                     if piece.is_empty() {

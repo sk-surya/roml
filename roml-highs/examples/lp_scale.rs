@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => {
             let text = std::fs::read_to_string(path)?;
             let values: Vec<f64> = text
-                .split(|c| c == ',' || c == '\n')
+                .split([',', '\n'])
                 .filter_map(|piece| {
                     let piece = piece.trim();
                     if piece.is_empty() {
@@ -83,9 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "forecast stream too short"
             );
             (0..steps)
-                .map(|k| {
-                    values[k * BATTERIES * PERIODS..(k + 1) * BATTERIES * PERIODS].to_vec()
-                })
+                .map(|k| values[k * BATTERIES * PERIODS..(k + 1) * BATTERIES * PERIODS].to_vec())
                 .collect()
         }
         None => {
@@ -103,22 +101,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut model = Model::named("lp-scale");
     let mut price_of = Vec::with_capacity(BATTERIES * PERIODS);
-    for b in 0..BATTERIES {
-        for t in 0..PERIODS {
-            price_of.push(
-                model.add_parameter(parameter(50.0).named(format!("p{b}_{t}")))?,
-            );
+    for _ in 0..BATTERIES {
+        for _ in 0..PERIODS {
+            price_of.push(model.add_parameter(parameter(50.0))?);
         }
     }
     let mut charge = Vec::with_capacity(BATTERIES * PERIODS);
     let mut discharge = Vec::with_capacity(BATTERIES * PERIODS);
     let mut energy = Vec::with_capacity(BATTERIES * (PERIODS + 1));
-    for b in 0..BATTERIES {
-        for t in 0..PERIODS {
+    for _ in 0..BATTERIES {
+        for _ in 0..PERIODS {
             charge.push(model.add_variable(continuous().bounds(0.0, POWER))?);
             discharge.push(model.add_variable(continuous().bounds(0.0, POWER))?);
         }
-        for t in 0..=PERIODS {
+        for _ in 0..=PERIODS {
             energy.push(model.add_variable(continuous().bounds(0.0, ENERGY_CAP))?);
         }
     }
@@ -164,9 +160,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut update_ms, mut solve_ms, mut extract_ms) = (0.0, 0.0, 0.0);
     for _ in 0..repeats {
         let rep_start = Instant::now();
-        for k in 0..steps {
+        for stream in streams.iter().take(steps) {
             let u0 = Instant::now();
-            for (p, v) in price_of.iter().zip(streams[k].iter()) {
+            for (p, v) in price_of.iter().zip(stream.iter()) {
                 model.set_parameter(*p, *v)?;
             }
             let u1 = Instant::now();

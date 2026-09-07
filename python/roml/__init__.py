@@ -36,7 +36,7 @@ NoSolutionError = _native.NoSolutionError
 MissingValueError = _native.MissingValueError
 UnavailableDiagnosticError = _native.UnavailableDiagnosticError
 
-__version__ = "0.1.0"
+__version__ = _native.version()
 
 __all__ = [
     "__version__",
