@@ -257,3 +257,92 @@ failures.)
 2. Complete exact-head independent re-review with no unresolved P0/P1 (PR #49 open, draft).
 3. Owner-authorized merge of PR #49.
 4. Update the milestone routing state to authorize P34 after the P31 merge.
+
+## Remediation round 3 — executor reproduction (2026-09-07)
+
+Independent review #4989892030 (head `6536506`) left one P1: generated
+objective terms silently omitted from stage evaluation plus missing-as-zero
+primals. Commit `e0a5efa` addressed it by preferring the backend-reported
+solved scalar and rejecting missing primals. Executor reproduction on
+`e0a5efa` (isolated worktree, Rust 1.97.1, controlled-backend probes) found
+residual defects in the same accounting family, all fixed in `4e69fe2` with
+red-on-`e0a5efa` / green-on-fix evidence:
+
+1. **Delta-path objective coefficient tracking (P1).** `compile_delta`
+   updated `compiled_objective_coefficients` for `SetObjectiveCell` /
+   `SetObjectiveConstant` but not for `SetCell` / `RemoveCell` with an
+   objective target — the ops ordinary `minimize`/`maximize` builds emit.
+   After incremental sync the terms read back empty, so per-stage and final
+   objective vectors silently evaluated to the bare constant (0.0) and
+   missing-primal rejection never fired. Fix mirrors the `SetObjectiveCell`
+   tracking update (replace cell, deterministic order) and drops removed
+   cells. Regression: controlled two-level policy over `min x / max y`
+   asserts stage-0 `obj1 = 2.0` and final `[obj1 = 2.0, obj2 = 3.0]`
+   (red on `e0a5efa`: `0.0`).
+2. **No-candidate final vectors (P1).** `complete_objective_values_at` ran
+   unconditionally, attaching invented `[0.0, 0.0]` vectors to infeasible /
+   Unknown outcomes. The final vector is now gated on actual candidate
+   availability (`result.solution.is_some()`); without a candidate the stage
+   keeps its empty vector. A present-but-incomplete candidate still raises
+   typed `Numerical` (regression with `x`-only primals). Regressions extend
+   the existing infeasible/Unknown tests with empty-vector assertions
+   (red on `e0a5efa`: non-empty).
+3. **Objective-targeted penalty reconstruction (P1).** `evaluate_objective`
+   skipped generated violation coefficients (no user mapping), so
+   per-objective and final vectors dropped P30 objective-targeted penalties
+   even where the backend scalar (3.0) retained them. `evaluate_objective`
+   now rebuilds each active objective-targeted penalty from snapshot data as
+   `signed_weight * violation` (`+w` minimize / `-w` maximize, mirroring the
+   compiler fold); `evaluate_stage_scalar` gains the normalized counterpart
+   (`level_weight * weight * violation`) via a new
+   `StageScalar::objective_penalties` field, making the no-reported-scalar
+   fallback exact too. Only active constructs resolve (the pre-existing
+   priority resolver additionally gains the missing `active` check — a
+   deactivated penalty contributes no bridge rows). No cap is applied in
+   reconstruction: violation variables carry `[0, cap]` bounds, so an
+   over-cap violation is backend-infeasible (no scalar exists to compare);
+   on success the cap is inactive. Shared violation helper
+   `penalty_violation` serves both paths. Regressions: controlled fallback
+   `g(x) = x + 0.5*max(0, 6-x)` at `x = 0` reports scalar, vector and lock
+   `3.0` (red on `e0a5efa`: `Some(0.0)`); parameterized weight `0.5 -> 3.0`
+   then `1.0 -> 6.0` across an incremental re-solve; deactivation returns
+   vectors to unpenalized `0.0`; real-HiGHS two-level native test asserts
+   backend scalar, lock, per-objective vector and final vector all carry the
+   full penalty, plus a native parameterized-weight variant.
+4. **Explicit options and shared staged budget (PR-INTAKE MPC budget).**
+   `solve_objective_policy` hardcoded `SolveOptions::default()`. New
+   backwards-compatible `solve_objective_policy_with_options` and
+   `solve_objective_policy_with_options_and_clock` (injectable `PolicyClock`;
+   `SystemPolicyClock` default) thread options into base synchronization and
+   cap each stage solve at the REMAINING budget of a shared deadline — never
+   a reset allowance. Budget expiry before stage 1 returns typed
+   `BudgetExhausted` (no incumbent exists); expiry later returns completed
+   stages with new `MultiObjectiveResult::budget_exhausted = true` and the
+   last valid incumbent (locks never constructed without evidence).
+   Operational stage errors return their own class and are never masked by an
+   expired clock. The frozen P31 stage schema is unchanged; the result-level
+   flag is the explicit budget-stop reason. Regressions (deterministic manual
+   clock, no sleeps): pre-stage-1 exhaustion errors with zero stage solves
+   and a clean follow-up; post-stage-1 stop preserves the incumbent;
+   two-stage request limits observed as exactly `[7.0, 5.0]`s of a 10s
+   budget; solve failure with live budget stays `Backend`; NaN-gap options
+   reject before mutation. Native: generous-limit solve unaffected, zero
+   limit deterministically `BudgetExhausted`.
+
+## Verification (remediation round 3)
+
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy -p roml --all-targets -- -D warnings` — clean.
+- `cargo test -p roml --all-targets` — all pass (faults file 21, including
+  the new accounting/budget/deactivation regressions).
+- `cargo test -p roml-highs --test objective_policy` — 10 pass (new vector,
+  parameterized-weight, and options/budget natives included).
+- Red/green: the strengthened vector assertions (`2.0` vs `0.0`), the
+  infeasible empty-vector assertion, and the fallback `3.0` regression each
+  fail on pristine `e0a5efa` and pass with the fix (scratch worktree,
+  2026-09-07).
+- `RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps` — clean (recorded
+  at final gate).
+- Hosted exact-head CI on the remediation head — required before merge.
+- Independent re-review of the remediation head — required; zero P0/P1 to
+  merge.
