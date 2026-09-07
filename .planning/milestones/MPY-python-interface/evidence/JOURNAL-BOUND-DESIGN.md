@@ -155,9 +155,13 @@ only with justification, never by weakening.
 
 ## 6. Residuals (documented, not hidden)
 
-- Count-bounding does not bound bytes for pathological single-batch
-  sizes (e.g., a 100k-entity bulk build commits one large batch).
-  Uniform MPC workloads are bounded; byte accounting is future work.
+- The bound of 128 is on history LENGTH (batch count), not bytes:
+  individual batch sizes remain workload-dependent (a 100k-entity
+  bulk build commits one large batch while an MPC delta is
+  kilobytes). Uniform MPC workloads are byte-bounded in practice
+  (~2.5 MB at the measured 20 KB/batch); byte accounting is future
+  work, to be revisited only if a qualification workload exposes
+  another retention problem.
 - A session idle longer than the window always pays one rebuild on
   resume (correctness unaffected).
 - The `Journal::batches` map and `SyncCoordinator::journal` field
