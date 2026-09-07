@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
 status: active
-stopped_at: P30 merged via PR #47; P31 activated for planning/execution
-last_updated: "2026-08-18T00:00:00Z"
+stopped_at: P31 merged via PR #49; P34 activated for qualification/closure
+last_updated: "2026-09-07T00:00:00Z"
 progress:
   total_phases: 17
-  completed_phases: 13
+  completed_phases: 14
   total_plans: 29
   completed_plans: 22
-  percent: 76
-current_phase: 31
-current_phase_name: Lexicographic objectives
+  percent: 82
+current_phase: 34
+current_phase_name: M3 final qualification
 implementation_authorized: true
 ---
 
@@ -32,12 +32,12 @@ This file is the root GSD routing authority. Detailed contracts live under `.pla
 
 ## Routing versus execution
 
-**Current routing target:** P31 — lexicographic objectives.
-**Active production implementation:** P31 is now authorized after P30 merged via PR #47 at merge commit `28a019e83a40f2c7df637290c48ad23d7d568ec9`. P36 is complete and merged via PR #46 at merge commit `8838effee84eafdcbc2e502fb417df8d09221248`.
+**Current routing target:** P34 — M3 final qualification.
+**Active production implementation:** P34 is now authorized after P31 merged via PR #49 at merge commit `4cbe13caa9a621b43593da76259e9c5b88fc4d18` (reviewed head `c7d935a5e08497d3fef0d0f9783bd4003bb9ecfa`). P36 is complete and merged via PR #46 at merge commit `8838effee84eafdcbc2e502fb417df8d09221248`.
 **Planning prerequisite:** completion-planning PR #45 merged to `main` as `48fab4db347522cebc786393e5afcbdbcea98f33`.
-**Later production phases:** P34 remains inactive until P31 merges.
+**Later production phases:** M4 remains a design gate only; MPY (Python interface) is the authorized successor after M3 closure (see MPY STATE).
 
-A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. The explicit authorization here permits P31 only; P34 remains unauthorized.
+A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. The explicit authorization here permits P34 only; M4 production remains unauthorized.
 
 ## Accepted state
 
@@ -46,7 +46,8 @@ A `current_phase` value identifies the next GSD routing target; it is **not** im
 - P35 MPS import: complete, merged via PR #44 as `7159fad8830b32f5a9377174e6e57bb24f99de95`.
 - P29 design record: merged via PR #38 as `4467797f002c93a1baab638b5e65976fb8492505`.
 - P30: complete and merged via PR #47 as `28a019e83a40f2c7df637290c48ad23d7d568ec9`; exact-head hosted CI and independent review passed.
-- P31: authorized and active for planning/execution; P34 remains planned and inactive.
+- P31: complete and merged via PR #49 as `4cbe13caa9a621b43593da76259e9c5b88fc4d18`; reviewed head `c7d935a5e08497d3fef0d0f9783bd4003bb9ecfa` with exact-head hosted CI (17 pass, 2 pre-existing skips) and independent CLEAR review.
+- P34: authorized and active for qualification/closure; execute only the P34 plan and its explicit gates.
 - P36: complete, merged via PR #46 as `8838effee84eafdcbc2e502fb417df8d09221248`; the reviewed implementation head was `8a8ee7573532c6c9b883249f74afefb477bbb6a1`.
 - M4 quadratic/nonlinear foundation: preview/design gate only; no production implementation authorization.
 
@@ -90,10 +91,10 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 | P28 | complete | no new work | accepted evidence |
 | P29 | complete | no new work | PR #39 / P29 evidence |
 | P30 | complete | no new work | PR #47 merged; exact-head evidence retained |
-| P31 | active | **true** | P31 evidence/review and owner merge |
+| P31 | complete | no new work | PR #49 merged as `4cbe13c`; exact-head evidence retained |
 | P32 | complete | no new work | accepted evidence |
 | P33 | complete | no new work | accepted evidence |
-| P34 | planned | **false** | P31 accepted + merged |
+| P34 | active | **true** | P34 evidence/review and owner merge |
 | P35 | complete | no new work | PR #44 / P35 evidence |
 | P36 | complete | no new work | PR #46 merged as `8838effe`; exact-head evidence and review retained |
 
@@ -101,17 +102,16 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 
 - One production phase at a time.
 - Research/review may be prepared ahead; production code may not.
-- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated. P31 has now passed the P30 merge gate.
+- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated. P34 has now passed the P31 merge gate.
 - Completion requires exact-head evidence, independent review, hosted mandatory CI, and owner-authorized merge.
-- P34 remains unauthorized until its P31 predecessor merge gate is complete and this state is updated again.
+- M4 production remains unauthorized; MPY runtime phases are conditionally authorized after M3 closure.
 - A skipped mandatory check never counts as pass.
 - Publication/tag/release remain separate owner gates and are not implied by M3 completion.
 
-## P30 Execution Position
+## P31 Execution Position
 
-- Plans complete: 30-01, 30-02, 30-03, and 30-04 (4 of 4).
-- Phase status: P30 complete and merged via PR #47; closure evidence retained.
-- P31 status: active and authorized; execute only the P31 plan and its explicit gates.
+- P31 objective policies + lexicographic executor complete and merged via PR #49; closure evidence in `.planning/phases/31-lexicographic-objectives/P31_OBJECTIVE_POLICIES.md`.
+- P34 status: active and authorized; execute only the P34 plan and its explicit gates.
 
 ## Performance Metrics
 
@@ -126,6 +126,6 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 
 ## Session
 
-**Last session:** 2026-08-14T17:22:00Z
-**Stopped at:** P30 merged via PR #47; P31 activated for planning/execution
+**Last session:** 2026-09-07T00:00:00Z
+**Stopped at:** P31 merged via PR #49; P34 activated for qualification/closure
 **Resume file:** None

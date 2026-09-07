@@ -1,0 +1,23 @@
+[package]
+name = "p34-perf"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "P34 deterministic primitive parameter-update benchmark (P34_PRIMITIVE_PARAMETER_UPDATE_V1)"
+license = "MIT OR Apache-2.0"
+
+# Deliberately NOT a workspace member: this harness builds against both the
+# current tree and the historical baseline checkout via path dependencies.
+# The workspace root is two levels up from tools/p34-perf when this directory
+# is copied next to (or into) the measured checkout; see README.md.
+
+[dependencies]
+roml = { path = "../.." }
+roml-highs = { path = "../../roml-highs" }
+
+[profile.release]
+opt-level = 3
+
+# Standalone crate: never part of the Cargo workspace (keeps `cargo test
+# --workspace` and all package boundaries untouched).
+[workspace]

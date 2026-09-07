@@ -53,6 +53,13 @@ before/after migration is in `MIGRATION.md`.
   Netlib, and imported P29 IIS qualification coverage. Chinneck archive
   materialization remains a qualification gate before P35 completion.
 
+#### M3 final qualification (P34, in progress)
+- Frozen Q01–Q14 native/portable qualification corpus with hand-verified
+  optima and formulation fingerprints; import-to-repair and MILP
+  orchestration workflows; deterministic `P34_PRIMITIVE_PARAMETER_UPDATE_V1`
+  perf gate; packed-consumer package protocol; executable fault matrix;
+  capability truth table; NLP-readiness review.
+
 #### Core model correctness (P1)
 - **Canonical coefficient cells** — duplicate terms for the same `(target, variable)` pair
   are algebraically combined (`p*x + q*x → (p+q)*x`) instead of overwriting.

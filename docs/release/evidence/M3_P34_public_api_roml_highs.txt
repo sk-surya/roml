@@ -1,0 +1,520 @@
+pub mod roml_highs
+pub use roml_highs::HighsInt
+pub enum roml_highs::MpsDifferentialDisposition
+pub roml_highs::MpsDifferentialDisposition::CompatibilityException
+pub roml_highs::MpsDifferentialDisposition::CompatibilityException::owner_approval: alloc::string::String
+pub roml_highs::MpsDifferentialDisposition::DialectNarrowed
+pub roml_highs::MpsDifferentialDisposition::IntentionalRomlRejection
+pub roml_highs::MpsDifferentialDisposition::RomlBugFixed
+impl core::clone::Clone for roml_highs::MpsDifferentialDisposition
+pub fn roml_highs::MpsDifferentialDisposition::clone(&self) -> roml_highs::MpsDifferentialDisposition
+impl core::cmp::Eq for roml_highs::MpsDifferentialDisposition
+impl core::cmp::PartialEq for roml_highs::MpsDifferentialDisposition
+pub fn roml_highs::MpsDifferentialDisposition::eq(&self, &roml_highs::MpsDifferentialDisposition) -> bool
+impl core::fmt::Debug for roml_highs::MpsDifferentialDisposition
+pub fn roml_highs::MpsDifferentialDisposition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::MpsDifferentialDisposition
+impl core::marker::Freeze for roml_highs::MpsDifferentialDisposition
+impl core::marker::Send for roml_highs::MpsDifferentialDisposition
+impl core::marker::Sync for roml_highs::MpsDifferentialDisposition
+impl core::marker::Unpin for roml_highs::MpsDifferentialDisposition
+impl core::marker::UnsafeUnpin for roml_highs::MpsDifferentialDisposition
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsDifferentialDisposition
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsDifferentialDisposition
+impl<T, U> core::convert::Into<U> for roml_highs::MpsDifferentialDisposition where U: core::convert::From<T>
+pub fn roml_highs::MpsDifferentialDisposition::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsDifferentialDisposition where U: core::convert::Into<T>
+pub type roml_highs::MpsDifferentialDisposition::Error = never
+pub fn roml_highs::MpsDifferentialDisposition::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsDifferentialDisposition where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsDifferentialDisposition::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsDifferentialDisposition::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::MpsDifferentialDisposition where T: core::clone::Clone
+pub type roml_highs::MpsDifferentialDisposition::Owned = T
+pub fn roml_highs::MpsDifferentialDisposition::clone_into(&self, &mut T)
+pub fn roml_highs::MpsDifferentialDisposition::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::MpsDifferentialDisposition where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsDifferentialDisposition::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsDifferentialDisposition where T: ?core::marker::Sized
+pub fn roml_highs::MpsDifferentialDisposition::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsDifferentialDisposition where T: ?core::marker::Sized
+pub fn roml_highs::MpsDifferentialDisposition::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::MpsDifferentialDisposition where T: core::clone::Clone
+pub unsafe fn roml_highs::MpsDifferentialDisposition::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::MpsDifferentialDisposition
+pub fn roml_highs::MpsDifferentialDisposition::from(T) -> T
+pub struct roml_highs::Highs
+impl roml_highs::Highs
+pub fn roml_highs::Highs::new() -> core::result::Result<Self, roml_highs::HighsError>
+pub fn roml_highs::Highs::solve(&mut self, &mut roml::model::Model) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+pub fn roml_highs::Highs::solve_plan(&mut self, &mut roml::model::Model, roml::solver::plan::SolvePlan) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+pub fn roml_highs::Highs::solve_with(&mut self, &mut roml::model::Model, roml::solver::options::SolveOptions) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+pub fn roml_highs::Highs::solve_with_overlay(&mut self, &mut roml::model::Model, roml::solver::options::SolveOptions, &roml::solver::overlay::SolveOverlay, core::option::Option<roml::id::ObjId>) -> core::result::Result<roml::solution::Solution, roml::solver::error::SolveError>
+impl core::marker::Freeze for roml_highs::Highs
+impl core::marker::Send for roml_highs::Highs
+impl !core::marker::Sync for roml_highs::Highs
+impl core::marker::Unpin for roml_highs::Highs
+impl core::marker::UnsafeUnpin for roml_highs::Highs
+impl !core::panic::unwind_safe::RefUnwindSafe for roml_highs::Highs
+impl !core::panic::unwind_safe::UnwindSafe for roml_highs::Highs
+impl<T, U> core::convert::Into<U> for roml_highs::Highs where U: core::convert::From<T>
+pub fn roml_highs::Highs::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::Highs where U: core::convert::Into<T>
+pub type roml_highs::Highs::Error = never
+pub fn roml_highs::Highs::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::Highs where U: core::convert::TryFrom<T>
+pub type roml_highs::Highs::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::Highs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::Highs where T: 'static + ?core::marker::Sized
+pub fn roml_highs::Highs::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::Highs where T: ?core::marker::Sized
+pub fn roml_highs::Highs::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::Highs where T: ?core::marker::Sized
+pub fn roml_highs::Highs::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::Highs
+pub fn roml_highs::Highs::from(T) -> T
+pub struct roml_highs::HighsFixture
+impl roml::solver::session::BackendFixture for roml_highs::HighsFixture
+pub type roml_highs::HighsFixture::Session = roml_highs::HighsSession
+pub fn roml_highs::HighsFixture::backend_name(&self) -> &str
+pub fn roml_highs::HighsFixture::new_session(&self) -> core::result::Result<Self::Session, roml::solver::backend::BackendError>
+impl core::marker::Freeze for roml_highs::HighsFixture
+impl core::marker::Send for roml_highs::HighsFixture
+impl core::marker::Sync for roml_highs::HighsFixture
+impl core::marker::Unpin for roml_highs::HighsFixture
+impl core::marker::UnsafeUnpin for roml_highs::HighsFixture
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::HighsFixture
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::HighsFixture
+impl<T, U> core::convert::Into<U> for roml_highs::HighsFixture where U: core::convert::From<T>
+pub fn roml_highs::HighsFixture::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::HighsFixture where U: core::convert::Into<T>
+pub type roml_highs::HighsFixture::Error = never
+pub fn roml_highs::HighsFixture::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::HighsFixture where U: core::convert::TryFrom<T>
+pub type roml_highs::HighsFixture::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::HighsFixture::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::HighsFixture where T: 'static + ?core::marker::Sized
+pub fn roml_highs::HighsFixture::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::HighsFixture where T: ?core::marker::Sized
+pub fn roml_highs::HighsFixture::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::HighsFixture where T: ?core::marker::Sized
+pub fn roml_highs::HighsFixture::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::HighsFixture
+pub fn roml_highs::HighsFixture::from(T) -> T
+pub struct roml_highs::HighsMpsSummary
+pub roml_highs::HighsMpsSummary::column_order: alloc::vec::Vec<alloc::string::String>
+pub roml_highs::HighsMpsSummary::column_semantics: alloc::collections::btree::map::BTreeMap<alloc::string::String, roml_highs::MpsColumnSemantics>
+pub roml_highs::HighsMpsSummary::columns: usize
+pub roml_highs::HighsMpsSummary::matrix: alloc::collections::btree::map::BTreeMap<(alloc::string::String, alloc::string::String), f64>
+pub roml_highs::HighsMpsSummary::nonzeros: usize
+pub roml_highs::HighsMpsSummary::objective_offset: f64
+pub roml_highs::HighsMpsSummary::objective_sense: highs_sys::HighsInt
+pub roml_highs::HighsMpsSummary::row_order: alloc::vec::Vec<alloc::string::String>
+pub roml_highs::HighsMpsSummary::row_semantics: alloc::collections::btree::map::BTreeMap<alloc::string::String, roml_highs::MpsRowSemantics>
+pub roml_highs::HighsMpsSummary::rows: usize
+impl core::clone::Clone for roml_highs::HighsMpsSummary
+pub fn roml_highs::HighsMpsSummary::clone(&self) -> roml_highs::HighsMpsSummary
+impl core::cmp::PartialEq for roml_highs::HighsMpsSummary
+pub fn roml_highs::HighsMpsSummary::eq(&self, &roml_highs::HighsMpsSummary) -> bool
+impl core::fmt::Debug for roml_highs::HighsMpsSummary
+pub fn roml_highs::HighsMpsSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::HighsMpsSummary
+impl core::marker::Freeze for roml_highs::HighsMpsSummary
+impl core::marker::Send for roml_highs::HighsMpsSummary
+impl core::marker::Sync for roml_highs::HighsMpsSummary
+impl core::marker::Unpin for roml_highs::HighsMpsSummary
+impl core::marker::UnsafeUnpin for roml_highs::HighsMpsSummary
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::HighsMpsSummary
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::HighsMpsSummary
+impl<T, U> core::convert::Into<U> for roml_highs::HighsMpsSummary where U: core::convert::From<T>
+pub fn roml_highs::HighsMpsSummary::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::HighsMpsSummary where U: core::convert::Into<T>
+pub type roml_highs::HighsMpsSummary::Error = never
+pub fn roml_highs::HighsMpsSummary::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::HighsMpsSummary where U: core::convert::TryFrom<T>
+pub type roml_highs::HighsMpsSummary::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::HighsMpsSummary::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::HighsMpsSummary where T: core::clone::Clone
+pub type roml_highs::HighsMpsSummary::Owned = T
+pub fn roml_highs::HighsMpsSummary::clone_into(&self, &mut T)
+pub fn roml_highs::HighsMpsSummary::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::HighsMpsSummary where T: 'static + ?core::marker::Sized
+pub fn roml_highs::HighsMpsSummary::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::HighsMpsSummary where T: ?core::marker::Sized
+pub fn roml_highs::HighsMpsSummary::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::HighsMpsSummary where T: ?core::marker::Sized
+pub fn roml_highs::HighsMpsSummary::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::HighsMpsSummary where T: core::clone::Clone
+pub unsafe fn roml_highs::HighsMpsSummary::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::HighsMpsSummary
+pub fn roml_highs::HighsMpsSummary::from(T) -> T
+pub struct roml_highs::HighsSession
+impl roml_highs::HighsSession
+pub fn roml_highs::HighsSession::new_unchecked() -> Self
+pub fn roml_highs::HighsSession::try_new() -> core::result::Result<Self, roml::solver::backend::BackendError>
+impl roml_highs::HighsSession
+pub fn roml_highs::HighsSession::observe_model_structure(&roml::model::Model) -> core::result::Result<roml_highs::HighsMpsSummary, roml_highs::HighsError>
+pub fn roml_highs::HighsSession::read_model_summary<P: core::convert::AsRef<std::path::Path>>(&mut self, P) -> core::result::Result<roml_highs::HighsMpsSummary, roml_highs::HighsError>
+pub fn roml_highs::HighsSession::solve_loaded_mps_model(&mut self) -> core::result::Result<roml_highs::MpsSolveObservation, roml_highs::HighsError>
+impl core::marker::Send for roml_highs::HighsSession
+impl core::ops::drop::Drop for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::drop(&mut self)
+impl roml::solver::session::BackendMetadata for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::backend_name(&self) -> &str
+pub fn roml_highs::HighsSession::capabilities(&self) -> roml::solver::backend::BackendCapabilities
+pub fn roml_highs::HighsSession::name(&self) -> &str
+pub fn roml_highs::HighsSession::typed_capabilities(&self) -> &roml::compiler::capability::BackendCapabilitySet
+pub fn roml_highs::HighsSession::version(&self) -> &str
+impl roml::solver::session::BackendSession for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::close(self) -> core::result::Result<(), roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::native_conflict(&self, &roml::solver::infeasibility::NativeConflictRequest) -> core::result::Result<roml::solver::infeasibility::NativeConflict, roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::solve(&mut self, &roml::solver::request::SolveRequest) -> core::result::Result<roml::solver::request::SolveResult, roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::spawn_infeasibility_oracle(&self, &roml::compiler::backend_ir::BackendSnapshot, &roml::solver::infeasibility::SemanticConflictUniverse) -> core::result::Result<alloc::boxed::Box<dyn roml::solver::infeasibility::FeasibilityOracle>, roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::synchronize(&mut self, roml::solver::session::Synchronization) -> core::result::Result<roml::solver::session::SyncReceipt, roml::solver::backend::BackendError>
+impl roml::solver::session::CallbackSession for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::clear_callback_handler(&mut self) -> core::result::Result<(), roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::set_callback_handler(&mut self, alloc::boxed::Box<dyn roml::solver::callback::CallbackHandler>) -> core::result::Result<(), roml::solver::backend::BackendError>
+impl roml::solver::session::OverlaySession for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::apply_mip_starts(&mut self, &[roml::solver::plan::MipStart]) -> core::result::Result<(), roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::apply_overlay(&mut self, &roml::solver::overlay::CompiledOverlay) -> core::result::Result<roml::solver::overlay::OverlayApplyReceipt, roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::apply_variable_hints(&mut self, &roml::solver::plan::VariableHints) -> core::result::Result<(), roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::rollback_overlay(&mut self, &roml::solver::overlay::OverlayApplyReceipt) -> core::result::Result<roml::solver::overlay::OverlayRollbackOutcome, roml::solver::backend::BackendError>
+pub fn roml_highs::HighsSession::verify_overlay_clean(&mut self) -> core::result::Result<(), roml::solver::backend::BackendError>
+impl roml::solver::session::SessionHealth for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::health(&self) -> roml::sync::AdapterHealth
+pub fn roml_highs::HighsSession::revision(&self) -> roml::revision::ModelRevision
+impl roml::solver::session::SolutionView for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::dual(&self, roml::id::ConId) -> core::option::Option<f64>
+pub fn roml_highs::HighsSession::objective_value(&self) -> core::option::Option<f64>
+pub fn roml_highs::HighsSession::reduced_cost(&self, roml::id::VarId) -> core::option::Option<f64>
+pub fn roml_highs::HighsSession::value(&self, roml::id::VarId) -> core::option::Option<f64>
+impl core::marker::Freeze for roml_highs::HighsSession
+impl !core::marker::Sync for roml_highs::HighsSession
+impl core::marker::Unpin for roml_highs::HighsSession
+impl core::marker::UnsafeUnpin for roml_highs::HighsSession
+impl !core::panic::unwind_safe::RefUnwindSafe for roml_highs::HighsSession
+impl !core::panic::unwind_safe::UnwindSafe for roml_highs::HighsSession
+impl<T, U> core::convert::Into<U> for roml_highs::HighsSession where U: core::convert::From<T>
+pub fn roml_highs::HighsSession::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::HighsSession where U: core::convert::Into<T>
+pub type roml_highs::HighsSession::Error = never
+pub fn roml_highs::HighsSession::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::HighsSession where U: core::convert::TryFrom<T>
+pub type roml_highs::HighsSession::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::HighsSession::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::HighsSession where T: 'static + ?core::marker::Sized
+pub fn roml_highs::HighsSession::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::HighsSession where T: ?core::marker::Sized
+pub fn roml_highs::HighsSession::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::HighsSession where T: ?core::marker::Sized
+pub fn roml_highs::HighsSession::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::HighsSession
+pub fn roml_highs::HighsSession::from(T) -> T
+pub struct roml_highs::MpsColumnSemantics
+pub roml_highs::MpsColumnSemantics::cost: f64
+pub roml_highs::MpsColumnSemantics::integrality: highs_sys::HighsInt
+pub roml_highs::MpsColumnSemantics::lower: f64
+pub roml_highs::MpsColumnSemantics::upper: f64
+impl core::clone::Clone for roml_highs::MpsColumnSemantics
+pub fn roml_highs::MpsColumnSemantics::clone(&self) -> roml_highs::MpsColumnSemantics
+impl core::cmp::PartialEq for roml_highs::MpsColumnSemantics
+pub fn roml_highs::MpsColumnSemantics::eq(&self, &roml_highs::MpsColumnSemantics) -> bool
+impl core::fmt::Debug for roml_highs::MpsColumnSemantics
+pub fn roml_highs::MpsColumnSemantics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::MpsColumnSemantics
+impl core::marker::Freeze for roml_highs::MpsColumnSemantics
+impl core::marker::Send for roml_highs::MpsColumnSemantics
+impl core::marker::Sync for roml_highs::MpsColumnSemantics
+impl core::marker::Unpin for roml_highs::MpsColumnSemantics
+impl core::marker::UnsafeUnpin for roml_highs::MpsColumnSemantics
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsColumnSemantics
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsColumnSemantics
+impl<T, U> core::convert::Into<U> for roml_highs::MpsColumnSemantics where U: core::convert::From<T>
+pub fn roml_highs::MpsColumnSemantics::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsColumnSemantics where U: core::convert::Into<T>
+pub type roml_highs::MpsColumnSemantics::Error = never
+pub fn roml_highs::MpsColumnSemantics::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsColumnSemantics where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsColumnSemantics::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsColumnSemantics::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::MpsColumnSemantics where T: core::clone::Clone
+pub type roml_highs::MpsColumnSemantics::Owned = T
+pub fn roml_highs::MpsColumnSemantics::clone_into(&self, &mut T)
+pub fn roml_highs::MpsColumnSemantics::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::MpsColumnSemantics where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsColumnSemantics::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsColumnSemantics where T: ?core::marker::Sized
+pub fn roml_highs::MpsColumnSemantics::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsColumnSemantics where T: ?core::marker::Sized
+pub fn roml_highs::MpsColumnSemantics::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::MpsColumnSemantics where T: core::clone::Clone
+pub unsafe fn roml_highs::MpsColumnSemantics::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::MpsColumnSemantics
+pub fn roml_highs::MpsColumnSemantics::from(T) -> T
+pub struct roml_highs::MpsDifferentialObservation
+pub roml_highs::MpsDifferentialObservation::highs: core::result::Result<roml_highs::HighsMpsSummary, roml_highs::HighsError>
+pub roml_highs::MpsDifferentialObservation::roml: core::result::Result<roml_highs::RomlMpsSummary, roml::io::mps::MpsError>
+impl core::fmt::Debug for roml_highs::MpsDifferentialObservation
+pub fn roml_highs::MpsDifferentialObservation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for roml_highs::MpsDifferentialObservation
+impl core::marker::Send for roml_highs::MpsDifferentialObservation
+impl core::marker::Sync for roml_highs::MpsDifferentialObservation
+impl core::marker::Unpin for roml_highs::MpsDifferentialObservation
+impl core::marker::UnsafeUnpin for roml_highs::MpsDifferentialObservation
+impl !core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsDifferentialObservation
+impl !core::panic::unwind_safe::UnwindSafe for roml_highs::MpsDifferentialObservation
+impl<T, U> core::convert::Into<U> for roml_highs::MpsDifferentialObservation where U: core::convert::From<T>
+pub fn roml_highs::MpsDifferentialObservation::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsDifferentialObservation where U: core::convert::Into<T>
+pub type roml_highs::MpsDifferentialObservation::Error = never
+pub fn roml_highs::MpsDifferentialObservation::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsDifferentialObservation where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsDifferentialObservation::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsDifferentialObservation::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::MpsDifferentialObservation where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsDifferentialObservation::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsDifferentialObservation where T: ?core::marker::Sized
+pub fn roml_highs::MpsDifferentialObservation::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsDifferentialObservation where T: ?core::marker::Sized
+pub fn roml_highs::MpsDifferentialObservation::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::MpsDifferentialObservation
+pub fn roml_highs::MpsDifferentialObservation::from(T) -> T
+pub struct roml_highs::MpsRowSemantics
+pub roml_highs::MpsRowSemantics::lower: f64
+pub roml_highs::MpsRowSemantics::upper: f64
+impl core::clone::Clone for roml_highs::MpsRowSemantics
+pub fn roml_highs::MpsRowSemantics::clone(&self) -> roml_highs::MpsRowSemantics
+impl core::cmp::PartialEq for roml_highs::MpsRowSemantics
+pub fn roml_highs::MpsRowSemantics::eq(&self, &roml_highs::MpsRowSemantics) -> bool
+impl core::fmt::Debug for roml_highs::MpsRowSemantics
+pub fn roml_highs::MpsRowSemantics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::MpsRowSemantics
+impl core::marker::Freeze for roml_highs::MpsRowSemantics
+impl core::marker::Send for roml_highs::MpsRowSemantics
+impl core::marker::Sync for roml_highs::MpsRowSemantics
+impl core::marker::Unpin for roml_highs::MpsRowSemantics
+impl core::marker::UnsafeUnpin for roml_highs::MpsRowSemantics
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsRowSemantics
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsRowSemantics
+impl<T, U> core::convert::Into<U> for roml_highs::MpsRowSemantics where U: core::convert::From<T>
+pub fn roml_highs::MpsRowSemantics::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsRowSemantics where U: core::convert::Into<T>
+pub type roml_highs::MpsRowSemantics::Error = never
+pub fn roml_highs::MpsRowSemantics::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsRowSemantics where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsRowSemantics::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsRowSemantics::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::MpsRowSemantics where T: core::clone::Clone
+pub type roml_highs::MpsRowSemantics::Owned = T
+pub fn roml_highs::MpsRowSemantics::clone_into(&self, &mut T)
+pub fn roml_highs::MpsRowSemantics::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::MpsRowSemantics where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsRowSemantics::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsRowSemantics where T: ?core::marker::Sized
+pub fn roml_highs::MpsRowSemantics::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsRowSemantics where T: ?core::marker::Sized
+pub fn roml_highs::MpsRowSemantics::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::MpsRowSemantics where T: core::clone::Clone
+pub unsafe fn roml_highs::MpsRowSemantics::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::MpsRowSemantics
+pub fn roml_highs::MpsRowSemantics::from(T) -> T
+pub struct roml_highs::MpsSolveComparison
+pub roml_highs::MpsSolveComparison::differences: alloc::vec::Vec<alloc::string::String>
+pub roml_highs::MpsSolveComparison::equivalent: bool
+impl core::clone::Clone for roml_highs::MpsSolveComparison
+pub fn roml_highs::MpsSolveComparison::clone(&self) -> roml_highs::MpsSolveComparison
+impl core::cmp::Eq for roml_highs::MpsSolveComparison
+impl core::cmp::PartialEq for roml_highs::MpsSolveComparison
+pub fn roml_highs::MpsSolveComparison::eq(&self, &roml_highs::MpsSolveComparison) -> bool
+impl core::fmt::Debug for roml_highs::MpsSolveComparison
+pub fn roml_highs::MpsSolveComparison::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::MpsSolveComparison
+impl core::marker::Freeze for roml_highs::MpsSolveComparison
+impl core::marker::Send for roml_highs::MpsSolveComparison
+impl core::marker::Sync for roml_highs::MpsSolveComparison
+impl core::marker::Unpin for roml_highs::MpsSolveComparison
+impl core::marker::UnsafeUnpin for roml_highs::MpsSolveComparison
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsSolveComparison
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsSolveComparison
+impl<T, U> core::convert::Into<U> for roml_highs::MpsSolveComparison where U: core::convert::From<T>
+pub fn roml_highs::MpsSolveComparison::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsSolveComparison where U: core::convert::Into<T>
+pub type roml_highs::MpsSolveComparison::Error = never
+pub fn roml_highs::MpsSolveComparison::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsSolveComparison where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsSolveComparison::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsSolveComparison::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::MpsSolveComparison where T: core::clone::Clone
+pub type roml_highs::MpsSolveComparison::Owned = T
+pub fn roml_highs::MpsSolveComparison::clone_into(&self, &mut T)
+pub fn roml_highs::MpsSolveComparison::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::MpsSolveComparison where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsSolveComparison::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsSolveComparison where T: ?core::marker::Sized
+pub fn roml_highs::MpsSolveComparison::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsSolveComparison where T: ?core::marker::Sized
+pub fn roml_highs::MpsSolveComparison::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::MpsSolveComparison where T: core::clone::Clone
+pub unsafe fn roml_highs::MpsSolveComparison::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::MpsSolveComparison
+pub fn roml_highs::MpsSolveComparison::from(T) -> T
+pub struct roml_highs::MpsSolveDifferentialObservation
+pub roml_highs::MpsSolveDifferentialObservation::highs: core::result::Result<roml_highs::MpsSolveObservation, roml_highs::HighsError>
+pub roml_highs::MpsSolveDifferentialObservation::roml: core::result::Result<roml_highs::MpsSolveObservation, alloc::string::String>
+impl core::fmt::Debug for roml_highs::MpsSolveDifferentialObservation
+pub fn roml_highs::MpsSolveDifferentialObservation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for roml_highs::MpsSolveDifferentialObservation
+impl core::marker::Send for roml_highs::MpsSolveDifferentialObservation
+impl core::marker::Sync for roml_highs::MpsSolveDifferentialObservation
+impl core::marker::Unpin for roml_highs::MpsSolveDifferentialObservation
+impl core::marker::UnsafeUnpin for roml_highs::MpsSolveDifferentialObservation
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsSolveDifferentialObservation
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsSolveDifferentialObservation
+impl<T, U> core::convert::Into<U> for roml_highs::MpsSolveDifferentialObservation where U: core::convert::From<T>
+pub fn roml_highs::MpsSolveDifferentialObservation::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsSolveDifferentialObservation where U: core::convert::Into<T>
+pub type roml_highs::MpsSolveDifferentialObservation::Error = never
+pub fn roml_highs::MpsSolveDifferentialObservation::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsSolveDifferentialObservation where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsSolveDifferentialObservation::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsSolveDifferentialObservation::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for roml_highs::MpsSolveDifferentialObservation where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsSolveDifferentialObservation::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsSolveDifferentialObservation where T: ?core::marker::Sized
+pub fn roml_highs::MpsSolveDifferentialObservation::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsSolveDifferentialObservation where T: ?core::marker::Sized
+pub fn roml_highs::MpsSolveDifferentialObservation::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for roml_highs::MpsSolveDifferentialObservation
+pub fn roml_highs::MpsSolveDifferentialObservation::from(T) -> T
+pub struct roml_highs::MpsSolveObservation
+pub roml_highs::MpsSolveObservation::objective_value: core::option::Option<f64>
+pub roml_highs::MpsSolveObservation::status: roml::solver::SolveStatus
+impl core::clone::Clone for roml_highs::MpsSolveObservation
+pub fn roml_highs::MpsSolveObservation::clone(&self) -> roml_highs::MpsSolveObservation
+impl core::cmp::PartialEq for roml_highs::MpsSolveObservation
+pub fn roml_highs::MpsSolveObservation::eq(&self, &roml_highs::MpsSolveObservation) -> bool
+impl core::fmt::Debug for roml_highs::MpsSolveObservation
+pub fn roml_highs::MpsSolveObservation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::MpsSolveObservation
+impl core::marker::Freeze for roml_highs::MpsSolveObservation
+impl core::marker::Send for roml_highs::MpsSolveObservation
+impl core::marker::Sync for roml_highs::MpsSolveObservation
+impl core::marker::Unpin for roml_highs::MpsSolveObservation
+impl core::marker::UnsafeUnpin for roml_highs::MpsSolveObservation
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsSolveObservation
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsSolveObservation
+impl<T, U> core::convert::Into<U> for roml_highs::MpsSolveObservation where U: core::convert::From<T>
+pub fn roml_highs::MpsSolveObservation::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsSolveObservation where U: core::convert::Into<T>
+pub type roml_highs::MpsSolveObservation::Error = never
+pub fn roml_highs::MpsSolveObservation::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsSolveObservation where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsSolveObservation::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsSolveObservation::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::MpsSolveObservation where T: core::clone::Clone
+pub type roml_highs::MpsSolveObservation::Owned = T
+pub fn roml_highs::MpsSolveObservation::clone_into(&self, &mut T)
+pub fn roml_highs::MpsSolveObservation::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::MpsSolveObservation where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsSolveObservation::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsSolveObservation where T: ?core::marker::Sized
+pub fn roml_highs::MpsSolveObservation::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsSolveObservation where T: ?core::marker::Sized
+pub fn roml_highs::MpsSolveObservation::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::MpsSolveObservation where T: core::clone::Clone
+pub unsafe fn roml_highs::MpsSolveObservation::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::MpsSolveObservation
+pub fn roml_highs::MpsSolveObservation::from(T) -> T
+pub struct roml_highs::MpsStructuralComparison
+pub roml_highs::MpsStructuralComparison::differences: alloc::vec::Vec<alloc::string::String>
+pub roml_highs::MpsStructuralComparison::equivalent: bool
+impl core::clone::Clone for roml_highs::MpsStructuralComparison
+pub fn roml_highs::MpsStructuralComparison::clone(&self) -> roml_highs::MpsStructuralComparison
+impl core::cmp::Eq for roml_highs::MpsStructuralComparison
+impl core::cmp::PartialEq for roml_highs::MpsStructuralComparison
+pub fn roml_highs::MpsStructuralComparison::eq(&self, &roml_highs::MpsStructuralComparison) -> bool
+impl core::fmt::Debug for roml_highs::MpsStructuralComparison
+pub fn roml_highs::MpsStructuralComparison::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::MpsStructuralComparison
+impl core::marker::Freeze for roml_highs::MpsStructuralComparison
+impl core::marker::Send for roml_highs::MpsStructuralComparison
+impl core::marker::Sync for roml_highs::MpsStructuralComparison
+impl core::marker::Unpin for roml_highs::MpsStructuralComparison
+impl core::marker::UnsafeUnpin for roml_highs::MpsStructuralComparison
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::MpsStructuralComparison
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::MpsStructuralComparison
+impl<T, U> core::convert::Into<U> for roml_highs::MpsStructuralComparison where U: core::convert::From<T>
+pub fn roml_highs::MpsStructuralComparison::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::MpsStructuralComparison where U: core::convert::Into<T>
+pub type roml_highs::MpsStructuralComparison::Error = never
+pub fn roml_highs::MpsStructuralComparison::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::MpsStructuralComparison where U: core::convert::TryFrom<T>
+pub type roml_highs::MpsStructuralComparison::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::MpsStructuralComparison::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::MpsStructuralComparison where T: core::clone::Clone
+pub type roml_highs::MpsStructuralComparison::Owned = T
+pub fn roml_highs::MpsStructuralComparison::clone_into(&self, &mut T)
+pub fn roml_highs::MpsStructuralComparison::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::MpsStructuralComparison where T: 'static + ?core::marker::Sized
+pub fn roml_highs::MpsStructuralComparison::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::MpsStructuralComparison where T: ?core::marker::Sized
+pub fn roml_highs::MpsStructuralComparison::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::MpsStructuralComparison where T: ?core::marker::Sized
+pub fn roml_highs::MpsStructuralComparison::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::MpsStructuralComparison where T: core::clone::Clone
+pub unsafe fn roml_highs::MpsStructuralComparison::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::MpsStructuralComparison
+pub fn roml_highs::MpsStructuralComparison::from(T) -> T
+pub struct roml_highs::RomlMpsSummary
+pub roml_highs::RomlMpsSummary::column_semantics: alloc::collections::btree::map::BTreeMap<alloc::string::String, roml_highs::MpsColumnSemantics>
+pub roml_highs::RomlMpsSummary::columns: usize
+pub roml_highs::RomlMpsSummary::matrix: alloc::collections::btree::map::BTreeMap<(alloc::string::String, alloc::string::String), f64>
+pub roml_highs::RomlMpsSummary::nonzeros: usize
+pub roml_highs::RomlMpsSummary::objective_offset: f64
+pub roml_highs::RomlMpsSummary::objective_sense: highs_sys::HighsInt
+pub roml_highs::RomlMpsSummary::row_semantics: alloc::collections::btree::map::BTreeMap<alloc::string::String, roml_highs::MpsRowSemantics>
+pub roml_highs::RomlMpsSummary::rows: usize
+impl core::clone::Clone for roml_highs::RomlMpsSummary
+pub fn roml_highs::RomlMpsSummary::clone(&self) -> roml_highs::RomlMpsSummary
+impl core::cmp::PartialEq for roml_highs::RomlMpsSummary
+pub fn roml_highs::RomlMpsSummary::eq(&self, &roml_highs::RomlMpsSummary) -> bool
+impl core::fmt::Debug for roml_highs::RomlMpsSummary
+pub fn roml_highs::RomlMpsSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for roml_highs::RomlMpsSummary
+impl core::marker::Freeze for roml_highs::RomlMpsSummary
+impl core::marker::Send for roml_highs::RomlMpsSummary
+impl core::marker::Sync for roml_highs::RomlMpsSummary
+impl core::marker::Unpin for roml_highs::RomlMpsSummary
+impl core::marker::UnsafeUnpin for roml_highs::RomlMpsSummary
+impl core::panic::unwind_safe::RefUnwindSafe for roml_highs::RomlMpsSummary
+impl core::panic::unwind_safe::UnwindSafe for roml_highs::RomlMpsSummary
+impl<T, U> core::convert::Into<U> for roml_highs::RomlMpsSummary where U: core::convert::From<T>
+pub fn roml_highs::RomlMpsSummary::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for roml_highs::RomlMpsSummary where U: core::convert::Into<T>
+pub type roml_highs::RomlMpsSummary::Error = never
+pub fn roml_highs::RomlMpsSummary::try_from(U) -> core::result::Result<T, never>
+impl<T, U> core::convert::TryInto<U> for roml_highs::RomlMpsSummary where U: core::convert::TryFrom<T>
+pub type roml_highs::RomlMpsSummary::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn roml_highs::RomlMpsSummary::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for roml_highs::RomlMpsSummary where T: core::clone::Clone
+pub type roml_highs::RomlMpsSummary::Owned = T
+pub fn roml_highs::RomlMpsSummary::clone_into(&self, &mut T)
+pub fn roml_highs::RomlMpsSummary::to_owned(&self) -> T
+impl<T> core::any::Any for roml_highs::RomlMpsSummary where T: 'static + ?core::marker::Sized
+pub fn roml_highs::RomlMpsSummary::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for roml_highs::RomlMpsSummary where T: ?core::marker::Sized
+pub fn roml_highs::RomlMpsSummary::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for roml_highs::RomlMpsSummary where T: ?core::marker::Sized
+pub fn roml_highs::RomlMpsSummary::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for roml_highs::RomlMpsSummary where T: core::clone::Clone
+pub unsafe fn roml_highs::RomlMpsSummary::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for roml_highs::RomlMpsSummary
+pub fn roml_highs::RomlMpsSummary::from(T) -> T
+pub const roml_highs::MPS_STRUCTURAL_ABS_TOLERANCE: f64
+pub const roml_highs::MPS_STRUCTURAL_REL_TOLERANCE: f64
+pub fn roml_highs::compare_mps_solve(&roml_highs::MpsSolveObservation, &roml_highs::MpsSolveObservation, f64, f64) -> roml_highs::MpsSolveComparison
+pub fn roml_highs::compare_mps_structure(&roml_highs::HighsMpsSummary, &roml_highs::RomlMpsSummary, f64, f64) -> roml_highs::MpsStructuralComparison
+pub fn roml_highs::highs_capability_set(i32, i32, i32) -> roml::compiler::capability::BackendCapabilitySet
+pub fn roml_highs::observe_mps_differential(impl core::convert::AsRef<std::path::Path>) -> roml_highs::MpsDifferentialObservation
+pub fn roml_highs::observe_mps_solve_differential(impl core::convert::AsRef<std::path::Path>) -> roml_highs::MpsSolveDifferentialObservation
+pub type roml_highs::HighsError = roml::solver::backend::BackendError
