@@ -11,6 +11,8 @@ Param = _native.Param
 Constraint = _native.Constraint
 Objective = _native.Objective
 Expr = _native.Expr
+Comparison = _native.Comparison
+ComparisonArray = _native.ComparisonArray
 VarArray = _native.VarArray
 ParamArray = _native.ParamArray
 ExprArray = _native.ExprArray
@@ -44,6 +46,8 @@ __all__ = [
     "Constraint",
     "Objective",
     "Expr",
+    "Comparison",
+    "ComparisonArray",
     "VarArray",
     "ParamArray",
     "ExprArray",
