@@ -99,3 +99,14 @@ python python/examples/bess_mpc.py
 
 No packages published, no releases created, no merges performed
 without authorization. Implementation PR stays reviewable.
+
+## Final qualifications (owner, 2026-09-07)
+
+- **Oracle tests:** `importorskip` is appropriate where highspy is
+  optional, but mandatory qualification CI now fails if `test_mpc`
+  skips (`Assert oracle tests ran` step in `ci-python.yml`).
+- **Tested commit:** six-cell matrix green on `6d1df58`; the delta to
+  the branch head is planning-docs only (verified:
+  `6d1df58..b6b0e16` touches `STATE.md` alone, 2 lines).
+- **Cleanup:** delete only exact task-created directories (allocate
+  with `mktemp -d`); `/tmp/*` is not an ownership boundary.
