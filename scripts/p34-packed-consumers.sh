@@ -150,7 +150,7 @@ fn main() {
     let snapshot = model.take_snapshot().unwrap();
     assert_eq!(snapshot.revision, model.current_revision());
     println!("core-ok rev={} vars=1", snapshot.revision);
-}' "core-ok rev=1 vars=1"
+}' "core-ok rev=r1 vars=1"
 
 consumer highs 'roml = { path = "'"$ROML_DIR"'" }
 roml-highs = { path = "'"$HIGHS_DIR"'" }' '
