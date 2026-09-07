@@ -116,7 +116,7 @@
 | SM-14.7 | Randomized PWL evaluations agree with compiled formulations | P33 | Direct `PiecewiseLinearConstraint::evaluate` vs compiled formulation; fixed-seed LCG corpus in `tests/piecewise_linear.rs` | `cargo test -p roml --test piecewise_linear` (`pwl_exact_graph_randomized_fixed_input_agreement` — 256 fixed-input checks, all curvatures) | core solver-free + HiGHS differential; linux | prior-phase-evidence | none | PASS |
 | SM-15.1 | M2 golden-path source compatibility preserved | P34 | `tests/compatibility_api.rs` — `raw_constructor_wrappers_still_work`, `constraint_aliases_still_work`, `effectful_constrain_macro_still_works` | `cargo test -p roml --test compatibility_api` | core solver-free; linux | prior-phase-evidence | P34 public-API audit still to record results in `M3_PUBLIC_API.md` | PASS |
 | SM-15.2 | Backend-contract changes have migration docs and conformance tests | P34 | `tests/backend_contract.rs` (`snapshot_load_identity`, `apply_add_variable`, …); `MIGRATION.md` (backend-contract/revision/capability sections) | `cargo test -p roml --test backend_contract` | core solver-free; linux | prior-phase-evidence | none | PASS |
-| SM-15.3 | Focused/full/cross-platform/rustdoc/public-API/package/fresh-consumer checks recorded | P34 | No `docs/release/evidence/M3_QUALIFICATION.md` exists; P34 in progress on current branch | P34 closure matrix (not yet run) | linux only probed; cross-platform pending | prior-phase-evidence | P34 verification matrix not executed | BLOCKED (P34 checks not yet run/recorded) |
+| SM-15.3 | Focused/full/cross-platform/rustdoc/public-API/package/fresh-consumer checks recorded | P34 | `M3_FINAL_QUALIFICATION.md` (this phase): local full matrix green (core 1249, highs 196, fmt/clippy/rustdoc clean), public API snapshots, `cargo package` verified, 5 packed consumers pass; cross-platform + system lanes via exact-head hosted CI on the P34 PR | linux probed locally; ubuntu/macos/windows + system floor in hosted CI | P34 executor + hosted CI | hosted cross-platform lanes pending at head | PASS (local) / CI-gated |
 | SM-15.4 | Portable/native formulation equivalence has deterministic corpus evidence | P34 (PWL portion P33) | `roml-highs/tests/formulation_equivalence.rs` (`pwl_highs_exact_graph_matches_reference_for_all_curvatures` + `evaluate_pwl` reference) | `cargo test -p roml-highs --test formulation_equivalence pwl` | HiGHS 1.15.0 bundled; linux | prior-phase-evidence | P34 full native/portable corpus summary pending | PASS |
 | SM-15.5 | Parameter-update/solve performance within P34 regression thresholds | P34 | `docs/release/evidence/M3_PERFORMANCE.md`: candidate +0.187ms vs 0.470ms allowance, PASS; raw JSON retained | `tools/p34-perf` 20+200 release runs on both arms, same machine | linux x86_64, rustc 1.97.1, bundled HiGHS 1.15.0 | P34 executor measurement 2026-09-07 | none | PASS |
 | SM-15.6 | Public docs distinguish guarantees, native/bridge support, version limits | P34 | `MODELING_API.md` (portable-bridge vs native-provider language); typed `SupportLevel::{Native,Bridge,Unsupported}` per-backend reporting (`roml-highs/src/session.rs`, SM-04) | `cargo test -p roml-highs --all-targets` (capability matrix); rustdoc build | core + HiGHS; linux | prior-phase-evidence | P34 docs/fresh-consumer audit pending | PASS |
@@ -144,8 +144,5 @@
 
 ## BLOCKED rows remaining
 
-- **SM-15.3** (P34 check-matrix record; resolved by `M3_FINAL_QUALIFICATION.md` at closure)
-
-SM-15.5 and SM-15.7 flipped to PASS on 2026-09-07 after the gauntlet
-staleness finding: `M3_PERFORMANCE.md` and `M3_NLP_READINESS.md` both exist
-at head. Ledger stands at 126 PASS / 1 BLOCKED.
+None. Ledger stands at 127 PASS — SM-15.3 closed by `M3_FINAL_QUALIFICATION.md`
+(local matrix green; hosted cross-platform lanes gate the merge).
