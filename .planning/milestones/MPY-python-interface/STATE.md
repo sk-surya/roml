@@ -20,7 +20,7 @@ MPY-01 (binding toolchain and package boundary) is authorized.
 | MPY-03 | complete | arrays/CSR, atomic updates, 39 tests, interface review, perf notes |
 | MPY-04 | complete | detached solves, outcomes, warm starts, duals, 61 tests, lifecycle review |
 | MPY-05 | complete | BESS MPC, oracle equivalence, benchmark matrix; bulk gate amended (pass); memory gate fixed via #54, soak PASSES |
-| MPY-06 | complete | typing/wheels/sdist/docs done; #54 merged; integrated head verified (65 py, 73 core, soak, bulk, wheel/sdist); six-cell installed-wheel matrix green on CI (run 34162447682); #53 draft reviewable, no merge/publication |
+| MPY-06 | complete | typing/wheels/sdist/docs done; #54 merged; integrated head verified (66 py, 73 core, soak, bulk, wheel/sdist); six-cell matrix green on CI (run 34168672849); final review findings fixed; #53 draft reviewable, no merge/publication |
 | MPY-J | complete | journal-bounding correction designed, reviewed, implemented, merged (#54); soak PASSES |
 | MPY-01 | not started | none |
 | MPY-02 | not started | none |
