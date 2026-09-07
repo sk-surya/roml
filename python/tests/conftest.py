@@ -1,12 +1,14 @@
 """Test path bootstrap: make `benchmarks` helpers importable.
 
 The installed `roml` distribution ships only the `roml` package; test
-support modules under `python/benchmarks` stay in-tree. This hook puts
-the `python/` source directory on `sys.path` so both editable and
-installed-wheel runs resolve them identically.
+support modules under `python/benchmarks` stay in-tree. This hook
+APPENDS the `python/` source directory to `sys.path` (never prepends),
+so an installed `roml` in site-packages always wins over the source
+tree, while `benchmarks.*` still resolves identically on editable and
+installed-wheel runs.
 """
 
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
