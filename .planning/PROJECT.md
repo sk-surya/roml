@@ -1,5 +1,16 @@
 # ROML Public-Release Hardening Project
 
+## Scope amendment — Python successor milestone, 2026-09-07
+
+The owner has authorized [MPY — Python Interface](milestones/MPY-python-interface/README.md)
+after prerequisite PR merges and M3/P34 qualification. MPY uses direct PyO3 +
+maturin bindings and precedes the deferred quadratic/nonlinear milestone.
+The wrapper non-goal below describes the original release train, not a continuing
+prohibition. A public ROML C ABI is no longer a prerequisite for Python; other
+language bindings remain deferred. Existing core, native-safety and publication
+constraints remain in force. This amendment authorizes a successor, not a claim
+that its prerequisite gates are already complete.
+
 **Authoritative baseline:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
 **Historical audit baseline:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
 **Planning date:** 2026-07-13  

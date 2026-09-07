@@ -1,5 +1,22 @@
 # ROML Agent Instructions
 
+## Current owner instruction — Python successor, 2026-09-07
+
+For the requested Python work, read
+`.planning/milestones/MPY-python-interface/README.md` and its complete packet.
+The owner authorizes review/remediation and normal merge of relevant pending
+prerequisite PRs, followed by PyO3 + maturin implementation after P34 closure.
+The packet explicitly replaces a C-ABI-first assumption for Python and places
+MPY ahead of the deferred M4 preview. Preserve branch protections, independent
+review, existing correctness/native-safety invariants and publication gates.
+Do not request permission again for an already-authorized qualifying prerequisite
+merge. Leave MPY implementation PRs reviewable unless separately authorized to merge.
+
+Several architecture/defect descriptions below are historical hardening-baseline
+text, not evidence that those defects remain on current main. Reconcile them
+against current code during MPY-00 and retain resolved defects as regression
+history. Follow the current root/milestone state for actual phase completion.
+
 ## Repository mission
 
 ROML is a pre-1.0 Rust MILP modeling workspace centered on parameter-dependent coefficients and incremental projection into persistent solver sessions. Current workspace crates are:

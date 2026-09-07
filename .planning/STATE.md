@@ -18,6 +18,16 @@ implementation_authorized: true
 
 # ROML Active State — M3 Completion
 
+## Authorized successor: MPY (2026-09-07)
+
+The owner requested the [Python interface ultra-planning packet](milestones/MPY-python-interface/README.md)
+and authorized the coding agent to first check/remediate/normally merge relevant
+pending PRs, then implement PyO3 + maturin bindings. MPY-00 preserves P31 and P34
+closure as prerequisites; MPY runtime phases are conditionally authorized after
+that gate. No prerequisite has been marked complete by this amendment. MPY
+precedes the deferred M4 preview. Detailed new-milestone state lives in
+[MPY STATE](milestones/MPY-python-interface/STATE.md).
+
 This file is the root GSD routing authority. Detailed contracts live under `.planning/milestones/M3-semantic-modeling-workflows/`.
 
 ## Routing versus execution

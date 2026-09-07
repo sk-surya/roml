@@ -167,9 +167,20 @@ Native backends are additionally checked by rebuild-vs-incremental solve equival
 
 ## D-016 — Foreign language boundary
 
-**Decision:** future wrappers target a versioned C ABI or equivalent stable boundary, never Rust ABI.
+**Decision (amended 2026-09-07):** Python uses a direct PyO3 extension packaged
+with maturin, as specified in
+[MPY](../../.planning/milestones/MPY-python-interface/README.md). The extension
+and its Rust dependencies are compiled together; it does not dynamically link
+against an independently versioned Rust ABI. An exported ROML C ABI is not a
+prerequisite for Python. Other-language bindings remain deferred and require
+their own concrete consumer and boundary design.
 
-The C ABI uses opaque handles, explicit ownership, bulk operations, version negotiation, panic containment, and stable external IDs. Work begins after v0.1 qualification, not during core hardening.
+Ownership, bulk operations, panic/error containment and external identity
+validation remain required. A future public C ABI would additionally require
+opaque handle and version-negotiation contracts. MPY follows verified M3/P34
+qualification and precedes M4; registry publication is not a prerequisite or
+authorized side effect. This explicitly supersedes the earlier C-ABI-first
+wording for Python under the owner's 2026-09-07 instruction.
 
 ## D-017 — Performance method
 
