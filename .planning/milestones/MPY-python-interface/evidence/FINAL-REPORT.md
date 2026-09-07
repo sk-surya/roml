@@ -6,10 +6,10 @@ Base: P34 closure + prerequisite merges (see packet).
 
 ## Head under review
 
-`cb237a69d3fe58e2609c7a166436917fede29fe2` on branch
-`mpy-python-interface`, PR #53 (draft, reviewable, DO NOT MERGE
-without separate authorization). Base: `main` post-P34 with planning
-PR #50 merged.
+branch `mpy-python-interface`, PR #53 (draft, reviewable, DO NOT MERGE
+without separate authorization). The exact head under review is recorded
+in the PR body (editing the body does not move the head). Base: `main`
+post-P34 with planning PR #50 merged.
 
 ## What was built
 
