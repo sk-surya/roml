@@ -65,6 +65,9 @@ pub(crate) struct Snapshot {
     pub has_candidate: bool,
     pub backend: String,
     pub instance: ModelInstanceId,
+    /// Whether the solved model contained discrete variables, recorded at
+    /// solve time so later model edits cannot change old diagnostics.
+    pub discrete: bool,
     pub lineage: roml::ModelLineageId,
     pub revision: ModelRevision,
     pub py_revision: u64,
@@ -183,8 +186,8 @@ impl Solution {
             ));
         }
         let con = constraint.borrow();
-        let discrete = check_solution_owner(&con.owner, &self.snapshot)?;
-        require_lp(discrete)?;
+        check_solution_owner(&con.owner, &self.snapshot)?;
+        require_lp(self.snapshot.discrete)?;
         match &self.snapshot.duals {
             Some(duals) => duals.get(&con.id).copied().ok_or_else(|| {
                 super::errors::MissingValueError::new_err("no dual reported for this constraint")
@@ -209,8 +212,8 @@ impl Solution {
             ));
         }
         let arr = constraint_array.borrow();
-        let discrete = check_solution_owner(&arr.owner, &self.snapshot)?;
-        require_lp(discrete)?;
+        check_solution_owner(&arr.owner, &self.snapshot)?;
+        require_lp(self.snapshot.discrete)?;
         let duals = self.snapshot.duals.as_ref().ok_or_else(|| {
             UnavailableDiagnosticError::new_err(
                 "the backend reported no valid dual evidence for this result",
@@ -244,8 +247,8 @@ impl Solution {
             ));
         }
         let var = var.borrow();
-        let discrete = check_solution_owner(&var.owner, &self.snapshot)?;
-        require_lp(discrete)?;
+        check_solution_owner(&var.owner, &self.snapshot)?;
+        require_lp(self.snapshot.discrete)?;
         match &self.snapshot.reduced_costs {
             Some(costs) => costs.get(&var.id).copied().ok_or_else(|| {
                 super::errors::MissingValueError::new_err(
@@ -312,19 +315,19 @@ impl Solution {
 fn check_solution_owner(
     owner: &pyo3::Py<super::model::Model>,
     snapshot: &Snapshot,
-) -> PyResult<bool> {
-    let (owned, discrete) = Python::attach(|py| {
+) -> PyResult<()> {
+    let owned = Python::attach(|py| {
         let bound = owner.bind(py);
         let borrowed = bound.borrow();
         let state = super::model::lock_state(&borrowed)?;
-        Ok::<_, PyErr>((state.model.instance(), state.has_discrete))
+        Ok::<_, PyErr>(state.model.instance())
     })?;
     if owned != snapshot.instance {
         return Err(super::errors::ModelMismatchError::new_err(
             "this handle belongs to a different model than the solution",
         ));
     }
-    Ok(discrete)
+    Ok(())
 }
 
 /// Duals and reduced costs are LP-only: on discrete models they raise

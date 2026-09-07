@@ -105,6 +105,7 @@ struct NativeSolve {
     effective_time_limit: Option<f64>,
     wall_seconds: f64,
     warm_start: super::solution::WarmStart,
+    discrete: bool,
 }
 
 /// Nonblocking session-state acquisition with poison fusion.
@@ -135,6 +136,38 @@ fn optional_finite(value: Option<Bound<'_, PyAny>>, what: &str) -> PyResult<Opti
             Ok(Some(py_numeric(&v, what)?))
         }
     }
+}
+
+/// Gap and seed validation shared by constructor defaults and per-call
+/// overrides so both paths reject identically.
+fn check_relative_gap(gap: Option<f64>) -> PyResult<Option<f64>> {
+    if let Some(g) = gap {
+        if !(0.0..=1.0).contains(&g) {
+            return Err(InvalidModelError::new_err(
+                "relative_gap must lie in [0, 1]",
+            ));
+        }
+    }
+    Ok(gap)
+}
+
+fn check_absolute_gap(gap: Option<f64>) -> PyResult<Option<f64>> {
+    if let Some(g) = gap {
+        if g < 0.0 {
+            return Err(InvalidModelError::new_err(
+                "absolute_gap must be nonnegative",
+            ));
+        }
+    }
+    Ok(gap)
+}
+
+fn check_seed(value: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let s = py_numeric(value, "random_seed")?;
+    if s.fract() != 0.0 || !(-2147483648.0..=2147483647.0).contains(&s) {
+        return Err(InvalidModelError::new_err("random_seed must be an integer"));
+    }
+    Ok(s as i32)
 }
 
 #[pymethods]
@@ -176,33 +209,15 @@ impl Session {
                 ));
             }
         }
-        let relative_gap = optional_finite(relative_gap, "relative_gap")?;
-        if let Some(g) = relative_gap {
-            if !(0.0..=1.0).contains(&g) {
-                return Err(InvalidModelError::new_err(
-                    "relative_gap must lie in [0, 1]",
-                ));
-            }
-        }
-        let absolute_gap = optional_finite(absolute_gap, "absolute_gap")?;
-        if let Some(g) = absolute_gap {
-            if g < 0.0 {
-                return Err(InvalidModelError::new_err(
-                    "absolute_gap must be nonnegative",
-                ));
-            }
-        }
+        let relative_gap = check_relative_gap(optional_finite(relative_gap, "relative_gap")?)?;
+        let absolute_gap = check_absolute_gap(optional_finite(absolute_gap, "absolute_gap")?)?;
         let seed = match random_seed {
             None => None,
             Some(v) => {
                 if v.is_none() {
                     None
                 } else {
-                    let s = py_numeric(&v, "random_seed")?;
-                    if s.fract() != 0.0 {
-                        return Err(InvalidModelError::new_err("random_seed must be an integer"));
-                    }
-                    Some(s as i32)
+                    Some(check_seed(&v)?)
                 }
             }
         };
@@ -285,16 +300,15 @@ impl Session {
             }
             merged.time_limit_secs = Some(v);
         }
-        if let Some(v) = optional_finite(relative_gap, "relative_gap")? {
+        if let Some(v) = check_relative_gap(optional_finite(relative_gap, "relative_gap")?)? {
             merged.relative_gap = Some(v);
         }
-        if let Some(v) = optional_finite(absolute_gap, "absolute_gap")? {
+        if let Some(v) = check_absolute_gap(optional_finite(absolute_gap, "absolute_gap")?)? {
             merged.absolute_gap = Some(v);
         }
         if let Some(v) = random_seed {
             if !v.is_none() {
-                let s = py_numeric(&v, "random_seed")?;
-                merged.random_seed = Some(s as i32);
+                merged.random_seed = Some(check_seed(&v)?);
             }
         }
         let effective_time_limit = merged.time_limit_secs;
@@ -317,6 +331,7 @@ impl Session {
                 Some(StartData {
                     values: snapshot.values.clone(),
                     instance: snapshot.instance,
+                    revision: snapshot.revision,
                 })
             }
         };
@@ -360,6 +375,7 @@ impl Session {
                         effective_time_limit: solved.effective_time_limit,
                         wall_seconds: solved.wall_seconds,
                         warm_start: solved.warm_start,
+                        discrete: solved.discrete,
                     },
                 })
             }
@@ -371,10 +387,14 @@ impl Session {
     }
 }
 
-/// Owned warm-start request data (no Python objects, no guards).
+/// Owned warm-start request data (no Python objects, no guards). Carries
+/// the start solution's own revision for honest provenance: a
+/// changed-revision start is accepted as a checked assignment (DESIGN §7),
+/// never relabeled as current.
 struct StartData {
     values: std::collections::HashMap<roml::VarId, f64>,
     instance: ModelInstanceId,
+    revision: roml::ModelRevision,
 }
 
 fn native_error(err: NativeError) -> PyErr {
@@ -442,7 +462,7 @@ impl Session {
                 let assignment = roml::PrimalAssignment {
                     lineage: guard.model.lineage(),
                     source_instance: Some(instance),
-                    source_revision: Some(guard.model.current_revision()),
+                    source_revision: Some(requested.revision),
                     values: requested.values.iter().map(|(v, x)| (*v, *x)).collect(),
                 };
                 let plan = roml::SolvePlan {
@@ -498,6 +518,7 @@ impl Session {
             py_revision: guard.py_revision,
             duals: solved.duals().cloned(),
             reduced_costs: solved.reduced_costs().cloned(),
+            discrete: guard.has_discrete,
             effective_time_limit,
             wall_seconds: 0.0,
             warm_start,

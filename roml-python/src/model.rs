@@ -192,24 +192,22 @@ impl Model {
     }
 
     #[getter]
-    fn name(slf: &Bound<'_, Self>) -> String {
-        slf.borrow()
-            .shared
-            .state
-            .lock()
-            .map(|state| state.name.clone())
-            .unwrap_or_default()
+    fn name(slf: &Bound<'_, Self>) -> PyResult<String> {
+        lock_state(&slf.borrow()).map(|state| state.name.clone())
     }
 
     fn __repr__(slf: &Bound<'_, Self>) -> String {
-        match slf.borrow().shared.state.lock() {
+        // Nonblocking read: a busy model renders a placeholder instead of
+        // blocking the caller (repr must never hang); poison still shows.
+        match slf.borrow().shared.state.try_lock() {
             Ok(state) => format!(
                 "Model({} vars, {} params, {} constraints)",
                 state.var_names.len(),
                 state.param_names.len(),
                 state.con_names.len()
             ),
-            Err(_) => "Model(<invalid>)".to_string(),
+            Err(std::sync::TryLockError::WouldBlock) => "Model(<busy>)".to_string(),
+            Err(std::sync::TryLockError::Poisoned(_)) => "Model(<invalid>)".to_string(),
         }
     }
 
