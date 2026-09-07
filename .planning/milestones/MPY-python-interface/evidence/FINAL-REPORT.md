@@ -6,7 +6,10 @@ Base: P34 closure + prerequisite merges (see packet).
 
 ## Head under review
 
-TBD (exact SHA at PR creation).
+`be25f8e2bb8cfade1b3679ad5b547211e200ebbf` on branch
+`mpy-python-interface`, PR #53 (draft, reviewable, DO NOT MERGE
+without separate authorization). Base: `main` post-P34 with planning
+PR #50 merged.
 
 ## What was built
 
