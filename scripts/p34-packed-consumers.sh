@@ -145,7 +145,7 @@ EOF
     mkdir -p "$dir/src"
     printf '%s' "$src" > "$dir/src/main.rs"
     local got errfile="/tmp/p34-consumer-$name-err.txt"
-    if ! got="$(cargo run --quiet --manifest-path "$dir/Cargo.toml" --offline 2>"$errfile")"; then
+    if ! got="$(cargo run --quiet --manifest-path "$dir/Cargo.toml" --offline 2>"$errfile" | tail -1)"; then
         echo "FATAL: consumer $name failed to build/run:"
         cat "$errfile"
         exit 1
