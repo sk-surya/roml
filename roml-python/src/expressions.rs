@@ -43,6 +43,7 @@ impl Affine {
         for term in &other.terms {
             self.push_term(term.var, term.coeff.clone() * sign)?;
         }
+        self.constant = simplify_value(self.constant.clone() + other.constant.clone() * sign);
         Ok(())
     }
 
@@ -54,9 +55,12 @@ impl Affine {
         }
         match self.terms.iter_mut().find(|t| t.var == var) {
             Some(existing) => {
-                existing.coeff = existing.coeff.clone() + coeff;
+                existing.coeff = simplify_value(existing.coeff.clone() + coeff);
             }
-            None => self.terms.push(ExprTerm { var, coeff }),
+            None => self.terms.push(ExprTerm {
+                var,
+                coeff: simplify_value(coeff),
+            }),
         }
         Ok(())
     }
@@ -68,9 +72,9 @@ impl Affine {
             ));
         }
         for term in &mut self.terms {
-            term.coeff = term.coeff.clone() * factor;
+            term.coeff = simplify_value(term.coeff.clone() * factor);
         }
-        self.constant = self.constant.clone() * factor;
+        self.constant = simplify_value(self.constant.clone() * factor);
         Ok(())
     }
 }
@@ -128,32 +132,41 @@ impl Expr {
         })
     }
 
-    fn __add__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __add__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let base = slf.bind(py).borrow();
             let mut inner = base.inner.clone();
             drop(base);
             add_operand(&mut inner, &other, 1.0)?;
-            Ok(Bound::new(py, Self { inner })?.unbind())
+            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
         })
     }
 
-    fn __radd__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __radd__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__add__(slf, other)
     }
 
-    fn __sub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __sub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let base = slf.bind(py).borrow();
             let mut inner = base.inner.clone();
             drop(base);
             add_operand(&mut inner, &other, -1.0)?;
-            Ok(Bound::new(py, Self { inner })?.unbind())
+            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
         })
     }
 
-    fn __rsub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __rsub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let base = slf.bind(py).borrow();
             let mut inner = Affine {
                 owner: base.inner.owner.clone_ref(py),
@@ -167,26 +180,32 @@ impl Expr {
             drop(neg);
             let orig = slf.bind(py).borrow();
             result.add_terms(&orig.inner, -1.0)?;
-            Ok(Bound::new(py, Self { inner: result })?.unbind())
+            Ok(Bound::new(py, Self { inner: result })?.into_any().unbind())
         })
     }
 
-    fn __mul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __mul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let base = slf.bind(py).borrow();
             let mut inner = base.inner.clone();
             drop(base);
             mul_operand(&mut inner, &other)?;
-            Ok(Bound::new(py, Self { inner })?.unbind())
+            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
         })
     }
 
-    fn __rmul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __rmul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__mul__(slf, other)
     }
 
-    fn __truediv__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Self>> {
+    fn __truediv__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let divisor = operand_numeric(&other, "division")?;
             if divisor == 0.0 {
                 return Err(InvalidModelError::new_err("division by zero"));
@@ -195,20 +214,38 @@ impl Expr {
             let mut inner = base.inner.clone();
             drop(base);
             inner.scale(1.0 / divisor)?;
-            Ok(Bound::new(py, Self { inner })?.unbind())
+            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
         })
     }
 
-    fn __le__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Comparison> {
-        compare_operand(&slf, &other, Sense::Le)
+    fn __le__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
+            let c = compare_operand(&slf, &other, Sense::Le)?;
+            Ok(Bound::new(py, c)?.into_any().unbind())
+        })
     }
 
-    fn __ge__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Comparison> {
-        compare_operand(&slf, &other, Sense::Ge)
+    fn __ge__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
+            let c = compare_operand(&slf, &other, Sense::Ge)?;
+            Ok(Bound::new(py, c)?.into_any().unbind())
+        })
     }
 
-    fn __eq__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Comparison> {
-        compare_operand(&slf, &other, Sense::Eq)
+    fn __eq__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
+            let c = compare_operand(&slf, &other, Sense::Eq)?;
+            Ok(Bound::new(py, c)?.into_any().unbind())
+        })
     }
 }
 
@@ -220,6 +257,8 @@ enum Sense {
 }
 
 /// Add (sign +1) or subtract (sign -1) an operand into an affine expression.
+/// Array operands cannot fold into a scalar: callers route them through
+/// the array engine before reaching here.
 fn add_operand(inner: &mut Affine, other: &Bound<'_, PyAny>, sign: f64) -> PyResult<()> {
     if let Ok(var) = other.cast::<Var>() {
         let var = var.borrow();
@@ -314,6 +353,8 @@ fn nonlinear() -> PyErr {
 fn compare_operand(slf: &Py<Expr>, other: &Bound<'_, PyAny>, sense: Sense) -> PyResult<Comparison> {
     Python::attach(|py| {
         // Move the operand to the left: lhs = self - other, bound 0.
+        // Array operands never reach here: every comparison dunder
+        // returns NotImplemented for them first.
         let base = slf.bind(py).borrow();
         let mut lhs = base.inner.clone();
         drop(base);
@@ -363,15 +404,6 @@ impl Comparison {
     pub(crate) fn owner_check(&self, model: &Bound<'_, Model>) -> PyResult<()> {
         super::handles::check_owner(&self.owner, model)
     }
-
-    /// Bound expressions as (lower, upper) symbolic pair.
-    pub(crate) fn bound_exprs(&self) -> (Option<ValueExpr>, Option<ValueExpr>) {
-        match &self.rhs {
-            BoundSide::Upper(u) => (None, Some(u.clone())),
-            BoundSide::Lower(l) => (Some(l.clone()), None),
-            BoundSide::Eq(e) => (Some(e.clone()), Some(e.clone())),
-        }
-    }
 }
 
 #[pymethods]
@@ -392,15 +424,15 @@ impl Comparison {
         ))
     }
 
-    fn __le__(&self, _other: Bound<'_, PyAny>) -> PyResult<Comparison> {
+    fn __le__(&self, _other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Err(chained())
     }
 
-    fn __ge__(&self, _other: Bound<'_, PyAny>) -> PyResult<Comparison> {
+    fn __ge__(&self, _other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Err(chained())
     }
 
-    fn __eq__(&self, _other: Bound<'_, PyAny>) -> PyResult<Comparison> {
+    fn __eq__(&self, _other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Err(chained())
     }
 }
@@ -471,28 +503,37 @@ impl Var {
         })
     }
 
-    fn __add__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __add__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, 1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __radd__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __radd__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__add__(slf, other)
     }
 
-    fn __sub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __sub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __rsub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __rsub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let base = slf.bind(py).borrow();
             let mut inner = Affine {
                 owner: base.owner.clone_ref(py),
@@ -505,55 +546,73 @@ impl Var {
             let single = var_affine(py, &orig);
             drop(orig);
             inner.add_terms(&single, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __mul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __mul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             mul_operand(&mut inner, &other)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __rmul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __rmul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__mul__(slf, other)
     }
 
-    fn __truediv__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __truediv__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let divisor = operand_numeric(&other, "division")?;
             if divisor == 0.0 {
                 return Err(InvalidModelError::new_err("division by zero"));
             }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             inner.scale(1.0 / divisor)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __le__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Comparison> {
+    fn __le__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let inner = var_affine(py, &slf.bind(py).borrow());
             let expr = Bound::new(py, Expr { inner })?;
-            compare_operand(&expr.unbind(), &other, Sense::Le)
+            let c = compare_operand(&expr.unbind(), &other, Sense::Le)?;
+            Ok(Bound::new(py, c)?.into_any().unbind())
         })
     }
 
-    fn __ge__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Comparison> {
+    fn __ge__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let inner = var_affine(py, &slf.bind(py).borrow());
             let expr = Bound::new(py, Expr { inner })?;
-            compare_operand(&expr.unbind(), &other, Sense::Ge)
+            let c = compare_operand(&expr.unbind(), &other, Sense::Ge)?;
+            Ok(Bound::new(py, c)?.into_any().unbind())
         })
     }
 
-    fn __eq__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Comparison> {
+    fn __eq__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let inner = var_affine(py, &slf.bind(py).borrow());
             let expr = Bound::new(py, Expr { inner })?;
-            compare_operand(&expr.unbind(), &other, Sense::Eq)
+            let c = compare_operand(&expr.unbind(), &other, Sense::Eq)?;
+            Ok(Bound::new(py, c)?.into_any().unbind())
         })
     }
 
@@ -597,28 +656,37 @@ impl Param {
         })
     }
 
-    fn __add__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __add__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, 1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __radd__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __radd__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__add__(slf, other)
     }
 
-    fn __sub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __sub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __rsub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __rsub__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let base = slf.bind(py).borrow();
             let mut inner = Affine {
                 owner: base.owner.clone_ref(py),
@@ -631,31 +699,37 @@ impl Param {
             let single = param_affine(py, &orig);
             drop(orig);
             inner.add_terms(&single, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __mul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __mul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             mul_operand(&mut inner, &other)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
-    fn __rmul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __rmul__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Self::__mul__(slf, other)
     }
 
-    fn __truediv__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<Expr>> {
+    fn __truediv__(slf: Py<Self>, other: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
+            if super::arrays::is_array_operand(&other) {
+                return Ok(py.NotImplemented());
+            }
             let divisor = operand_numeric(&other, "division")?;
             if divisor == 0.0 {
                 return Err(InvalidModelError::new_err("division by zero"));
             }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             inner.scale(1.0 / divisor)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
         })
     }
 
@@ -663,5 +737,58 @@ impl Param {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "parameters have no truth value",
         ))
+    }
+}
+
+/// Canonicalize a coefficient/constant expression: constant folding plus
+/// zero/one identities. `ValueExpr` trees never simplify themselves, so
+/// binding-built arithmetic (`0 * p`, accumulated folds) would otherwise
+/// carry phantom parameter dependencies. Only exact identities apply;
+/// nothing is reordered or approximated.
+pub(crate) fn simplify_value(expr: ValueExpr) -> ValueExpr {
+    use roml::ValueExpr as V;
+    match expr {
+        V::Constant(_) | V::Param(_) => expr,
+        V::Neg(inner) => match simplify_value(*inner) {
+            V::Constant(c) => V::constant(-c),
+            s => V::neg(s),
+        },
+        V::Add(l, r) => {
+            let (l, r) = (simplify_value(*l), simplify_value(*r));
+            match (&l, &r) {
+                (V::Constant(a), V::Constant(b)) => V::constant(a + b),
+                (V::Constant(a), _) if *a == 0.0 => r,
+                (_, V::Constant(b)) if *b == 0.0 => l,
+                _ => V::add(l, r),
+            }
+        }
+        V::Sub(l, r) => {
+            let (l, r) = (simplify_value(*l), simplify_value(*r));
+            match (&l, &r) {
+                (V::Constant(a), V::Constant(b)) => V::constant(a - b),
+                (_, V::Constant(b)) if *b == 0.0 => l,
+                _ => V::sub(l, r),
+            }
+        }
+        V::Mul(l, r) => {
+            let (l, r) = (simplify_value(*l), simplify_value(*r));
+            match (&l, &r) {
+                (V::Constant(a), V::Constant(b)) => V::constant(a * b),
+                (V::Constant(a), _) if *a == 0.0 => V::constant(0.0),
+                (_, V::Constant(b)) if *b == 0.0 => V::constant(0.0),
+                (V::Constant(a), _) if *a == 1.0 => r,
+                (_, V::Constant(b)) if *b == 1.0 => l,
+                _ => V::mul(l, r),
+            }
+        }
+        V::Div(l, r) => {
+            let (l, r) = (simplify_value(*l), simplify_value(*r));
+            match (&l, &r) {
+                (V::Constant(a), V::Constant(b)) => V::constant(a / b),
+                (V::Constant(a), _) if *a == 0.0 => V::constant(0.0),
+                (_, V::Constant(b)) if *b == 1.0 => l,
+                _ => V::div(l, r),
+            }
+        }
     }
 }

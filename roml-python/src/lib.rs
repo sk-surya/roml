@@ -7,6 +7,7 @@
 
 use pyo3::prelude::*;
 
+mod arrays;
 mod errors;
 mod expressions;
 mod handles;
@@ -40,6 +41,13 @@ mod _native {
         m.add_class::<solution::Solution>()?;
         m.add_class::<solution::SolveStatus>()?;
         m.add_class::<solver::Session>()?;
+        m.add_class::<arrays::VarArray>()?;
+        m.add_class::<arrays::ParamArray>()?;
+        m.add_class::<arrays::ExprArray>()?;
+        m.add_class::<arrays::ComparisonArray>()?;
+        m.add_class::<arrays::ConstraintArray>()?;
+        m.add_function(wrap_pyfunction!(arrays::sum, m)?)?;
+        m.add_function(wrap_pyfunction!(arrays::dot, m)?)?;
         // The packet contract spells status members UPPER_CASE. Expose
         // aliases on the enum type (same objects, both spellings work).
         let status = m.getattr("SolveStatus")?;

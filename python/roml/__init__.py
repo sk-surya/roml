@@ -2,12 +2,19 @@
 
 from . import _native
 
+sum = _native.sum
+dot = _native.dot
+
 Model = _native.Model
 Var = _native.Var
 Param = _native.Param
 Constraint = _native.Constraint
 Objective = _native.Objective
 Expr = _native.Expr
+VarArray = _native.VarArray
+ParamArray = _native.ParamArray
+ExprArray = _native.ExprArray
+ConstraintArray = _native.ConstraintArray
 Highs = _native.Highs
 Solution = _native.Solution
 SolveStatus = _native.SolveStatus
@@ -37,9 +44,15 @@ __all__ = [
     "Constraint",
     "Objective",
     "Expr",
+    "VarArray",
+    "ParamArray",
+    "ExprArray",
+    "ConstraintArray",
     "Highs",
     "Solution",
     "SolveStatus",
+    "sum",
+    "dot",
     "RomlError",
     "InvalidModelError",
     "InvalidHandleError",

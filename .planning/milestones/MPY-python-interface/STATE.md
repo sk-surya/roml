@@ -15,7 +15,8 @@ MPY-01 (binding toolchain and package boundary) is authorized.
 | Phase | State | Evidence |
 |---|---|---|
 | MPY-00 | complete | `evidence/PR-INVENTORY.md`; PR #49 merge `4cbe13c`; PR #51 merge `17e8b79` |
-| MPY-01 | in progress | `evidence/DEPENDENCIES.md`; import from built wheel |
+| MPY-01 | complete | `evidence/DEPENDENCIES.md`; import from built wheel; independent CLEAR review |
+| MPY-02 | complete | golden LP, identity/errors, production.py, ergonomics review |
 | MPY-01 | not started | none |
 | MPY-02 | not started | none |
 | MPY-03 | not started | none |

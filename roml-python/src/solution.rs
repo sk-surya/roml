@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use roml::{ModelInstanceId, ModelRevision, SolveStatus as CoreStatus, VarId};
 
-use super::errors::{InvalidHandleError, MissingValueError, NoSolutionError};
+use super::errors::{InvalidHandleError, InvalidModelError, MissingValueError, NoSolutionError};
 use super::handles::Var;
 use super::model::Model;
 
@@ -100,11 +100,40 @@ impl Solution {
             ));
         }
         let var = var.borrow();
+        check_solution_owner(&var.owner, &self.snapshot)?;
         self.snapshot
             .values
             .get(&var.id)
             .copied()
             .ok_or_else(|| MissingValueError::new_err("no value reported for this variable"))
+    }
+
+    /// Owned NumPy float64 result over a `VarArray`, same shape and C
+    /// order; a copy, never a view into live native buffers.
+    fn values(&self, var_array: Bound<'_, super::arrays::VarArray>) -> PyResult<Py<PyAny>> {
+        use numpy::{IxDyn, PyArray1, PyArrayMethods};
+        if !self.has_primal() {
+            return Err(NoSolutionError::new_err(
+                "this result carries no primal solution",
+            ));
+        }
+        let arr = var_array.borrow();
+        check_solution_owner(&arr.owner, &self.snapshot)?;
+        let mut data = Vec::with_capacity(arr.vars.len());
+        for (i, var) in arr.vars.iter().enumerate() {
+            data.push(self.snapshot.values.get(var).copied().ok_or_else(|| {
+                MissingValueError::new_err(format!("no value reported for array element {i}"))
+            })?);
+        }
+        let shape = arr.shape.clone();
+        drop(arr);
+        Python::attach(|py| {
+            let flat = PyArray1::from_vec(py, data);
+            let shaped = flat.reshape(IxDyn(&shape)).map_err(|_| {
+                InvalidModelError::new_err("internal error: result shape does not match data")
+            })?;
+            Ok(shaped.into_any().unbind())
+        })
     }
 
     fn is_current(&self, model: Bound<'_, Model>) -> PyResult<bool> {
@@ -136,4 +165,28 @@ impl Solution {
             self.snapshot.objective
         )
     }
+}
+
+/// A handle from another model (or instance) must never index into this
+/// result: arena IDs can coincide across models. Compare the owner's live
+/// instance against the recorded solve provenance.
+fn check_solution_owner(
+    owner: &pyo3::Py<super::model::Model>,
+    snapshot: &Snapshot,
+) -> PyResult<()> {
+    let owned = Python::attach(|py| {
+        let bound = owner.bind(py);
+        let borrowed = bound.borrow();
+        let state = borrowed
+            .state
+            .lock()
+            .map_err(|_| InvalidHandleError::new_err("model state is invalid"))?;
+        Ok::<_, PyErr>(state.model.instance())
+    })?;
+    if owned != snapshot.instance {
+        return Err(super::errors::ModelMismatchError::new_err(
+            "this handle belongs to a different model than the solution",
+        ));
+    }
+    Ok(())
 }
