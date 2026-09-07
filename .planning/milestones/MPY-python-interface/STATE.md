@@ -21,7 +21,7 @@ MPY-01 (binding toolchain and package boundary) is authorized.
 | MPY-04 | complete | detached solves, outcomes, warm starts, duals, 61 tests, lifecycle review |
 | MPY-05 | complete | BESS MPC, oracle equivalence, benchmark matrix; bulk gate amended (pass), memory gate open |
 | MPY-06 | open | typing/wheels/sdist/docs done; journal fix reviewed + green on #54 (draft); soak PASSES; merge pending separate authorization |
-| MPY-J | open | journal-bounding correction: design approved, implemented, independently reviewed, gates green, soak PASS; PR #54 draft review |
+| MPY-J | complete | journal-bounding correction designed, reviewed, implemented, merged (#54); soak PASSES |
 | MPY-01 | not started | none |
 | MPY-02 | not started | none |
 | MPY-03 | not started | none |
