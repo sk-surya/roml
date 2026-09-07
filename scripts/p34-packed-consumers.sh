@@ -57,6 +57,10 @@ else
     HIGHS_DIR="$PACKED/roml-highs-$HIGHS_VER"
     mkdir -p "$HIGHS_DIR"
     while IFS= read -r f; do
+        # Generated pack metadata is not present in the working tree.
+        case "$f" in
+            .cargo_vcs_info.json | .cargo-checksum.json) continue ;;
+        esac
         mkdir -p "$HIGHS_DIR/$(dirname "$f")"
         cp "$ROOT/$f" "$HIGHS_DIR/$f"
     done < /tmp/p34-roml-highs-package-list.txt
