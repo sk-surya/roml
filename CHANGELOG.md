@@ -26,6 +26,28 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Python interface over persistent sessions (MPY, unreleased)
+
+- New `roml-python` crate (PyO3 + maturin, `pip install roml-python`)
+  exposing the solver-independent model with NumPy-shaped bulk
+  modeling, atomic named parameter updates, and persistent `Highs`
+  sessions returning immutable solution snapshots.
+- Scalar and shaped expressions with parameter-dependent coefficients;
+  `rm.sum` / `rm.dot` bulk reductions execute in Rust with one
+  extension call per vector operation; CSR bulk rows accumulate
+  duplicates algebraically.
+- Detached native solves (GIL released), deterministic busy errors,
+  explicit warm-start requests with measured disposition, LP-only
+  duals/reduced costs, and honest solution metadata including the
+  synchronization mode.
+- Full typing (`py.typed`, strict-checked stubs) and runnable examples
+  (scalar production LP, rolling-battery MPC).
+- Known limitation: parameter-dependent objective *constants* are
+  rejected explicitly (the core has no replaceable constant cell).
+- Known limitation: long-lived models retain committed delta batches
+  for lagging adapters (unbounded journal), so the 10k-cycle memory
+  gate currently fails pending a journal-bounding design decision.
+
 #### Persistent soft constraints and portable feasibility repair (P30)
 - Added revisioned persistent soft-constraint handles with exact lower/upper
   violation rows, finite caps, parameterized nonnegative weights, and explicit

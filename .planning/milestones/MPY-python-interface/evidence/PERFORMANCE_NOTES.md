@@ -57,3 +57,34 @@ hasty core change (cursor-acknowledged pruning is an architectural
 protocol touching the multi-adapter invariant). Escalated for owner
 disposition: amend the threshold, authorize a journal-pruning design,
 or accept periodic session/model recycling with explicit semantics.
+
+## MPY-05 canonical numbers (release wheel, quiet host, 2026-09-07)
+
+MPC matched MILP (1000 gates x 30 reps, threads=1, limit 2.0s):
+
+| Arm | p50 ms/gate |
+|---|---|
+| Python ROML persistent | 4.52 |
+| Python ROML fresh rebuild | 5.99 (+33%: state-reuse benefit) |
+| Direct highspy persistent | 3.97 |
+| Direct Rust ROML persistent | 3.98 |
+
+Wrapper overhead on this workload: ~0.55 ms/gate (~14% over direct
+highspy). Gate-by-gate objectives agree exactly across arms.
+
+LP-small (relaxation): 0.64 ms/gate (Python persistent).
+
+LP-scale (100x96, 9,600 cells/gate, release):
+
+| Arm | update | extract | non-solve | native solve |
+|---|---|---|---|---|
+| Python persistent | 2.82 | 0.13 | ~2.95 | ~475 |
+| Direct Rust | 0.23 | 0.12 | ~0.35 | ~482 |
+
+PY-27 gate: 2.95 <= 1.5 * 0.35 + 5 = 5.53 ms. PASS.
+
+IMPORTANT METHODOLOGY NOTE: all pre-release Python timings in this
+file's MPY-03 section were measured on debug (`maturin develop`)
+builds, which run ~10x slower than release on validation-heavy paths
+(26 ms vs 2.8 ms for the LP-scale update). Canonical qualification
+numbers above are release-wheel only.
