@@ -126,3 +126,12 @@ Full MPY Python suite (65 tests) green against the fixed core.
 
 MPY-06 remains open until #54 is reviewed and merged (separate
 authorization required); the implementation PR #53 stays draft.
+
+## Status after correction work (2026-09-07)
+
+- Bulk: corrected Amdahl breakdown + amended contract in
+  `evidence/BULK-CONTRACT.md` (release-measured 53% identical, max
+  1.87x, measured 1.43x consistent; eliminable-work benefit 2.9x).
+- Memory: fix implemented on `fix/bounded-sync-journal` (#54),
+  independently reviewed with all findings fixed, core gates green,
+  10k soak PASSES (0.0 MiB). Awaiting review + merge authorization.
