@@ -1,15 +1,21 @@
 //! Revision journal for delta replay.
 //!
 //! The journal stores committed `DeltaBatch` values indexed by their
-//! `from` revision. Each batch is immutable once stored and retained
-//! until explicit compaction.
+//! `from` revision. Each batch is immutable once stored. Retention is
+//! automatic and bounded (see below) — callers must not assume history
+//! is retained for any particular session.
 //!
 //! # Design
 //!
 //! - Batches are stored in revision order (by `from` revision).
+//! - At most the [`DEFAULT_JOURNAL_CAPACITY`] most recent batches are
+//!   retained; `record` evicts oldest-first beyond capacity. There is
+//!   no per-session pinning: retention is global.
 //! - `deltas_since(revision)` returns all batches whose `from` revision
-//!   is >= the requested revision, in order.
-//! - The journal does not compact automatically; callers control retention.
+//!   is >= the requested revision, in order, or
+//!   [`RevisionError::Compacted`](crate::revision::RevisionError) when
+//!   the requested revision predates the retained window (the caller
+//!   rebuilds from a snapshot).
 
 use std::collections::BTreeMap;
 
@@ -20,29 +26,66 @@ use crate::revision::{ModelRevision, RevisionError};
 ///
 /// Each batch is stored at its `from` revision. The journal supports
 /// replay queries for adapters that need to catch up.
-#[derive(Clone, Debug, Default)]
+///
+/// # Retention bound
+///
+/// The journal retains at most `capacity` most recent batches
+/// (`DEFAULT_JOURNAL_CAPACITY` unless overridden). Older batches are
+/// evicted on record; a replay query for an evicted range fails with
+/// `RevisionError::Compacted`, and the caller rebuilds from a snapshot
+/// (the facade's existing recovery path). The bound means idle or
+/// abandoned sessions can never pin history: retention is global, never
+/// per-session. INVARIANT: `batches.len() <= capacity` whenever capacity
+/// is `Some` — direct field inserts bypassing `record` violate this.
+#[derive(Clone, Debug)]
 pub struct Journal {
     /// Batches indexed by their `from` revision, in order.
     batches: BTreeMap<ModelRevision, DeltaBatch>,
 
     /// The latest revision committed to this journal.
     latest_revision: ModelRevision,
+
+    /// Maximum retained batches (`None` = unbounded, test-only).
+    capacity: Option<std::num::NonZeroUsize>,
+}
+
+/// Default retention: enough headroom for typical multi-session lag
+/// (single digits) with bounded memory on uniform workloads.
+pub const DEFAULT_JOURNAL_CAPACITY: usize = 128;
+
+impl Default for Journal {
+    /// Default is a bounded empty journal (same as `new`).
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Methods used by sync coordinator and tests.
 impl Journal {
-    /// Create an empty journal.
+    /// Create an empty journal with the default retention bound.
     pub fn new() -> Self {
         Self {
             batches: BTreeMap::new(),
             latest_revision: ModelRevision::ZERO,
+            capacity: std::num::NonZeroUsize::new(DEFAULT_JOURNAL_CAPACITY),
+        }
+    }
+
+    /// Create an empty journal with an explicit retention bound (`None`
+    /// = unbounded; intended for tests pinning legacy semantics).
+    pub fn with_capacity(capacity: Option<std::num::NonZeroUsize>) -> Self {
+        Self {
+            batches: BTreeMap::new(),
+            latest_revision: ModelRevision::ZERO,
+            capacity,
         }
     }
 
     /// Record a committed delta batch.
     ///
     /// The batch's `from` revision must equal the journal's latest revision
-    /// (no gaps). Returns an error if there's a gap.
+    /// (no gaps). Returns an error if there's a gap. After inserting,
+    /// oldest batches beyond capacity are evicted.
     pub fn record(&mut self, batch: DeltaBatch) -> Result<(), RevisionError> {
         if batch.from != self.latest_revision {
             return Err(RevisionError::FutureRevision {
@@ -53,19 +96,35 @@ impl Journal {
 
         self.latest_revision = batch.to;
         self.batches.insert(batch.from, batch);
+        if let Some(cap) = self.capacity {
+            while self.batches.len() > cap.get() {
+                // BTreeMap iterates in key order: pop the oldest first.
+                let oldest = *self.batches.keys().next().expect("nonempty after insert");
+                self.batches.remove(&oldest);
+            }
+        }
         Ok(())
     }
 
     /// Return all batches with `from` revision >= `since`, in order.
     ///
-    /// Returns an error if `since` references a compacted revision
-    /// (not yet implemented — compaction is future work).
+    /// Boundary contract: `since` older than the oldest retained batch
+    /// fails with `RevisionError::Compacted` (the caller rebuilds from a
+    /// snapshot); `since` within `[oldest_retained, latest]` returns the
+    /// exact suffix; `since == latest` (or an empty journal queried at
+    /// `ZERO`) returns `Ok(empty)` meaning up-to-date.
     pub fn deltas_since(&self, since: ModelRevision) -> Result<Vec<&DeltaBatch>, RevisionError> {
         if since > self.latest_revision {
             return Err(RevisionError::FutureRevision {
                 requested: since,
                 current: self.latest_revision,
             });
+        }
+        // Evicted prefix: the retained suffix would silently miss history.
+        if let Some(&oldest) = self.batches.keys().next() {
+            if since < oldest {
+                return Err(RevisionError::Compacted { revision: since });
+            }
         }
 
         Ok(self.batches.range(since..).map(|(_, b)| b).collect())
@@ -74,6 +133,12 @@ impl Journal {
     /// The latest revision in the journal.
     pub fn latest_revision(&self) -> ModelRevision {
         self.latest_revision
+    }
+
+    /// The oldest retained batch revision, if any. Eviction advances this;
+    /// replay queries below it fail with `RevisionError::Compacted`.
+    pub fn oldest_retained(&self) -> Option<ModelRevision> {
+        self.batches.keys().next().copied()
     }
 
     /// Number of batches in the journal.
@@ -162,5 +227,72 @@ mod tests {
             .deltas_since(ModelRevision::ZERO)
             .unwrap()
             .is_empty());
+    }
+
+    fn rev(n: u64) -> ModelRevision {
+        ModelRevision::from_u64(n)
+    }
+
+    fn fill(journal: &mut Journal, count: u64) {
+        for i in 0..count {
+            journal
+                .record(make_batch(rev(i), rev(i + 1)))
+                .expect("sequential record");
+        }
+    }
+
+    #[test]
+    fn record_beyond_capacity_evicts_oldest() {
+        use std::num::NonZeroUsize;
+        let cap = NonZeroUsize::new(4).unwrap();
+        let mut journal = Journal::with_capacity(Some(cap));
+        fill(&mut journal, 6);
+        assert_eq!(journal.len(), 4);
+        assert_eq!(journal.oldest_retained(), Some(rev(2)));
+        assert_eq!(journal.latest_revision(), rev(6));
+        // Retained window serves exact suffixes, including the exact
+        // oldest boundary (guards `<` vs `<=` in the eviction check).
+        assert_eq!(journal.deltas_since(rev(2)).unwrap().len(), 4);
+        let suffix = journal.deltas_since(rev(4)).unwrap();
+        assert_eq!(suffix.len(), 2);
+        assert_eq!(journal.deltas_since(rev(6)).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn deltas_since_below_window_is_compacted_not_truncated() {
+        use std::num::NonZeroUsize;
+        let cap = NonZeroUsize::new(4).unwrap();
+        let mut journal = Journal::with_capacity(Some(cap));
+        fill(&mut journal, 6);
+        // A stale cursor must FAIL, never receive a truncated suffix as Ok.
+        match journal.deltas_since(rev(0)) {
+            Err(RevisionError::Compacted { revision }) => assert_eq!(revision, rev(0)),
+            other => panic!("expected Compacted, got {other:?}"),
+        }
+        match journal.deltas_since(rev(1)) {
+            Err(RevisionError::Compacted { revision }) => assert_eq!(revision, rev(1)),
+            other => panic!("expected Compacted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unbounded_capacity_preserves_legacy_semantics() {
+        let mut journal = Journal::with_capacity(None);
+        fill(&mut journal, 300);
+        assert_eq!(journal.len(), 300);
+        assert_eq!(journal.oldest_retained(), Some(rev(0)));
+        assert_eq!(journal.deltas_since(rev(0)).unwrap().len(), 300);
+    }
+
+    #[test]
+    fn default_capacity_is_bounded() {
+        use std::num::NonZeroUsize;
+        let mut journal = Journal::new();
+        assert_eq!(
+            journal.capacity,
+            NonZeroUsize::new(DEFAULT_JOURNAL_CAPACITY)
+        );
+        fill(&mut journal, DEFAULT_JOURNAL_CAPACITY as u64 + 10);
+        assert_eq!(journal.len(), DEFAULT_JOURNAL_CAPACITY);
     }
 }

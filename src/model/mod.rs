@@ -3346,13 +3346,24 @@ impl Model {
 impl Model {
     /// Get all delta batches since the given revision for testing.
     ///
-    /// Returns batches in order. An empty vec means no batches recorded
-    /// since the given revision. Errors if `since` is in the future.
+    /// Returns batches in order. An empty vec means the model is already
+    /// up-to-date (no batches recorded since the given revision). Errors
+    /// if `since` is in the future, or with `RevisionError::Compacted`
+    /// if `since` predates the retained window (the caller rebuilds from
+    /// a snapshot instead of replaying).
     pub fn deltas_since(
         &self,
         since: ModelRevision,
     ) -> Result<Vec<&DeltaBatch>, crate::revision::RevisionError> {
         self.coordinator.journal.deltas_since(since)
+    }
+
+    /// Number of delta batches currently retained in the sync journal.
+    ///
+    /// The journal is bounded (`DEFAULT_JOURNAL_CAPACITY`); this never
+    /// grows without limit no matter how many revisions commit.
+    pub fn journal_len(&self) -> usize {
+        self.coordinator.journal.len()
     }
 }
 

@@ -58,6 +58,7 @@ struct FaultState {
     revision: ModelRevision,
     health: AdapterHealth,
     reject_next_delta: bool,
+    fail_after_applied: Option<usize>,
     fail_delta_terminal: bool,
     fail_rebuild: bool,
     solve_fails: bool,
@@ -86,6 +87,12 @@ impl FaultState {
 
     fn set_reject_next_delta(&mut self) {
         self.reject_next_delta = true;
+    }
+
+    /// Fail recoverably after `n` successful delta applications (partial
+    /// sync: the cursor advances through the applied prefix, then errors).
+    fn set_fail_after_applied(&mut self, n: usize) {
+        self.fail_after_applied = Some(n);
     }
 
     fn set_fail_delta_terminal(&mut self) {
@@ -167,6 +174,7 @@ impl TestBackend {
             revision: ModelRevision::ZERO,
             health: AdapterHealth::Ready,
             reject_next_delta: false,
+            fail_after_applied: None,
             fail_delta_terminal: false,
             fail_rebuild: false,
             solve_fails: false,
@@ -491,6 +499,15 @@ impl BackendSession for TestBackend {
                             HealthEffect::Recoverable,
                         ));
                     }
+                    if s.fail_after_applied == Some(0) {
+                        s.fail_after_applied = None;
+                        s.health = AdapterHealth::RequiresRebuild;
+                        return Err(BackendError::new(
+                            "injected recoverable failure after applied prefix",
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
                     if s.fail_delta_terminal {
                         s.fail_delta_terminal = false;
                         s.health = AdapterHealth::Terminal;
@@ -561,6 +578,15 @@ impl BackendSession for TestBackend {
                             HealthEffect::Recoverable,
                         ));
                     }
+                    if s.fail_after_applied == Some(0) {
+                        s.fail_after_applied = None;
+                        s.health = AdapterHealth::RequiresRebuild;
+                        return Err(BackendError::new(
+                            "injected recoverable failure after applied prefix",
+                            ErrorCategory::InvalidInput,
+                            HealthEffect::Recoverable,
+                        ));
+                    }
                     if s.fail_delta_terminal {
                         s.fail_delta_terminal = false;
                         s.health = AdapterHealth::Terminal;
@@ -591,6 +617,9 @@ impl BackendSession for TestBackend {
                 s.revision = batch.to_revision;
                 s.health = AdapterHealth::Ready;
                 s.current_compilation = Some(batch.to_compilation);
+                if let Some(remaining) = s.fail_after_applied {
+                    s.fail_after_applied = Some(remaining.saturating_sub(1));
+                }
                 Ok(SyncReceipt {
                     cursor: roml::sync::AdapterCursor {
                         applied_revision: s.revision,
@@ -1252,4 +1281,227 @@ fn facade_uses_typed_validate_request_for_options() {
         matches!(err, SolveError::InvalidOptions(_)),
         "expected InvalidOptions from the typed validate_request, got {err:?}"
     );
+}
+
+// ── Bounded replay journal (MPY memory-gate correction) ──────────────────────
+// The model journal retains at most DEFAULT_JOURNAL_CAPACITY batches;
+// sessions older than the window rebuild from a snapshot instead of
+// replaying. These tests pin the multi-session, failure, disposal, and
+// repeated-pruning behavior.
+
+use roml::DEFAULT_JOURNAL_CAPACITY;
+
+/// A model with one churnable parameter; objective tracks its value so
+/// solves distinguish revisions: maximize price * x + 0 with x <= 10.
+fn build_churn_model() -> (Model, roml::id::ParamId, VarId) {
+    let mut model = Model::new();
+    let price = model.add_parameter(parameter(1.0)).unwrap();
+    let x = model.add_variable(continuous()).unwrap();
+    model.add_constraint(x.le(10.0)).unwrap();
+    model.maximize(price * x).unwrap();
+    (model, price, x)
+}
+
+/// Commit `count` sequential parameter revisions without solving.
+fn churn(model: &mut Model, price: roml::id::ParamId, count: usize, base: f64) {
+    for i in 0..count {
+        model
+            .set_parameter(price, base + i as f64)
+            .expect("finite parameter sets");
+        model.commit().expect("commit succeeds");
+    }
+}
+
+fn journal_len(model: &Model) -> usize {
+    model.journal_len()
+}
+
+/// A session older than the retained window rebuilds from a snapshot
+/// and solves correctly; the journal stays bounded throughout.
+#[test]
+fn lagging_session_rebuilds_after_eviction() {
+    let (mut model, price, _x) = build_churn_model();
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
+    let first = session.solve(&mut model).unwrap();
+    assert_eq!(first.metadata().synchronization, SynchronizationMode::Delta);
+
+    // Push the model well beyond the retention window.
+    churn(&mut model, price, DEFAULT_JOURNAL_CAPACITY + 20, 100.0);
+    assert!(
+        journal_len(&model) <= DEFAULT_JOURNAL_CAPACITY,
+        "journal bounded after churn: {}",
+        journal_len(&model)
+    );
+
+    // The stale session cannot replay: it rebuilds and solves correctly.
+    let second = session.solve(&mut model).unwrap();
+    assert_eq!(
+        second.metadata().synchronization,
+        SynchronizationMode::Rebuild,
+        "evicted cursor must rebuild, not replay a truncated suffix"
+    );
+    assert_eq!(second.metadata().model_revision, model.current_revision());
+    // price = 100 + (128+20-1) = 247, x = 1.0 in the test backend.
+    let expected = 100.0 + (DEFAULT_JOURNAL_CAPACITY + 20 - 1) as f64;
+    assert!((second.objective_value().unwrap() - expected).abs() < 1e-9);
+    assert_eq!(state.borrow().rebuilds(), 2, "base + lagging rebuild");
+}
+
+/// Two sessions at different revisions advance independently; the fresh
+/// one replays deltas while the current one reports no change.
+#[test]
+fn multiple_sessions_advance_independently() {
+    let (mut model, price, _x) = build_churn_model();
+    let mut session_a = SolverSession::new(TestBackend::new().0);
+    let mut session_b = SolverSession::new(TestBackend::new().0);
+
+    session_a.solve(&mut model).unwrap();
+    session_b.solve(&mut model).unwrap();
+    churn(&mut model, price, 10, 50.0);
+    // A is 10 behind: replays the retained window as deltas.
+    let a = session_a.solve(&mut model).unwrap();
+    assert_eq!(a.metadata().synchronization, SynchronizationMode::Delta);
+    // B is 15 behind (10 old + 5 new): replays the retained window.
+    churn(&mut model, price, 5, 60.0);
+    let b = session_b.solve(&mut model).unwrap();
+    assert_eq!(b.metadata().synchronization, SynchronizationMode::Delta);
+    assert_eq!(b.metadata().model_revision, model.current_revision());
+    // price = 60 + 4 = 64.
+    assert!((b.objective_value().unwrap() - 64.0).abs() < 1e-9);
+    assert!(journal_len(&model) <= DEFAULT_JOURNAL_CAPACITY);
+}
+
+/// A backend failure mid-delta-application applies a strict prefix
+/// (first batch applied, second rejected: partial cursor advance), and
+/// the same solve recovers via rebuild with correct results. A terminal
+/// failure instead surfaces without silent success, and the session
+/// recovers afterwards.
+#[test]
+fn failed_partial_sync_recovers_via_rebuild() {
+    let (mut model, price, _x) = build_churn_model();
+    let (backend, state) = TestBackend::new();
+    let mut session = SolverSession::new(backend);
+    session.solve(&mut model).unwrap();
+    assert_eq!(state.borrow().rebuilds(), 1);
+    assert_eq!(state.borrow().deltas(), 1);
+
+    // Two pending batches, then a recoverable failure on the second:
+    // the first applies (cursor advances to the intermediate revision),
+    // then recovery rebuilds within the same call.
+    churn(&mut model, price, 2, 20.0);
+    state.borrow_mut().set_fail_after_applied(1);
+    let recovered = session.solve(&mut model).unwrap();
+    // Exactly one more delta applied (the strict prefix) before the
+    // failure, then one recovery rebuild within the same call.
+    assert_eq!(state.borrow().deltas(), 2);
+    assert_eq!(state.borrow().rebuilds(), 2);
+    assert_eq!(
+        recovered.metadata().synchronization,
+        SynchronizationMode::Rebuild
+    );
+    assert_eq!(
+        recovered.metadata().model_revision,
+        model.current_revision()
+    );
+    // price = 21 (two churns from 20).
+    assert!((recovered.objective_value().unwrap() - 21.0).abs() < 1e-9);
+
+    // Terminal failure surfaces as an error (no silent success).
+    churn(&mut model, price, 1, 30.0);
+    state.borrow_mut().set_fail_delta_terminal();
+    assert!(session.solve(&mut model).is_err());
+    // Clearing the fault and health recovers via rebuild with correct
+    // results (terminal health otherwise persists by design).
+    state.borrow_mut().fail_delta_terminal = false;
+    state.borrow_mut().health = AdapterHealth::Ready;
+    let again = session.solve(&mut model).unwrap();
+    assert_eq!(again.metadata().model_revision, model.current_revision());
+    assert!((again.objective_value().unwrap() - 30.0).abs() < 1e-9);
+}
+
+/// A dropped (abandoned or idle) session pins nothing: many commits
+/// later the journal is still bounded.
+#[test]
+fn disposed_session_pins_nothing() {
+    let (mut model, price, _x) = build_churn_model();
+    {
+        let mut session = SolverSession::new(TestBackend::new().0);
+        session.solve(&mut model).unwrap();
+        // Session dropped here without another solve.
+    }
+    churn(&mut model, price, 3 * DEFAULT_JOURNAL_CAPACITY, 7.0);
+    assert!(
+        journal_len(&model) <= DEFAULT_JOURNAL_CAPACITY,
+        "abandoned session must not pin history: {}",
+        journal_len(&model)
+    );
+    // A fresh session still syncs (via rebuild past the window) correctly.
+    let mut fresh = SolverSession::new(TestBackend::new().0);
+    let solved = fresh.solve(&mut model).unwrap();
+    assert_eq!(
+        solved.metadata().synchronization,
+        SynchronizationMode::Rebuild,
+        "fresh backend past the evicted window must rebuild"
+    );
+    assert_eq!(solved.metadata().model_revision, model.current_revision());
+}
+
+/// Repeated pruning across many rounds keeps the journal bounded while
+/// a current session keeps delta-syncing.
+#[test]
+fn repeated_pruning_stays_bounded_and_current_session_uses_deltas() {
+    let (mut model, price, _x) = build_churn_model();
+    let mut session = SolverSession::new(TestBackend::new().0);
+    session.solve(&mut model).unwrap();
+    for round in 0..5 {
+        churn(&mut model, price, 60, 1000.0 + round as f64 * 100.0);
+        assert!(
+            journal_len(&model) <= DEFAULT_JOURNAL_CAPACITY,
+            "round {round}: journal bounded, got {}",
+            journal_len(&model)
+        );
+        // Within-window lag replays as deltas (60 < 128).
+        let solved = session.solve(&mut model).unwrap();
+        assert_eq!(
+            solved.metadata().synchronization,
+            SynchronizationMode::Delta,
+            "round {round}: current session must delta-sync"
+        );
+        assert_eq!(solved.metadata().model_revision, model.current_revision());
+    }
+}
+
+/// A stale-past-window session rebuilds while a current session
+/// delta-syncs on the same model: retention is global, never per-session,
+/// and both end correct at the current revision.
+#[test]
+fn mixed_window_sessions_rebuild_and_delta_side_by_side() {
+    let (mut model, price, _x) = build_churn_model();
+    let mut stale = SolverSession::new(TestBackend::new().0);
+    let mut fresh = SolverSession::new(TestBackend::new().0);
+    stale.solve(&mut model).unwrap();
+
+    // Push the model beyond the window for the stale session only in
+    // effect: the fresh session solves along the way to stay current.
+    churn(&mut model, price, DEFAULT_JOURNAL_CAPACITY + 10, 500.0);
+    // Fresh session was never used: it is as stale as the other. Solve
+    // it first via rebuild, then advance a little and check both.
+    let rebuilt = fresh.solve(&mut model).unwrap();
+    assert_eq!(
+        rebuilt.metadata().synchronization,
+        SynchronizationMode::Rebuild
+    );
+    churn(&mut model, price, 3, 900.0);
+    // Both sessions are now within the window: both delta-sync.
+    let s = stale.solve(&mut model).unwrap();
+    assert_eq!(s.metadata().synchronization, SynchronizationMode::Rebuild);
+    let f = fresh.solve(&mut model).unwrap();
+    assert_eq!(f.metadata().synchronization, SynchronizationMode::Delta);
+    assert_eq!(s.metadata().model_revision, model.current_revision());
+    assert_eq!(f.metadata().model_revision, model.current_revision());
+    // price = 900 + 2 = 902.
+    assert!((s.objective_value().unwrap() - 902.0).abs() < 1e-9);
+    assert!((f.objective_value().unwrap() - 902.0).abs() < 1e-9);
+    assert!(journal_len(&model) <= DEFAULT_JOURNAL_CAPACITY);
 }
