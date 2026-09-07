@@ -1,6 +1,6 @@
 """ROML Python interface (MPY): typed MILP modeling over a persistent session."""
 
-from roml import _native
+from . import _native
 
 __version__ = "0.1.0"
 

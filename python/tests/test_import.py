@@ -4,3 +4,4 @@ def test_native_import():
 
     assert isinstance(roml.__version__, str)
     assert _native.__name__ == "roml._native"
+    assert _native.version() == roml.__version__
