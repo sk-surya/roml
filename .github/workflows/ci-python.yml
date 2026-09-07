@@ -51,6 +51,15 @@ jobs:
           python -c "import roml, sys; assert 'site-packages' in roml.__file__, roml.__file__; print(roml.__file__)"
       - name: Python test suite (installed package)
         run: python -m pytest python/tests -q
+      - name: Assert oracle tests ran (no skip)
+        run: |
+          python -m pytest python/tests/test_mpc.py -v -rs > /tmp/oracle-out.txt 2>&1; code=$?
+          cat /tmp/oracle-out.txt
+          if [ $code -ne 0 ]; then exit $code; fi
+          if grep -qE "SKIPPED|skipped" /tmp/oracle-out.txt; then
+            echo "ORACLE GATE: test_mpc was skipped (highspy missing); qualification requires it to run."
+            exit 1
+          fi
       - name: Examples (from installed package)
         run: |
           python python/examples/production.py
