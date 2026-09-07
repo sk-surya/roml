@@ -17,6 +17,9 @@ from benchmarks.fixtures import (
     gate_forecast,
     objective_value,
 )
+highspy = pytest.importorskip(
+    "highspy", reason="oracle equivalence needs the highspy reference backend"
+)
 from benchmarks.highspy_reference import solve_gate
 
 
