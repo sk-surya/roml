@@ -88,15 +88,14 @@ s = open(path).read()
 s = s.replace('roml = { version = "0.1.0", path = ".." }',
               'roml = { version = "0.1.0", path = "%s" }' % roml_dir)
 for key, value in [
+    # rust-version first: it contains 'version.workspace' as a substring.
+    ('rust-version.workspace = true', 'rust-version = "1.85"'),
     ('version.workspace = true', 'version = "0.1.0"'),
     ('edition.workspace = true', 'edition = "2021"'),
-    ('rust-version.workspace = true', 'rust-version = "1.85"'),
     ('authors.workspace = true', 'authors = ["Surya Krishnan"]'),
     ('repository.workspace = true',
      'repository = "https://github.com/sk-surya/roml"'),
     ('license.workspace = true', 'license = "MIT OR Apache-2.0"'),
-    ('description.workspace = true',
-     'description = "HiGHS solver backend for roml"'),
 ]:
     assert key in s, "expected workspace inheritance for " + key
     s = s.replace(key, value)
