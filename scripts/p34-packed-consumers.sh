@@ -33,7 +33,7 @@ if cargo package -p roml-highs --locked 2>/tmp/p34-highs-pack-err.txt; then
 else
     echo "roml-highs pack failed; checking for the documented unpublished-roml limitation only:"
     cat /tmp/p34-highs-pack-err.txt
-    if grep -qE "roml.*(not published|no matching package|failed to resolve|offline|not found)" /tmp/p34-highs-pack-err.txt; then
+    if grep -qE "no matching package named|not published|failed to resolve|location searched: crates.io" /tmp/p34-highs-pack-err.txt; then
         echo "accepted: unpublished-roml resolution limitation"
         HIGHS_PACK_MODE="packed-tree"
     else
