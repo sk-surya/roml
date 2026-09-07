@@ -141,6 +141,16 @@ before/after migration is in `MIGRATION.md`.
 - **Showcase examples** — `pwl_production_planning`, `warm_start_mip`,
   `overlay_solve`, `constructs` under `roml-highs/examples/`, exercising the
   M3 capabilities end-to-end with HiGHS.
+- **Objective policies and lexicographic solves** (P31) — one canonical
+  `ObjectivePolicy` / `ObjectivePriority`, portable sequential
+  weighted/lexicographic execution with exact normalized `|z*|` degradation
+  locks, `PenaltyTarget::Priority` integration, and provider-policy
+  separation (`SolverSession::solve_objective_policy`). Explicit per-attempt
+  options and a shared staged deadline via
+  `solve_objective_policy_with_options` (`PolicyClock`/`SystemPolicyClock`
+  seam); budget exhaustion preserves the last valid incumbent and reports
+  `MultiObjectiveResult::budget_exhausted` or typed
+  `ObjectiveExecutionError::BudgetExhausted` when no stage ran.
 
 ### Changed
 

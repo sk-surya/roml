@@ -1044,6 +1044,20 @@ impl CompilationSession {
                                 variable: vid,
                                 value: *evaluated_value,
                             });
+                            // WR-03: ordinary coefficient changes (e.g. from
+                            // `minimize`/`maximize` builds) arrive as `SetCell`
+                            // with an objective target, not `SetObjectiveCell`.
+                            // Keep the compiled objective coefficient tracking
+                            // in sync exactly as `SetObjectiveCell` does
+                            // (replace the coefficient cell, preserve
+                            // deterministic compiled order); otherwise P31
+                            // stage evaluation would silently use stale/empty
+                            // terms on the delta path.
+                            if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid) {
+                                cells.retain(|(cid, _)| *cid != vid);
+                                cells.push((vid, *evaluated_value));
+                                cells.sort_by_key(|(cid, _)| *cid);
+                            }
                         }
                     }
                 }
@@ -1096,6 +1110,14 @@ impl CompilationSession {
                                 objective: oid,
                                 variable: vid,
                             });
+                            // WR-03: drop the removed cell from the compiled
+                            // objective coefficient tracking (mirror the
+                            // `SetCell` objective-target update above); a
+                            // stale coefficient would otherwise survive in
+                            // P31 stage evaluation on the delta path.
+                            if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid) {
+                                cells.retain(|(cid, _)| *cid != vid);
+                            }
                         }
                     }
                 }
@@ -1531,6 +1553,18 @@ fn add_soft_penalty_objective(
     let target = match payload.penalty.target {
         PenaltyTarget::None => return Ok(()),
         PenaltyTarget::Objective(objective) => objective,
+        PenaltyTarget::Priority(priority) => {
+            // SM-10.6: a priority-targeted penalty contributes nothing to any
+            // canonical single objective. It is resolved numerically by the
+            // P31 objective executor (folded into the matching lexicographic
+            // stage), not folded into a canonical objective here. The
+            // parameterized weight is evaluated against the current snapshot
+            // at execution time. If it is genuinely absent from the solve
+            // policy, the executor rejects it atomically (never silently
+            // drops it).
+            let _ = priority;
+            return Ok(());
+        }
     };
     let compiled_objective = objective_ids.get(&target).copied().ok_or_else(|| {
         CompileError::UnsupportedFeature(format!(

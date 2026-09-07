@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::assignment::{AssignmentError, PrimalAssignment};
 use crate::identity::IdentityOverflow;
-use crate::model::{Model, Objective, VarType};
+use crate::model::{Model, VarType};
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::SolveOverlay;
 use crate::Variable;
@@ -154,6 +154,15 @@ impl SolvePlan {
             }
         }
 
+        // P31: the single-objective override field only supports a `Single`
+        // policy. `Weighted`/`Lexicographic` policies are executed by the P31
+        // objective executor, not this override path; reject before mutation.
+        if let Some(policy) = &self.objective_override {
+            if !matches!(policy, ObjectivePolicy::Single(_)) {
+                return Err(PlanError::NonSingleObjectiveOverride);
+            }
+        }
+
         Ok(())
     }
 }
@@ -271,18 +280,7 @@ pub enum UnsupportedFeaturePolicy {
     ConvertStartToTemporaryFixing,
 }
 
-/// Objective policy for one solve (design §15; SM-07.1).
-///
-/// P28 forward-declares the `Single` variant only; P31 owns the full
-/// `Weighted`/`Lexicographic` semantics in `src/objective_policy.rs`. The
-/// `#[non_exhaustive]` boundary keeps the P31 extension a non-breaking change
-/// (A30/A32 extension-surface precedent).
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ObjectivePolicy {
-    /// Solve for a single objective.
-    Single(Objective),
-}
+pub use crate::objective_policy::ObjectivePolicy;
 
 /// Lexicographic-stage continuation policy (design §15.2; SM-07.7).
 ///
@@ -337,6 +335,10 @@ pub enum PlanError {
         /// The plan's unsupported-feature policy at the time of rejection.
         policy: UnsupportedFeaturePolicy,
     },
+    /// A `Weighted`/`Lexicographic` policy was placed in the P28
+    /// single-objective override field; these policies are executed by the
+    /// P31 objective executor, not the single-objective override path.
+    NonSingleObjectiveOverride,
 }
 
 impl std::fmt::Display for PlanError {
@@ -366,6 +368,11 @@ impl std::fmt::Display for PlanError {
                 f,
                 "solve-plan unsupported feature '{feature}' under policy {policy:?}"
             ),
+            PlanError::NonSingleObjectiveOverride => write!(
+                f,
+                "solve-plan objective override only supports a single objective; use the P31 \
+                 objective executor for weighted/lexicographic policies"
+            ),
         }
     }
 }
@@ -375,5 +382,64 @@ impl std::error::Error for PlanError {}
 impl From<AssignmentError> for PlanError {
     fn from(e: AssignmentError) -> Self {
         PlanError::Assignment(e)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Model;
+    use crate::objective_policy::{
+        LexicographicObjectives, ObjectivePriority, WeightedObjective, WeightedObjectiveLevel,
+        WeightedObjectives,
+    };
+    use crate::solver::options::SolveOptions;
+
+    fn base_plan() -> SolvePlan {
+        SolvePlan::new(SolveOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn validate_rejects_non_single_objective_override() {
+        let model = Model::new();
+        let mut plan = base_plan();
+        plan.objective_override = Some(ObjectivePolicy::Weighted(WeightedObjectives {
+            objectives: vec![WeightedObjective {
+                objective: crate::id::ObjId::new(1, crate::id::Generation::new()),
+                weight: 1.0,
+            }],
+        }));
+        assert!(matches!(
+            plan.validate(&model),
+            Err(PlanError::NonSingleObjectiveOverride)
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_single_objective_override_shape() {
+        let model = Model::new();
+        let mut plan = base_plan();
+        plan.objective_override = Some(ObjectivePolicy::Single(crate::id::ObjId::new(
+            1,
+            crate::id::Generation::new(),
+        )));
+        // A stale single objective is not resolved at plan-validation layer for
+        // the override role; validation should pass (no non-single rejection).
+        assert!(plan.validate(&model).is_ok());
+    }
+
+    #[test]
+    fn lexicographic_plan_shape_compiles() {
+        let _ = LexicographicObjectives {
+            levels: vec![WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: crate::id::ObjId::new(1, crate::id::Generation::new()),
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 1e-6,
+                relative_tolerance: 1e-9,
+            }],
+        };
     }
 }
