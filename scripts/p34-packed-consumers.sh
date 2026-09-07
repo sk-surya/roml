@@ -62,6 +62,14 @@ else
             .cargo_vcs_info.json | .cargo-checksum.json | Cargo.toml.orig) continue ;;
         esac
         # The highs package list is relative to roml-highs/, not the root.
+        # Cargo.lock is generated at consumer build time, not shipped from
+        # the workspace (root lock only); record the skip explicitly.
+        case "$f" in
+            Cargo.lock)
+                echo "note: skipping Cargo.lock (generated per consumer build)"
+                continue
+                ;;
+        esac
         if [ ! -e "$ROOT/roml-highs/$f" ]; then
             echo "FATAL: packed file missing from working tree: roml-highs/$f"
             exit 1
