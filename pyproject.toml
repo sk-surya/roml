@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+# Distribution name: PyPI `roml` is owned by an unrelated 0.0.1 release
+# (checked 2026-09-07), so the distribution is `roml-python` while the
+# import namespace stays `roml` (packet DESIGN §4). No registry claim made.
+name = "roml-python"
+version = "0.1.0"
+description = "ROML: parameter-dependent MILP modeling with persistent HiGHS sessions (Python interface)"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT OR Apache-2.0" }
+dependencies = ["numpy>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.0"]
+
+[tool.maturin]
+manifest-path = "roml-python/Cargo.toml"
+python-source = "python"
+module-name = "roml._native"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

@@ -1,0 +1,3 @@
+"""Type stubs for roml._native (MPY-01 skeleton; extended per phase)."""
+
+def version() -> str: ...
