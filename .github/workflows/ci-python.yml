@@ -47,7 +47,7 @@ jobs:
         run: python -m maturin build --release --locked --manifest-path roml-python/Cargo.toml --out dist
       - name: Install wheel (outside the source tree)
         run: |
-          python -m pip install dist/*.whl
+          python -m pip install --no-index --find-links=dist roml-python
           python -c "import roml, sys; assert 'site-packages' in roml.__file__, roml.__file__; print(roml.__file__)"
       - name: Python test suite (installed package)
         run: python -m pytest python/tests -q
