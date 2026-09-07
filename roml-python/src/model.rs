@@ -42,12 +42,20 @@ pub(crate) struct ModelState {
     pub array_names: std::collections::HashSet<String>,
     /// Parameter array base names with their immutable shapes.
     pub param_array_shapes: HashMap<String, Vec<usize>>,
+    /// Parameter array base names with their element identities in
+    /// C order, so batch updates address elements without reformatting
+    /// names or re-hashing per element.
+    pub param_array_ids: HashMap<String, Vec<ParamId>>,
     /// Coefficient templates for derived-overflow pre-validation on update:
     /// every parameter-dependent coefficient the binding lowered, keyed by
     /// target. Coefficients update natively in the core; these copies exist
     /// only to evaluate proposed environments before mutation.
     pub obj_coeffs: HashMap<ObjId, Vec<ValueExpr>>,
     pub con_coeffs: HashMap<ConId, Vec<ValueExpr>>,
+    /// True once any recorded template holds a non-lone-parameter
+    /// expression. Guards the lazy proposed-environment build: without
+    /// complex dependents, updates skip the full parameter scan.
+    pub has_complex_deps: bool,
     /// True once any integer/binary variable exists. Duals and reduced
     /// costs are LP-only diagnostics; on discrete models they raise
     /// `UnavailableDiagnosticError` instead of advertising relaxation
@@ -180,8 +188,10 @@ impl Model {
                     bound_deps: Vec::new(),
                     array_names: std::collections::HashSet::new(),
                     param_array_shapes: HashMap::new(),
+                    param_array_ids: HashMap::new(),
                     obj_coeffs: HashMap::new(),
                     con_coeffs: HashMap::new(),
+                    has_complex_deps: false,
                     has_discrete: false,
                     pending: true,
                     py_revision: 0,
@@ -349,7 +359,7 @@ impl Model {
                 .extract()
                 .map_err(|_| InvalidModelError::new_err("parameter names must be strings"))?;
             if let Some(shape) = state.param_array_shapes.get(&name).cloned() {
-                use super::arrays::{element_name, numel, parse_numeric, NumericMode};
+                use super::arrays::{numel, parse_numeric, NumericMode};
                 let parsed = parse_numeric(
                     slf.py(),
                     &value,
@@ -363,12 +373,12 @@ impl Model {
                     )));
                 }
                 debug_assert_eq!(parsed.values.len(), numel(&shape));
-                for (i, v) in parsed.values.iter().enumerate() {
-                    let ename = element_name(&name, i);
-                    let id = *state.param_names.get(&ename).ok_or_else(|| {
-                        InvalidModelError::new_err(format!("unknown parameter {ename:?}"))
-                    })?;
-                    batch.push((id, *v));
+                let ids = state.param_array_ids.get(&name).ok_or_else(|| {
+                    InvalidModelError::new_err(format!("unknown parameter {name:?}"))
+                })?;
+                debug_assert_eq!(ids.len(), parsed.values.len());
+                for (id, v) in ids.iter().zip(parsed.values.iter()) {
+                    batch.push((*id, *v));
                 }
                 continue;
             }
@@ -389,16 +399,30 @@ impl Model {
                 "update requires at least one parameter",
             ));
         }
-        // Proposed environment for derived validation.
-        let mut proposed: HashMap<ParamId, f64> = state
-            .param_names
-            .values()
-            .map(|id| (*id, state.model.parameter_value(*id).unwrap_or(0.0)))
-            .collect();
-        for (id, v) in &batch {
-            proposed.insert(*id, *v);
+        // Proposed environment for derived validation, built lazily:
+        // batches touching no tracked bounds or complex coefficients skip
+        // the full parameter scan.
+        let needs_proposed = !state.bound_deps.is_empty() || state.has_complex_deps;
+        let mut proposed: HashMap<ParamId, f64> = HashMap::new();
+        if needs_proposed {
+            proposed = state
+                .param_names
+                .values()
+                .map(|id| (*id, state.model.parameter_value(*id).unwrap_or(0.0)))
+                .collect();
+            for (id, v) in &batch {
+                proposed.insert(*id, *v);
+            }
         }
         let eval_proposed = |e: &ValueExpr| -> Result<f64, ModelError> {
+            // Fast path: lone parameters read straight from the proposed
+            // environment (the common coefficient shape).
+            if let ValueExpr::Param(p) = e {
+                return proposed
+                    .get(p)
+                    .copied()
+                    .ok_or(ModelError::ParameterNotFound(*p));
+            }
             for dep in e.dependencies() {
                 if !proposed.contains_key(&dep) {
                     return Err(ModelError::ParameterNotFound(dep));
@@ -455,14 +479,19 @@ impl Model {
         // Validate derived objective/constraint coefficients: a finite
         // update that drives any parameter-dependent coefficient
         // non-finite rejects the whole batch (same discipline as bounds).
-        // Only templates touching updated parameters are evaluated.
-        let batch_params: Vec<ParamId> = batch.iter().map(|(id, _)| *id).collect();
+        // Only templates touching updated parameters are evaluated; lone
+        // parameters read straight from the proposed environment (their
+        // values are finite by input validation, so they cannot overflow).
+        let batch_set: std::collections::HashSet<ParamId> =
+            batch.iter().map(|(id, _)| *id).collect();
         for coeffs in state.obj_coeffs.values().chain(state.con_coeffs.values()) {
             for coeff in coeffs {
-                if coeff
-                    .dependencies()
-                    .iter()
-                    .any(|p| batch_params.contains(p))
+                // Lone parameters equal proposed values, which Phase 1
+                // already proved finite: nothing to validate.
+                if matches!(coeff, ValueExpr::Param(_)) {
+                    continue;
+                }
+                if coeff.dependencies().iter().any(|p| batch_set.contains(p))
                     && eval_proposed(coeff).is_err()
                 {
                     return Err(InvalidModelError::new_err(
@@ -684,6 +713,9 @@ impl Model {
         state
             .param_array_shapes
             .insert(name.to_string(), parsed.shape.clone());
+        state
+            .param_array_ids
+            .insert(name.to_string(), params.clone());
         state.pending = true;
         state.py_revision += 1;
         Ok(super::arrays::ParamArray {
@@ -752,6 +784,12 @@ impl Model {
             .filter(|c| !c.dependencies().is_empty())
             .collect();
         if !param_coeffs.is_empty() {
+            if param_coeffs
+                .iter()
+                .any(|c| !matches!(c, ValueExpr::Param(_)))
+            {
+                state.has_complex_deps = true;
+            }
             state.obj_coeffs.insert(obj, param_coeffs);
         }
         state.pending = true;
@@ -921,6 +959,12 @@ impl Model {
                 .filter(|c| !c.dependencies().is_empty())
                 .collect();
             if !param_coeffs.is_empty() {
+                if param_coeffs
+                    .iter()
+                    .any(|c| !matches!(c, ValueExpr::Param(_)))
+                {
+                    state.has_complex_deps = true;
+                }
                 state.con_coeffs.insert(con, param_coeffs);
             }
             cons.push(con);
@@ -1150,9 +1194,12 @@ fn parse_integer_vector(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<i64>
                 kwargs
             }),
         )?;
+        use numpy::{IxDyn, PyArray, PyArrayMethods};
         let values: Vec<i64> = flat
             .call_method0("ravel")?
-            .extract()
+            .cast::<PyArray<i64, IxDyn>>()
+            .map_err(|_| InvalidModelError::new_err(format!("{what}: cannot read data")))?
+            .to_vec()
             .map_err(|_| InvalidModelError::new_err(format!("{what}: cannot read data")))?;
         return Ok(values);
     }
@@ -1330,8 +1377,10 @@ mod lock_tests {
                 con_names: HashMap::new(),
                 array_names: std::collections::HashSet::new(),
                 param_array_shapes: HashMap::new(),
+                param_array_ids: HashMap::new(),
                 obj_coeffs: HashMap::new(),
                 con_coeffs: HashMap::new(),
+                has_complex_deps: false,
                 bound_deps: Vec::new(),
                 has_discrete: false,
                 pending: false,

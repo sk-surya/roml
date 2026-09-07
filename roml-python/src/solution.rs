@@ -81,6 +81,8 @@ pub(crate) struct Snapshot {
     pub effective_time_limit: Option<f64>,
     /// Total wall-clock seconds for the solve call measured in the binding.
     pub wall_seconds: f64,
+    /// How the model was synchronized into the backend for this solve.
+    pub sync_mode: roml::SynchronizationMode,
     /// Warm-start disposition: `none` (no start requested), `applied` (the
     /// backend's effective plan records the start), or
     /// `requested_not_applied`.
@@ -276,6 +278,7 @@ impl Solution {
         out.set_item("effective_time_limit", self.snapshot.effective_time_limit)?;
         out.set_item("wall_seconds", self.snapshot.wall_seconds)?;
         out.set_item("warm_start", self.snapshot.warm_start.as_str())?;
+        out.set_item("sync_mode", format!("{:?}", self.snapshot.sync_mode))?;
         out.set_item("has_primal", self.snapshot.has_candidate)?;
         Ok(out)
     }

@@ -27,3 +27,33 @@ core per-entity costs identical in both arms, 3x is unachievable by wrapper
 work alone; the gap is a fixture/threshold property, not a wrapper defect.
 Carried as an at-risk item into MPY-05 with this mechanism documented. No
 speculative core batch API is added to chase it.
+
+## MPY-05 memory soak (2026-09-07): FAILING — unbounded journal retention
+
+Memory-soak gate (10k update/solve LP-small cycles, retain ≤ max(32 MiB,
+10% post-warmup)): **FAIL. Growth ≈ 20 KB/cycle (≈ 203 MiB over 10k).**
+
+Isolation experiments (all post-gc current RSS):
+
+- update-only (2k changing updates, no solves): 0.0 MB.
+- solve-only (2k solves, no updates): 0.0 MB.
+- const-value updates + solves (2.2k cycles): 0.0 MB.
+- changing updates + solves: linear ≈ 20 KB/cycle (Rust arm too:
+  ~254 MB mid-flight at ~10k gates; highspy persistent: 0.0 MB/2.5k).
+
+Mechanism: only *committed changes* grow. `Model::commit` drains the
+changelog (`model.rs:2356,2782`) but `SyncCoordinator::commit_batch`
+appends every `DeltaBatch` to `Journal::batches` (`src/journal.rs:55`)
+with no truncation path anywhere in-tree. Each gate's parameter/bound
+delta is retained forever so lagging adapters can catch up
+(`batches_for_cursor`). No prune-on-acknowledgement protocol exists:
+sessions never report cursors back to the model.
+
+This is M3-core behavior (identical on all ROML arms; not wrapper
+overhead and not a binding leak), but it breaks the MPY-05 memory gate
+as specified. Deliberately NOT worked around (e.g. periodic model
+rebuilds would fake the persistent-model leak test) and NOT fixed by a
+hasty core change (cursor-acknowledged pruning is an architectural
+protocol touching the multi-adapter invariant). Escalated for owner
+disposition: amend the threshold, authorize a journal-pruning design,
+or accept periodic session/model recycling with explicit semantics.

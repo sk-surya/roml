@@ -106,6 +106,7 @@ struct NativeSolve {
     wall_seconds: f64,
     warm_start: super::solution::WarmStart,
     discrete: bool,
+    sync_mode: roml::SynchronizationMode,
 }
 
 /// Nonblocking session-state acquisition with poison fusion.
@@ -376,6 +377,7 @@ impl Session {
                         wall_seconds: solved.wall_seconds,
                         warm_start: solved.warm_start,
                         discrete: solved.discrete,
+                        sync_mode: solved.sync_mode,
                     },
                 })
             }
@@ -491,6 +493,7 @@ impl Session {
         };
         guard.pending = false;
         let metadata = solved.metadata();
+        let sync_mode = metadata.synchronization;
         let warm_start = match start {
             None => super::solution::WarmStart::None,
             Some(_) => {
@@ -519,6 +522,7 @@ impl Session {
             duals: solved.duals().cloned(),
             reduced_costs: solved.reduced_costs().cloned(),
             discrete: guard.has_discrete,
+            sync_mode,
             effective_time_limit,
             wall_seconds: 0.0,
             warm_start,

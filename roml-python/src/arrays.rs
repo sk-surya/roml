@@ -11,8 +11,8 @@ use pyo3::types::{PyAny, PyBool, PyDict, PySequence, PyTuple};
 use roml::{ValueExpr, VarId};
 
 use super::errors::{InvalidModelError, ModelMismatchError, ShapeError};
-use super::expressions::Affine;
 pub(crate) use super::expressions::BoundSide;
+use super::expressions::{simplify_value, Affine};
 use super::expressions::{Comparison, ExprTerm};
 use super::handles::{Param, Var};
 use super::model::Model;
@@ -158,9 +158,12 @@ fn parse_numpy(
             .map_err(|_| InvalidModelError::new_err(format!("{what}: invalid array shape")))?;
         shape.push(n);
     }
+    use numpy::{IxDyn, PyArray, PyArrayMethods};
     let ravel: Vec<f64> = flat
         .call_method0("ravel")?
-        .extract()
+        .cast::<PyArray<f64, IxDyn>>()
+        .map_err(|_| InvalidModelError::new_err(format!("{what}: cannot read array data")))?
+        .to_vec()
         .map_err(|_| InvalidModelError::new_err(format!("{what}: cannot read array data")))?;
     if ravel.len() != numel(&shape) {
         return Err(ShapeError::new_err(format!(
@@ -487,28 +490,55 @@ fn owners_match(a: &pyo3::Py<Model>, b: &pyo3::Py<Model>) -> PyResult<()> {
 }
 
 /// Fold a slice of affines with signs into one Rust-owned affine.
+///
+/// Terms combine through a hash map (linear time, deterministic `VarId`
+/// order at the end). Constants combine through a BALANCED pairwise tree
+/// (logarithmic depth): a linear fold would nest `ValueExpr` trees to
+/// depth O(n), overflowing the stack in recursive evaluation on large
+/// bulk reductions.
 fn fold_affines(py: Python<'_>, owner: &pyo3::Py<Model>, parts: &[(&Affine, f64)]) -> Affine {
-    let mut terms: Vec<ExprTerm> = Vec::new();
-    let mut constant = ValueExpr::constant(0.0);
+    let mut terms: std::collections::HashMap<VarId, ValueExpr> = std::collections::HashMap::new();
+    let mut consts: Vec<ValueExpr> = Vec::with_capacity(parts.len());
     for (affine, sign) in parts {
         for term in &affine.terms {
-            match terms.iter_mut().find(|t| t.var == term.var) {
-                Some(existing) => {
-                    existing.coeff = existing.coeff.clone() + term.coeff.clone() * *sign;
-                }
-                None => terms.push(ExprTerm {
-                    var: term.var,
-                    coeff: term.coeff.clone() * *sign,
-                }),
-            }
+            terms
+                .entry(term.var)
+                .and_modify(|e| *e = simplify_value(e.clone() + term.coeff.clone() * *sign))
+                .or_insert_with(|| simplify_value(term.coeff.clone() * *sign));
         }
-        constant = constant + affine.constant.clone() * *sign;
+        consts.push(affine.constant.clone() * *sign);
     }
+    let mut term_vec: Vec<ExprTerm> = terms
+        .into_iter()
+        .map(|(var, coeff)| ExprTerm { var, coeff })
+        .collect();
+    term_vec.sort_by_key(|t| t.var);
     Affine {
         owner: owner.clone_ref(py),
-        terms,
-        constant,
+        terms: term_vec,
+        constant: balanced_sum(consts),
     }
+}
+
+/// Pairwise-balanced sum of value expressions (logarithmic tree depth).
+/// Each pair simplifies eagerly so pure constants collapse flat.
+fn balanced_sum(mut exprs: Vec<ValueExpr>) -> ValueExpr {
+    use super::expressions::simplify_value;
+    if exprs.is_empty() {
+        return ValueExpr::constant(0.0);
+    }
+    while exprs.len() > 1 {
+        let mut next = Vec::with_capacity(exprs.len().div_ceil(2));
+        let mut iter = exprs.into_iter();
+        while let Some(a) = iter.next() {
+            match iter.next() {
+                Some(b) => next.push(simplify_value(a + b)),
+                None => next.push(a),
+            }
+        }
+        exprs = next;
+    }
+    exprs.pop().unwrap()
 }
 
 fn var_affine_of(py: Python<'_>, owner: &pyo3::Py<Model>, var: VarId) -> Affine {
@@ -703,31 +733,32 @@ fn apply_binary(
                 ));
             }
             if a.terms.is_empty() {
-                // Parameter-only (or constant) a scales b.
+                // Parameter-only (or constant) a scales b. Simplify so
+                // degenerate `1.0 * p` folds collapse to lone parameters.
                 let mut terms = Vec::with_capacity(b.terms.len());
                 for term in &b.terms {
                     terms.push(ExprTerm {
                         var: term.var,
-                        coeff: term.coeff.clone() * a.constant.clone(),
+                        coeff: simplify_value(term.coeff.clone() * a.constant.clone()),
                     });
                 }
                 return Ok(Affine {
                     owner: owner.clone_ref(py),
                     terms,
-                    constant: b.constant.clone() * a.constant.clone(),
+                    constant: simplify_value(b.constant.clone() * a.constant.clone()),
                 });
             }
             let mut terms = Vec::with_capacity(a.terms.len());
             for term in &a.terms {
                 terms.push(ExprTerm {
                     var: term.var,
-                    coeff: term.coeff.clone() * b.constant.clone(),
+                    coeff: simplify_value(term.coeff.clone() * b.constant.clone()),
                 });
             }
             Ok(Affine {
                 owner: owner.clone_ref(py),
                 terms,
-                constant: a.constant.clone() * b.constant.clone(),
+                constant: simplify_value(a.constant.clone() * b.constant.clone()),
             })
         }
         _ => Err(ShapeError::new_err("unknown array operator")),
@@ -1815,18 +1846,20 @@ pub(crate) fn dot(
         }
         parsed.values.into_iter().map(ValueExpr::constant).collect()
     };
-    // Fold pairwise in Rust: no Python element loop.
+    // Fold pairwise in Rust: no Python element loop. Constants combine
+    // through a balanced tree (logarithmic depth, not linear nesting).
     let mut terms: std::collections::HashMap<VarId, ValueExpr> = std::collections::HashMap::new();
-    let mut constant = ValueExpr::constant(0.0);
+    let mut consts: Vec<ValueExpr> = Vec::with_capacity(left.len());
     for (c, affine) in left.iter().zip(right.iter()) {
         for term in &affine.terms {
             terms
                 .entry(term.var)
-                .and_modify(|e| *e = e.clone() + term.coeff.clone() * c.clone())
-                .or_insert_with(|| term.coeff.clone() * c.clone());
+                .and_modify(|e| *e = simplify_value(e.clone() + term.coeff.clone() * c.clone()))
+                .or_insert_with(|| simplify_value(term.coeff.clone() * c.clone()));
         }
-        constant = constant + affine.constant.clone() * c.clone();
+        consts.push(affine.constant.clone() * c.clone());
     }
+    let constant = balanced_sum(consts);
     let mut terms: Vec<ExprTerm> = terms
         .into_iter()
         .map(|(var, coeff)| ExprTerm { var, coeff })
