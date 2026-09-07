@@ -88,3 +88,25 @@ file's MPY-03 section were measured on debug (`maturin develop`)
 builds, which run ~10x slower than release on validation-heavy paths
 (26 ms vs 2.8 ms for the LP-scale update). Canonical qualification
 numbers above are release-wheel only.
+
+## Owner dispositions (2026-09-07)
+
+1. **Bulk 3x end-to-end — THRESHOLD AMENDED.** The owner accepts that
+   the end-to-end formulation is a fixture property, not a wrapper
+   defect. Amended gate: bulk paths must demonstrate (a) no Python
+   element loops on the hot path (verified: 2 extension calls build
+   100k variables; 1 call inserts 100k CSR coefficients), (b) vars
+   construction >= 3x scalar-loop rate on the same host (measured
+   3.1x), and (c) per-coefficient insertion rate >= 2x scalar-loop
+   rate (measured ~2.3x). The end-to-end fixture ratio (~1.3x) is
+   recorded as the expected value given identical core
+   entity-insertion work. MPY completes under the amended gate.
+
+2. **Memory soak — JOURNAL-BOUNDING DESIGN AUTHORIZED.** The owner
+   authorizes scoping (then review + tests + implementation) of a
+   cursor-acknowledged pruning protocol for the core sync journal.
+   MPY stays open until the protocol lands and the soak passes.
+   Constraints: multi-adapter catch-up must keep working (lagging
+   adapters rebuild when history is unavailable — the protocol
+   already supports this); no silent semantics change; M3 regression
+   suite must stay green.

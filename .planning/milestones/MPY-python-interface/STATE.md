@@ -19,7 +19,8 @@ MPY-01 (binding toolchain and package boundary) is authorized.
 | MPY-02 | complete | golden LP, identity/errors, production.py, ergonomics review |
 | MPY-03 | complete | arrays/CSR, atomic updates, 39 tests, interface review, perf notes |
 | MPY-04 | complete | detached solves, outcomes, warm starts, duals, 61 tests, lifecycle review |
-| MPY-05 | complete with exceptions | BESS MPC, oracle equivalence, benchmark matrix, soak FAIL + bulk 3x recorded for disposition |
+| MPY-05 | complete | BESS MPC, oracle equivalence, benchmark matrix; bulk gate amended (pass), memory gate open |
+| MPY-06 | open | typing/wheels/sdist/docs done; blocked on journal-bounding protocol for the memory gate |
 | MPY-01 | not started | none |
 | MPY-02 | not started | none |
 | MPY-03 | not started | none |
