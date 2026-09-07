@@ -40,7 +40,7 @@ def test_limit_with_or_without_incumbent_is_consistent():
         m.add(xs[i] + xs[(i + 1) % n] <= 1.0)
     m.maximize(rm.sum(xs))
     with rm.Highs() as solver:
-        result = solver.solve(m, time_limit=1e-9)
+        result = solver.solve(m, time_limit=1e-3)
     assert result.status == rm.SolveStatus.TIME_LIMIT
     if result.has_primal:
         assert result.objective is not None
@@ -50,7 +50,7 @@ def test_limit_with_or_without_incumbent_is_consistent():
         assert result.objective is None
         with pytest.raises(rm.NoSolutionError):
             result.value(xs[0])
-    assert result.metadata["effective_time_limit"] == pytest.approx(1e-9)
+    assert result.metadata["effective_time_limit"] == pytest.approx(1e-3)
 
 
 def test_limit_preserves_infeasibility():

@@ -52,6 +52,7 @@ jobs:
       - name: Python test suite (installed package)
         run: python -m pytest python/tests -q
       - name: Assert oracle tests ran (no skip)
+        shell: bash
         run: |
           python -m pytest python/tests/test_mpc.py -v -rs > /tmp/oracle-out.txt 2>&1; code=$?
           cat /tmp/oracle-out.txt
@@ -64,8 +65,10 @@ jobs:
         run: |
           python python/examples/production.py
           python python/examples/bess_mpc.py
-      - name: Typing (strict example check)
-        run: python -m mypy --strict python/examples/production.py
+      - name: Typing (strict checks)
+        run: |
+          python -m mypy --strict python/examples/production.py
+          python -m mypy --strict python/tests/typing/
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.os }}-py${{ matrix.python }}

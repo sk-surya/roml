@@ -187,7 +187,7 @@ impl Session {
         let threads_value = match threads {
             Some(v) => {
                 let t = py_numeric(&v, "threads")?;
-                if t < 1.0 || t.fract() != 0.0 {
+                if t < 1.0 || t.fract() != 0.0 || t > 2147483647.0 {
                     return Err(InvalidModelError::new_err(
                         "threads must be a positive integer",
                     ));

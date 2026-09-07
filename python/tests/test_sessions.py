@@ -24,9 +24,9 @@ def test_per_call_options_do_not_leak():
     x = m.var("x", ub=10.0)
     m.maximize(x)
     with rm.Highs(time_limit=60.0) as solver:
-        first = solver.solve(m, time_limit=60.0)
+        first = solver.solve(m, time_limit=5.0)
         assert first.is_optimal
-        assert first.metadata["effective_time_limit"] == pytest.approx(60.0)
+        assert first.metadata["effective_time_limit"] == pytest.approx(5.0)
         second = solver.solve(m)
         assert second.is_optimal
         # Omitted values inherit constructor defaults, not the override.

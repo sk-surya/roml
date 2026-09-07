@@ -149,3 +149,13 @@ def test_affine_times_param_stays_affine():
         assert result.objective == pytest.approx(8.0)
     with pytest.raises(rm.UnsupportedExpressionError):
         (x + 1.0) * (y + 1.0)
+
+
+def test_error_codes_are_stable():
+    m = rm.Model()
+    m.var("x")
+    with pytest.raises(rm.InvalidModelError) as exc:
+        m.var("x")
+    assert exc.value.code == "invalid-model"
+    assert rm.ModelMismatchError("x").code == "model-mismatch"
+    assert issubclass(rm.ShapeError, rm.RomlError)

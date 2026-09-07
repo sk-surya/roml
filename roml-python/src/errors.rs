@@ -32,30 +32,92 @@ create_exception!(roml, UnavailableDiagnosticError, RomlError);
 /// subclasses share the `BaseException` layout, making this sound. The
 /// `RomlError` base always comes first, so `except RomlError` keeps working
 /// alongside `except ValueError` / `except TypeError`.
+/// Stable machine-readable codes, one per error class. Set as class
+/// attributes at import so every instance (including ones raised from
+/// any call site without extra plumbing) carries `code`.
+macro_rules! register_error {
+    ($py:expr, $module:expr, $name:expr, $ty:ty, $code:expr) => {{
+        let class = $py.get_type::<$ty>();
+        class.setattr("code", $code)?;
+        $module.add($name, class)?;
+    }};
+}
+
 pub fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add("RomlError", py.get_type::<RomlError>())?;
-    module.add("InvalidModelError", py.get_type::<InvalidModelError>())?;
-    module.add("InvalidHandleError", py.get_type::<InvalidHandleError>())?;
-    module.add("ModelMismatchError", py.get_type::<ModelMismatchError>())?;
-    module.add("ShapeError", py.get_type::<ShapeError>())?;
-    module.add(
+    register_error!(py, module, "RomlError", RomlError, "roml-error");
+    register_error!(
+        py,
+        module,
+        "InvalidModelError",
+        InvalidModelError,
+        "invalid-model"
+    );
+    register_error!(
+        py,
+        module,
+        "InvalidHandleError",
+        InvalidHandleError,
+        "invalid-handle"
+    );
+    register_error!(
+        py,
+        module,
+        "ModelMismatchError",
+        ModelMismatchError,
+        "model-mismatch"
+    );
+    register_error!(py, module, "ShapeError", ShapeError, "shape");
+    register_error!(
+        py,
+        module,
         "UnsupportedExpressionError",
-        py.get_type::<UnsupportedExpressionError>(),
-    )?;
-    module.add(
+        UnsupportedExpressionError,
+        "unsupported-expression"
+    );
+    register_error!(
+        py,
+        module,
         "UnsupportedFeatureError",
-        py.get_type::<UnsupportedFeatureError>(),
-    )?;
-    module.add("ModelBusyError", py.get_type::<ModelBusyError>())?;
-    module.add("SessionBusyError", py.get_type::<SessionBusyError>())?;
-    module.add("ClosedSessionError", py.get_type::<ClosedSessionError>())?;
-    module.add("SolverError", py.get_type::<SolverError>())?;
-    module.add("NoSolutionError", py.get_type::<NoSolutionError>())?;
-    module.add("MissingValueError", py.get_type::<MissingValueError>())?;
-    module.add(
+        UnsupportedFeatureError,
+        "unsupported-feature"
+    );
+    register_error!(py, module, "ModelBusyError", ModelBusyError, "model-busy");
+    register_error!(
+        py,
+        module,
+        "SessionBusyError",
+        SessionBusyError,
+        "session-busy"
+    );
+    register_error!(
+        py,
+        module,
+        "ClosedSessionError",
+        ClosedSessionError,
+        "closed-session"
+    );
+    register_error!(py, module, "SolverError", SolverError, "solver");
+    register_error!(
+        py,
+        module,
+        "NoSolutionError",
+        NoSolutionError,
+        "no-solution"
+    );
+    register_error!(
+        py,
+        module,
+        "MissingValueError",
+        MissingValueError,
+        "missing-value"
+    );
+    register_error!(
+        py,
+        module,
         "UnavailableDiagnosticError",
-        py.get_type::<UnavailableDiagnosticError>(),
-    )?;
+        UnavailableDiagnosticError,
+        "unavailable-diagnostic"
+    );
     let globals = pyo3::types::PyDict::new(py);
     globals.set_item("builtins", py.import("builtins")?)?;
     globals.set_item("InvalidModelError", py.get_type::<InvalidModelError>())?;
