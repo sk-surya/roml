@@ -2,42 +2,48 @@
 gsd_state_version: 1.0
 milestone: M3
 milestone_name: Semantic Modeling and Solve Workflows
-status: active
-stopped_at: P31 merged via PR #49; P34 activated for qualification/closure
+status: complete
+stopped_at: P34 merged via PR #51; M3 complete, MPY authorized
 last_updated: "2026-09-07T00:00:00Z"
 progress:
   total_phases: 17
-  completed_phases: 14
+  completed_phases: 17
   total_plans: 29
   completed_plans: 22
-  percent: 82
+  percent: 100
 current_phase: 34
 current_phase_name: M3 final qualification
-implementation_authorized: true
+implementation_authorized: false
 ---
 
 # ROML Active State — M3 Completion
 
-## Authorized successor: MPY (2026-09-07)
+## M3 complete (2026-09-07)
 
-The owner requested the [Python interface ultra-planning packet](milestones/MPY-python-interface/README.md)
-and authorized the coding agent to first check/remediate/normally merge relevant
-pending PRs, then implement PyO3 + maturin bindings. MPY-00 preserves P31 and P34
-closure as prerequisites; MPY runtime phases are conditionally authorized after
-that gate. No prerequisite has been marked complete by this amendment. MPY
-precedes the deferred M4 preview. Detailed new-milestone state lives in
+M3 is complete: P34 merged via PR #51 as `17e8b79`
+(reviewed head `3217044`, exact-head hosted CI 17 pass + 2 pre-existing
+skips, review gauntlet zero P0/P1). The positive closure predicate in
+`34-QUALIFICATION-CONTRACT.md` §7 holds affirmatively per
+`M3_FINAL_QUALIFICATION.md`. M4 remains a design gate only. The authorized
+successor is MPY (Python interface); MPY runtime phases are now authorized
+after this gate. No prerequisite has been marked complete beyond this
+amendment. Detailed new-milestone state lives in
 [MPY STATE](milestones/MPY-python-interface/STATE.md).
 
 This file is the root GSD routing authority. Detailed contracts live under `.planning/milestones/M3-semantic-modeling-workflows/`.
 
 ## Routing versus execution
 
-**Current routing target:** P34 — M3 final qualification.
-**Active production implementation:** P34 is now authorized after P31 merged via PR #49 at merge commit `4cbe13caa9a621b43593da76259e9c5b88fc4d18` (reviewed head `c7d935a5e08497d3fef0d0f9783bd4003bb9ecfa`). P36 is complete and merged via PR #46 at merge commit `8838effee84eafdcbc2e502fb417df8d09221248`.
+**Current routing target:** MPY — Python interface (see MPY STATE).
+**Completed production implementation:** P34 merged via PR #51 at merge
+commit `17e8b79275d488de335df02bac1f0a80d7ec9808` (reviewed head
+`32170448cb7bba53641ff70505f31e8ee3615ea6`); M3 is complete.
 **Planning prerequisite:** completion-planning PR #45 merged to `main` as `48fab4db347522cebc786393e5afcbdbcea98f33`.
-**Later production phases:** M4 remains a design gate only; MPY (Python interface) is the authorized successor after M3 closure (see MPY STATE).
+**Later production phases:** M4 remains a design gate only; MPY runtime
+phases are authorized.
 
-A `current_phase` value identifies the next GSD routing target; it is **not** implementation authorization by itself. The explicit authorization here permits P34 only; M4 production remains unauthorized.
+M3 production authorization is closed (`implementation_authorized: false`
+for M3 phases). MPY authorization lives in the MPY milestone state.
 
 ## Accepted state
 
@@ -94,7 +100,7 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 | P31 | complete | no new work | PR #49 merged as `4cbe13c`; exact-head evidence retained |
 | P32 | complete | no new work | accepted evidence |
 | P33 | complete | no new work | accepted evidence |
-| P34 | active | **true** | P34 evidence/review and owner merge |
+| P34 | complete | no new work | PR #51 merged as `17e8b79`; exact-head evidence retained |
 | P35 | complete | no new work | PR #44 / P35 evidence |
 | P36 | complete | no new work | PR #46 merged as `8838effe`; exact-head evidence and review retained |
 
@@ -102,16 +108,17 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 
 - One production phase at a time.
 - Research/review may be prepared ahead; production code may not.
-- A phase becomes implementation-active only after its predecessor/packet merge gate is satisfied and this state file is updated. P34 has now passed the P31 merge gate.
+- M3 phases are all complete; no M3 production work is authorized.
 - Completion requires exact-head evidence, independent review, hosted mandatory CI, and owner-authorized merge.
-- M4 production remains unauthorized; MPY runtime phases are conditionally authorized after M3 closure.
+- M4 production remains unauthorized; MPY runtime phases are authorized (see MPY STATE).
 - A skipped mandatory check never counts as pass.
 - Publication/tag/release remain separate owner gates and are not implied by M3 completion.
 
-## P31 Execution Position
+## M3 Closure Position
 
 - P31 objective policies + lexicographic executor complete and merged via PR #49; closure evidence in `.planning/phases/31-lexicographic-objectives/P31_OBJECTIVE_POLICIES.md`.
-- P34 status: active and authorized; execute only the P34 plan and its explicit gates.
+- P34 qualification complete and merged via PR #51; closure evidence in `.planning/phases/34-m3-qualification/` (`M3_FINAL_QUALIFICATION.md`, `34-REQUIREMENT-LEDGER.md` at 127 PASS).
+- Successor: MPY Python interface (authorized); M4 remains a design gate only.
 
 ## Performance Metrics
 
@@ -127,5 +134,5 @@ P36 is an explicit **program gate** for P30 even though P30's mathematical prere
 ## Session
 
 **Last session:** 2026-09-07T00:00:00Z
-**Stopped at:** P31 merged via PR #49; P34 activated for qualification/closure
+**Stopped at:** P34 merged via PR #51; M3 complete, MPY authorized
 **Resume file:** None

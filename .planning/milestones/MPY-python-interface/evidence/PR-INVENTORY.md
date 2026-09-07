@@ -42,3 +42,11 @@ regressions; (2) final-vector candidate gating; (3) options/deadline entry point
 deterministic-clock tests; (4) HiGHS per-objective/final-vector assertions;
 (5) independent re-review with zero P0/P1; (6) exact-head mandatory CI green.
 Expected-head comparison mandatory at merge time.
+
+## P34 closure (2026-09-07)
+
+No P34 PR existed at intake; P34 was executed on branch
+`phase-roml-P34-m3-qualification` and merged as PR #51 (`17e8b79`,
+reviewed head `3217044`, exact-head hosted CI 17 pass + 2 pre-existing
+skips, review gauntlet zero P0/P1 with all findings fixed/recorded).
+MPY-00 is complete; MPY runtime phases are authorized.
