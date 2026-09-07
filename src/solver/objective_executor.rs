@@ -481,6 +481,11 @@ pub(crate) fn validate_priority_targets(
         .take_snapshot()
         .map_err(|e| ObjectiveExecutionError::Preflight(format!("snapshot failed: {e}")))?;
     for construct in &snapshot.constructs {
+        // Inactive constructs compile to nothing: they constrain neither
+        // resolution nor policy validation.
+        if !construct.active {
+            continue;
+        }
         let target = match &construct.kind {
             ConstructKind::SoftConstraint(payload) => payload.penalty.target,
             _ => continue,

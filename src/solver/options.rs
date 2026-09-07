@@ -77,6 +77,17 @@ impl SolveOptions {
     /// (the façade) validates before committing or touching the backend, so
     /// model and backend state are left unchanged.
     pub(crate) fn validate(&self) -> Result<(), SolveError> {
+        if let Some(limit) = self.request.time_limit_secs {
+            // A staged solve budget must be a representable non-negative
+            // duration. The builder takes `Duration` (finite by
+            // construction), so this rejects only programmatically built
+            // requests — before any state change.
+            if Duration::try_from_secs_f64(limit).is_err() {
+                return Err(SolveError::InvalidOptions(format!(
+                    "time_limit must be a non-negative finite duration representable in seconds, got {limit}"
+                )));
+            }
+        }
         if let Some(gap) = self.request.mip_rel_gap {
             if !(gap.is_finite() && gap >= 0.0) {
                 return Err(SolveError::InvalidOptions(format!(

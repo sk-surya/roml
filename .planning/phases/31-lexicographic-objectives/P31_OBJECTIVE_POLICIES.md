@@ -346,3 +346,27 @@ red-on-`e0a5efa` / green-on-fix evidence:
 - Hosted exact-head CI on the remediation head — required before merge.
 - Independent re-review of the remediation head — required; zero P0/P1 to
   merge.
+
+## Independent review disposition (2026-09-07)
+
+An independent reviewer agent audited the full `e0a5efa..HEAD` diff against
+the three prior owner reviews and the packet intake targets. Verdict: **CLEAR
+TO MERGE** with no P0/P1 and four P2s. The reviewer independently verified
+the normalization-sign math for all sense combinations, absence of
+double-counting, delta-path tracking mirroring, `active` consistency,
+budget mechanics/ordering, cap justification, and public API
+docs/exports. Disposition:
+
+- P2 `validate_priority_targets` ignores `active` — ACCEPTED and fixed in
+  this round (one-line skip + regression proving an inactive
+  priority-targeted penalty neither blocks validation nor resolves).
+- P2 budget range errors rejected after mutation — ACCEPTED and fixed:
+  `SolveOptions::validate` now rejects non-representable time limits before
+  any state change; the facade `checked_add` backstop remains for the
+  practically unreachable overflow.
+- P2 missing CHANGELOG entry — ACCEPTED and fixed (P31 entry under
+  Unreleased/Added).
+- P2 `evaluate_constraint_row` silently skips unmapped compiled vars —
+  recorded as follow-up: dead code today (constraint rows are user-only by
+  construction), and tightening it could reclassify legitimate generated-var
+  rows; any change needs its own regression and stays out of this merge.

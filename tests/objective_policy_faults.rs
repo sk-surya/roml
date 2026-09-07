@@ -1019,3 +1019,54 @@ fn invalid_options_reject_before_mutation() {
     // Nothing was committed or synchronized: the model solves cleanly after.
     assert!(session.solve(&mut model).is_ok());
 }
+
+/// Priority-target validation ignores deactivated penalties: an inactive
+/// soft constraint targeting an absent priority constrains neither
+/// validation nor resolution, while the active form still rejects.
+#[test]
+fn deactivated_priority_penalty_target_skips_validation() {
+    use roml::ObjectivePriority;
+
+    for deactivate in [false, true] {
+        let mut model = Model::new();
+        let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+        let con = model.add_constraint((x).ge(6.0)).unwrap();
+        let obj = model.minimize(x).unwrap();
+        let soft = model
+            .soften_constraint(
+                con,
+                ViolationPolicy::default(),
+                PenaltyPolicy {
+                    weight: ValueExpr::constant(5.0),
+                    target: PenaltyTarget::Priority(ObjectivePriority::new(7)),
+                },
+            )
+            .expect("softening must succeed");
+        if deactivate {
+            model.set_construct_active(soft.construct(), false).unwrap();
+        }
+        let mut session = SolverSession::new(FaultBackend::with_outcome(
+            None,
+            SolveOutcome::Feasible {
+                values: vec![(x, 6.0)],
+            },
+        ));
+        let result = session.solve_objective_policy(
+            &mut model,
+            ObjectivePolicy::Single(obj),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        );
+        if deactivate {
+            let result = result.expect("deactivated penalty must not block validation");
+            assert_eq!(result.stages.len(), 1);
+            // No penalty resolved: the scalar is the bare canonical value.
+            assert_eq!(result.stages[0].scalar_stage_value, Some(6.0));
+        } else {
+            assert!(
+                matches!(result, Err(ObjectiveExecutionError::Preflight(_))),
+                "active penalty targeting an absent priority must reject, got {result:?}"
+            );
+        }
+    }
+}
