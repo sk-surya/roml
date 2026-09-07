@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use roml::{ModelInstanceId, ModelRevision, SolveStatus as CoreStatus, VarId};
 
-use super::errors::{InvalidHandleError, InvalidModelError, MissingValueError, NoSolutionError};
+use super::errors::{InvalidModelError, MissingValueError, NoSolutionError};
 use super::handles::Var;
 use super::model::Model;
 
@@ -59,11 +60,45 @@ pub(crate) struct Snapshot {
     /// access gates on this — never on status alone and never on a
     /// non-empty map — so limits with incumbents expose values while
     /// infeasible/unbounded outcomes without candidates do not.
+    /// (Preliminary rule: HiGHS reports values only with a candidate;
+    /// MPY-04 governs the exact termination-based evidence contract.)
     pub has_candidate: bool,
     pub backend: String,
     pub instance: ModelInstanceId,
+    pub lineage: roml::ModelLineageId,
     pub revision: ModelRevision,
     pub py_revision: u64,
+    /// Native dual values by constraint id, when the backend reported
+    /// valid LP dual evidence.
+    pub duals: Option<HashMap<roml::ConId, f64>>,
+    /// Native reduced costs by variable id, when reported.
+    pub reduced_costs: Option<HashMap<VarId, f64>>,
+    /// Effective per-call time limit in seconds (constructor default with
+    /// per-call override applied), if any.
+    pub effective_time_limit: Option<f64>,
+    /// Total wall-clock seconds for the solve call measured in the binding.
+    pub wall_seconds: f64,
+    /// Warm-start disposition: `none` (no start requested), `applied` (the
+    /// backend's effective plan records the start), or
+    /// `requested_not_applied`.
+    pub warm_start: WarmStart,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WarmStart {
+    None,
+    Applied,
+    RequestedNotApplied,
+}
+
+impl WarmStart {
+    fn as_str(self) -> &'static str {
+        match self {
+            WarmStart::None => "none",
+            WarmStart::Applied => "applied",
+            WarmStart::RequestedNotApplied => "requested_not_applied",
+        }
+    }
 }
 
 #[pyclass(frozen, name = "Solution")]
@@ -136,12 +171,115 @@ impl Solution {
         })
     }
 
+    /// Native dual value for one constraint: LP evidence only.
+    /// Raises `UnavailableDiagnosticError` when the backend reported no
+    /// valid dual evidence (including MILP models, whose duals are not
+    /// economic marginal values).
+    fn dual(&self, constraint: Bound<'_, super::handles::Constraint>) -> PyResult<f64> {
+        use super::errors::UnavailableDiagnosticError;
+        if !self.has_primal() {
+            return Err(NoSolutionError::new_err(
+                "this result carries no primal solution",
+            ));
+        }
+        let con = constraint.borrow();
+        let discrete = check_solution_owner(&con.owner, &self.snapshot)?;
+        require_lp(discrete)?;
+        match &self.snapshot.duals {
+            Some(duals) => duals.get(&con.id).copied().ok_or_else(|| {
+                super::errors::MissingValueError::new_err("no dual reported for this constraint")
+            }),
+            None => Err(UnavailableDiagnosticError::new_err(
+                "the backend reported no valid dual evidence for this result",
+            )),
+        }
+    }
+
+    /// Owned NumPy float64 duals over a `ConstraintArray`, same shape and
+    /// C order. Any missing entry raises instead of fabricating a value.
+    fn duals(
+        &self,
+        constraint_array: Bound<'_, super::arrays::ConstraintArray>,
+    ) -> PyResult<Py<PyAny>> {
+        use super::errors::UnavailableDiagnosticError;
+        use numpy::{IxDyn, PyArray1, PyArrayMethods};
+        if !self.has_primal() {
+            return Err(NoSolutionError::new_err(
+                "this result carries no primal solution",
+            ));
+        }
+        let arr = constraint_array.borrow();
+        let discrete = check_solution_owner(&arr.owner, &self.snapshot)?;
+        require_lp(discrete)?;
+        let duals = self.snapshot.duals.as_ref().ok_or_else(|| {
+            UnavailableDiagnosticError::new_err(
+                "the backend reported no valid dual evidence for this result",
+            )
+        })?;
+        let mut data = Vec::with_capacity(arr.cons.len());
+        for (i, con) in arr.cons.iter().enumerate() {
+            data.push(duals.get(con).copied().ok_or_else(|| {
+                super::errors::MissingValueError::new_err(format!(
+                    "no dual reported for array element {i}"
+                ))
+            })?);
+        }
+        let shape = arr.shape.clone();
+        drop(arr);
+        Python::attach(|py| {
+            let flat = PyArray1::from_vec(py, data);
+            let shaped = flat.reshape(IxDyn(&shape)).map_err(|_| {
+                InvalidModelError::new_err("internal error: result shape does not match data")
+            })?;
+            Ok(shaped.into_any().unbind())
+        })
+    }
+
+    /// Native reduced cost for one variable; same diagnostic policy as duals.
+    fn reduced_cost(&self, var: Bound<'_, Var>) -> PyResult<f64> {
+        use super::errors::UnavailableDiagnosticError;
+        if !self.has_primal() {
+            return Err(NoSolutionError::new_err(
+                "this result carries no primal solution",
+            ));
+        }
+        let var = var.borrow();
+        let discrete = check_solution_owner(&var.owner, &self.snapshot)?;
+        require_lp(discrete)?;
+        match &self.snapshot.reduced_costs {
+            Some(costs) => costs.get(&var.id).copied().ok_or_else(|| {
+                super::errors::MissingValueError::new_err(
+                    "no reduced cost reported for this variable",
+                )
+            }),
+            None => Err(UnavailableDiagnosticError::new_err(
+                "the backend reported no valid reduced-cost evidence for this result",
+            )),
+        }
+    }
+
+    /// Solve metadata: backend, model identity/revision, effective options,
+    /// synchronization mode, warm-start disposition, and measured timing.
+    /// Missing native diagnostic evidence is `None`, never zero.
+    #[getter]
+    fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        use pyo3::types::PyDict;
+        let out = PyDict::new(py);
+        out.set_item("backend", self.snapshot.backend.clone())?;
+        out.set_item("lineage", format!("{:?}", self.snapshot.lineage))?;
+        out.set_item("instance", format!("{:?}", self.snapshot.instance))?;
+        out.set_item("revision", self.snapshot.revision.as_u64())?;
+        out.set_item("py_revision", self.snapshot.py_revision)?;
+        out.set_item("effective_time_limit", self.snapshot.effective_time_limit)?;
+        out.set_item("wall_seconds", self.snapshot.wall_seconds)?;
+        out.set_item("warm_start", self.snapshot.warm_start.as_str())?;
+        out.set_item("has_primal", self.snapshot.has_candidate)?;
+        Ok(out)
+    }
+
     fn is_current(&self, model: Bound<'_, Model>) -> PyResult<bool> {
         let borrowed = model.borrow();
-        let state = borrowed
-            .state
-            .lock()
-            .map_err(|_| InvalidHandleError::new_err("model state is invalid"))?;
+        let state = super::model::lock_state(&borrowed)?;
         if state.model.instance() != self.snapshot.instance {
             return Ok(false);
         }
@@ -169,23 +307,32 @@ impl Solution {
 
 /// A handle from another model (or instance) must never index into this
 /// result: arena IDs can coincide across models. Compare the owner's live
-/// instance against the recorded solve provenance.
+/// instance against the recorded solve provenance. Returns the owner's
+/// discreteness flag alongside for LP-only diagnostic gating.
 fn check_solution_owner(
     owner: &pyo3::Py<super::model::Model>,
     snapshot: &Snapshot,
-) -> PyResult<()> {
-    let owned = Python::attach(|py| {
+) -> PyResult<bool> {
+    let (owned, discrete) = Python::attach(|py| {
         let bound = owner.bind(py);
         let borrowed = bound.borrow();
-        let state = borrowed
-            .state
-            .lock()
-            .map_err(|_| InvalidHandleError::new_err("model state is invalid"))?;
-        Ok::<_, PyErr>(state.model.instance())
+        let state = super::model::lock_state(&borrowed)?;
+        Ok::<_, PyErr>((state.model.instance(), state.has_discrete))
     })?;
     if owned != snapshot.instance {
         return Err(super::errors::ModelMismatchError::new_err(
             "this handle belongs to a different model than the solution",
+        ));
+    }
+    Ok(discrete)
+}
+
+/// Duals and reduced costs are LP-only: on discrete models they raise
+/// instead of advertising relaxation values as economic marginals.
+fn require_lp(discrete: bool) -> PyResult<()> {
+    if discrete {
+        return Err(super::errors::UnavailableDiagnosticError::new_err(
+            "duals and reduced costs are LP-only diagnostics and are not reported for mixed-integer models",
         ));
     }
     Ok(())

@@ -631,19 +631,38 @@ fn normalize_operand(
             "{op}: bools are not accepted as numeric values"
         )));
     }
-    let v: f64 = obj
-        .extract()
-        .map_err(|_| InvalidModelError::new_err(format!("{op}: unsupported operand type")))?;
-    if !v.is_finite() {
-        return Err(InvalidModelError::new_err(format!(
-            "{op}: operand must be finite"
+    if let Ok(v) = obj.extract::<f64>() {
+        if !v.is_finite() {
+            return Err(InvalidModelError::new_err(format!(
+                "{op}: operand must be finite"
+            )));
+        }
+        return Ok(Operand::Scalar(Affine {
+            owner: owner.clone_ref(py),
+            terms: Vec::new(),
+            constant: ValueExpr::constant(v),
+        }));
+    }
+    // Dense numeric bounds (NumPy or nested sequences) with matching shape.
+    let parsed = parse_numeric(py, obj, NumericMode::Finite, op)?;
+    if parsed.shape != shape {
+        return Err(ShapeError::new_err(format!(
+            "{op}: bound shape {:?} does not match array shape {:?}",
+            parsed.shape, shape
         )));
     }
-    Ok(Operand::Scalar(Affine {
-        owner: owner.clone_ref(py),
-        terms: Vec::new(),
-        constant: ValueExpr::constant(v),
-    }))
+    Ok(Operand::Vector(
+        parsed.shape,
+        parsed
+            .values
+            .into_iter()
+            .map(|v| Affine {
+                owner: owner.clone_ref(py),
+                terms: Vec::new(),
+                constant: ValueExpr::constant(v),
+            })
+            .collect(),
+    ))
 }
 
 /// Expand a scalar-or-vector operand pair into per-element affine pairs.

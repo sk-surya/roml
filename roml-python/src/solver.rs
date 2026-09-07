@@ -62,9 +62,67 @@ struct SessionState {
     closed: bool,
 }
 
+/// GIL-independent shared session state (see `SharedModel`): the `Arc`
+/// crosses the detach boundary; locks are acquired and released inside.
+#[derive(Clone)]
+struct SharedSession {
+    state: std::sync::Arc<Mutex<SessionState>>,
+    poison: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 #[pyclass(frozen, name = "Highs")]
 pub struct Session {
-    state: Mutex<SessionState>,
+    shared: SharedSession,
+}
+
+/// Operational failure inside detached native work, converted to a Python
+/// error only after reattachment (`PyErr` needs the GIL).
+#[derive(Debug)]
+enum NativeError {
+    SessionBusy,
+    ModelBusy,
+    Closed,
+    Mismatch(String),
+    Solver(String),
+    Poisoned(&'static str),
+}
+
+/// Owned native result data. Everything here is plain `Send` data: no
+/// `MutexGuard` and no Python object crosses the detach boundary.
+#[allow(clippy::too_many_arguments)]
+struct NativeSolve {
+    status: roml::SolveStatus,
+    objective: Option<f64>,
+    values: std::collections::HashMap<roml::VarId, f64>,
+    has_candidate: bool,
+    backend: String,
+    instance: ModelInstanceId,
+    lineage: roml::ModelLineageId,
+    revision: roml::ModelRevision,
+    py_revision: u64,
+    duals: Option<std::collections::HashMap<roml::ConId, f64>>,
+    reduced_costs: Option<std::collections::HashMap<roml::VarId, f64>>,
+    effective_time_limit: Option<f64>,
+    wall_seconds: f64,
+    warm_start: super::solution::WarmStart,
+}
+
+/// Nonblocking session-state acquisition with poison fusion.
+fn lock_session(
+    shared: &SharedSession,
+) -> Result<std::sync::MutexGuard<'_, SessionState>, NativeError> {
+    use std::sync::atomic::Ordering;
+    if shared.poison.load(Ordering::SeqCst) {
+        return Err(NativeError::Poisoned("session"));
+    }
+    match shared.state.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(NativeError::SessionBusy),
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            shared.poison.store(true, Ordering::SeqCst);
+            Err(NativeError::Poisoned("session"))
+        }
+    }
 }
 
 fn optional_finite(value: Option<Bound<'_, PyAny>>, what: &str) -> PyResult<Option<f64>> {
@@ -150,29 +208,39 @@ impl Session {
         };
         let backend = HighsSession::try_new().map_err(|e| SolverError::new_err(e.to_string()))?;
         Ok(Self {
-            state: Mutex::new(SessionState {
-                session: SolverSession::new(backend),
-                bound: None,
-                options: StoredOptions {
-                    threads: Some(threads_value),
-                    output: Some(output_value),
-                    time_limit_secs: limit,
-                    relative_gap,
-                    absolute_gap,
-                    random_seed: seed,
-                },
-                closed: false,
-            }),
+            shared: SharedSession {
+                state: std::sync::Arc::new(Mutex::new(SessionState {
+                    session: SolverSession::new(backend),
+                    bound: None,
+                    options: StoredOptions {
+                        threads: Some(threads_value),
+                        output: Some(output_value),
+                        time_limit_secs: limit,
+                        relative_gap,
+                        absolute_gap,
+                        random_seed: seed,
+                    },
+                    closed: false,
+                })),
+                poison: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
         })
     }
 
     fn close(&self) -> PyResult<()> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| SolverError::new_err("session state is invalid"))?;
-        state.closed = true;
-        Ok(())
+        // Close while a solve holds the session fails deterministically
+        // instead of waiting; native destruction stays exactly-once by
+        // ownership when the last handle drops.
+        match lock_session(&self.shared) {
+            Ok(mut state) => {
+                state.closed = true;
+                Ok(())
+            }
+            Err(NativeError::SessionBusy) => Err(super::errors::SessionBusyError::new_err(
+                "cannot close a Highs session while it is solving",
+            )),
+            Err(e) => Err(native_error(e)),
+        }
     }
 
     fn __enter__(slf: Py<Self>) -> Py<Self> {
@@ -190,6 +258,7 @@ impl Session {
     }
 
     #[pyo3(signature = (model, *, time_limit = None, relative_gap = None, absolute_gap = None, random_seed = None, start = None))]
+    #[allow(clippy::too_many_arguments)]
     fn solve(
         &self,
         model: Bound<'_, Model>,
@@ -199,99 +268,267 @@ impl Session {
         random_seed: Option<Bound<'_, PyAny>>,
         start: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Solution> {
-        if start.is_some() {
-            return Err(super::errors::UnsupportedFeatureError::new_err(
-                "warm starts are not supported by this solve",
-            ));
-        }
-        // Per-call overrides apply to this call only; omitted values inherit
-        // constructor defaults (None inherits, never clears).
-        let options = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| SolverError::new_err("session state is invalid"))?;
+        // Attached phase: validate options and the start request. No locks
+        // are held here; per-call overrides never leak into the session.
+        let mut merged = {
+            let state = lock_session(&self.shared).map_err(native_error)?;
             if state.closed {
                 return Err(ClosedSessionError::new_err("this Highs session is closed"));
             }
-            let mut merged = state.options.clone();
-            if let Some(v) = optional_finite(time_limit, "time_limit")? {
-                if v <= 0.0 {
+            state.options.clone()
+        };
+        if let Some(v) = optional_finite(time_limit, "time_limit")? {
+            if v <= 0.0 {
+                return Err(InvalidModelError::new_err(
+                    "time_limit must be positive when supplied",
+                ));
+            }
+            merged.time_limit_secs = Some(v);
+        }
+        if let Some(v) = optional_finite(relative_gap, "relative_gap")? {
+            merged.relative_gap = Some(v);
+        }
+        if let Some(v) = optional_finite(absolute_gap, "absolute_gap")? {
+            merged.absolute_gap = Some(v);
+        }
+        if let Some(v) = random_seed {
+            if !v.is_none() {
+                let s = py_numeric(&v, "random_seed")?;
+                merged.random_seed = Some(s as i32);
+            }
+        }
+        let effective_time_limit = merged.time_limit_secs;
+        let options = merged.build();
+        // Start requests validate cheaply here (type + primal presence);
+        // same-model identity is enforced inside, before any mutation.
+        let start_data: Option<StartData> = match start {
+            None => None,
+            Some(s) if s.is_none() => None,
+            Some(s) => {
+                let requested = s.cast::<super::solution::Solution>().map_err(|_| {
+                    InvalidModelError::new_err("start must be a Solution from a previous solve")
+                })?;
+                let snapshot = &requested.borrow().snapshot;
+                if !snapshot.has_candidate {
                     return Err(InvalidModelError::new_err(
-                        "time_limit must be positive when supplied",
+                        "start solution carries no primal values",
                     ));
                 }
-                merged.time_limit_secs = Some(v);
+                Some(StartData {
+                    values: snapshot.values.clone(),
+                    instance: snapshot.instance,
+                })
             }
-            if let Some(v) = optional_finite(relative_gap, "relative_gap")? {
-                merged.relative_gap = Some(v);
-            }
-            if let Some(v) = optional_finite(absolute_gap, "absolute_gap")? {
-                merged.absolute_gap = Some(v);
-            }
-            if let Some(v) = random_seed {
-                if !v.is_none() {
-                    let s = py_numeric(&v, "random_seed")?;
-                    merged.random_seed = Some(s as i32);
-                }
-            }
-            merged.build()
         };
-        // Bind-on-first-solve; a different model rejects before mutation.
-        let instance = {
-            let borrowed = model.borrow();
-            let guard = borrowed
-                .state
-                .lock()
-                .map_err(|_| SolverError::new_err("model state is invalid"))?;
-            guard.model.instance()
-        };
-        let mut session = self
-            .state
-            .lock()
-            .map_err(|_| SolverError::new_err("session state is invalid"))?;
-        if session.closed {
-            return Err(ClosedSessionError::new_err("this Highs session is closed"));
+        // Lock ordering is fixed (session, then model) and every
+        // acquisition is a nonblocking try_lock, so contention fails fast
+        // instead of deadlocking. No guard crosses the detach boundary:
+        // locks are acquired and released inside the closure, which moves
+        // only owned `Send` data.
+        let wall_start = std::time::Instant::now();
+        let session_shared = self.shared.clone();
+        let model_shared = model.borrow().shared.clone();
+        let native = Python::attach(|py| {
+            py.detach(|| {
+                Self::solve_detached(
+                    &session_shared,
+                    &model_shared,
+                    &options,
+                    start_data.as_ref(),
+                    effective_time_limit,
+                )
+            })
+        });
+        let wall_seconds = wall_start.elapsed().as_secs_f64();
+        match native {
+            Err(e) => Err(native_error(e)),
+            Ok(mut solved) => {
+                solved.wall_seconds = wall_seconds;
+                Ok(Solution {
+                    snapshot: Snapshot {
+                        status: solved.status,
+                        objective: solved.objective,
+                        values: solved.values,
+                        has_candidate: solved.has_candidate,
+                        backend: solved.backend,
+                        instance: solved.instance,
+                        lineage: solved.lineage,
+                        revision: solved.revision,
+                        py_revision: solved.py_revision,
+                        duals: solved.duals,
+                        reduced_costs: solved.reduced_costs,
+                        effective_time_limit: solved.effective_time_limit,
+                        wall_seconds: solved.wall_seconds,
+                        warm_start: solved.warm_start,
+                    },
+                })
+            }
         }
+    }
+
+    fn __repr__(&self) -> String {
+        "Highs(<session>)".to_string()
+    }
+}
+
+/// Owned warm-start request data (no Python objects, no guards).
+struct StartData {
+    values: std::collections::HashMap<roml::VarId, f64>,
+    instance: ModelInstanceId,
+}
+
+fn native_error(err: NativeError) -> PyErr {
+    match err {
+        NativeError::SessionBusy => super::errors::SessionBusyError::new_err(
+            "this Highs session is busy with another solve",
+        ),
+        NativeError::ModelBusy => {
+            super::errors::ModelBusyError::new_err("model is busy with another operation")
+        }
+        NativeError::Closed => ClosedSessionError::new_err("this Highs session is closed"),
+        NativeError::Mismatch(msg) => ModelMismatchError::new_err(msg),
+        NativeError::Solver(msg) => SolverError::new_err(msg),
+        NativeError::Poisoned(what) => {
+            SolverError::new_err(format!("{what} state is poisoned and cannot be reused"))
+        }
+    }
+}
+
+impl Session {
+    /// Execute one solve with the GIL released. Locks are acquired in
+    /// fixed order (session, then model) with nonblocking `try_lock`;
+    /// every guard drops before the closure returns. No Python API runs
+    /// in here and no guard escapes.
+    fn solve_detached(
+        session_shared: &SharedSession,
+        model_shared: &super::model::SharedModel,
+        options: &SolveOptions,
+        start: Option<&StartData>,
+        effective_time_limit: Option<f64>,
+    ) -> Result<NativeSolve, NativeError> {
+        let mut session = lock_session(session_shared)?;
+        if session.closed {
+            return Err(NativeError::Closed);
+        }
+        let mut guard = super::model::try_model_state(model_shared).map_err(|fail| match fail {
+            super::model::ModelLockFail::Busy => NativeError::ModelBusy,
+            super::model::ModelLockFail::Poisoned => NativeError::Poisoned("model"),
+        })?;
+        let instance = guard.model.instance();
+        // A solver binds to its first model and rejects another model
+        // before any backend mutation.
         match session.bound {
             Some(bound) if bound != instance => {
-                return Err(ModelMismatchError::new_err(
-                    "this solver is bound to a different model",
+                return Err(NativeError::Mismatch(
+                    "this solver is bound to a different model".to_string(),
                 ))
             }
             Some(_) => {}
             None => session.bound = Some(instance),
         }
-        // Preliminary blocking solve: both locks are held for the call.
-        // MPY-04 releases the GIL, orders try_lock acquisition, and reports
-        // deterministic busy errors instead.
-        let borrowed = model.borrow();
-        let mut guard = borrowed
-            .state
-            .lock()
-            .map_err(|_| SolverError::new_err("model state is invalid"))?;
-        let solved = session
-            .session
-            .solve_with(&mut guard.model, options)
-            .map_err(|e| SolverError::new_err(e.to_string()))?;
+        if let Some(requested) = start {
+            if requested.instance != instance {
+                return Err(NativeError::Mismatch(
+                    "warm-start solution belongs to a different model".to_string(),
+                ));
+            }
+        }
+        let solved = match start {
+            None => session
+                .session
+                .solve_with(&mut guard.model, options.clone())
+                .map_err(|e| NativeError::Solver(e.to_string()))?,
+            Some(requested) => {
+                let assignment = roml::PrimalAssignment {
+                    lineage: guard.model.lineage(),
+                    source_instance: Some(instance),
+                    source_revision: Some(guard.model.current_revision()),
+                    values: requested.values.iter().map(|(v, x)| (*v, *x)).collect(),
+                };
+                let plan = roml::SolvePlan {
+                    options: options.clone(),
+                    overlay: roml::SolveOverlay::new(
+                        std::collections::BTreeMap::new(),
+                        vec![],
+                        vec![],
+                        vec![],
+                    )
+                    .map_err(|e| NativeError::Solver(format!("{e:?}")))?,
+                    mip_starts: vec![roml::MipStart::new(
+                        assignment,
+                        roml::RepairPolicy::BackendDefault,
+                    )],
+                    hints: roml::VariableHints::default(),
+                    objective_override: None,
+                    lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+                    unsupported: roml::UnsupportedFeaturePolicy::Reject,
+                };
+                session
+                    .session
+                    .solve_plan(&mut guard.model, plan)
+                    .map_err(|e| NativeError::Solver(e.to_string()))?
+            }
+        };
         guard.pending = false;
-        let snapshot = Snapshot {
+        let metadata = solved.metadata();
+        let warm_start = match start {
+            None => super::solution::WarmStart::None,
+            Some(_) => {
+                let applied = metadata
+                    .effective_plan
+                    .applied_features
+                    .iter()
+                    .any(|f| f.feature == "mip_start");
+                if applied {
+                    super::solution::WarmStart::Applied
+                } else {
+                    super::solution::WarmStart::RequestedNotApplied
+                }
+            }
+        };
+        Ok(NativeSolve {
             status: solved.status(),
             objective: solved.objective_value(),
-            values: solved.values().clone(),
-            // Preliminary candidate rule, documented: HiGHS reports values
-            // only with a candidate. MPY-04 replaces this with exact
-            // termination-based primal evidence.
             has_candidate: !solved.values().is_empty(),
-            backend: solved.metadata().backend_name.clone(),
-            instance: solved.metadata().model_instance,
-            revision: solved.metadata().model_revision,
+            values: solved.values().clone(),
+            backend: metadata.backend_name.clone(),
+            instance: metadata.model_instance,
+            lineage: metadata.model_lineage,
+            revision: metadata.model_revision,
             py_revision: guard.py_revision,
-        };
-        Ok(Solution { snapshot })
+            duals: solved.duals().cloned(),
+            reduced_costs: solved.reduced_costs().cloned(),
+            effective_time_limit,
+            wall_seconds: 0.0,
+            warm_start,
+        })
     }
+}
 
-    fn __repr__(&self) -> String {
-        "Highs(<session>)".to_string()
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    /// Session contention fails deterministically: holding the session
+    /// guard makes a second acquisition (as `close` performs) report
+    /// `SessionBusy` instead of waiting.
+    #[test]
+    fn session_try_lock_contention_is_busy() {
+        let shared = SharedSession {
+            state: std::sync::Arc::new(Mutex::new(SessionState {
+                session: CoreSession::new(
+                    HighsSession::try_new().expect("bundled HiGHS available"),
+                ),
+                bound: None,
+                options: StoredOptions::default(),
+                closed: false,
+            })),
+            poison: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let _held = lock_session(&shared).expect("first acquisition succeeds");
+        assert!(matches!(
+            lock_session(&shared),
+            Err(NativeError::SessionBusy)
+        ));
     }
 }

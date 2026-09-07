@@ -48,6 +48,11 @@ pub(crate) struct ModelState {
     /// only to evaluate proposed environments before mutation.
     pub obj_coeffs: HashMap<ObjId, Vec<ValueExpr>>,
     pub con_coeffs: HashMap<ConId, Vec<ValueExpr>>,
+    /// True once any integer/binary variable exists. Duals and reduced
+    /// costs are LP-only diagnostics; on discrete models they raise
+    /// `UnavailableDiagnosticError` instead of advertising relaxation
+    /// values as economic marginals.
+    pub has_discrete: bool,
     pub pending: bool,
     pub py_revision: u64,
 }
@@ -104,13 +109,59 @@ pub(crate) fn eval_expr(state: &ModelState, expr: &ValueExpr) -> Result<f64, Mod
     Ok(v)
 }
 
-fn invalid_state() -> PyErr {
-    InvalidModelError::new_err("model state is invalid")
+/// GIL-independent shared model state. The `Arc` (not the `Py<Model>`
+/// wrapper) crosses the PyO3 detach boundary: it is `Send`/`Sync` while
+/// carrying no Python object. Locks are always acquired and released
+/// inside the detached closure; no guard ever crosses it.
+#[derive(Clone)]
+pub(crate) struct SharedModel {
+    state: std::sync::Arc<Mutex<ModelState>>,
+    poison: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[pyclass(frozen, name = "Model")]
 pub struct Model {
-    pub(crate) state: Mutex<ModelState>,
+    pub(crate) shared: SharedModel,
+}
+
+/// GIL-free lock outcome for detached native work.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ModelLockFail {
+    Busy,
+    Poisoned,
+}
+
+/// Nonblocking model-state acquisition without Python errors (usable with
+/// the GIL released). Contention reports `Busy`; poisoning fuses the model
+/// and reports `Poisoned`.
+pub(crate) fn try_model_state(
+    shared: &SharedModel,
+) -> Result<std::sync::MutexGuard<'_, ModelState>, ModelLockFail> {
+    use std::sync::atomic::Ordering;
+    if shared.poison.load(Ordering::SeqCst) {
+        return Err(ModelLockFail::Poisoned);
+    }
+    match shared.state.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(ModelLockFail::Busy),
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            shared.poison.store(true, Ordering::SeqCst);
+            Err(ModelLockFail::Poisoned)
+        }
+    }
+}
+
+/// Nonblocking model-state acquisition: contention fails deterministically
+/// with `ModelBusyError` instead of waiting; poisoning fuses the model.
+pub(crate) fn lock_state(model: &Model) -> PyResult<std::sync::MutexGuard<'_, ModelState>> {
+    try_model_state(&model.shared).map_err(|fail| match fail {
+        ModelLockFail::Busy => {
+            super::errors::ModelBusyError::new_err("model is busy with another operation")
+        }
+        ModelLockFail::Poisoned => {
+            InvalidModelError::new_err("model is unusable after an operational failure")
+        }
+    })
 }
 
 #[pymethods]
@@ -119,26 +170,31 @@ impl Model {
     #[pyo3(signature = (name = ""))]
     fn new(name: &str) -> PyResult<Self> {
         Ok(Self {
-            state: Mutex::new(ModelState {
-                model: CoreModel::new(),
-                name: name.to_string(),
-                var_names: HashMap::new(),
-                param_names: HashMap::new(),
-                con_names: HashMap::new(),
-                bound_deps: Vec::new(),
-                array_names: std::collections::HashSet::new(),
-                param_array_shapes: HashMap::new(),
-                obj_coeffs: HashMap::new(),
-                con_coeffs: HashMap::new(),
-                pending: true,
-                py_revision: 0,
-            }),
+            shared: SharedModel {
+                state: std::sync::Arc::new(Mutex::new(ModelState {
+                    model: CoreModel::new(),
+                    name: name.to_string(),
+                    var_names: HashMap::new(),
+                    param_names: HashMap::new(),
+                    con_names: HashMap::new(),
+                    bound_deps: Vec::new(),
+                    array_names: std::collections::HashSet::new(),
+                    param_array_shapes: HashMap::new(),
+                    obj_coeffs: HashMap::new(),
+                    con_coeffs: HashMap::new(),
+                    has_discrete: false,
+                    pending: true,
+                    py_revision: 0,
+                })),
+                poison: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
         })
     }
 
     #[getter]
     fn name(slf: &Bound<'_, Self>) -> String {
         slf.borrow()
+            .shared
             .state
             .lock()
             .map(|state| state.name.clone())
@@ -146,7 +202,7 @@ impl Model {
     }
 
     fn __repr__(slf: &Bound<'_, Self>) -> String {
-        match slf.borrow().state.lock() {
+        match slf.borrow().shared.state.lock() {
             Ok(state) => format!(
                 "Model({} vars, {} params, {} constraints)",
                 state.var_names.len(),
@@ -205,7 +261,7 @@ impl Model {
             }
         }
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         if state.var_names.contains_key(name)
             || state.param_names.contains_key(name)
             || state.array_names.contains(name)
@@ -220,6 +276,9 @@ impl Model {
             VarType::Binary => roml::binary().bounds(lower, upper),
         };
         let id = state.model.add_variable(def).map_err(map_model_error)?;
+        if var_type != VarType::Continuous {
+            state.has_discrete = true;
+        }
         state.var_names.insert(name.to_string(), id);
         state.pending = true;
         state.py_revision += 1;
@@ -238,7 +297,7 @@ impl Model {
         }
         let v = py_numeric(&value, "parameter value")?;
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         if state.var_names.contains_key(name)
             || state.param_names.contains_key(name)
             || state.array_names.contains(name)
@@ -280,7 +339,7 @@ impl Model {
     #[pyo3(signature = (**values))]
     fn update(slf: &Bound<'_, Self>, values: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         let values = values
             .ok_or_else(|| InvalidModelError::new_err("update requires keyword arguments"))?;
         // Phase 1: resolve + validate the entire batch before mutation.
@@ -499,7 +558,7 @@ impl Model {
             domains.push((lo, hi));
         }
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         // Reserve the base name and every element name before mutation.
         if state.var_names.contains_key(name)
             || state.param_names.contains_key(name)
@@ -537,6 +596,9 @@ impl Model {
             let id = state.model.add_variable(def).map_err(map_model_error)?;
             state.var_names.insert(ename.clone(), id);
             vars.push(id);
+            if var_type != VarType::Continuous {
+                state.has_discrete = true;
+            }
         }
         state.pending = true;
         state.py_revision += 1;
@@ -594,7 +656,7 @@ impl Model {
         let n = numel(&parsed.shape);
         debug_assert_eq!(parsed.values.len(), n);
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         if state.var_names.contains_key(name)
             || state.param_names.contains_key(name)
             || state.array_names.contains(name)
@@ -653,7 +715,7 @@ impl Model {
 impl Model {
     fn set_objective_impl(slf: &Bound<'_, Self>, e: Affine, sense: Sense) -> PyResult<Objective> {
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         for term in &e.terms {
             if state.model.variable_bounds(term.var).is_none() {
                 return Err(InvalidHandleError::new_err(
@@ -755,7 +817,7 @@ impl Model {
                 }
             }
             let borrowed = slf.borrow();
-            let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+            let mut state = lock_state(&borrowed)?;
             if let Some(n) = name {
                 if state.con_names.contains_key(n)
                     || state.var_names.contains_key(n)
@@ -813,7 +875,7 @@ impl Model {
         let items = borrowed_arr.items.clone();
         drop(borrowed_arr);
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         if let Some(n) = name {
             if state.con_names.contains_key(n)
                 || state.var_names.contains_key(n)
@@ -970,7 +1032,7 @@ impl Model {
             }
         }
         let borrowed = slf.borrow();
-        let mut state = borrowed.state.lock().map_err(|_| invalid_state())?;
+        let mut state = lock_state(&borrowed)?;
         if let Some(n) = name {
             if state.con_names.contains_key(n)
                 || state.var_names.contains_key(n)
@@ -1251,4 +1313,35 @@ fn lower_affine(
         upper: upper_val,
     };
     Ok((lin, bounds, lower_sym, upper_sym))
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    /// Contention on model state fails deterministically instead of
+    /// waiting: holding the guard makes a second acquisition report Busy.
+    #[test]
+    fn model_try_lock_contention_is_busy() {
+        let shared = SharedModel {
+            state: std::sync::Arc::new(Mutex::new(ModelState {
+                model: CoreModel::new(),
+                name: String::new(),
+                var_names: HashMap::new(),
+                param_names: HashMap::new(),
+                con_names: HashMap::new(),
+                array_names: std::collections::HashSet::new(),
+                param_array_shapes: HashMap::new(),
+                obj_coeffs: HashMap::new(),
+                con_coeffs: HashMap::new(),
+                bound_deps: Vec::new(),
+                has_discrete: false,
+                pending: false,
+                py_revision: 0,
+            })),
+            poison: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let _held = try_model_state(&shared).expect("first acquisition succeeds");
+        assert!(matches!(try_model_state(&shared), Err(ModelLockFail::Busy)));
+    }
 }
