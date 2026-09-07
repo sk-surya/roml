@@ -110,3 +110,19 @@ numbers above are release-wheel only.
    adapters rebuild when history is unavailable — the protocol
    already supports this); no silent semantics change; M3 regression
    suite must stay green.
+
+## Journal-bounding fix: soak PASSES (2026-09-07)
+
+Separate branch/PR `fix/bounded-sync-journal` (#54, draft for
+independent review): count-bounded replay journal (128 batches),
+evicted-range `Compacted` with existing snapshot-rebuild recovery.
+Core gates green (72 binaries, 0 failures); new journal unit +
+facade multi-session/partial/terminal/disposal/pruning tests green.
+
+10k-cycle LP-small soak on the fixed core (release wheel, clean
+venv): post-warmup 45.1 MiB -> final 45.2 MiB, **growth 0.0 MiB**
+(allowance 32.0 MiB), 0.11 ms/cycle. **LEAK CHECK: PASS.**
+Full MPY Python suite (65 tests) green against the fixed core.
+
+MPY-06 remains open until #54 is reviewed and merged (separate
+authorization required); the implementation PR #53 stays draft.
