@@ -6,7 +6,7 @@ Base: P34 closure + prerequisite merges (see packet).
 
 ## Head under review
 
-`22e838d186e34033817152d7cb02102db011caec` on branch
+`cb237a69d3fe58e2609c7a166436917fede29fe2` on branch
 `mpy-python-interface`, PR #53 (draft, reviewable, DO NOT MERGE
 without separate authorization). Base: `main` post-P34 with planning
 PR #50 merged.
