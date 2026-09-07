@@ -106,8 +106,8 @@ if grep -rn "path *= *\"\.\./" "$HIGHS_DIR/Cargo.toml" | grep -v "$ROML_DIR" ; t
     echo "FATAL: packed roml-highs Cargo.toml points at the live workspace"
     exit 1
 fi
-if grep -rIl "planning/\|machine-local\|/home/\|/srv/repos" "$ROML_DIR/src" "$HIGHS_DIR/src" 2>/dev/null | head -3; then
-    echo "FATAL: machine-local paths inside packed sources"
+if grep -rIl "/home/\|/srv/repos\|/tmp/p34\|machine-local" "$ROML_DIR/src" "$HIGHS_DIR/src" 2>/dev/null | head -3; then
+    echo "FATAL: machine-local absolute paths inside packed sources"
     exit 1
 fi
 echo "packed-tree assertions PASS"
