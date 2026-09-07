@@ -540,13 +540,27 @@ where
             applied_revision: backend_rev,
             health: AdapterHealth::Ready,
         };
-        let batches = model.coordinator.batches_for_cursor(&cursor).map_err(|_| {
-            SolveError::Synchronization(BackendError::new(
-                "delta chain unavailable for backend revision; rebuild required",
-                ErrorCategory::InvalidInput,
-                HealthEffect::RequiresRebuild,
-            ))
-        })?;
+        let batches = model
+            .coordinator
+            .batches_for_cursor(&cursor)
+            .map_err(|e| {
+                // Eviction is routine once the journal is bounded: report
+                // the stale revision (and current window) instead of a
+                // generic message. Rebuild behavior is unchanged.
+                let detail = match e {
+                    crate::revision::RevisionError::Compacted { revision } => format!(
+                        "delta chain compacted for backend revision {revision} (oldest retained {:?}, current {:?}); rebuild required",
+                        model.coordinator.journal.oldest_retained(),
+                        model.coordinator.journal.latest_revision(),
+                    ),
+                    other => format!("delta chain unavailable ({other}); rebuild required"),
+                };
+                SolveError::Synchronization(BackendError::new(
+                    detail,
+                    ErrorCategory::InvalidInput,
+                    HealthEffect::RequiresRebuild,
+                ))
+            })?;
 
         // Compile-before-mutation: every delta is lowered to backend IR before
         // any backend mutation. A delta that cannot be compiled incrementally

@@ -61,6 +61,7 @@ pub use function::{
 };
 pub use id::{CoeffId, ConId, ObjId, ParamId, VarId};
 pub use identity::{ConstructId, IdentityOverflow, ModelInstanceId, ModelLineageId};
+pub use journal::DEFAULT_JOURNAL_CAPACITY;
 pub use metadata::{EntityMetadata, EntityRef, ModelSource};
 pub use model::changelog::Change;
 pub use model::{
