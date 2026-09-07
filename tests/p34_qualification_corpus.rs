@@ -469,8 +469,8 @@ fn q14_mps_parameterized_snapshot_round_trip() {
         .read(Cursor::new(bytes))
         .expect("writer output is readable");
     // Evaluated parameters do not survive MPS (documented limitation), but
-    // the mathematical structure does: same counts, sense, and evaluated
-    // objective coefficient 4.0 on the reread side.
+    // the mathematical structure does: same user counts and sense on the
+    // reread side.
     let (_compiler, before) = compile_model(&model);
     let (_compiler2, after) = compile_model(&imported.model);
     assert_eq!(before.user_vars, after.user_vars);

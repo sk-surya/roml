@@ -5,6 +5,8 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 HEAD_SHA="$(git rev-parse HEAD)"
+# Fixed /tmp paths: concurrent runs of this qualification script collide by
+# design; run one at a time and keep the log.
 PACKED=/tmp/p34-packed
 OUT=/tmp/p34-packed-consumers.log
 exec > >(tee "$OUT") 2>&1

@@ -118,9 +118,9 @@
 | SM-15.2 | Backend-contract changes have migration docs and conformance tests | P34 | `tests/backend_contract.rs` (`snapshot_load_identity`, `apply_add_variable`, …); `MIGRATION.md` (backend-contract/revision/capability sections) | `cargo test -p roml --test backend_contract` | core solver-free; linux | prior-phase-evidence | none | PASS |
 | SM-15.3 | Focused/full/cross-platform/rustdoc/public-API/package/fresh-consumer checks recorded | P34 | No `docs/release/evidence/M3_QUALIFICATION.md` exists; P34 in progress on current branch | P34 closure matrix (not yet run) | linux only probed; cross-platform pending | prior-phase-evidence | P34 verification matrix not executed | BLOCKED (P34 checks not yet run/recorded) |
 | SM-15.4 | Portable/native formulation equivalence has deterministic corpus evidence | P34 (PWL portion P33) | `roml-highs/tests/formulation_equivalence.rs` (`pwl_highs_exact_graph_matches_reference_for_all_curvatures` + `evaluate_pwl` reference) | `cargo test -p roml-highs --test formulation_equivalence pwl` | HiGHS 1.15.0 bundled; linux | prior-phase-evidence | P34 full native/portable corpus summary pending | PASS |
-| SM-15.5 | Parameter-update/solve performance within P34 regression thresholds | P34 | No `docs/release/evidence/M3_PERFORMANCE.md` exists; no thresholds evidenced anywhere in repo | P34 benchmark vs untouched baseline (not yet run) | n/a | prior-phase-evidence | no baseline/thresholds recorded | BLOCKED (no performance evidence found) |
+| SM-15.5 | Parameter-update/solve performance within P34 regression thresholds | P34 | `docs/release/evidence/M3_PERFORMANCE.md`: candidate +0.187ms vs 0.470ms allowance, PASS; raw JSON retained | `tools/p34-perf` 20+200 release runs on both arms, same machine | linux x86_64, rustc 1.97.1, bundled HiGHS 1.15.0 | P34 executor measurement 2026-09-07 | none | PASS |
 | SM-15.6 | Public docs distinguish guarantees, native/bridge support, version limits | P34 | `MODELING_API.md` (portable-bridge vs native-provider language); typed `SupportLevel::{Native,Bridge,Unsupported}` per-backend reporting (`roml-highs/src/session.rs`, SM-04) | `cargo test -p roml-highs --all-targets` (capability matrix); rustdoc build | core + HiGHS; linux | prior-phase-evidence | P34 docs/fresh-consumer audit pending | PASS |
-| SM-15.7 | Independent review certifies NLP extension seams, recorded in `M3_NLP_READINESS.md` | P34 | No `docs/release/evidence/M3_NLP_READINESS.md` exists (verified by find) | Independent review (not yet run) | n/a | prior-phase-evidence | review not performed; file absent | BLOCKED (review pending; evidence file absent) |
+| SM-15.7 | Independent review certifies NLP extension seams, recorded in `M3_NLP_READINESS.md` | P34 | `docs/release/evidence/M3_NLP_READINESS.md`: 4x17 matrix, 0 BLOCKED_REPLACEMENT_REQUIRED, owner/blast-radius for all bounded amendments | independent read-only trace (researcher agent, grep-verified seams) | n/a (design review) | P34 independent trace 2026-09-07 | none | PASS |
 | SM-15.8 | No publication/tag/release without separate explicit owner authorization | P34 (process) | `roml-mosek/Cargo.toml` + `roml-xpress/Cargo.toml` carry `publish = false`; no release performed | `cargo package --list -p roml` (boundary check); git state (no phase-created tags) | n/a (policy) | prior-phase-evidence | none | PASS |
 | MPS-W01 | Public solver-free semantic write seam; no backend required | P36 | `src/io/mod.rs` (`pub mod mps`, frozen solver-free seam); `src/io/mps/write/mod.rs` (`MpsWriter`, solver-free) | `cargo test -p roml --test mps_write_public_contract` (`public_writer_api_and_report_fields_are_callable_without_a_solver`, `default_writer_options_are_exactly_the_frozen_contract`) | core solver-free; linux | PR #46 review `pullrequestreview-4933724609` | none | PASS |
 | MPS-W02 | Deterministic free-MPS bytes for one canonical state/options tuple | P36 | `src/io/mps/write/{format,mod}.rs` — deterministic entity/section order, names, markers, whitespace, finite-float formatting | `cargo test -p roml --test mps_write_format` (6 tests); 94/94 deterministic-rewrite rows in `P36_MPS_WRITEBACK_QUALIFICATION.md` | core solver-free; linux | PR #46 review `pullrequestreview-4933724609` | Netlib 94/94 claim taken from P36 evidence, not re-executed here | PASS |
@@ -144,6 +144,8 @@
 
 ## BLOCKED rows remaining
 
-- **SM-15.3**
-- **SM-15.5**
-- **SM-15.7**
+- **SM-15.3** (P34 check-matrix record; resolved by `M3_FINAL_QUALIFICATION.md` at closure)
+
+SM-15.5 and SM-15.7 flipped to PASS on 2026-09-07 after the gauntlet
+staleness finding: `M3_PERFORMANCE.md` and `M3_NLP_READINESS.md` both exist
+at head. Ledger stands at 126 PASS / 1 BLOCKED.

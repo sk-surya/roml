@@ -5,7 +5,10 @@
 //! stack (bundled HiGHS). Objective comparisons obey the frozen rule
 //! `|a-b| <= 1e-7 + 1e-8*max(|a|,|b|)`; primal residuals `1e-7`;
 //! integrality residuals exact-committed `1e-6`.
-//! All fixtures use one solver thread and no output.
+//! Q09 pins one solver thread, a fixed seed, and no output via
+//! `quiet_options()`; all other fixtures use solver defaults, which is
+//! adequate for these trivially small deterministic models (recorded
+//! explicitly rather than overstated).
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -154,8 +157,8 @@ fn q05_binary_product() {
     let solution = session.solve(&mut model).unwrap();
     assert_eq!(solution.status(), SolveStatus::Optimal);
     assert!(approx_eq(solution.objective_value().unwrap(), 5.0));
-    let bv = solution.value(b).unwrap();
-    assert!((bv - 0.0).abs() < 1e-6 || (bv - 1.0).abs() < 1e-6);
+    // out = 5 forces b = 1 and x = 5 under the exact bridge: assert both.
+    assert!((solution.value(b).unwrap() - 1.0).abs() < 1e-6);
     assert!(approx_eq(solution.value(x).unwrap(), 5.0));
 }
 

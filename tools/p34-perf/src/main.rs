@@ -15,8 +15,9 @@
 //! plus synchronization classification counts as compact JSON on stdout.
 //!
 //! The driver uses only APIs present in both the current tree and the
-//! historical baseline `4d111cc` (see `adapter_4d111cc.patch` for the exact
-//! mechanical differences); the mathematical workload is identical.
+//! historical baseline `4d111cc` (verified empirically: the same source
+//! builds on both with bit-identical mathematics; see `README.md`);
+//! the mathematical workload is identical.
 
 use std::time::Instant;
 

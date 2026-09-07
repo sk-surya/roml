@@ -9,11 +9,11 @@ use roml::construct::PwlRelation;
 use roml::io::mps::{MpsReader, MpsWriter};
 use roml::solver::infeasibility::BoundSide;
 use roml::{
-    binary, continuous, ConstraintExprExt, InfeasibilityOutcome, InfeasibilityPlan, LexicographicObjectives,
-    LinExpr, MipStart, Model, ObjectivePolicy, ObjectivePriority, ObjectiveProviderPolicy,
-    PenaltyPolicy, PenaltyTarget, PrimalAssignment, RelaxationOutcome, RelaxationRestriction,
-    RelaxationScope, RepairPolicy, SolveOptions, SolveStatus, SolverSession, StageContinuation,
-    ValueExpr, VariableHints, ViolationPolicy, WeightedObjective,
+    binary, continuous, ConstraintExprExt, InfeasibilityOutcome, InfeasibilityPlan,
+    LexicographicObjectives, LinExpr, MipStart, Model, ObjectivePolicy, ObjectivePriority,
+    ObjectiveProviderPolicy, PenaltyPolicy, PenaltyTarget, PrimalAssignment, RelaxationOutcome,
+    RelaxationRestriction, RelaxationScope, RepairPolicy, SolveOptions, SolveStatus, SolverSession,
+    StageContinuation, ValueExpr, VariableHints, ViolationPolicy, WeightedObjective,
 };
 use roml_highs::HighsSession;
 
@@ -30,12 +30,8 @@ fn imported_infeasibility_repairs_through_iis_origins() {
     let x = built
         .add_variable(continuous().bounds(0.0, 10.0).named("x"))
         .unwrap();
-    built
-        .add_constraint((x).ge(7.0).named("demand"))
-        .unwrap();
-    built
-        .add_constraint((x).le(3.0).named("capacity"))
-        .unwrap();
+    built.add_constraint((x).ge(7.0).named("demand")).unwrap();
+    built.add_constraint((x).le(3.0).named("capacity")).unwrap();
     built.minimize(x).unwrap();
 
     let mut bytes = Vec::new();
@@ -65,12 +61,10 @@ fn imported_infeasibility_repairs_through_iis_origins() {
         .solve_feasibility_relaxation(
             &mut model,
             roml::FeasibilityRelaxationPlan {
-                scope: RelaxationScope::Explicit(vec![
-                    RelaxationRestriction::ConstraintSide {
-                        constraint: demand_con,
-                        side: BoundSide::Lower,
-                    },
-                ]),
+                scope: RelaxationScope::Explicit(vec![RelaxationRestriction::ConstraintSide {
+                    constraint: demand_con,
+                    side: BoundSide::Lower,
+                }]),
                 ..Default::default()
             },
         )
@@ -90,12 +84,8 @@ fn milp_reuse_orchestration_with_constructs_starts_and_priorities() {
     use roml::construct::ExtrapolationPolicy;
 
     let mut model = Model::new();
-    let charge = model
-        .add_variable(continuous().bounds(0.0, 2.0))
-        .unwrap();
-    let discharge = model
-        .add_variable(continuous().bounds(0.0, 2.0))
-        .unwrap();
+    let charge = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
+    let discharge = model.add_variable(continuous().bounds(0.0, 2.0)).unwrap();
     let direction = model.add_variable(binary()).unwrap();
     // Direction exclusivity (MILP): charge and discharge never coincide.
     model
@@ -194,9 +184,9 @@ fn milp_reuse_orchestration_with_constructs_starts_and_priorities() {
     // cap 1.5 (penalty 4.0 per unit outweighs net revenue slope 1.5/unit).
     let xf = result.final_solution.value(charge).unwrap();
     let yf = result.final_solution.value(discharge).unwrap();
-    assert!(xf.abs() < 1e-6, "charge pinned at 0, got {xf}");
+    assert!(xf.abs() < 1e-7, "charge pinned at 0, got {xf}");
     assert!(
-        (yf - 1.5).abs() < 1e-6,
+        (yf - 1.5).abs() < 1e-7,
         "discharge at soft cap 1.5, got {yf}"
     );
     // Ordinary solve afterwards proves no solve-scoped artifact leaked.
