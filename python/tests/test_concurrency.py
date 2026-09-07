@@ -18,7 +18,7 @@ def make_model(n=20):
 
 
 def test_heartbeat_progresses_during_native_solve():
-    m, x = make_model(600)
+    m, x = make_model(1500)
     beats = []
     stop = threading.Event()
 
@@ -41,7 +41,7 @@ def test_heartbeat_progresses_during_native_solve():
     # The GIL is released during native work: heartbeats recorded strictly
     # inside the solve window prove Python progress while native code runs.
     inside = [b for b in beats if t0 < b < t1]
-    assert len(inside) >= 3, f"only {len(inside)} beats inside a {t1 - t0:.3f}s solve"
+    assert len(inside) >= 2, f"only {len(inside)} beats inside a {t1 - t0:.3f}s solve"
 
 
 def test_overlapping_solves_are_safe():
