@@ -1362,7 +1362,7 @@ fn multiple_sessions_advance_independently() {
     // A is 10 behind: replays the retained window as deltas.
     let a = session_a.solve(&mut model).unwrap();
     assert_eq!(a.metadata().synchronization, SynchronizationMode::Delta);
-    // B already current after A's solve committed nothing new: no change.
+    // B is 15 behind (10 old + 5 new): replays the retained window.
     churn(&mut model, price, 5, 60.0);
     let b = session_b.solve(&mut model).unwrap();
     assert_eq!(b.metadata().synchronization, SynchronizationMode::Delta);
@@ -1439,6 +1439,11 @@ fn disposed_session_pins_nothing() {
     // A fresh session still syncs (via rebuild past the window) correctly.
     let mut fresh = SolverSession::new(TestBackend::new().0);
     let solved = fresh.solve(&mut model).unwrap();
+    assert_eq!(
+        solved.metadata().synchronization,
+        SynchronizationMode::Rebuild,
+        "fresh backend past the evicted window must rebuild"
+    );
     assert_eq!(solved.metadata().model_revision, model.current_revision());
 }
 
@@ -1465,4 +1470,38 @@ fn repeated_pruning_stays_bounded_and_current_session_uses_deltas() {
         );
         assert_eq!(solved.metadata().model_revision, model.current_revision());
     }
+}
+
+/// A stale-past-window session rebuilds while a current session
+/// delta-syncs on the same model: retention is global, never per-session,
+/// and both end correct at the current revision.
+#[test]
+fn mixed_window_sessions_rebuild_and_delta_side_by_side() {
+    let (mut model, price, _x) = build_churn_model();
+    let mut stale = SolverSession::new(TestBackend::new().0);
+    let mut fresh = SolverSession::new(TestBackend::new().0);
+    stale.solve(&mut model).unwrap();
+
+    // Push the model beyond the window for the stale session only in
+    // effect: the fresh session solves along the way to stay current.
+    churn(&mut model, price, DEFAULT_JOURNAL_CAPACITY + 10, 500.0);
+    // Fresh session was never used: it is as stale as the other. Solve
+    // it first via rebuild, then advance a little and check both.
+    let rebuilt = fresh.solve(&mut model).unwrap();
+    assert_eq!(
+        rebuilt.metadata().synchronization,
+        SynchronizationMode::Rebuild
+    );
+    churn(&mut model, price, 3, 900.0);
+    // Both sessions are now within the window: both delta-sync.
+    let s = stale.solve(&mut model).unwrap();
+    assert_eq!(s.metadata().synchronization, SynchronizationMode::Rebuild);
+    let f = fresh.solve(&mut model).unwrap();
+    assert_eq!(f.metadata().synchronization, SynchronizationMode::Delta);
+    assert_eq!(s.metadata().model_revision, model.current_revision());
+    assert_eq!(f.metadata().model_revision, model.current_revision());
+    // price = 900 + 2 = 902.
+    assert!((s.objective_value().unwrap() - 902.0).abs() < 1e-9);
+    assert!((f.objective_value().unwrap() - 902.0).abs() < 1e-9);
+    assert!(journal_len(&model) <= DEFAULT_JOURNAL_CAPACITY);
 }

@@ -1,15 +1,21 @@
 //! Revision journal for delta replay.
 //!
 //! The journal stores committed `DeltaBatch` values indexed by their
-//! `from` revision. Each batch is immutable once stored and retained
-//! until explicit compaction.
+//! `from` revision. Each batch is immutable once stored. Retention is
+//! automatic and bounded (see below) — callers must not assume history
+//! is retained for any particular session.
 //!
 //! # Design
 //!
 //! - Batches are stored in revision order (by `from` revision).
+//! - At most the [`DEFAULT_JOURNAL_CAPACITY`] most recent batches are
+//!   retained; `record` evicts oldest-first beyond capacity. There is
+//!   no per-session pinning: retention is global.
 //! - `deltas_since(revision)` returns all batches whose `from` revision
-//!   is >= the requested revision, in order.
-//! - The journal does not compact automatically; callers control retention.
+//!   is >= the requested revision, in order, or
+//!   [`RevisionError::Compacted`](crate::revision::RevisionError) when
+//!   the requested revision predates the retained window (the caller
+//!   rebuilds from a snapshot).
 
 use std::collections::BTreeMap;
 
@@ -244,7 +250,9 @@ mod tests {
         assert_eq!(journal.len(), 4);
         assert_eq!(journal.oldest_retained(), Some(rev(2)));
         assert_eq!(journal.latest_revision(), rev(6));
-        // Retained window serves exact suffixes.
+        // Retained window serves exact suffixes, including the exact
+        // oldest boundary (guards `<` vs `<=` in the eviction check).
+        assert_eq!(journal.deltas_since(rev(2)).unwrap().len(), 4);
         let suffix = journal.deltas_since(rev(4)).unwrap();
         assert_eq!(suffix.len(), 2);
         assert_eq!(journal.deltas_since(rev(6)).unwrap().len(), 0);
