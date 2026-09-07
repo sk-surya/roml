@@ -340,6 +340,13 @@ pub struct MultiObjectiveResult {
     pub stages: Vec<ObjectiveStageResult>,
     /// Which provider executed the policy.
     pub provider: ObjectiveExecutionProvider,
+    /// True when the shared staged solve budget was exhausted before every
+    /// level executed. The returned stages and final solution are the last
+    /// valid incumbents (all math and cleanup verified); `false` means every
+    /// level ran. Added as a prerequisite hardening field: the frozen P31
+    /// stage schema is unchanged, and this flag is the explicit budget-stop
+    /// reason distinguishing early stop from full descent.
+    pub budget_exhausted: bool,
 }
 
 /// Result of validating an objective policy against a model or the frozen
@@ -868,6 +875,7 @@ mod tests {
             final_solution: solution,
             stages: vec![stage],
             provider: ObjectiveExecutionProvider::PortableSequential,
+            budget_exhausted: false,
         };
         assert_eq!(multi.stages.len(), 1);
         assert_eq!(

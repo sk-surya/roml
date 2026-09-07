@@ -25,6 +25,26 @@ use crate::solver::objective_combine::{combine_stage, CombinedStage};
 use crate::solver::overlay::OverlayOp;
 use crate::solver::SolveStatus;
 
+/// Clock used to enforce a shared staged solve budget across P31 stages.
+///
+/// The default [`SystemPolicyClock`] reads the wall clock. Tests inject a
+/// deterministic manual clock so deadline exhaustion before stage 1, between
+/// stages, and alongside operational errors is reproducible without sleeps.
+pub trait PolicyClock {
+    /// Current time for budget accounting.
+    fn now(&self) -> std::time::Instant;
+}
+
+/// [`PolicyClock`] reading the system wall clock.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemPolicyClock;
+
+impl PolicyClock for SystemPolicyClock {
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
 /// Mutable overlay-assembly state (operations, origins, and allocation
 /// cursors) used while building one stage's overlay.
 pub(crate) struct OverlayAssembly {
@@ -78,6 +98,12 @@ pub enum ObjectiveExecutionError {
     },
     /// The backend returned malformed/non-finite numeric evidence.
     Numerical(String),
+    /// The shared staged solve budget was exhausted. When at least one stage
+    /// completed, the executor returns the completed stages with
+    /// [`MultiObjectiveResult::budget_exhausted`](crate::MultiObjectiveResult::budget_exhausted)
+    /// set instead of this error; this variant is returned only when no stage
+    /// produced an incumbent, so there is no valid result to preserve.
+    BudgetExhausted(String),
 }
 
 /// A prior stage's degradation lock: the normalized scalar function whose
@@ -97,6 +123,13 @@ pub(crate) struct PriorLock {
 /// generated violation variable for each finite side of the softened
 /// constraint. The weight is the numerically evaluated parameterized penalty
 /// weight from the current parameter snapshot.
+///
+/// The same shape is reused for objective-targeted (`PenaltyTarget::Objective`)
+/// penalties when reconstructing exact penalty contributions from primal
+/// values (see [`evaluate_objective`]): there the caller signs the weight by
+/// the targeted objective's sense (`+w` for minimize, `-w` for maximize,
+/// mirroring the compiler fold) or by the normalized level weight inside a
+/// stage scalar.
 pub(crate) struct PriorityPenalty {
     /// The evaluated finite nonnegative weight.
     pub weight: f64,
@@ -106,6 +139,20 @@ pub(crate) struct PriorityPenalty {
     pub bounds: ConstraintBounds,
     /// The constraint's row coefficients in compiled-variable order.
     pub row: Vec<(CompiledVariableId, f64)>,
+}
+
+/// One objective-targeted P30 penalty folded into a normalized stage scalar.
+///
+/// In the normalized minimization stage, an objective-targeted penalty always
+/// enters as `level_weight * weight * v` regardless of the targeted
+/// objective's sense: the compiler folds `+w` (minimize) or `-w` (maximize)
+/// into the canonical objective, and stage normalization multiplies by `+w_i`
+/// (minimize) or `-w_i` (maximize), so the product is always `+w_i * w`.
+pub(crate) struct ObjectiveStagePenalty {
+    /// The normalized level weight of the targeted objective in this stage.
+    pub level_weight: f64,
+    /// The resolved objective-targeted penalty (unsigned weight).
+    pub penalty: PriorityPenalty,
 }
 
 /// The full normalized stage scalar: the canonical weighted combination plus
@@ -120,6 +167,11 @@ pub(crate) struct StageScalar {
     pub canonical: CombinedStage,
     /// Priority penalties folded into this level.
     pub penalties: Vec<PriorityPenalty>,
+    /// Objective-targeted penalties folded (by the compiler) into the level's
+    /// canonical objectives, resolved here for exact primal reconstruction on
+    /// the no-reported-scalar fallback path. Each entry carries the normalized
+    /// level weight of its targeted objective.
+    pub objective_penalties: Vec<ObjectiveStagePenalty>,
 }
 
 /// Build the solve-scoped overlay for one stage.
@@ -262,9 +314,19 @@ pub(crate) fn stage_scalar(
     let canonical = combine_stage(compiler, model, priority, objectives)
         .map_err(|e| ObjectiveExecutionError::Combine(format!("{e:?}")))?;
     let penalties = resolve_priority_penalties(model, compiler, priority)?;
+    let mut objective_penalties = Vec::new();
+    for wo in objectives {
+        for penalty in resolve_objective_penalties(model, compiler, wo.objective)? {
+            objective_penalties.push(ObjectiveStagePenalty {
+                level_weight: wo.weight,
+                penalty,
+            });
+        }
+    }
     Ok(StageScalar {
         canonical,
         penalties,
+        objective_penalties,
     })
 }
 
@@ -280,6 +342,11 @@ fn resolve_priority_penalties(
         .map_err(|e| ObjectiveExecutionError::Compile(format!("snapshot failed: {e}")))?;
     let mut out = Vec::new();
     for construct in &snapshot.constructs {
+        // Only active constructs are compiled: a deactivated soft constraint
+        // contributes no bridge rows, no violation variables and no penalty.
+        if !construct.active {
+            continue;
+        }
         let (payload, target) = match &construct.kind {
             ConstructKind::SoftConstraint(payload) => (payload, payload.penalty.target),
             _ => continue,
@@ -319,6 +386,79 @@ fn resolve_priority_penalties(
             .ok_or_else(|| {
                 ObjectiveExecutionError::Preflight(format!(
                     "priority-targeted penalty references unknown constraint {:?}",
+                    payload.original_constraint
+                ))
+            })?;
+        let row = constraint_coefficients(&snapshot, compiler, payload.original_constraint)?;
+        out.push(PriorityPenalty {
+            weight,
+            max_violation: payload.violation.max_violation,
+            bounds: constraint.bounds,
+            row,
+        });
+    }
+    Ok(out)
+}
+
+/// Enumerate and numerically resolve every objective-targeted P30 penalty
+/// folded (by the compiler) into one canonical objective, from the current
+/// parameter snapshot.
+///
+/// This is the exact-reconstruction counterpart of the compiler fold: the
+/// generated violation variables are absent from backend-reported primal
+/// values, so per-objective evaluation rebuilds each penalty as
+/// `weight * violation` from the softened constraint's row at the solution
+/// point. Only active constructs are resolved (mirroring compilation); an
+/// inexactly reconstructible penalty is a typed error, never a silent drop.
+fn resolve_objective_penalties(
+    model: &Model,
+    compiler: &CompilationSession,
+    objective: ObjId,
+) -> Result<Vec<PriorityPenalty>, ObjectiveExecutionError> {
+    let snapshot = model
+        .take_snapshot()
+        .map_err(|e| ObjectiveExecutionError::Compile(format!("snapshot failed: {e}")))?;
+    let mut out = Vec::new();
+    for construct in &snapshot.constructs {
+        if !construct.active {
+            continue;
+        }
+        let payload = match &construct.kind {
+            ConstructKind::SoftConstraint(payload) => payload,
+            _ => continue,
+        };
+        match payload.penalty.target {
+            PenaltyTarget::Objective(target) if target == objective => {}
+            _ => continue,
+        };
+        let weight = payload
+            .penalty
+            .weight
+            .eval_checked(|parameter| {
+                snapshot
+                    .parameters
+                    .iter()
+                    .find(|p| p.id == parameter)
+                    .map(|p| p.value)
+                    .ok_or(parameter)
+            })
+            .map_err(|parameter| {
+                ObjectiveExecutionError::Preflight(format!(
+                    "objective-targeted penalty weight references missing parameter {parameter:?}"
+                ))
+            })?;
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(ObjectiveExecutionError::Preflight(format!(
+                "objective-targeted penalty weight must be finite and nonnegative, got {weight}"
+            )));
+        }
+        let constraint = snapshot
+            .constraints
+            .iter()
+            .find(|entry| entry.id == payload.original_constraint)
+            .ok_or_else(|| {
+                ObjectiveExecutionError::Preflight(format!(
+                    "objective-targeted penalty references unknown constraint {:?}",
                     payload.original_constraint
                 ))
             })?;
@@ -432,13 +572,41 @@ fn constraint_coefficients(
     Ok(coefficients)
 }
 
-/// Evaluate the full stage scalar (canonical + priority penalties) at a
-/// solution's canonical variable values.
+/// Evaluate the total violation of one resolved penalty at a solution: the sum
+/// of `max(0, lower - expr)` over finite lower sides and
+/// `max(0, expr - upper)` over finite upper sides.
+///
+/// No cap is applied: the generated violation variable carries bounds
+/// `[0, cap]`, so a violation exceeding the cap makes the backend problem
+/// infeasible (there is then no solved scalar to reconstruct); whenever a
+/// scalar exists the cap is inactive and the uncapped sum is exact.
+fn penalty_violation(
+    penalty: &PriorityPenalty,
+    compiler: &CompilationSession,
+    values: &[(VarId, f64)],
+) -> Result<f64, ObjectiveExecutionError> {
+    let expr = evaluate_constraint_row(compiler, &penalty.row, values)?;
+    let mut total = 0.0;
+    for side in violation_sides(penalty.bounds) {
+        let violation = match side {
+            BoundSide::Lower => (penalty.bounds.lower - expr).max(0.0),
+            BoundSide::Upper => (expr - penalty.bounds.upper).max(0.0),
+        };
+        total += violation;
+    }
+    finite_or_numerical(total)
+}
+
+/// Evaluate the full stage scalar (canonical + priority penalties +
+/// objective-targeted penalties) at a solution's canonical variable values.
 ///
 /// Priority penalties are evaluated as a pure function of the solution:
 /// `weight * max(0, lower - expr)` for a lower-side violation and
 /// `weight * max(0, expr - upper)` for an upper-side violation, using the
 /// softened constraint's row coefficients resolved against the solution.
+/// Objective-targeted penalties enter normalized as
+/// `level_weight * weight * violation`, matching the compiler fold plus stage
+/// normalization for every sense combination.
 pub(crate) fn evaluate_stage_scalar(
     compiler: &CompilationSession,
     scalar: &StageScalar,
@@ -446,14 +614,12 @@ pub(crate) fn evaluate_stage_scalar(
 ) -> Result<f64, ObjectiveExecutionError> {
     let mut value = evaluate_combined(compiler, &scalar.canonical, values)?;
     for penalty in &scalar.penalties {
-        let expr = evaluate_constraint_row(compiler, &penalty.row, values)?;
-        for side in violation_sides(penalty.bounds) {
-            let violation = match side {
-                BoundSide::Lower => (penalty.bounds.lower - expr).max(0.0),
-                BoundSide::Upper => (expr - penalty.bounds.upper).max(0.0),
-            };
-            value += penalty.weight * violation;
-        }
+        value += penalty.weight * penalty_violation(penalty, compiler, values)?;
+    }
+    for entry in &scalar.objective_penalties {
+        value += entry.level_weight
+            * entry.penalty.weight
+            * penalty_violation(&entry.penalty, compiler, values)?;
     }
     finite_or_numerical(value)
 }
@@ -502,6 +668,16 @@ pub(crate) fn evaluate_combined(
 }
 
 /// Evaluate one raw (un-normalized) objective at a solution.
+///
+/// The value is the user-mappable canonical part plus every active
+/// objective-targeted P30 penalty folded into this objective, reconstructed
+/// exactly from primal values as `signed_weight * violation` (`+w` for a
+/// minimized objective, `-w` for a maximized one, mirroring the compiler
+/// fold). Generated violation variables are absent from backend-reported
+/// primals; rebuilding them from the softened rows keeps the per-objective
+/// vector consistent with the exact solved scalar. A missing required primal
+/// value is a typed [`Numerical`](ObjectiveExecutionError::Numerical) error,
+/// never zero.
 pub(crate) fn evaluate_objective(
     compiler: &CompilationSession,
     model: &Model,
@@ -525,7 +701,16 @@ pub(crate) fn evaluate_objective(
             value += coef * v;
         }
     }
-    let _ = model.objective_sense(objective);
+    let sense = model.objective_sense(objective).ok_or_else(|| {
+        ObjectiveExecutionError::Preflight(format!("stale objective {objective:?}"))
+    })?;
+    let sign = match sense {
+        crate::model::Sense::Minimize => 1.0,
+        crate::model::Sense::Maximize => -1.0,
+    };
+    for penalty in resolve_objective_penalties(model, compiler, objective)? {
+        value += sign * penalty.weight * penalty_violation(&penalty, compiler, values)?;
+    }
     finite_or_numerical(value)
 }
 

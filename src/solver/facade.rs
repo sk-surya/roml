@@ -7,6 +7,7 @@
 //! - [`SolverSession`]: generic model-to-backend orchestration (D2).
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use log::warn;
 
@@ -35,7 +36,7 @@ use crate::solver::objective_combine::classify_continuation;
 use crate::solver::objective_executor::{
     build_stage_overlay, evaluate_objective, evaluate_stage_scalar,
     objective_status_from_termination, objective_values, stage_scalar, validate_priority_targets,
-    ObjectiveExecutionError, OverlayAssembly, PriorLock,
+    ObjectiveExecutionError, OverlayAssembly, PolicyClock, PriorLock, SystemPolicyClock,
 };
 use crate::solver::options::SolveOptions;
 use crate::solver::overlay::{
@@ -1025,12 +1026,73 @@ where
     /// always rolled back before a result escapes; canonical model state and
     /// revision are never changed. Stages execute in ascending
     /// [`ObjectivePriority`] order.
+    ///
+    /// This entry point uses solver defaults (no staged solve budget). Use
+    /// [`solve_objective_policy_with_options`](Self::solve_objective_policy_with_options)
+    /// for explicit per-attempt options and a shared deadline across stages.
     pub fn solve_objective_policy(
         &mut self,
         model: &mut Model,
         policy: ObjectivePolicy,
         provider: ObjectiveProviderPolicy,
         continuation: StageContinuation,
+    ) -> Result<MultiObjectiveResult, ObjectiveExecutionError> {
+        self.solve_objective_policy_with_options(
+            model,
+            policy,
+            provider,
+            continuation,
+            SolveOptions::default(),
+        )
+    }
+
+    /// Execute a weighted or lexicographic objective policy with explicit
+    /// per-attempt [`SolveOptions`].
+    ///
+    /// The options apply to base synchronization and to every stage solve.
+    /// When the options carry a time limit, it is a SHARED deadline across
+    /// all stages: each stage receives only the remaining budget, never a
+    /// reset full allowance. If no budget remains before a stage executes,
+    /// descent stops and the completed stages are returned with
+    /// [`MultiObjectiveResult::budget_exhausted`](crate::MultiObjectiveResult::budget_exhausted)
+    /// set and the last valid incumbent as the final solution; a lock is
+    /// never constructed without candidate evidence. When the budget expires
+    /// before the first stage, there is no incumbent to preserve and a typed
+    /// [`ObjectiveExecutionError::BudgetExhausted`] is returned. An
+    /// operational stage failure always surfaces as its own error (never
+    /// masked as budget exhaustion), even when the clock is also expired.
+    pub fn solve_objective_policy_with_options(
+        &mut self,
+        model: &mut Model,
+        policy: ObjectivePolicy,
+        provider: ObjectiveProviderPolicy,
+        continuation: StageContinuation,
+        options: SolveOptions,
+    ) -> Result<MultiObjectiveResult, ObjectiveExecutionError> {
+        self.solve_objective_policy_with_options_and_clock(
+            model,
+            policy,
+            provider,
+            continuation,
+            options,
+            &SystemPolicyClock,
+        )
+    }
+
+    /// [`solve_objective_policy_with_options`](Self::solve_objective_policy_with_options)
+    /// with an injectable [`PolicyClock`].
+    ///
+    /// The clock is a test seam: production callers pass [`SystemPolicyClock`]
+    /// (via `solve_objective_policy_with_options`); deterministic tests inject
+    /// a manual clock so deadline exhaustion is reproducible without sleeps.
+    pub fn solve_objective_policy_with_options_and_clock(
+        &mut self,
+        model: &mut Model,
+        policy: ObjectivePolicy,
+        provider: ObjectiveProviderPolicy,
+        continuation: StageContinuation,
+        options: SolveOptions,
+        clock: &dyn PolicyClock,
     ) -> Result<MultiObjectiveResult, ObjectiveExecutionError> {
         // Atomically reject a stale objective reference in ANY policy variant
         // (including Single) before backend mutation.
@@ -1076,7 +1138,7 @@ where
         validate_priority_targets(model, &priorities)?;
 
         let (request, committed, sync_mode) = self
-            .synchronize_base(model, SolveOptions::default())
+            .synchronize_base(model, options)
             .map_err(|e| ObjectiveExecutionError::Backend(e.to_string()))?;
         let base_compilation = self.compiler.current_compilation().ok_or_else(|| {
             ObjectiveExecutionError::Preflight(
@@ -1084,11 +1146,58 @@ where
             )
         })?;
 
+        // Shared staged solve budget: an explicit time limit is a deadline
+        // across ALL stages, not a per-stage reset. The start instant is the
+        // solve's linearization point (synchronization complete); each stage
+        // below receives only the remaining time.
+        let start = clock.now();
+        let deadline = match request.time_limit_secs {
+            None => None,
+            Some(limit) => {
+                let budget = Duration::try_from_secs_f64(limit).map_err(|_| {
+                    ObjectiveExecutionError::Preflight(format!(
+                        "invalid staged solve budget time limit: {limit}"
+                    ))
+                })?;
+                Some(start.checked_add(budget).ok_or_else(|| {
+                    ObjectiveExecutionError::Preflight(format!(
+                        "staged solve budget time limit out of range: {limit}"
+                    ))
+                })?)
+            }
+        };
+
         let mut prior_locks: Vec<PriorLock> = Vec::new();
         let mut stages: Vec<ObjectiveStageResult> = Vec::new();
         let mut final_solution: Option<Solution> = None;
+        // True once the shared deadline stops descent early. The returned
+        // stages and final solution remain the last valid incumbents.
+        let mut budget_exhausted = false;
+        // Whether the last executed stage produced an actual candidate
+        // solution. The final objective vector below may only be evaluated
+        // against reported primal evidence; an absent solution must never
+        // trigger evaluation at an invented zero point.
+        let mut final_candidate_available = false;
 
         for level in &levels {
+            // Enforce the shared deadline BEFORE any backend mutation for
+            // this stage. A stage receives only the remaining budget, never a
+            // reset full allowance. Operational stage failures below return
+            // their own error immediately and are never masked as budget
+            // exhaustion.
+            let stage_request = match deadline {
+                None => request.clone(),
+                Some(limit) => {
+                    let remaining = limit.saturating_duration_since(clock.now());
+                    if remaining.is_zero() {
+                        budget_exhausted = true;
+                        break;
+                    }
+                    let mut staged = request.clone();
+                    staged.time_limit_secs = Some(remaining.as_secs_f64());
+                    staged
+                }
+            };
             // Resolve the full stage scalar (canonical combination + priority
             // penalties) from the current snapshot before any backend mutation.
             let combined = stage_scalar(&self.compiler, model, level.priority, &level.objectives)?;
@@ -1130,7 +1239,7 @@ where
                     &receipt,
                 );
             }
-            let result = match self.backend.solve(&request) {
+            let result = match self.backend.solve(&stage_request) {
                 Ok(result) => result,
                 Err(error) => {
                     return self.rollback_objective(
@@ -1172,6 +1281,7 @@ where
             }
             let decision = classify_continuation(continuation, status);
             let values = result.solution.as_ref().map(|c| c.variable_values.clone());
+            final_candidate_available = values.is_some();
             let stage_values = if let Some(v) = &values {
                 match objective_values(&self.compiler, model, &level.objectives, v) {
                     Ok(vals) => vals,
@@ -1282,26 +1392,45 @@ where
             }
         }
 
-        let final_solution = final_solution.ok_or_else(|| {
-            ObjectiveExecutionError::Numerical(
-                "objective execution produced no final solution".into(),
-            )
-        })?;
+        let final_solution = match final_solution {
+            Some(solution) => solution,
+            None if budget_exhausted => {
+                return Err(ObjectiveExecutionError::BudgetExhausted(
+                    "shared staged solve budget exhausted before the first stage; no incumbent available"
+                        .into(),
+                ))
+            }
+            None => {
+                return Err(ObjectiveExecutionError::Numerical(
+                    "objective execution produced no final solution".into(),
+                ))
+            }
+        };
         // Task 31-06: the final solution must expose every canonical policy
         // objective value at the FINAL point. Each stage records only its own
         // objectives at its own solution, so recompute the complete distinct
         // objective vector at the final point and attach it to the last
-        // executed stage.
+        // executed stage. This runs only when the last executed stage produced
+        // an actual candidate: with no reported primal evidence (infeasible,
+        // unbounded-without-solution, unknown) the stage keeps its empty
+        // objective vector rather than evaluating objectives at an invented
+        // zero point. A present-but-incomplete candidate still evaluates
+        // strictly: a missing required primal value is a typed Numerical
+        // error, never zero.
         if let Some(last) = stages.last_mut() {
-            let complete = self.complete_objective_values_at(model, &levels, &final_solution)?;
-            if !complete.is_empty() {
-                last.objective_values = complete;
+            if final_candidate_available {
+                let complete =
+                    self.complete_objective_values_at(model, &levels, &final_solution)?;
+                if !complete.is_empty() {
+                    last.objective_values = complete;
+                }
             }
         }
         Ok(MultiObjectiveResult {
             final_solution,
             stages,
             provider: execution_provider,
+            budget_exhausted,
         })
     }
 

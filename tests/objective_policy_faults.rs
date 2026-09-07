@@ -20,9 +20,13 @@ use roml::solver::session::{BackendMetadata, BackendSession, SessionHealth, Sync
 use roml::sync::{AdapterCursor, AdapterHealth};
 use roml::{
     continuous, ConstraintExprExt, LexicographicObjectives, Model, ObjId, ObjectiveExecutionError,
-    ObjectivePolicy, ObjectivePriority, ObjectiveProviderPolicy, SolverSession, StageContinuation,
-    StageContinuationDecision, WeightedObjective, WeightedObjectiveLevel,
+    ObjectivePolicy, ObjectivePriority, ObjectiveProviderPolicy, PenaltyPolicy, PenaltyTarget,
+    PolicyClock, SolveOptions, SolverSession, StageContinuation, StageContinuationDecision,
+    ValueExpr, ViolationPolicy, WeightedObjective, WeightedObjectiveLevel,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Controls what a fault-free `solve` returns (termination + optional values),
 /// so continuation/lock semantics can be exercised without a real optimizer.
@@ -58,6 +62,9 @@ struct FaultBackend {
     /// overlay's, forcing the post-solve extraction/validation failure path.
     mismatched_compilation: bool,
     rebuilds: usize,
+    /// Every `time_limit_secs` observed on a stage solve request, in order.
+    /// Shared with the test so staged-budget propagation is observable.
+    pub seen_limits: Rc<RefCell<Vec<Option<f64>>>>,
 }
 
 impl FaultBackend {
@@ -71,6 +78,12 @@ impl FaultBackend {
         ] {
             caps.set(feature, FeatureSupport::native(Default::default()));
         }
+        // Persistent soft constraints compile through the exact ROML bridge
+        // (no native backend support is claimed).
+        caps.set(
+            BackendFeature::SoftConstraint,
+            FeatureSupport::bridge(Default::default()),
+        );
         Self {
             inner: ReferenceBackend::new(),
             caps,
@@ -79,6 +92,7 @@ impl FaultBackend {
             outcome,
             mismatched_compilation: false,
             rebuilds: 0,
+            seen_limits: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -164,7 +178,8 @@ impl BackendSession for FaultBackend {
         })
     }
 
-    fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
+    fn solve(&mut self, request: &SolveRequest) -> Result<SolveResult, BackendError> {
+        self.seen_limits.borrow_mut().push(request.time_limit_secs);
         if matches!(self.failure, Some(FailurePoint::Solve)) {
             return Err(BackendError::new(
                 "injected objective solve failure",
@@ -476,6 +491,10 @@ fn require_optimal_infeasible_stage_stops_descent() {
         StageContinuationDecision::StopNoFeasiblePoint
     );
     assert!(result.stages[0].lock.is_none());
+    // No candidate exists, so no objective vector may be fabricated: the
+    // stage keeps its empty vector rather than evaluating at an invented
+    // zero point.
+    assert!(result.stages[0].objective_values.is_empty());
 }
 
 /// A legitimate solver `Unknown` outcome is a MATHEMATICAL result, not a
@@ -509,6 +528,8 @@ fn unknown_termination_is_a_mathematical_stage_outcome_not_a_backend_error() {
     // No valid solution and therefore no degradation lock is emitted.
     assert!(stage.lock.is_none());
     assert!(stage.status != roml::SolveStatus::Error);
+    // Unknown carries no candidate either: the objective vector stays empty.
+    assert!(stage.objective_values.is_empty());
     // The stage overlay was applied and rolled back to produce this result
     // (an un-rolled-back overlay would have surfaced as a cleanup error).
     // The general `session.solve` path intentionally rejects `Unknown`
@@ -624,17 +645,377 @@ fn last_stage_exposes_complete_distinct_objective_vector() {
         .expect("two-level BestFeasible descent must succeed");
     assert_eq!(result.stages.len(), 2);
 
-    // The earlier stage still carries only its own objective.
+    // The earlier stage still carries only its own objective, evaluated at
+    // its own point: obj1 = min(x) at x = 2. (Delta-path regression: the
+    // compiled objective coefficient tracking must survive incremental sync,
+    // so this is 2.0 rather than a bare constant 0.0.)
     assert_eq!(result.stages[0].objective_values.len(), 1);
-    assert!(result.stages[0]
-        .objective_values
-        .iter()
-        .any(|v| v.objective == obj1));
+    assert_eq!(result.stages[0].objective_values[0].objective, obj1);
+    assert_eq!(result.stages[0].objective_values[0].value, 2.0);
 
-    // The last (final-point) stage exposes the complete distinct vector.
+    // The last (final-point) stage exposes the complete distinct vector with
+    // exact values at the final point: obj1 = 2.0, obj2 = max(y) = 3.0.
     let last = result.stages.last().unwrap();
-    let ids: Vec<ObjId> = last.objective_values.iter().map(|v| v.objective).collect();
-    assert_eq!(ids.len(), 2);
-    assert!(ids.contains(&obj1));
-    assert!(ids.contains(&obj2));
+    assert_eq!(last.objective_values.len(), 2);
+    for expected in [(obj1, 2.0), (obj2, 3.0)] {
+        let found = last
+            .objective_values
+            .iter()
+            .find(|v| v.objective == expected.0)
+            .unwrap_or_else(|| panic!("missing objective {:?} in final vector", expected.0));
+        assert_eq!(found.value, expected.1);
+    }
+}
+
+/// Deterministic clock for staged-budget tests: each `now()` consumes the
+/// next programmed offset (seconds after construction), repeating the last
+/// once exhausted. No sleeps; exhaustion points are exact.
+struct ManualClock {
+    start: Instant,
+    offsets: RefCell<Vec<f64>>,
+}
+
+impl ManualClock {
+    fn new(offsets_secs: Vec<f64>) -> Self {
+        assert!(!offsets_secs.is_empty());
+        Self {
+            start: Instant::now(),
+            offsets: RefCell::new(offsets_secs),
+        }
+    }
+}
+
+impl PolicyClock for ManualClock {
+    fn now(&self) -> Instant {
+        let mut offsets = self.offsets.borrow_mut();
+        let dt = if offsets.len() > 1 {
+            offsets.remove(0)
+        } else {
+            offsets[0]
+        };
+        self.start + Duration::from_secs_f64(dt)
+    }
+}
+
+/// A present-but-incomplete candidate is a typed extraction failure, never a
+/// zero-filled point: with only `x` reported, the stage-1 objective over `y`
+/// must raise `Numerical`, roll back cleanly, and leave the session reusable.
+#[test]
+fn partial_primal_candidate_is_typed_error_with_clean_rollback() {
+    let (mut model, x, _y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0)],
+        },
+    ));
+    let result = session.solve_objective_policy(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::BestFeasible,
+    );
+    assert!(
+        matches!(result, Err(ObjectiveExecutionError::Numerical(_))),
+        "expected a Numerical missing-primal error, got {result:?}"
+    );
+    // The stage overlay was rolled back and the model itself was never
+    // corrupted: it still commits cleanly afterwards.
+    assert!(model.commit().is_ok());
+}
+
+/// Build `min x` on `0 <= x <= 10` softened as `x >= 6` with an
+/// objective-targeted penalty: `g(x) = x + w*max(0, 6-x)`.
+fn objective_target_penalty_model(
+    weight: ValueExpr,
+) -> (Model, roml::VarId, ObjId, roml::ConstructId) {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let con = model.add_constraint((x).ge(6.0)).unwrap();
+    let obj0 = model.minimize(x).unwrap();
+    let soft = model
+        .soften_constraint(
+            con,
+            ViolationPolicy::default(),
+            PenaltyPolicy {
+                weight,
+                target: PenaltyTarget::Objective(obj0),
+            },
+        )
+        .expect("softening an objective-targeted constraint must succeed");
+    (model, x, obj0, soft.construct())
+}
+
+/// The no-reported-scalar fallback must reconstruct the FULL penalized scalar
+/// from primal values: with `w = 0.5` the backend-silent stage at `x = 0`
+/// reports `z* = 0 + 0.5*6 = 3.0` (not a primal recomputation that drops the
+/// generated violation term), the per-objective vector carries the same 3.0,
+/// and the zero-tolerance lock pins it.
+#[test]
+fn objective_target_penalty_reconstructs_exact_scalar_on_fallback() {
+    let (mut model, x, obj0, _soft) = objective_target_penalty_model(ValueExpr::constant(0.5));
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 0.0)],
+        },
+    ));
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            ObjectivePolicy::Single(obj0),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        )
+        .expect("objective-target penalty fallback solve must succeed");
+    assert_eq!(result.stages.len(), 1);
+    let stage = &result.stages[0];
+    assert_eq!(
+        stage.scalar_stage_value,
+        Some(3.0),
+        "fallback scalar must retain the full 0.5*6 penalty"
+    );
+    assert_eq!(stage.objective_values.len(), 1);
+    assert_eq!(stage.objective_values[0].objective, obj0);
+    assert_eq!(
+        stage.objective_values[0].value, 3.0,
+        "per-objective vector must retain the full penalty"
+    );
+    let lock = stage.lock.expect("feasible stage must emit a lock");
+    assert_eq!(lock.reference_value, 3.0);
+    assert!(!result.budget_exhausted);
+}
+
+/// Parameterized objective-targeted weights resolve numerically before stage
+/// evaluation: `w = 0.5` yields 3.0, and updating the live parameter to
+/// `1.0` yields 6.0 on re-solve through the incremental delta path.
+#[test]
+fn objective_target_penalty_with_parameter_weight_resolves_before_stage() {
+    let mut model = Model::new();
+    let x = model.add_variable(continuous().bounds(0.0, 10.0)).unwrap();
+    let con = model.add_constraint((x).ge(6.0)).unwrap();
+    let obj0 = model.minimize(x).unwrap();
+    let param = model.add_parameter(0.5).unwrap();
+    model
+        .soften_constraint(
+            con,
+            ViolationPolicy::default(),
+            PenaltyPolicy {
+                weight: ValueExpr::param(param),
+                target: PenaltyTarget::Objective(obj0),
+            },
+        )
+        .expect("softening with a parameter weight must succeed");
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 0.0)],
+        },
+    ));
+    let first = session
+        .solve_objective_policy(
+            &mut model,
+            ObjectivePolicy::Single(obj0),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        )
+        .expect("parameter-weighted fallback solve must succeed");
+    assert_eq!(first.stages[0].scalar_stage_value, Some(3.0));
+    assert_eq!(first.stages[0].objective_values[0].value, 3.0);
+
+    model.set_parameter(param, 1.0).unwrap();
+    let second = session
+        .solve_objective_policy(
+            &mut model,
+            ObjectivePolicy::Single(obj0),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        )
+        .expect("re-solve after parameter update must succeed");
+    assert_eq!(second.stages[0].scalar_stage_value, Some(6.0));
+    assert_eq!(second.stages[0].objective_values[0].value, 6.0);
+}
+
+/// Deactivating the soft constraint removes its penalty everywhere: the
+/// fallback scalar and per-objective vector return to the unpenalized `x`.
+#[test]
+fn deactivated_objective_penalty_vanishes_from_vectors() {
+    let (mut model, x, obj0, soft) = objective_target_penalty_model(ValueExpr::constant(0.5));
+    model.set_construct_active(soft, false).unwrap();
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 0.0)],
+        },
+    ));
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            ObjectivePolicy::Single(obj0),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+        )
+        .expect("solve with a deactivated penalty must succeed");
+    assert_eq!(result.stages[0].scalar_stage_value, Some(0.0));
+    assert_eq!(result.stages[0].objective_values[0].value, 0.0);
+}
+
+/// A budget already expired before the first stage yields a typed
+/// `BudgetExhausted` error (there is no incumbent to preserve), before any
+/// stage backend mutation, with the session left clean.
+#[test]
+fn budget_exhausted_before_first_stage_returns_typed_error_no_incumbent() {
+    let (mut model, x, y, obj1, obj2) = base_objective_model();
+    let backend = FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0), (y, 3.0)],
+        },
+    );
+    let limits = backend.seen_limits.clone();
+    let mut session = SolverSession::new(backend);
+    // Start at t=0 with a 10s budget; the stage-1 check observes t=11s.
+    let clock = ManualClock::new(vec![0.0, 11.0]);
+    let result = session.solve_objective_policy_with_options_and_clock(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::BestFeasible,
+        SolveOptions::new().time_limit(Duration::from_secs(10)),
+        &clock,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ObjectiveExecutionError::BudgetExhausted(ref msg))
+                if msg.contains("no incumbent")
+        ),
+        "expected BudgetExhausted with no incumbent, got {result:?}"
+    );
+    // No stage solve ever ran against the expired budget.
+    assert!(limits.borrow().is_empty());
+    // The session is clean: an ordinary solve works afterwards.
+    assert!(session.solve(&mut model).is_ok());
+}
+
+/// Expiry between stages preserves the last valid incumbent: one completed
+/// stage, `budget_exhausted` set, and the final solution from stage 0.
+#[test]
+fn budget_exhausted_after_first_stage_preserves_last_incumbent() {
+    let (mut model, x, y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0), (y, 3.0)],
+        },
+    ));
+    // Start and stage-0 check at t=0 (10s remain); the stage-1 check observes
+    // t=11s and stops descent.
+    let clock = ManualClock::new(vec![0.0, 0.0, 11.0]);
+    let result = session
+        .solve_objective_policy_with_options_and_clock(
+            &mut model,
+            two_level_policy(obj1, obj2),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+            SolveOptions::new().time_limit(Duration::from_secs(10)),
+            &clock,
+        )
+        .expect("mid-policy budget stop must preserve the incumbent");
+    assert!(result.budget_exhausted);
+    assert_eq!(result.stages.len(), 1);
+    assert_eq!(
+        result.stages[0].continuation,
+        StageContinuationDecision::ContinueBestFeasible
+    );
+    assert_eq!(result.final_solution.value(x), Some(2.0));
+    assert_eq!(result.final_solution.value(y), Some(3.0));
+    assert_eq!(result.stages[0].scalar_stage_value, Some(2.0));
+}
+
+/// Each stage solve receives only the remaining budget, never a reset full
+/// allowance: with a 10s budget and checks at t=3s and t=5s, the two stage
+/// requests carry exactly 7s and 5s.
+#[test]
+fn stage_solves_receive_only_remaining_budget() {
+    let (mut model, x, y, obj1, obj2) = base_objective_model();
+    let backend = FaultBackend::with_outcome(
+        None,
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0), (y, 3.0)],
+        },
+    );
+    let limits = backend.seen_limits.clone();
+    let mut session = SolverSession::new(backend);
+    let clock = ManualClock::new(vec![0.0, 3.0, 5.0]);
+    let result = session
+        .solve_objective_policy_with_options_and_clock(
+            &mut model,
+            two_level_policy(obj1, obj2),
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::BestFeasible,
+            SolveOptions::new().time_limit(Duration::from_secs(10)),
+            &clock,
+        )
+        .expect("budgeted two-level descent must succeed");
+    assert!(!result.budget_exhausted);
+    assert_eq!(result.stages.len(), 2);
+    assert_eq!(*limits.borrow(), vec![Some(7.0), Some(5.0)]);
+}
+
+/// An operational stage failure keeps its own error class on the options
+/// entry point: with a live budget, an injected solve failure surfaces as
+/// `Backend`, never as budget exhaustion.
+#[test]
+fn solve_failure_with_live_budget_stays_operational_error() {
+    let (mut model, x, y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::with_outcome(
+        Some(FailurePoint::Solve),
+        SolveOutcome::Feasible {
+            values: vec![(x, 2.0), (y, 3.0)],
+        },
+    ));
+    let clock = ManualClock::new(vec![0.0, 0.0]);
+    let result = session.solve_objective_policy_with_options_and_clock(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::BestFeasible,
+        SolveOptions::new().time_limit(Duration::from_secs(10)),
+        &clock,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ObjectiveExecutionError::Backend(ref msg))
+                if msg.contains("injected objective solve failure")
+        ),
+        "expected the operational Backend error, got {result:?}"
+    );
+}
+
+/// Invalid solve options reject before any state change on the
+/// options entry point.
+#[test]
+fn invalid_options_reject_before_mutation() {
+    let (mut model, _x, _y, obj1, obj2) = base_objective_model();
+    let mut session = SolverSession::new(FaultBackend::new(None));
+    let clock = ManualClock::new(vec![0.0]);
+    let result = session.solve_objective_policy_with_options_and_clock(
+        &mut model,
+        two_level_policy(obj1, obj2),
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::RequireOptimal,
+        SolveOptions::new().relative_gap(f64::NAN),
+        &clock,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ObjectiveExecutionError::Backend(ref msg)) if msg.contains("relative_gap")
+        ),
+        "expected an InvalidOptions Backend error, got {result:?}"
+    );
+    // Nothing was committed or synchronized: the model solves cleanly after.
+    assert!(session.solve(&mut model).is_ok());
 }

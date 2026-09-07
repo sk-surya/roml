@@ -1044,6 +1044,20 @@ impl CompilationSession {
                                 variable: vid,
                                 value: *evaluated_value,
                             });
+                            // WR-03: ordinary coefficient changes (e.g. from
+                            // `minimize`/`maximize` builds) arrive as `SetCell`
+                            // with an objective target, not `SetObjectiveCell`.
+                            // Keep the compiled objective coefficient tracking
+                            // in sync exactly as `SetObjectiveCell` does
+                            // (replace the coefficient cell, preserve
+                            // deterministic compiled order); otherwise P31
+                            // stage evaluation would silently use stale/empty
+                            // terms on the delta path.
+                            if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid) {
+                                cells.retain(|(cid, _)| *cid != vid);
+                                cells.push((vid, *evaluated_value));
+                                cells.sort_by_key(|(cid, _)| *cid);
+                            }
                         }
                     }
                 }
@@ -1096,6 +1110,14 @@ impl CompilationSession {
                                 objective: oid,
                                 variable: vid,
                             });
+                            // WR-03: drop the removed cell from the compiled
+                            // objective coefficient tracking (mirror the
+                            // `SetCell` objective-target update above); a
+                            // stale coefficient would otherwise survive in
+                            // P31 stage evaluation on the delta path.
+                            if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid) {
+                                cells.retain(|(cid, _)| *cid != vid);
+                            }
                         }
                     }
                 }

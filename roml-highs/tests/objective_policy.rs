@@ -7,11 +7,13 @@
 //! degradation-lock rows as solve-scoped overlays (Task 31-08 portable path).
 
 use roml::{
-    ConstraintExprExt, Model, MultiObjectiveResult, ObjectiveExecutionProvider, ObjectivePolicy,
-    ObjectivePriority, ObjectiveProviderPolicy, ObjectiveStageResult, SolverSession,
-    StageContinuation, StageContinuationDecision, WeightedObjective, WeightedObjectives,
+    ConstraintExprExt, Model, MultiObjectiveResult, ObjectiveExecutionError,
+    ObjectiveExecutionProvider, ObjectivePolicy, ObjectivePriority, ObjectiveProviderPolicy,
+    ObjectiveStageResult, SolveOptions, SolverSession, StageContinuation,
+    StageContinuationDecision, WeightedObjective, WeightedObjectives,
 };
 use roml_highs::HighsSession;
+use std::time::Duration;
 
 /// Build `minimize x` and `maximize y` over `x,y in [0,10]` with `x+y <= 10`.
 fn two_objective_model() -> (Model, roml::VarId, roml::VarId, roml::ObjId, roml::ObjId) {
@@ -111,15 +113,30 @@ fn lexicographic_policy_runs_stages_in_priority_order() {
     }));
     // Task 31-06: the last (final-point) stage exposes BOTH distinct canonical
     // objectives evaluated at the final solution, not only its own objective.
+    // The final point is x = 0, y = 10, so obj1 = min(x) is 0.0 and
+    // obj2 = max(y) is 10.0.
     let last = result.stages.last().unwrap();
     let ids: Vec<_> = last.objective_values.iter().map(|v| v.objective).collect();
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&obj1));
     assert!(ids.contains(&obj2));
+    for (obj, expected) in [(obj1, 0.0), (obj2, 10.0)] {
+        let found = last
+            .objective_values
+            .iter()
+            .find(|v| v.objective == obj)
+            .unwrap_or_else(|| panic!("missing objective {obj:?} in final vector"));
+        assert!(
+            (found.value - expected).abs() < 1e-6,
+            "final vector for {obj:?}: expected {expected}, got {}",
+            found.value
+        );
+    }
     let _ = MultiObjectiveResult {
         final_solution: result.final_solution.clone(),
         stages: result.stages.clone(),
         provider: result.provider.clone(),
+        budget_exhausted: result.budget_exhausted,
     };
 }
 
@@ -489,5 +506,151 @@ fn two_level_objective_target_penalty_lock_uses_exact_solved_scalar() {
     assert!(
         (xf - 0.0).abs() < 1e-6,
         "penalized scalar must be preserved at x=0, got {xf}"
+    );
+    // The per-objective vector and the final complete vector retain the full
+    // penalty: obj0 at x = 0 is 0 + 0.5*6 = 3.0 (reconstructed from primal
+    // values, consistent with the backend scalar), and obj1 = max(x) is 0.0.
+    assert_eq!(s0.objective_values.len(), 1);
+    assert_eq!(s0.objective_values[0].objective, obj0);
+    assert!(
+        (s0.objective_values[0].value - 3.0).abs() < 1e-6,
+        "stage-0 per-objective vector must retain the full penalty, got {}",
+        s0.objective_values[0].value
+    );
+    let last = result.stages.last().unwrap();
+    assert_eq!(last.objective_values.len(), 2);
+    for (obj, expected) in [(obj0, 3.0), (obj1, 0.0)] {
+        let found = last
+            .objective_values
+            .iter()
+            .find(|v| v.objective == obj)
+            .unwrap_or_else(|| panic!("missing objective {obj:?} in final vector"));
+        assert!(
+            (found.value - expected).abs() < 1e-6,
+            "final vector for {obj:?}: expected {expected}, got {}",
+            found.value
+        );
+    }
+    assert!(!result.budget_exhausted);
+}
+
+/// A parameterized objective-targeted weight resolves before stage execution
+/// on the native path: with `w = 0.5` the solved scalar, lock and vectors
+/// match the constant-weight regression exactly.
+#[test]
+fn objective_target_penalty_with_parameter_weight_matches_native_scalar() {
+    use roml::{PenaltyPolicy, PenaltyTarget, ValueExpr, ViolationPolicy};
+
+    let mut model = Model::new();
+    let x = model
+        .add_variable(roml::continuous().bounds(0.0, 10.0))
+        .unwrap();
+    let con = model.add_constraint((x).ge(6.0)).unwrap();
+    let obj0 = model.minimize(x).unwrap();
+    let param = model.add_parameter(0.5).unwrap();
+    model
+        .soften_constraint(
+            con,
+            ViolationPolicy::default(),
+            PenaltyPolicy {
+                weight: ValueExpr::param(param),
+                target: PenaltyTarget::Objective(obj0),
+            },
+        )
+        .expect("softening with a parameter weight must succeed");
+    let obj1 = model.maximize(x).unwrap();
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+    let policy = ObjectivePolicy::Lexicographic(roml::LexicographicObjectives {
+        levels: vec![
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(0),
+                objectives: vec![WeightedObjective {
+                    objective: obj0,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+            roml::WeightedObjectiveLevel {
+                priority: ObjectivePriority::new(1),
+                objectives: vec![WeightedObjective {
+                    objective: obj1,
+                    weight: 1.0,
+                }],
+                absolute_tolerance: 0.0,
+                relative_tolerance: 0.0,
+            },
+        ],
+    });
+    let result = session
+        .solve_objective_policy(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::RequireOptimal,
+        )
+        .expect("parameter-weighted objective-target solve must succeed");
+
+    assert_eq!(result.stages.len(), 2);
+    let z = result.stages[0].scalar_stage_value.expect("stage-0 scalar");
+    assert!((z - 3.0).abs() < 1e-6, "expected z*=3.0, got {z}");
+    let lock = result.stages[0].lock.expect("stage-0 lock");
+    assert!((lock.reference_value - 3.0).abs() < 1e-6);
+    let last = result.stages.last().unwrap();
+    let obj0_final = last
+        .objective_values
+        .iter()
+        .find(|v| v.objective == obj0)
+        .expect("final vector carries obj0");
+    assert!(
+        (obj0_final.value - 3.0).abs() < 1e-6,
+        "final obj0 must retain the full penalty, got {}",
+        obj0_final.value
+    );
+}
+
+/// Explicit solve options thread through the native policy path: a generous
+/// time limit solves normally without a budget stop, while a zero budget
+/// deterministically reports exhaustion before the first stage (no incumbent,
+/// no native call timing involved).
+#[test]
+fn objective_policy_with_options_threads_limits_and_budget() {
+    let (mut model, _x, _y, obj1, obj2) = two_objective_model();
+    let mut session = SolverSession::new(HighsSession::try_new().expect("HiGHS available"));
+    let policy = ObjectivePolicy::Weighted(WeightedObjectives {
+        objectives: vec![WeightedObjective {
+            objective: obj1,
+            weight: 1.0,
+        }],
+    });
+    let generous = session
+        .solve_objective_policy_with_options(
+            &mut model,
+            policy,
+            ObjectiveProviderPolicy::PortableOnly,
+            StageContinuation::RequireOptimal,
+            SolveOptions::new().time_limit(Duration::from_secs(60)),
+        )
+        .expect("generous-limit policy solve must succeed");
+    assert_eq!(generous.stages.len(), 1);
+    assert!(!generous.budget_exhausted);
+
+    let policy = ObjectivePolicy::Weighted(WeightedObjectives {
+        objectives: vec![WeightedObjective {
+            objective: obj2,
+            weight: 1.0,
+        }],
+    });
+    let exhausted = session.solve_objective_policy_with_options(
+        &mut model,
+        policy,
+        ObjectiveProviderPolicy::PortableOnly,
+        StageContinuation::RequireOptimal,
+        SolveOptions::new().time_limit(Duration::ZERO),
+    );
+    assert!(
+        matches!(exhausted, Err(ObjectiveExecutionError::BudgetExhausted(_))),
+        "expected deterministic BudgetExhausted, got {exhausted:?}"
     );
 }
