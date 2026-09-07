@@ -61,8 +61,13 @@ else
         case "$f" in
             .cargo_vcs_info.json | .cargo-checksum.json | Cargo.toml.orig) continue ;;
         esac
+        # The highs package list is relative to roml-highs/, not the root.
+        if [ ! -e "$ROOT/roml-highs/$f" ]; then
+            echo "FATAL: packed file missing from working tree: roml-highs/$f"
+            exit 1
+        fi
         mkdir -p "$HIGHS_DIR/$(dirname "$f")"
-        cp "$ROOT/$f" "$HIGHS_DIR/$f"
+        cp "$ROOT/roml-highs/$f" "$HIGHS_DIR/$f"
     done < /tmp/p34-roml-highs-package-list.txt
     # Point the packed tree at the extracted roml crate sources.
     python3 - "$HIGHS_DIR/Cargo.toml" "$ROML_DIR" <<'EOF'
