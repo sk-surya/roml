@@ -1,5 +1,15 @@
 # ROML Active Roadmap — M3 Completion
 
+## Owner-authorized successor — Python interface (2026-09-07)
+
+After current prerequisite PR review/merge and P34 closure, execute
+[MPY — Python Interface](milestones/MPY-python-interface/README.md) before the
+deferred M4 preview. The owner authorized the executor to review, remediate and
+normally merge relevant pending prerequisite PRs, then implement PyO3 + maturin
+bindings. The packet defines API, phase gates, benchmark/wheel qualification and
+merge/publication boundaries. This successor does not claim P31/P34 have passed;
+the current M3 routing below remains active until verified closure.
+
 This root file is the concise GSD routing projection. Historical milestone design remains under `.planning/milestones/`; it is not duplicated here.
 
 ## Current routing gate
