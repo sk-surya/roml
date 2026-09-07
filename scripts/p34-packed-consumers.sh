@@ -77,14 +77,31 @@ else
         mkdir -p "$HIGHS_DIR/$(dirname "$f")"
         cp "$ROOT/roml-highs/$f" "$HIGHS_DIR/$f"
     done < /tmp/p34-roml-highs-package-list.txt
-    # Point the packed tree at the extracted roml crate sources.
+    # Point the packed tree at the extracted roml crate sources and
+    # materialize workspace-inherited fields (cargo normalizes these only
+    # inside .crate archives, which roml-highs cannot produce while roml
+    # is unpublished).
     python3 - "$HIGHS_DIR/Cargo.toml" "$ROML_DIR" <<'EOF'
 import sys
 path, roml_dir = sys.argv[1], sys.argv[2]
 s = open(path).read()
 s = s.replace('roml = { version = "0.1.0", path = ".." }',
               'roml = { version = "0.1.0", path = "%s" }' % roml_dir)
+for key, value in [
+    ('version.workspace = true', 'version = "0.1.0"'),
+    ('edition.workspace = true', 'edition = "2021"'),
+    ('rust-version.workspace = true', 'rust-version = "1.85"'),
+    ('authors.workspace = true', 'authors = ["Surya Krishnan"]'),
+    ('repository.workspace = true',
+     'repository = "https://github.com/sk-surya/roml"'),
+    ('license.workspace = true', 'license = "MIT OR Apache-2.0"'),
+    ('description.workspace = true',
+     'description = "HiGHS solver backend for roml"'),
+]:
+    assert key in s, "expected workspace inheritance for " + key
+    s = s.replace(key, value)
 open(path, 'w').write(s)
+print("packed roml-highs manifest materialized")
 EOF
 fi
 echo "roml dir: $ROML_DIR"
@@ -128,8 +145,12 @@ $dep
 EOF
     mkdir -p "$dir/src"
     printf '%s' "$src" > "$dir/src/main.rs"
-    local got
-    got="$(cargo run --quiet --manifest-path "$dir/Cargo.toml" --offline 2>/dev/null)"
+    local got errfile="/tmp/p34-consumer-$name-err.txt"
+    if ! got="$(cargo run --quiet --manifest-path "$dir/Cargo.toml" --offline 2>"$errfile")"; then
+        echo "FATAL: consumer $name failed to build/run:"
+        cat "$errfile"
+        exit 1
+    fi
     if [ "$got" != "$expect" ]; then
         echo "FATAL: consumer $name: expected [$expect], got [$got]"
         exit 1
