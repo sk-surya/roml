@@ -112,6 +112,23 @@ in `Solution::objective_value()` (API-03.5) — you never add them back yourself
 The low-level multi-objective controls (`add_objective`, `set_active_objective`,
 …) are **advanced**; ordinary models use `minimize`/`maximize`.
 
+For large constant objectives, `set_linear_objective_bulk(sense, vars,
+coeffs, constant)` inserts the whole coefficient block in one validated
+operation with one packed journal entry instead of one mutation per term.
+The canonical state is identical to `minimize`/`maximize` (near-zero
+coefficients are dropped and duplicates combine, exactly as on the scalar
+path); mismatched lengths, non-finite values, and stale variables reject
+atomically before any mutation:
+
+```rust
+let obj = model.set_linear_objective_bulk(
+    roml::Sense::Minimize,
+    &vars,
+    &coeffs,
+    0.0,
+)?;
+```
+
 ## 4. Names and diagnostics
 
 Names are first-class model metadata (D6): retrievable, and shown in

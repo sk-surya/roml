@@ -12,6 +12,7 @@ mod errors;
 mod expressions;
 mod handles;
 mod model;
+mod namespace;
 mod solution;
 mod solver;
 

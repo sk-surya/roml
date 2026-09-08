@@ -21,6 +21,7 @@ pub(crate) use changelog::ChangeLog;
 pub(crate) use coefficient::CoefficientData;
 pub(crate) use coefficient::CoefficientIndex;
 pub use coefficient::CoefficientTarget;
+pub(crate) use coefficient::ParamCell;
 pub use constraint::ConstraintBounds;
 pub(crate) use constraint::ConstraintStore;
 pub(crate) use objective::ObjectiveStore;
@@ -53,7 +54,7 @@ use crate::construct::{
     PenaltyTarget, PiecewiseLinearConstraint, ProductOperand, PwlPoint, PwlRelation,
     ReificationConstraint, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
 };
-use crate::delta::{DeltaBatch, ModelOp};
+use crate::delta::{DeltaBatch, LinearRowBlock, ModelOp, ParamCoeffCell};
 use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
@@ -68,6 +69,7 @@ use crate::solution::{SignedCorrection, Solution};
 use crate::value_expr::ValueExpr;
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use log::warn;
 
@@ -209,6 +211,24 @@ pub enum ModelError {
     ConstraintAlreadySoftened(ConId),
     /// Revision counter overflow.
     RevisionOverflow,
+    /// A bulk coefficient call received mismatched input lengths.
+    MismatchedBulkLengths {
+        /// Number of variables supplied.
+        vars: usize,
+        /// Number of coefficients supplied.
+        coeffs: usize,
+    },
+    /// A bulk row call received inconsistent row shapes.
+    MismatchedRowBlock {
+        /// Number of rows (bounds entries) supplied.
+        rows: usize,
+        /// Number of row-pointer entries supplied.
+        ptr: usize,
+        /// Number of variables supplied.
+        vars: usize,
+        /// Number of coefficients supplied.
+        values: usize,
+    },
     /// An opaque identity counter was exhausted (ids never wrap).
     IdentityOverflow,
 }
@@ -354,6 +374,20 @@ impl std::fmt::Display for ModelError {
                 write!(f, "constraint {id:?} is already persistently softened")
             }
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
+            Self::MismatchedBulkLengths { vars, coeffs } => write!(
+                f,
+                "bulk coefficient input length mismatch: {vars} variables vs {coeffs} coefficients"
+            ),
+            Self::MismatchedRowBlock {
+                rows,
+                ptr,
+                vars,
+                values,
+            } => write!(
+                f,
+                "bulk row input shape mismatch: {rows} rows, {ptr} row pointers, \
+                 {vars} variables, {values} coefficients"
+            ),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
             }
@@ -1583,7 +1617,7 @@ impl Model {
         }
 
         // Remove all coefficients for this variable
-        let coeffs: Vec<_> = self.coefficients.for_var(var).collect();
+        let coeffs: Vec<_> = self.coefficients.for_var(var);
         for coeff_id in coeffs {
             self.remove_coefficient_internal(coeff_id);
         }
@@ -1997,6 +2031,104 @@ impl Model {
         self.add_empty_constraint_internal(bounds, None)
     }
 
+    /// Insert a block of constant linear rows in one bulk operation (P1A).
+    ///
+    /// Row `r` owns `vars[row_ptr[r]..row_ptr[r+1]]` with the parallel
+    /// `values` slice and `bounds[r]`. This is the fast path for large
+    /// matrix-assembled models (e.g. a hundred thousand CSR rows): whole
+    /// batch validation, one storage reservation per array, one packed
+    /// [`Change::BulkLinearRows`] journal entry — instead of one expression
+    /// build plus general row/coefficient mutations per row. The resulting
+    /// canonical state is identical to adding the same rows one by one.
+    ///
+    /// # Semantics
+    ///
+    /// - Shapes must agree (`row_ptr.len() == bounds.len() + 1`,
+    ///   `row_ptr[last] == vars.len() == values.len()`, `row_ptr[0] == 0`,
+    ///   monotone pointers) or [`ModelError::MismatchedRowBlock`] results.
+    /// - Every coefficient must be finite ([`ModelError::NonFiniteValue`]);
+    ///   every variable must be live ([`ModelError::VariableNotFound`]);
+    ///   every bound must be valid ([`ModelError::InvalidBounds`]).
+    ///   All validation runs before any mutation (API-06.5 atomicity).
+    /// - Rows are canonicalized exactly like the scalar row path (sorted
+    ///   variables, duplicates summed, near-zero totals dropped); merged
+    ///   totals that overflow reject atomically.
+    /// - Constant coefficients only. Parameterized rows keep the scalar
+    ///   expression path.
+    pub fn add_linear_rows_bulk(
+        &mut self,
+        row_ptr: &[u32],
+        vars: &[VarId],
+        values: &[f64],
+        bounds: &[ConstraintBounds],
+    ) -> Result<Vec<ConId>, ModelError> {
+        let nrows = bounds.len();
+        let shape_ok = row_ptr.len() == nrows + 1
+            && row_ptr.first().copied().unwrap_or(0) == 0
+            && row_ptr.windows(2).all(|w| w[0] <= w[1])
+            && row_ptr.last().copied().unwrap_or(0) as usize == vars.len()
+            && vars.len() == values.len();
+        if !shape_ok {
+            return Err(ModelError::MismatchedRowBlock {
+                rows: nrows,
+                ptr: row_ptr.len(),
+                vars: vars.len(),
+                values: values.len(),
+            });
+        }
+        for bound in bounds.iter() {
+            validate_constraint_bounds(*bound)?;
+        }
+        for value in values.iter() {
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("row coefficient"));
+            }
+        }
+        for var in vars.iter() {
+            if !self.variables.contains(*var) {
+                return Err(ModelError::VariableNotFound(*var));
+            }
+        }
+        // Canonicalize every row (pure; merged-overflow rejects atomically).
+        let mut canon_ptr: Vec<u32> = Vec::with_capacity(nrows + 1);
+        let mut canon_vars: Vec<VarId> = Vec::new();
+        let mut canon_values: Vec<f64> = Vec::new();
+        canon_ptr.push(0);
+        for r in 0..nrows {
+            let (s, e) = (row_ptr[r] as usize, row_ptr[r + 1] as usize);
+            for (var, value) in
+                CoefficientIndex::canonicalize_constant_row(&vars[s..e], &values[s..e])?
+            {
+                canon_vars.push(var);
+                canon_values.push(value);
+            }
+            canon_ptr.push(canon_vars.len() as u32);
+        }
+        // Allocate row identities sequentially.
+        self.constraints.reserve(nrows);
+        let mut cons = Vec::with_capacity(nrows);
+        for bound in bounds.iter() {
+            cons.push(self.constraints.add(*bound));
+        }
+        // Append the coefficient block (no per-cell probing/journaling).
+        let targets: Vec<CoefficientTarget> = cons
+            .iter()
+            .map(|&con| CoefficientTarget::Constraint(con))
+            .collect();
+        self.coefficients
+            .append_canonical_block(&targets, &canon_ptr, &canon_vars, &canon_values);
+        // Journal one packed change.
+        let block = Arc::new(LinearRowBlock {
+            constraints: cons.clone(),
+            bounds: bounds.to_vec(),
+            row_ptr: canon_ptr,
+            vars: canon_vars,
+            values: canon_values,
+        });
+        self.changelog.push(Change::BulkLinearRows { block });
+        Ok(cons)
+    }
+
     /// Private primitive: insert an empty constraint with the given bounds and
     /// optional name, pushing the changelog event.
     pub(crate) fn add_empty_constraint_internal(
@@ -2376,27 +2508,47 @@ impl Model {
             new: new_value,
         });
 
-        // Propagate to dependent coefficients
+        // Propagate to dependent coefficients: overlay cells evaluate
+        // their stored expressions; packed parametric cells recompute
+        // contiguously through the reverse parameter index.
         let affected: Vec<_> = self.coefficients.for_param(param).collect();
         let lookup = self.parameters.as_lookup();
 
         for coeff_id in affected {
-            if let Some(data) = self.coefficients.get_mut(coeff_id) {
-                let old_cached = data.cached_value;
-                let new_cached = data.value_expr.eval(&lookup);
-
-                if (old_cached - new_cached).abs() >= f64::EPSILON {
-                    data.cached_value = new_cached;
+            if !self.coefficients.is_overlay_cell(coeff_id) {
+                continue;
+            }
+            // Overlay-only by construction (packed cells are constant, so
+            // they never enter the parameter index); the old snapshot
+            // carries var/target/expression for the changelog entry.
+            // Read-only fetch first: the cached value is rewritten only
+            // when the re-evaluated value moves (baseline semantics — an
+            // unconditional pre-write would clobber the cache with zero
+            // on sub-epsilon updates).
+            if let Some(old) = self.coefficients.get(coeff_id) {
+                let new_cached = old.value_expr.eval(&lookup);
+                if (old.cached_value - new_cached).abs() >= f64::EPSILON {
+                    self.coefficients.set_cached_value(coeff_id, new_cached);
                     self.changelog.push(Change::CoefficientValueChanged {
                         coeff: coeff_id,
-                        var: data.var,
-                        target: data.target,
-                        value_expr: data.value_expr.clone(),
-                        old: old_cached,
+                        var: old.var,
+                        target: old.target,
+                        value_expr: old.value_expr.clone(),
+                        old: old.cached_value,
                         new: new_cached,
                     });
                 }
             }
+        }
+        for update in self.coefficients.propagate_packed_param(param, new_value) {
+            self.changelog.push(Change::CoefficientValueChanged {
+                coeff: update.id,
+                var: update.var,
+                target: update.target,
+                value_expr: ValueExpr::scaled_param(update.scale, param),
+                old: update.old,
+                new: update.new,
+            });
         }
     }
 
@@ -2594,6 +2746,230 @@ impl Model {
         self.add_objective_coefficient(obj, var, value)
     }
 
+    /// Create and activate an objective from parallel constant-coefficient
+    /// slices in one bulk operation (P0).
+    ///
+    /// This is the fast path for large constant objectives (e.g. a
+    /// million-term sum): fused validation scans, one storage reservation,
+    /// one packed [`Change::BulkObjectiveCoefficients`] journal entry —
+    /// instead of one `simplify` plus one general coefficient mutation per
+    /// term. The resulting canonical state is identical to building the
+    /// same expression through [`Self::minimize`]/[`Self::maximize`].
+    ///
+    /// # Semantics
+    ///
+    /// - `vars.len() == coeffs.len()` is required
+    ///   ([`ModelError::MismatchedBulkLengths`]).
+    /// - Every coefficient and `constant` must be finite
+    ///   ([`ModelError::NonFiniteValue`]); every variable must be live
+    ///   ([`ModelError::VariableNotFound`]). All validation runs before any
+    ///   mutation, so rejection leaves no dangling objective, cells, or
+    ///   journal residue (API-06.5 atomicity).
+    /// - Coefficients with `|v| < f64::EPSILON` are dropped, exactly matching
+    ///   `LinExpr::simplify` filtering on the scalar path.
+    /// - Distinct variables take the bulk path. If a variable repeats, the
+    ///   call transparently falls back to the general path so duplicates
+    ///   combine algebraically (R2.2) rather than last-write-wins.
+    pub fn set_linear_objective_bulk(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        coeffs: &[f64],
+        constant: f64,
+    ) -> Result<ObjId, ModelError> {
+        if vars.len() != coeffs.len() {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: vars.len(),
+                coeffs: coeffs.len(),
+            });
+        }
+        if !constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("objective constant"));
+        }
+        // Fused validation + packing scan, before any mutation. Duplicates
+        // fall back to the general path (algebraic combine, R2.2); stale
+        // variables and non-finite values reject atomically (API-06.5).
+        // Near-zeros are dropped exactly like `LinExpr::simplify`.
+        let mut seen = HashSet::with_capacity(vars.len());
+        let mut packed: Vec<(VarId, f64)> = Vec::with_capacity(vars.len());
+        for (var, coeff) in vars.iter().zip(coeffs.iter()) {
+            if !coeff.is_finite() {
+                return Err(ModelError::NonFiniteValue("coefficient value"));
+            }
+            if !self.variables.contains(*var) {
+                return Err(ModelError::VariableNotFound(*var));
+            }
+            if !seen.insert(*var) {
+                return self.set_linear_objective_general(sense, vars, coeffs, constant);
+            }
+            if coeff.abs() >= f64::EPSILON {
+                packed.push((*var, *coeff));
+            }
+        }
+        let obj = self.add_objective_internal(sense, None);
+        let target = CoefficientTarget::Objective(obj);
+        self.coefficients.append_constant_block(target, &packed);
+        let cells: Arc<[(VarId, f64)]> = packed.into();
+        self.changelog
+            .push(Change::BulkObjectiveCoefficients { obj, cells });
+        // Mirror the scalar path: report the constant iff it differs, then
+        // activate.
+        self.set_objective_constant_internal(obj, constant);
+        self.set_active_objective(obj)?;
+        Ok(obj)
+    }
+
+    /// General-path fallback for [`Self::set_linear_objective_bulk`] when
+    /// variables repeat: builds the expression term-by-term so duplicates
+    /// combine algebraically (R2.2). Inputs are already validated finite
+    /// with live variables by the caller.
+    fn set_linear_objective_general(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        coeffs: &[f64],
+        constant: f64,
+    ) -> Result<ObjId, ModelError> {
+        let mut expr = LinExpr::new();
+        for (var, coeff) in vars.iter().zip(coeffs.iter()) {
+            expr = expr.term(*coeff, *var);
+        }
+        expr = expr.constant(constant);
+        match sense {
+            Sense::Minimize => self.minimize(expr),
+            Sense::Maximize => self.maximize(expr),
+        }
+    }
+
+    /// Create and activate an objective from parallel
+    /// `scale * parameter` slices in one bulk operation (P1C-2).
+    ///
+    /// This is the fast path for large parameterized objectives with
+    /// scaled-parameter coefficients (e.g. time-series prices): one fused
+    /// validation scan, one packed parametric append plus a compact reverse
+    /// parameter index, one packed [`Change::BulkObjectiveParamCoefficients`]
+    /// journal entry. Cells store `(variable, scale, parameter)` with an
+    /// evaluated cache — no `ValueExpr` per cell. Later arbitrary symbolic
+    /// mutation of a packed cell shadows it into the general overlay under
+    /// the same identity, exactly like packed constants.
+    ///
+    /// # Semantics
+    ///
+    /// - Lengths must agree or [`ModelError::MismatchedBulkLengths`] results
+    ///   (checked pairwise: variables against parameters, then scales).
+    /// - Every scale and `constant` must be finite
+    ///   ([`ModelError::NonFiniteValue`]); every variable
+    ///   ([`ModelError::VariableNotFound`]) and parameter
+    ///   ([`ModelError::ParameterNotFound`]) must be live. All validation
+    ///   runs before any mutation (API-06.5 atomicity).
+    /// - Duplicate variables canonicalize: same-variable/same-parameter
+    ///   scales sum into one packed cell; same variable with *distinct*
+    ///   parameters cannot pack and installs through the general scalar
+    ///   path with the algebraically combined expression (R2.2).
+    /// - `constant` must be a finite number; parameter-dependent objective
+    ///   constants stay rejected, exactly like the scalar path.
+    pub fn set_linear_objective_param_bulk(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        params: &[ParamId],
+        scales: &[f64],
+        constant: f64,
+    ) -> Result<ObjId, ModelError> {
+        if vars.len() != params.len() || vars.len() != scales.len() {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: vars.len(),
+                coeffs: scales.len().min(params.len()),
+            });
+        }
+        if !constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("objective constant"));
+        }
+        // Fused validation scan, before any mutation.
+        for scale in scales.iter() {
+            if !scale.is_finite() {
+                return Err(ModelError::NonFiniteValue("coefficient scale"));
+            }
+        }
+        for var in vars.iter() {
+            if !self.variables.contains(*var) {
+                return Err(ModelError::VariableNotFound(*var));
+            }
+        }
+        for param in params.iter() {
+            if !self.parameters.contains(*param) {
+                return Err(ModelError::ParameterNotFound(*param));
+            }
+        }
+        // Canonicalize by variable (stable): single-parameter runs pack;
+        // multi-parameter groups fall back to scalar overlay insertion.
+        let mut order: Vec<usize> = (0..vars.len()).collect();
+        order.sort_by_key(|&i| vars[i]);
+        let mut packed: Vec<ParamCell> = Vec::with_capacity(vars.len());
+        let mut combined: Vec<(VarId, ValueExpr, f64)> = Vec::new();
+        let mut i = 0;
+        while i < order.len() {
+            let var = vars[order[i]];
+            let mut j = i + 1;
+            while j < order.len() && vars[order[j]] == var {
+                j += 1;
+            }
+            // Group order[j] terms for one variable (stable input order).
+            let group = &order[i..j];
+            let first_param = params[group[0]];
+            if group.iter().all(|&k| params[k] == first_param) {
+                let scale: f64 = group.iter().map(|&k| scales[k]).sum();
+                let value = self.parameters.get_value(first_param).unwrap_or(0.0);
+                packed.push(ParamCell {
+                    var,
+                    param: first_param,
+                    scale,
+                    cached: scale * value,
+                });
+            } else {
+                let mut expr = ValueExpr::constant(0.0);
+                let mut cached = 0.0;
+                for &k in group {
+                    let value = self.parameters.get_value(params[k]).unwrap_or(0.0);
+                    expr = expr + ValueExpr::scaled_param(scales[k], params[k]);
+                    cached += scales[k] * value;
+                }
+                combined.push((var, expr, cached));
+            }
+            i = j;
+        }
+        let obj = self.add_objective_internal(sense, None);
+        let target = CoefficientTarget::Objective(obj);
+        self.coefficients.append_param_run(target, &packed);
+        for (var, expr, cached) in combined {
+            let id = self.coefficients.add(var, target, expr.clone(), cached);
+            self.changelog.push(Change::CoefficientAdded {
+                coeff: id,
+                var,
+                target,
+                value_expr: expr,
+                value: cached,
+            });
+        }
+        let cells: Arc<[ParamCoeffCell]> = packed
+            .iter()
+            .map(|c| ParamCoeffCell {
+                var: c.var,
+                scale: c.scale,
+                param: c.param,
+                value: c.cached,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        self.changelog
+            .push(Change::BulkObjectiveParamCoefficients { obj, cells });
+        // Mirror the scalar path: report the constant iff it differs, then
+        // activate.
+        self.set_objective_constant_internal(obj, constant);
+        self.set_active_objective(obj)?;
+        Ok(obj)
+    }
+
     /// Advanced: set the coefficient cell at `(target, variable)` by
     /// coordinate, replacing any existing canonical cell with `value` (D11).
     ///
@@ -2639,8 +3015,8 @@ impl Model {
             // otherwise the dependency survives and a later parameter update
             // silently changes the supposedly replaced coefficient.
             let existing = self.coefficients.get(existing_id);
-            let old = existing.map(|d| d.cached_value).unwrap_or(value);
-            if let Some(ValueExpr::Constant(c)) = existing.map(|d| &d.value_expr) {
+            let old = existing.as_ref().map(|d| d.cached_value).unwrap_or(value);
+            if let Some(ValueExpr::Constant(c)) = existing.clone().map(|d| d.value_expr) {
                 if (c - value).abs() < f64::EPSILON {
                     return Ok(());
                 }
@@ -2748,7 +3124,13 @@ impl Model {
     }
 
     /// Get coefficient data.
-    pub fn coefficient(&self, coeff: CoeffId) -> Option<&CoefficientData> {
+    /// Get a snapshot of coefficient data by ID.
+    ///
+    /// Returned by value: packed-base cells have no per-cell record to
+    /// borrow (their constant expression materializes inline), so there is
+    /// no stable referent. Field reads (`.var`, `.cached_value`, …) work
+    /// exactly as before.
+    pub fn coefficient(&self, coeff: CoeffId) -> Option<CoefficientData> {
         self.coefficients.get(coeff)
     }
 
@@ -2947,64 +3329,14 @@ impl Model {
             }
         }
 
-        // 4. by_var index consistency
-        for (var_id, coeff_set) in self.coefficients.by_var_iter() {
-            if !self.variables.contains(*var_id) {
-                violations.push(format!("by_var index references dead variable {var_id:?}"));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!(
-                        "by_var index has dead coefficient {coeff_id:?} for var {var_id:?}"
-                    ));
-                }
-            }
-        }
-
-        // 5. by_constraint index consistency
-        for (con_id, coeff_set) in self.coefficients.by_constraint_iter() {
-            if !self.constraints.contains(*con_id) {
-                violations.push(format!(
-                    "by_constraint index references dead constraint {con_id:?}"
-                ));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!(
-                        "by_constraint index has dead coefficient {coeff_id:?}"
-                    ));
-                }
-            }
-        }
-
-        // 6. by_objective index consistency
-        for (obj_id, coeff_set) in self.coefficients.by_objective_iter() {
-            if !self.objectives.contains(*obj_id) {
-                violations.push(format!(
-                    "by_objective index references dead objective {obj_id:?}"
-                ));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!(
-                        "by_objective index has dead coefficient {coeff_id:?}"
-                    ));
-                }
-            }
-        }
-
-        // 7. by_param index consistency
-        for (param_id, coeff_set) in self.coefficients.by_param_iter() {
-            if !self.parameters.contains(*param_id) {
-                violations.push(format!(
-                    "by_param index references dead parameter {param_id:?}"
-                ));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!("by_param index has dead coefficient {coeff_id:?}"));
-                }
-            }
+        // 4-7. Coefficient-store structural consistency (P1.5B): the store
+        // audits base/overlay agreement itself — arena/location agreement,
+        // slice coverage and directory membership, shadow/dead/overlay
+        // coherence, delta-list linkage, live-counter exactness, and lazy
+        // index agreement when built. Entity liveness of the audited cells
+        // is covered by check 2 above.
+        for violation in self.coefficients.check_consistency() {
+            violations.push(format!("coefficient store: {violation}"));
         }
 
         // 8. Function-in-set consistency (P25 Task 3, SM-01.1): the
@@ -3445,6 +3777,13 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::CoefficientRemoved { var, target, .. } => Ok(ModelOp::RemoveCell {
             cell_key: (target, var),
         }),
+        Change::BulkObjectiveCoefficients { obj, cells } => {
+            Ok(ModelOp::SetObjectiveCells { obj, cells })
+        }
+        Change::BulkLinearRows { block } => Ok(ModelOp::AddLinearRows { block }),
+        Change::BulkObjectiveParamCoefficients { obj, cells } => {
+            Ok(ModelOp::SetObjectiveParamCells { obj, cells })
+        }
         Change::CoefficientValueChanged {
             var,
             target,
@@ -4339,5 +4678,315 @@ mod construct_tests {
             model.validate_invariants().is_ok(),
             "no orphaned construct metadata after removal"
         );
+    }
+}
+
+#[cfg(test)]
+mod bulk_objective_tests {
+    #![allow(deprecated)] // unit tests exercise the pre-1.0 compatibility surface
+    use super::*;
+    use crate::delta::ModelOp;
+    use crate::sync::AdapterCursor;
+
+    fn bulk_model(n: usize, constant: f64) -> (Model, ObjId, Vec<VarId>, Vec<f64>) {
+        let mut model = Model::new();
+        let vars: Vec<VarId> = (0..n).map(|_| model.add_var()).collect();
+        let coeffs: Vec<f64> = (1..=n).map(|i| i as f64).collect();
+        let obj = model
+            .set_linear_objective_bulk(Sense::Minimize, &vars, &coeffs, constant)
+            .unwrap();
+        (model, obj, vars, coeffs)
+    }
+
+    #[test]
+    fn bulk_journal_is_three_packed_entries() {
+        let (model, obj, vars, coeffs) = bulk_model(8, 0.0);
+        let changes = model.changelog.changes();
+        // 8 VariableAdded entries precede the 3 packed objective entries.
+        assert_eq!(changes.len(), 8 + 3, "packed journal, not per-cell events");
+        let changes = &changes[8..];
+        assert!(matches!(
+            changes[0],
+            Change::ObjectiveAdded { obj: o, .. } if o == obj
+        ));
+        match &changes[1] {
+            Change::BulkObjectiveCoefficients { obj: o, cells } => {
+                assert_eq!(*o, obj);
+                assert_eq!(cells.len(), 8);
+                for (i, (var, value)) in cells.iter().enumerate() {
+                    assert_eq!(*var, vars[i]);
+                    assert!((value - coeffs[i]).abs() < 1e-12);
+                }
+            }
+            other => panic!("expected packed bulk change, got {other:?}"),
+        }
+        assert!(matches!(changes[2], Change::ActiveObjectiveChanged { .. }));
+    }
+
+    #[test]
+    fn bulk_nonzero_constant_mirrors_scalar_journal() {
+        let (model, obj, _, _) = bulk_model(4, 2.5);
+        let changes = model.changelog.changes();
+        assert_eq!(changes.len(), 4 + 4);
+        let changes = &changes[4..];
+        assert!(matches!(
+            changes[2],
+            Change::ObjectiveConstantChanged { obj: o, .. } if o == obj
+        ));
+        assert!(matches!(changes[3], Change::ActiveObjectiveChanged { .. }));
+    }
+
+    #[test]
+    fn bulk_commit_batch_stays_packed() {
+        let (mut model, obj, _, _) = bulk_model(8, 1.5);
+        model.commit().unwrap();
+        let cursor = AdapterCursor::new();
+        let batches = model.coordinator.batches_for_cursor(&cursor).unwrap();
+        assert_eq!(batches.len(), 1);
+        let ops = &batches[0].operations;
+        // 8 AddVariable ops precede the 4 packed objective ops: no per-term
+        // op explosion in the delta.
+        assert_eq!(ops.len(), 8 + 4);
+        let ops = &ops[8..];
+        assert!(matches!(
+            &ops[0],
+            ModelOp::AddObjective { obj: o, .. } if *o == obj
+        ));
+        match &ops[1] {
+            ModelOp::SetObjectiveCells { obj: o, cells } => {
+                assert_eq!(*o, obj);
+                assert_eq!(cells.len(), 8);
+            }
+            other => panic!("expected packed delta op, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bulk_ids_follow_input_order() {
+        let (model, obj, vars, _) = bulk_model(16, 0.0);
+        let base = model
+            .coefficients
+            .for_cell(CoefficientTarget::Objective(obj), vars[0])
+            .map(|id| id.index())
+            .unwrap();
+        for (i, var) in vars.iter().enumerate() {
+            let id = model
+                .coefficients
+                .for_cell(CoefficientTarget::Objective(obj), *var)
+                .unwrap();
+            assert_eq!(
+                id.index(),
+                base + i as u32,
+                "input-order deterministic identities"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_empty_input_is_valid_noop() {
+        let mut model = Model::new();
+        let obj = model
+            .set_linear_objective_bulk(Sense::Minimize, &[], &[], 0.0)
+            .unwrap();
+        assert_eq!(model.active_objective(), Some(obj));
+        assert_eq!(model.num_coefficients(), 0);
+    }
+
+    fn param_bulk_model() -> (Model, ObjId, Vec<VarId>, Vec<ParamId>, Vec<f64>) {
+        let mut model = Model::new();
+        let vars: Vec<VarId> = (0..4).map(|_| model.add_var()).collect();
+        let params: Vec<ParamId> = [10.0, 20.0]
+            .iter()
+            .map(|v| model.add_parameter(*v).unwrap())
+            .collect();
+        // vars[0..2] scale params[0]; vars[2..4] scale params[1].
+        let cell_params = vec![params[0], params[0], params[1], params[1]];
+        let scales = vec![1.0, -2.0, 0.5, 3.0];
+        let obj = model
+            .set_linear_objective_param_bulk(Sense::Maximize, &vars, &cell_params, &scales, 0.0)
+            .unwrap();
+        (model, obj, vars, cell_params, scales)
+    }
+
+    #[test]
+    fn param_bulk_matches_scalar_canonical_state() {
+        let (packed, obj, vars, cell_params, scales) = param_bulk_model();
+        let mut scalar = Model::new();
+        let svars: Vec<VarId> = (0..4).map(|_| scalar.add_var()).collect();
+        let sparams: Vec<ParamId> = [10.0, 20.0]
+            .iter()
+            .map(|v| scalar.add_parameter(*v).unwrap())
+            .collect();
+        // Same logical structure through the scalar path: param arena order
+        // matches, so ids align pairwise.
+        assert_eq!(sparams[0], cell_params[0]);
+        assert_eq!(sparams[1], cell_params[2]);
+        let mut expr = LinExpr::new();
+        for (i, var) in svars.iter().enumerate() {
+            let p = if i < 2 { sparams[0] } else { sparams[1] };
+            expr = expr.term(TermCoeff::Expr(ValueExpr::scaled_param(scales[i], p)), *var);
+        }
+        scalar.maximize(expr).unwrap();
+        assert_eq!(
+            packed.take_snapshot().unwrap(),
+            scalar.take_snapshot().unwrap()
+        );
+        let _ = (obj, vars);
+    }
+
+    #[test]
+    fn param_bulk_journal_and_delta_stay_packed() {
+        let (model, obj, vars, _, _) = param_bulk_model();
+        let changes = model.changelog.changes();
+        assert_eq!(
+            changes.len(),
+            4 + 3,
+            "vars + 3 packed entries (params journal nothing)"
+        );
+        let tail = &changes[4..];
+        assert!(matches!(
+            tail[0],
+            Change::ObjectiveAdded { obj: o, .. } if o == obj
+        ));
+        match &tail[1] {
+            Change::BulkObjectiveParamCoefficients { obj: o, cells } => {
+                assert_eq!(*o, obj);
+                assert_eq!(cells.len(), 4);
+                for (i, cell) in cells.iter().enumerate() {
+                    assert_eq!(cell.var, vars[i]);
+                    assert!(
+                        (cell.value - cell.scale * if i < 2 { 10.0 } else { 20.0 }).abs() < 1e-12
+                    );
+                }
+            }
+            other => panic!("expected packed param change, got {other:?}"),
+        }
+        let mut model = model;
+        model.commit().unwrap();
+        let cursor = AdapterCursor::new();
+        let batches = model.coordinator.batches_for_cursor(&cursor).unwrap();
+        assert_eq!(batches.len(), 1);
+        let ops = &batches[0].operations;
+        assert!(matches!(
+            &ops[ops.len() - 2],
+            ModelOp::SetObjectiveParamCells { obj: o, cells }
+                if *o == obj && cells.len() == 4
+        ));
+    }
+
+    #[test]
+    fn param_bulk_propagates_and_shadows() {
+        let (mut model, obj, vars, cell_params, _) = param_bulk_model();
+        let target = CoefficientTarget::Objective(obj);
+        // Update params[0]: 10 -> 11. Cells 0,1 recompute; journal carries
+        // CoefficientValueChanged with the scaled-param expression.
+        model.set_parameter(cell_params[0], 11.0).unwrap();
+        model.commit().unwrap();
+        let id0 = model.coefficients.for_cell(target, vars[0]).unwrap();
+        let cached = model.coefficients.cached_value(id0).unwrap();
+        assert!((cached - 11.0).abs() < 1e-12);
+        let id1 = model.coefficients.for_cell(target, vars[1]).unwrap();
+        assert!((model.coefficients.cached_value(id1).unwrap() + 22.0).abs() < 1e-12);
+        model.validate_invariants().unwrap();
+        // Arbitrary symbolic mutation shadows the packed cell into the
+        // overlay under the same identity; propagation then skips it.
+        let before = model.coefficients.for_cell(target, vars[0]).unwrap();
+        model.set_coefficient(target, vars[0], 99.0).unwrap();
+        let after = model.coefficients.for_cell(target, vars[0]).unwrap();
+        assert_eq!(before, after, "shadowing preserves identity");
+        model.set_parameter(cell_params[0], 12.0).unwrap();
+        model.commit().unwrap();
+        assert!((model.coefficients.cached_value(after).unwrap() - 99.0).abs() < 1e-12);
+        model.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn param_bulk_dup_vars_canonicalize() {
+        let mut model = Model::new();
+        let v = model.add_var();
+        let p1 = model.add_parameter(2.0).unwrap();
+        // Same var, same param: scales sum into one packed cell.
+        let obj = model
+            .set_linear_objective_param_bulk(Sense::Minimize, &[v, v], &[p1, p1], &[1.0, 2.0], 0.0)
+            .unwrap();
+        assert_eq!(model.num_coefficients(), 1);
+        let id = model
+            .coefficients
+            .for_cell(CoefficientTarget::Objective(obj), v)
+            .unwrap();
+        assert!((model.coefficients.cached_value(id).unwrap() - 6.0).abs() < 1e-12);
+        // Same var, distinct params: general overlay path, combined expr.
+        let mut model2 = Model::new();
+        let v2 = model2.add_var();
+        let q1 = model2.add_parameter(2.0).unwrap();
+        let q2 = model2.add_parameter(3.0).unwrap();
+        let obj2 = model2
+            .set_linear_objective_param_bulk(
+                Sense::Minimize,
+                &[v2, v2],
+                &[q1, q2],
+                &[1.0, 1.0],
+                0.0,
+            )
+            .unwrap();
+        let id2 = model2
+            .coefficients
+            .for_cell(CoefficientTarget::Objective(obj2), v2)
+            .unwrap();
+        assert!(model2.coefficients.is_overlay_cell(id2));
+        assert!((model2.coefficients.cached_value(id2).unwrap() - 5.0).abs() < 1e-12);
+        model2.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn param_bulk_variable_removal_unlinks_index() {
+        let (mut model, obj, vars, cell_params, _) = param_bulk_model();
+        let target = CoefficientTarget::Objective(obj);
+        let doomed = model.coefficients.for_cell(target, vars[0]).unwrap();
+        model.remove_variable(vars[0]).unwrap();
+        // Stale identity resolves to nothing; the reverse index dropped it.
+        assert!(model.coefficients.get(doomed).is_none());
+        assert!(model.coefficients.cached_value(doomed).is_none());
+        assert_eq!(model.num_coefficients(), 3);
+        // Propagation touches only survivors with identical values.
+        model.set_parameter(cell_params[0], 11.0).unwrap();
+        model.commit().unwrap();
+        let id1 = model.coefficients.for_cell(target, vars[1]).unwrap();
+        assert!((model.coefficients.cached_value(id1).unwrap() + 22.0).abs() < 1e-12);
+        model.validate_invariants().unwrap();
+        // Re-adding the same logical cell goes through the scalar overlay.
+        let v_new = model.add_var();
+        let id_new = model.coefficients.add(
+            v_new,
+            target,
+            ValueExpr::scaled_param(2.0, cell_params[2]),
+            40.0,
+        );
+        assert!(model.coefficients.is_overlay_cell(id_new));
+        model.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn param_bulk_rejects_before_mutation() {
+        let mut model = Model::new();
+        let v = model.add_var();
+        let p = model.add_parameter(1.0).unwrap();
+        let stale_var = VarId::new(999, crate::id::Generation::new());
+        assert!(matches!(
+            model.set_linear_objective_param_bulk(Sense::Minimize, &[v], &[p], &[f64::NAN], 0.0),
+            Err(ModelError::NonFiniteValue(_))
+        ));
+        assert!(matches!(
+            model.set_linear_objective_param_bulk(Sense::Minimize, &[stale_var], &[p], &[1.0], 0.0),
+            Err(ModelError::VariableNotFound(_))
+        ));
+        assert!(model
+            .set_linear_objective_param_bulk(Sense::Minimize, &[v, v], &[p, p], &[1.0, 1.0], 0.0,)
+            .is_ok());
+        assert!(matches!(
+            model.set_linear_objective_param_bulk(Sense::Minimize, &[v], &[p, p], &[1.0], 0.0),
+            Err(ModelError::MismatchedBulkLengths { .. })
+        ));
+        assert_eq!(model.num_objectives(), 1, "rejections leave no residue");
     }
 }

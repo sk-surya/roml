@@ -178,50 +178,30 @@ impl ModelSnapshot {
     }
 }
 
-/// Reconstruct one semantic function-in-set entry from the authoritative
-/// legacy fields (constraint bounds + coefficient cells) (P25 Task 3).
+/// Reconstruct one semantic function-in-set entry from grouped cells.
 ///
-/// The coefficient index is the single coefficient authority (SM-01.1): the
-/// linear function is rebuilt from the constraint's cells and the set from the
-/// constraint's bounds. The transitional legacy fields remain the source; the
-/// invariant assertion below documents that the semantic set is derived from
-/// the legacy bounds, never a parallel authority.
-fn reconstruct_function_entry(
+/// Helper for [`take_snapshot`]: `terms` arrives in cell-slice encounter
+/// order for exactly one constraint with already-resolved `bounds`. Sorting
+/// here (stable, by var) reproduces the deterministic order the former
+/// per-constraint full scan produced (WR-01).
+fn build_function_entry(
     con: ConId,
     bounds: ConstraintBounds,
-    cells: &[(CellKey, ValueExpr, f64, Vec<ParamId>)],
+    mut terms: Vec<(VarId, ValueExpr)>,
 ) -> FunctionEntry {
     // F1: reconstruct the linear function SYMBOLICALLY — each term carries
     // `TermCoeff::Expr(ValueExpr)` sourced from the cell's `value_expr`, so a
     // parameterized coefficient keeps its symbolic form inside the function
     // (design §6). Dependencies are DERIVED from the function, never stored.
-    // Terms are sorted by var (WR-01) so the reconstructed expression agrees
-    // in term order with the canonical `Model::constraint_function` (both are
-    // deterministic, var-ordered reconstructions of the same coefficient
-    // index). The `set` is derived directly from the constraint bounds — the
-    // transitional legacy field is the single authority, and the real
-    // cross-check lives in `Model::take_snapshot`.
-    let mut symbolic: Vec<(VarId, ValueExpr)> = cells
-        .iter()
-        .filter_map(|(cell_key, value_expr, _, _)| {
-            if let CoefficientTarget::Constraint(c) = cell_key.0 {
-                if c == con {
-                    return Some((cell_key.1, value_expr.clone()));
-                }
-            }
-            None
-        })
-        .collect();
-    symbolic.sort_by_key(|(var, _)| *var);
+    terms.sort_by_key(|(var, _)| *var);
     let mut expr = LinExpr::new();
-    for (var, value_expr) in symbolic {
+    for (var, value_expr) in terms {
         expr = expr.term(TermCoeff::Expr(value_expr), var);
     }
-    let set = ScalarSet::from(bounds);
     FunctionEntry {
         constraint: con,
         function: ScalarFunction::Linear(expr),
-        set,
+        set: ScalarSet::from(bounds),
     }
 }
 
@@ -298,11 +278,29 @@ pub fn take_snapshot(
 
     // Reconstruct the canonical semantic function-in-set entries from the
     // authoritative legacy fields (constraint bounds + coefficient cells).
-    // Deterministic: sorted by constraint id, and the linear function term
-    // order follows the (already collected) cell order.
+    // Deterministic: sorted by constraint id, and each row's linear function
+    // term order is var-sorted (WR-01).
+    //
+    // P0.5: one linear grouping scan replaces the former per-constraint full
+    // scan over all cells (`O(constraints × cells)`). Constraint-target
+    // cells are grouped once in cell-slice encounter order; each row is then
+    // built from its own group with the same stable var sort, so output is
+    // bit-identical (see `reconstruction_lock_tests`). No cache is kept:
+    // the groups are local temporaries, never a second authority.
+    let mut grouped: HashMap<ConId, Vec<(VarId, ValueExpr)>> = HashMap::new();
+    for (cell_key, value_expr, _, _) in cells.iter() {
+        if let CoefficientTarget::Constraint(c) = cell_key.0 {
+            grouped
+                .entry(c)
+                .or_default()
+                .push((cell_key.1, value_expr.clone()));
+        }
+    }
     let mut functions: Vec<FunctionEntry> = constraints
         .iter()
-        .map(|(&id, &(bounds, _))| reconstruct_function_entry(id, bounds, cells))
+        .map(|(&id, &(bounds, _))| {
+            build_function_entry(id, bounds, grouped.remove(&id).unwrap_or_default())
+        })
         .collect();
     functions.sort_by_key(|f| f.constraint);
 
@@ -379,5 +377,92 @@ mod tests {
         assert_eq!(snap.constraints.len(), 1);
         assert_eq!(snap.cells.len(), 1);
         assert_eq!(snap.variables[0].bounds, Bounds::NON_NEGATIVE);
+    }
+}
+
+#[cfg(test)]
+mod reconstruction_lock_tests {
+    //! P0.5 output locks for snapshot function reconstruction: exact entries
+    //! the linearization must preserve bit-for-bit.
+    use super::*;
+    use crate::id::Generation;
+
+    fn var(i: u32) -> VarId {
+        VarId::new(i, Generation::new())
+    }
+    fn con(i: u32) -> ConId {
+        ConId::new(i, Generation::new())
+    }
+    fn param(i: u32) -> ParamId {
+        ParamId::new(i, Generation::new())
+    }
+
+    #[test]
+    fn snapshot_functions_group_sort_and_fold_exactly() {
+        use crate::expr::TermCoeff;
+        let (v9, v50, v2) = (var(9), var(50), var(2));
+        let (c100, c3) = (con(100), con(3));
+        let p = param(5);
+        let coeff = ValueExpr::param(p) + 1.0;
+        let mut constraints = HashMap::new();
+        constraints.insert(c100, (ConstraintBounds::le(4.0), true));
+        constraints.insert(c3, (ConstraintBounds::ge(1.0), true));
+        // Cells arrive out of order across rows and within rows.
+        let cells: Vec<(CellKey, ValueExpr, f64, Vec<ParamId>)> = vec![
+            (
+                (CoefficientTarget::Constraint(c100), v50),
+                coeff.clone(),
+                3.0,
+                vec![p],
+            ),
+            (
+                (CoefficientTarget::Constraint(c3), v2),
+                ValueExpr::constant(2.0),
+                2.0,
+                vec![],
+            ),
+            (
+                (CoefficientTarget::Constraint(c100), v9),
+                ValueExpr::constant(1.0),
+                1.0,
+                vec![],
+            ),
+            // Objective-target cells never enter constraint functions.
+            (
+                (
+                    CoefficientTarget::Objective(ObjId::new(0, Generation::new())),
+                    v2,
+                ),
+                ValueExpr::constant(9.0),
+                9.0,
+                vec![],
+            ),
+        ];
+        let snap = take_snapshot(
+            ModelRevision::ZERO,
+            &HashMap::new(),
+            &constraints,
+            &HashMap::new(),
+            &HashMap::new(),
+            &cells,
+        );
+        assert_eq!(snap.functions.len(), 2);
+        assert_eq!(snap.functions[0].constraint, c3);
+        assert_eq!(snap.functions[1].constraint, c100);
+        // Parameterized symbolic form preserved, terms var-sorted.
+        let expected = crate::expr::LinExpr::new()
+            .term(TermCoeff::Expr(ValueExpr::constant(1.0)), v9)
+            .term(TermCoeff::Expr(coeff), v50);
+        assert_eq!(snap.functions[1].function, ScalarFunction::Linear(expected));
+        assert_eq!(
+            snap.functions[1].set,
+            ScalarSet::from(ConstraintBounds::le(4.0))
+        );
+        // Legacy cells sorted by cell key.
+        let keys: Vec<CellKey> = snap.cells.iter().map(|c| c.cell_key).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+        let _ = v2;
     }
 }

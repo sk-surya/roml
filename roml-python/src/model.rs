@@ -18,7 +18,7 @@ use roml::{
 };
 
 use super::errors::{InvalidHandleError, InvalidModelError, ShapeError};
-use super::expressions::{simplify_value, to_affine, Affine, Comparison};
+use super::expressions::{simplify_value, to_scalar, Comparison, PackedCoeffs, Scalar};
 use super::handles::{Constraint, Objective, Param, Var};
 
 /// A parameter-derived constraint bound: the numeric bound installed in the
@@ -36,6 +36,15 @@ pub(crate) struct ModelState {
     pub var_names: HashMap<String, VarId>,
     pub param_names: HashMap<String, ParamId>,
     pub con_names: HashMap<String, ConId>,
+    /// Structural variable-array reservations: base name to element count
+    /// (P2A). Implicit generated names `base[i]` for `i < len` exist
+    /// without eagerly allocated strings; see [`crate::namespace`].
+    pub var_array_lens: HashMap<String, usize>,
+    /// Occupied generated-looking names that are NOT implicit variable
+    /// elements: explicit scalars, eager parameter elements, and array
+    /// bases of any kind, keyed by base. Constraint names excluded by
+    /// design (variable paths never consulted them).
+    pub explicit_indices: crate::namespace::ExplicitIndices,
     pub bound_deps: Vec<BoundDep>,
     /// Reserved array base names (including empty arrays, which contribute
     /// no element entries). Checked alongside the entity namespaces.
@@ -98,16 +107,28 @@ pub(crate) fn map_model_error(err: ModelError) -> PyErr {
     }
 }
 
-/// Evaluate a bound/value expression against committed parameter values.
-/// Committed values are always fresh: update() commits accepted batches
-/// before returning, so no queued-but-uncommitted state can exist outside
-/// update/solve internals.
-pub(crate) fn eval_expr(state: &ModelState, expr: &ValueExpr) -> Result<f64, ModelError> {
-    let values: HashMap<ParamId, f64> = state
+/// Snapshot of committed parameter values for preflight evaluation.
+///
+/// Built ONCE per lowering call and shared across all coefficient/bound
+/// evaluations within it: rebuilding it per term is quadratic in the
+/// parameter count (P1C-2 instrumentation). Values cannot change mid-call
+/// (the model lock is held throughout), so sharing is exact.
+pub(crate) fn param_values(state: &ModelState) -> HashMap<ParamId, f64> {
+    state
         .param_names
         .values()
         .map(|id| (*id, state.model.parameter_value(*id).unwrap_or(0.0)))
-        .collect();
+        .collect()
+}
+
+/// Evaluate a value expression against a prebuilt parameter snapshot.
+/// Committed values are always fresh: update() commits accepted batches
+/// before returning, so no queued-but-uncommitted state can exist outside
+/// update/solve internals.
+pub(crate) fn eval_expr(
+    values: &HashMap<ParamId, f64>,
+    expr: &ValueExpr,
+) -> Result<f64, ModelError> {
     for dep in expr.dependencies() {
         if !values.contains_key(&dep) {
             return Err(ModelError::ParameterNotFound(dep));
@@ -188,6 +209,8 @@ impl Model {
                     var_names: HashMap::new(),
                     param_names: HashMap::new(),
                     con_names: HashMap::new(),
+                    var_array_lens: HashMap::new(),
+                    explicit_indices: HashMap::new(),
                     bound_deps: Vec::new(),
                     array_names: std::collections::HashSet::new(),
                     param_array_shapes: HashMap::new(),
@@ -215,7 +238,7 @@ impl Model {
         match slf.borrow().shared.state.try_lock() {
             Ok(state) => format!(
                 "Model({} vars, {} params, {} constraints)",
-                state.var_names.len(),
+                state.variable_count(),
                 state.param_names.len(),
                 state.con_names.len()
             ),
@@ -273,10 +296,7 @@ impl Model {
         }
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
@@ -291,6 +311,7 @@ impl Model {
             state.has_discrete = true;
         }
         state.var_names.insert(name.to_string(), id);
+        state.index_explicit_name(name);
         state.pending = true;
         state.py_revision += 1;
         Ok(Var {
@@ -309,16 +330,14 @@ impl Model {
         let v = py_numeric(&value, "parameter value")?;
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
         }
         let id = state.model.add_parameter(v).map_err(map_model_error)?;
         state.param_names.insert(name.to_string(), id);
+        state.index_explicit_name(name);
         state.pending = true;
         state.py_revision += 1;
         Ok(Param {
@@ -338,13 +357,31 @@ impl Model {
     }
 
     fn minimize(slf: &Bound<'_, Self>, expr: Bound<'_, PyAny>) -> PyResult<Objective> {
-        let affine = to_affine(slf, &expr)?;
-        Self::set_objective_impl(slf, affine, Sense::Minimize)
+        let scalar = to_scalar(slf, &expr)?;
+        Self::set_objective_impl(slf, scalar, Sense::Minimize)
     }
 
     fn maximize(slf: &Bound<'_, Self>, expr: Bound<'_, PyAny>) -> PyResult<Objective> {
-        let affine = to_affine(slf, &expr)?;
-        Self::set_objective_impl(slf, affine, Sense::Maximize)
+        let scalar = to_scalar(slf, &expr)?;
+        Self::set_objective_impl(slf, scalar, Sense::Maximize)
+    }
+
+    /// Debug-only namespace cardinality probe (P2A evidence).
+    ///
+    /// Present in debug builds only; release wheels expose no such
+    /// surface. Returns `(var reservations, explicit var names,
+    /// explicit index entries)`: after `vars("x", 1M)` this reads
+    /// `(1, 0, 0)`, i.e. one structural reservation and zero stored
+    /// element strings anywhere in the namespace.
+    #[cfg(debug_assertions)]
+    fn _debug_namespace_counts(slf: &Bound<'_, Self>) -> PyResult<(usize, usize, usize)> {
+        let borrowed = slf.borrow();
+        let state = lock_state(&borrowed)?;
+        Ok((
+            state.var_array_lens.len(),
+            state.var_names.len(),
+            state.explicit_indices.values().map(|s| s.len()).sum(),
+        ))
     }
 
     #[pyo3(signature = (**values))]
@@ -403,7 +440,10 @@ impl Model {
                 }
                 continue;
             }
-            if state.var_names.contains_key(&name) || state.array_names.contains(&name) {
+            if state.var_names.contains_key(&name)
+                || state.array_names.contains(&name)
+                || state.implicit_var_element(&name)
+            {
                 return Err(InvalidModelError::new_err(format!(
                     "unknown parameter {name:?} (only parameters can be updated)"
                 )));
@@ -569,7 +609,7 @@ impl Model {
         ub: Option<Bound<'_, PyAny>>,
         kind: &str,
     ) -> PyResult<super::arrays::VarArray> {
-        use super::arrays::{element_name, numel, parse_bound_array, parse_shape};
+        use super::arrays::{numel, parse_bound_array, parse_shape};
         if name.is_empty() {
             return Err(InvalidModelError::new_err(
                 "variable array name must be a nonempty string",
@@ -615,42 +655,39 @@ impl Model {
         }
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        // Reserve the base name and every element name before mutation.
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        // Reserve the base structurally (P2A): the base itself goes
+        // through the unified explicit-name check (exact occupancy or an
+        // implicit element of another reservation, e.g. base "x[5]"), and
+        // the reverse index answers prospective-element collisions without
+        // formatting N strings. All validation runs before any mutation,
+        // preserving the old atomicity (no partial reservation, variables,
+        // or revision changes on rejection).
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
         }
-        let mut element_ids = Vec::with_capacity(n);
-        for i in 0..n {
-            let ename = element_name(name, i);
-            if state.var_names.contains_key(&ename)
-                || state.param_names.contains_key(&ename)
-                || state.array_names.contains(&ename)
-            {
-                return Err(InvalidModelError::new_err(format!(
-                    "namespace collision for array element {ename:?}"
-                )));
-            }
-            element_ids.push(ename);
+        if let Some(ename) = state.prospective_array_conflicts(name, n) {
+            return Err(InvalidModelError::new_err(format!(
+                "namespace collision for array element {ename:?}"
+            )));
         }
         state.array_names.insert(name.to_string());
+        state.index_explicit_name(name);
+        state.var_array_lens.insert(name.to_string(), n);
         let mut vars = Vec::with_capacity(n);
         // Domains pre-validated above; core insertion cannot fail on them.
         // (A residual internal failure would leave partial state; core
         // setters have no documented failure mode here.)
-        for (i, ename) in element_ids.iter().enumerate() {
-            let (lo, hi) = domains[i];
+        // No element strings are formatted, hashed, or stored: implicit
+        // names materialize on demand at handle creation.
+        for (lo, hi) in domains.iter().copied() {
             let def = match var_type {
                 VarType::Continuous => roml::continuous().bounds(lo, hi),
                 VarType::Integer => roml::integer().bounds(lo, hi),
                 VarType::Binary => roml::binary().bounds(lo, hi),
             };
             let id = state.model.add_variable(def).map_err(map_model_error)?;
-            state.var_names.insert(ename.clone(), id);
             vars.push(id);
             if var_type != VarType::Continuous {
                 state.has_discrete = true;
@@ -663,6 +700,8 @@ impl Model {
             shape,
             vars,
             base_name: name.to_string(),
+            // Root arrays own the identity mapping: no side vector.
+            ordinals: None,
         })
     }
 
@@ -713,32 +752,29 @@ impl Model {
         debug_assert_eq!(parsed.values.len(), n);
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
         }
-        for i in 0..n {
-            let ename = element_name(name, i);
-            if state.var_names.contains_key(&ename)
-                || state.param_names.contains_key(&ename)
-                || state.array_names.contains(&ename)
-            {
-                return Err(InvalidModelError::new_err(format!(
-                    "namespace collision for array element {ename:?}"
-                )));
-            }
+        if let Some(ename) = state.prospective_array_conflicts(name, n) {
+            return Err(InvalidModelError::new_err(format!(
+                "namespace collision for array element {ename:?}"
+            )));
         }
         let mut params = Vec::with_capacity(n);
         for (i, v) in parsed.values.iter().enumerate() {
             let id = state.model.add_parameter(*v).map_err(map_model_error)?;
-            state.param_names.insert(element_name(name, i), id);
+            let ename = element_name(name, i);
+            state.param_names.insert(ename.clone(), id);
+            // Parameter elements stay eager, but their generated-looking
+            // names join the reverse index so prospective variable arrays
+            // see them without string scans.
+            state.index_explicit_name(&ename);
             params.push(id);
         }
         state.array_names.insert(name.to_string());
+        state.index_explicit_name(name);
         state
             .param_array_shapes
             .insert(name.to_string(), parsed.shape.clone());
@@ -752,6 +788,8 @@ impl Model {
             shape: parsed.shape,
             params,
             base_name: name.to_string(),
+            // Root arrays own the identity mapping: no side vector.
+            ordinals: None,
         })
     }
 
@@ -772,7 +810,59 @@ impl Model {
 }
 
 impl Model {
-    fn set_objective_impl(slf: &Bound<'_, Self>, e: Affine, sense: Sense) -> PyResult<Objective> {
+    fn set_objective_impl(slf: &Bound<'_, Self>, e: Scalar, sense: Sense) -> PyResult<Objective> {
+        // Packed constant-coefficient vectors bypass the term-by-term
+        // lowering entirely and go straight to the core bulk primitive
+        // (P0). Everything else keeps the existing general path.
+        if let Scalar::Packed(packed) = e {
+            return Self::set_objective_packed(slf, packed, sense);
+        }
+        if let Scalar::PackedSymbolic(sym) = e {
+            return Self::set_objective_param_bulk(slf, sym, sense);
+        }
+        let Scalar::Lazy(lazy) = e else {
+            return Err(InvalidModelError::new_err("unsupported objective form"));
+        };
+        // P1E: classify once into the cheapest primitive. Numeric trees
+        // reach the constant bulk primitive, scaled-parameter trees the
+        // parametric one; only genuinely general trees pay the general
+        // Affine lowering below.
+        match lazy.classify(slf.py()) {
+            super::expressions::LoweredScalar::Numeric {
+                vars,
+                coeffs,
+                constant,
+            } => Self::set_objective_numeric_bulk(slf, sense, &vars, &coeffs, constant),
+            super::expressions::LoweredScalar::Parametric {
+                vars,
+                params,
+                scales,
+                constant,
+            } => Self::set_objective_param_bulk(
+                slf,
+                super::expressions::PackedSymbolic {
+                    owner: slf.clone().unbind(),
+                    vars,
+                    params,
+                    scales,
+                    constant,
+                },
+                sense,
+            ),
+            super::expressions::LoweredScalar::General(e) => {
+                Self::set_objective_general(slf, e, sense)
+            }
+        }
+    }
+
+    /// General `Affine` objective insertion: the fallback for genuinely
+    /// symbolic coefficients that admit no bulk primitive. Unchanged
+    /// lowering (preflight, LinExpr build, template recording).
+    fn set_objective_general(
+        slf: &Bound<'_, Self>,
+        e: super::expressions::Affine,
+        sense: Sense,
+    ) -> PyResult<Objective> {
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
         for term in &e.terms {
@@ -792,15 +882,16 @@ impl Model {
                 "parameter-dependent objective constants are not supported; move the parameter into a coefficient or a constraint bound",
             ));
         }
+        let values = param_values(&state);
         let mut lin = LinExpr::new();
         for term in &e.terms {
             let coeff = simplify_value(term.coeff.clone());
             // Preflight mirroring lower_affine: non-finite coefficients
             // fail here, not inside core insertion.
-            eval_expr(&state, &coeff).map_err(map_model_error)?;
+            eval_expr(&values, &coeff).map_err(map_model_error)?;
             lin = lin.term(TermCoeff::from(coeff), term.var);
         }
-        let const_now = eval_expr(&state, &const_simp).map_err(map_model_error)?;
+        let const_now = eval_expr(&values, &const_simp).map_err(map_model_error)?;
         lin = lin.constant(const_now);
         let obj = match sense {
             Sense::Minimize => state.model.minimize(lin),
@@ -808,6 +899,154 @@ impl Model {
         }
         .map_err(map_model_error)?;
         record_obj_coeffs(&mut state, obj, &e.terms);
+        state.pending = true;
+        state.py_revision += 1;
+        Ok(Objective {
+            owner: slf.clone().unbind(),
+            id: obj,
+        })
+    }
+
+    /// Packed constant-coefficient objective insertion (P0 bulk path).
+    ///
+    /// `rm.sum(VarArray)` / `rm.dot(numeric, VarArray)` arrive here without
+    /// any per-term `Affine` expansion. Coefficients are finite numerics by
+    /// construction; the core re-validates liveness/finiteness/uniqueness
+    /// (stale variables surface as `InvalidHandleError` through the shared
+    /// error mapping, exactly like the general path's preflight). No
+    /// parameter templates exist to record: packed coefficients admit no
+    /// parameter dependencies.
+    fn set_objective_packed(
+        slf: &Bound<'_, Self>,
+        packed: super::expressions::PackedVars,
+        sense: Sense,
+    ) -> PyResult<Objective> {
+        use super::expressions::PackedCoeffs;
+        if !packed.array.constant.is_finite() {
+            return Err(InvalidModelError::new_err(
+                "objective constant must be finite",
+            ));
+        }
+        // Flatten term blocks into parallel buffers for the core bulk
+        // primitive (single-term inputs stay a single contiguous run).
+        let mut vars: Vec<VarId> = Vec::new();
+        let mut coeffs: Vec<f64> = Vec::new();
+        for term in &packed.array.terms {
+            match &term.coeffs {
+                PackedCoeffs::One => {
+                    vars.extend_from_slice(&term.vars);
+                    coeffs.extend(std::iter::repeat_n(1.0, term.vars.len()));
+                }
+                PackedCoeffs::Scalar(v) => {
+                    vars.extend_from_slice(&term.vars);
+                    coeffs.extend(std::iter::repeat_n(*v, term.vars.len()));
+                }
+                PackedCoeffs::Dense(values) => {
+                    vars.extend_from_slice(&term.vars);
+                    coeffs.extend_from_slice(values);
+                }
+            }
+        }
+        Self::set_objective_numeric_bulk(slf, sense, &vars, &coeffs, packed.array.constant)
+    }
+
+    /// Numeric bulk objective insertion (P1E classifier path).
+    ///
+    /// Classified numeric trees arrive here as parallel buffers, straight
+    /// into the core constant bulk primitive — no per-term `Affine`
+    /// expansion, no `LinExpr` build. Coefficients are finite numerics by
+    /// classification; the core re-validates liveness/finiteness/uniqueness
+    /// atomically (stale variables surface as `InvalidHandleError` through
+    /// the shared error mapping, exactly like the general path's
+    /// preflight). No parameter templates exist to record: numeric
+    /// coefficients admit no parameter dependencies.
+    fn set_objective_numeric_bulk(
+        slf: &Bound<'_, Self>,
+        sense: Sense,
+        vars: &[VarId],
+        coeffs: &[f64],
+        constant: f64,
+    ) -> PyResult<Objective> {
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        let core_sense = match sense {
+            Sense::Minimize => roml::Sense::Minimize,
+            Sense::Maximize => roml::Sense::Maximize,
+        };
+        let obj = state
+            .model
+            .set_linear_objective_bulk(core_sense, vars, coeffs, constant)
+            .map_err(map_model_error)?;
+        state.pending = true;
+        state.py_revision += 1;
+        Ok(Objective {
+            owner: slf.clone().unbind(),
+            id: obj,
+        })
+    }
+
+    /// Packed scaled-parameter objective insertion (P1C-2 bulk path).
+    ///
+    /// `rm.dot` with structurally cheap parameter-only coefficients arrives
+    /// here as three flat buffers, straight into the core parametric bulk
+    /// primitive — no per-term `Affine` expansion, no `HashMap` fold. The
+    /// constant must be numeric (parameter-dependent constants reject with
+    /// the exact scalar-path error); scales are finite by construction and
+    /// the core re-validates liveness/finiteness atomically. Update-time
+    /// derived-coefficient validation sees the same templates the scalar
+    /// path would record (canonical scaled-parameter forms), so `update()`
+    /// accepts or rejects identically.
+    fn set_objective_param_bulk(
+        slf: &Bound<'_, Self>,
+        sym: super::expressions::PackedSymbolic,
+        sense: Sense,
+    ) -> PyResult<Objective> {
+        // Mirror the scalar path exactly: simplify first so degenerate
+        // `0 * p` folds accept, then reject genuine parameter dependence
+        // with the identical error.
+        let const_simp = simplify_value(sym.constant.clone());
+        if !const_simp.dependencies().is_empty() {
+            return Err(super::errors::UnsupportedExpressionError::new_err(
+                "parameter-dependent objective constants are not supported; move the parameter into a coefficient or a constraint bound",
+            ));
+        }
+        let const_now = const_simp.eval(|_| 0.0);
+        if !const_now.is_finite() {
+            return Err(InvalidModelError::new_err(
+                "objective constant must be finite",
+            ));
+        }
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        let core_sense = match sense {
+            Sense::Minimize => roml::Sense::Minimize,
+            Sense::Maximize => roml::Sense::Maximize,
+        };
+        let obj = state
+            .model
+            .set_linear_objective_param_bulk(
+                core_sense,
+                &sym.vars,
+                &sym.params,
+                &sym.scales,
+                const_now,
+            )
+            .map_err(map_model_error)?;
+        // Same update-validation templates the scalar path records: one
+        // canonical scaled-parameter expression per cell (lone parameters
+        // keep the `Param` fast path; scaled ones set `has_complex_deps`
+        // exactly as simplified scalar coefficients would).
+        let terms: Vec<super::expressions::ExprTerm> = sym
+            .vars
+            .iter()
+            .zip(sym.params.iter())
+            .zip(sym.scales.iter())
+            .map(|((var, param), scale)| super::expressions::ExprTerm {
+                var: *var,
+                coeff: ValueExpr::scaled_param(*scale, *param),
+            })
+            .collect();
+        record_obj_coeffs(&mut state, obj, &terms);
         state.pending = true;
         state.py_revision += 1;
         Ok(Objective {
@@ -858,7 +1097,7 @@ impl Model {
         if let Ok(scalar) = comparison.cast::<Comparison>() {
             let borrowed_cmp = scalar.borrow();
             borrowed_cmp.owner_check(slf)?;
-            let affine = borrowed_cmp.expr.clone();
+            let body = borrowed_cmp.expr.clone();
             let side = borrowed_cmp.rhs.clone();
             drop(borrowed_cmp);
             if let Some(n) = name {
@@ -875,13 +1114,21 @@ impl Model {
                     || state.var_names.contains_key(n)
                     || state.param_names.contains_key(n)
                     || state.array_names.contains(n)
+                    || state.implicit_var_element(n)
                 {
                     return Err(InvalidModelError::new_err(format!(
                         "duplicate constraint name {n:?}"
                     )));
                 }
             }
-            let con = insert_affine_comparison(&mut state, &affine, &side)?;
+            let con = match body {
+                super::expressions::ComparisonExpr::General(affine) => {
+                    insert_affine_comparison(&mut state, &affine, &side)?
+                }
+                super::expressions::ComparisonExpr::BulkRow(row) => {
+                    Self::insert_bulk_row(&mut state, &row)?
+                }
+            };
             if let Some(n) = name {
                 state.con_names.insert(n.to_string(), con);
             }
@@ -904,13 +1151,16 @@ impl Model {
     }
 
     /// Array insertion: lower every element first (all-or-none), then
-    /// commit all rows.
+    /// commit all rows. Packed comparisons bypass per-element lowering and
+    /// insert through the core bulk primitive in one call.
     pub(crate) fn add_array(
         slf: &Bound<'_, Self>,
         comparison: &Bound<'_, PyAny>,
         name: Option<&str>,
     ) -> PyResult<super::arrays::ConstraintArray> {
-        use super::arrays::{element_name, ComparisonArray, ConstraintArray};
+        use super::arrays::{
+            element_name, numel, ComparisonArray, ComparisonArrayRepr, ConstraintArray,
+        };
         if let Some(n) = name {
             if n.is_empty() {
                 return Err(InvalidModelError::new_err(
@@ -924,7 +1174,16 @@ impl Model {
         let borrowed_arr = arr.borrow();
         super::handles::check_owner(&borrowed_arr.owner, slf)?;
         let shape = borrowed_arr.shape.clone();
-        let items = borrowed_arr.items.clone();
+        let nelems = numel(&shape);
+        // Clone the packed form out (if any) before taking the model lock.
+        let packed = match &borrowed_arr.repr {
+            ComparisonArrayRepr::Packed(p) => Some(p.clone()),
+            ComparisonArrayRepr::Materialized(_) => None,
+        };
+        let items = match &borrowed_arr.repr {
+            ComparisonArrayRepr::Materialized(items) => Some(items.clone()),
+            ComparisonArrayRepr::Packed(_) => None,
+        };
         drop(borrowed_arr);
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
@@ -938,12 +1197,13 @@ impl Model {
                     "duplicate constraint name {n:?}"
                 )));
             }
-            for i in 0..items.len() {
+            for i in 0..nelems {
                 let ename = element_name(n, i);
                 if state.con_names.contains_key(&ename)
                     || state.var_names.contains_key(&ename)
                     || state.param_names.contains_key(&ename)
                     || state.array_names.contains(&ename)
+                    || state.implicit_var_element(&ename)
                 {
                     return Err(InvalidModelError::new_err(format!(
                         "namespace collision for constraint {ename:?}"
@@ -951,6 +1211,24 @@ impl Model {
                 }
             }
         }
+        if let Some(packed) = packed {
+            let cons = Self::insert_packed_comparison(&mut state, &packed)?;
+            if let Some(n) = name {
+                state.array_names.insert(n.to_string());
+                state.index_explicit_name(n);
+                for (i, con) in cons.iter().enumerate() {
+                    state.con_names.insert(element_name(n, i), *con);
+                }
+            }
+            state.pending = true;
+            state.py_revision += 1;
+            return Ok(ConstraintArray {
+                owner: slf.clone().unbind(),
+                shape,
+                cons,
+            });
+        }
+        let items = items.expect("packed xor materialized");
         // Lower everything before inserting anything.
         let mut lowered = Vec::with_capacity(items.len());
         for (affine, side) in &items {
@@ -973,6 +1251,7 @@ impl Model {
         }
         if let Some(n) = name {
             state.array_names.insert(n.to_string());
+            state.index_explicit_name(n);
             for (i, con) in cons.iter().enumerate() {
                 state.con_names.insert(element_name(n, i), *con);
             }
@@ -984,6 +1263,75 @@ impl Model {
             shape,
             cons,
         })
+    }
+
+    /// Insert one numeric scalar-comparison row through the core bulk row
+    /// primitive (P1E, batch size 1): no per-cell general insertion. The
+    /// bound already folds the tree constant (compare_operand mirrors the
+    /// general path's shifting); the core canonicalizes the row exactly
+    /// like scalar insertion (duplicate accumulation, zero drop) and
+    /// validates liveness/finiteness atomically. Numeric rows carry no
+    /// parameter templates, so no bound/coefficient bookkeeping applies.
+    fn insert_bulk_row(
+        state: &mut ModelState,
+        row: &super::expressions::BulkRow,
+    ) -> PyResult<ConId> {
+        let row_ptr = vec![0, row.vars.len() as u32];
+        let mut cons = state
+            .model
+            .add_linear_rows_bulk(&row_ptr, &row.vars, &row.coeffs, &[row.bound])
+            .map_err(map_model_error)?;
+        cons.pop()
+            .ok_or_else(|| InvalidModelError::new_err("bulk row insertion produced no constraint"))
+    }
+
+    /// Insert a packed numeric comparison array through the core bulk row
+    /// primitive (P1C-1): one flat row block, no per-element lowering.
+    /// Bounds fold the packed scalar constant exactly like `lower_affine`
+    /// (`bound - constant`, finiteness-checked); the core canonicalizes
+    /// each row exactly like scalar insertion.
+    fn insert_packed_comparison(
+        state: &mut ModelState,
+        packed: &super::arrays::PackedComparison,
+    ) -> PyResult<Vec<ConId>> {
+        use super::arrays::{numel, PackedSense};
+        let n = numel(&packed.shape);
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let mut row_ptr: Vec<u32> = Vec::with_capacity(n + 1);
+        let mut flat_vars: Vec<VarId> = Vec::with_capacity(packed.array.terms.len() * n);
+        let mut flat_values: Vec<f64> = Vec::with_capacity(packed.array.terms.len() * n);
+        let mut row_bounds: Vec<ConstraintBounds> = Vec::with_capacity(n);
+        row_ptr.push(0);
+        for i in 0..n {
+            for term in &packed.array.terms {
+                let c = match &term.coeffs {
+                    PackedCoeffs::One => 1.0,
+                    PackedCoeffs::Scalar(c) => *c,
+                    PackedCoeffs::Dense(v) => v[i],
+                };
+                flat_vars.push(term.vars[i]);
+                flat_values.push(c);
+            }
+            let shifted = packed.bound - packed.array.constant;
+            if !shifted.is_finite() {
+                return Err(map_model_error(ModelError::NonFiniteValue(
+                    "constraint bound",
+                )));
+            }
+            let (lower, upper) = match packed.sense {
+                PackedSense::Le => (f64::NEG_INFINITY, shifted),
+                PackedSense::Ge => (shifted, f64::INFINITY),
+                PackedSense::Eq => (shifted, shifted),
+            };
+            row_bounds.push(ConstraintBounds { lower, upper });
+            row_ptr.push(flat_vars.len() as u32);
+        }
+        state
+            .model
+            .add_linear_rows_bulk(&row_ptr, &flat_vars, &flat_values, &row_bounds)
+            .map_err(map_model_error)
     }
 }
 
@@ -1004,7 +1352,6 @@ impl Model {
         name: Option<&str>,
     ) -> PyResult<super::arrays::ConstraintArray> {
         use super::arrays::{element_name, parse_numeric, ConstraintArray, NumericMode};
-        use std::collections::HashMap;
         if let Some(n) = name {
             if n.is_empty() {
                 return Err(InvalidModelError::new_err(
@@ -1108,44 +1455,36 @@ impl Model {
                 ));
             }
         }
-        // Lower all rows (algebraic duplicate accumulation), then commit.
-        let mut lowered: Vec<(LinExpr, ConstraintBounds)> = Vec::with_capacity(nrows);
+        // Pack rows flat in CSR order and insert once through the core bulk
+        // primitive (P1B). Per-row canonicalization (sorted variables,
+        // duplicate accumulation, zero drop, merged-overflow rejection)
+        // happens inside the core exactly like the scalar row path; no
+        // per-row Affine/LinExpr objects are built here.
+        let mut row_ptr: Vec<u32> = Vec::with_capacity(nrows + 1);
+        let mut flat_vars: Vec<VarId> = Vec::with_capacity(indices.len());
+        let mut flat_values: Vec<f64> = Vec::with_capacity(data.values.len());
+        row_ptr.push(0);
         for i in 0..nrows {
             let (start, end) = (indptr[i] as usize, indptr[i + 1] as usize);
-            let mut cells: HashMap<VarId, f64> = HashMap::new();
             for k in start..end {
-                let var = columns[indices[k] as usize];
-                *cells.entry(var).or_insert(0.0) += data.values[k];
+                flat_vars.push(columns[indices[k] as usize]);
+                flat_values.push(data.values[k]);
             }
-            let mut lin = LinExpr::new();
-            let mut order: Vec<VarId> = cells.keys().copied().collect();
-            order.sort();
-            for var in order {
-                let coef = cells[&var];
-                if !coef.is_finite() {
-                    return Err(InvalidModelError::new_err(format!(
-                        "accumulated CSR coefficient at row {i} is not finite"
-                    )));
-                }
-                if coef != 0.0 {
-                    lin = lin.term(coef, var);
-                }
-            }
-            lowered.push((
-                lin,
-                ConstraintBounds {
-                    lower: lower_vals[i],
-                    upper: upper_vals[i],
-                },
-            ));
+            row_ptr.push(flat_vars.len() as u32);
         }
-        let mut cons = Vec::with_capacity(nrows);
-        for (lin, bounds) in lowered {
-            let spec = ConstraintSpec::new(lin, bounds);
-            cons.push(state.model.add_constraint(spec).map_err(map_model_error)?);
-        }
+        let row_bounds: Vec<ConstraintBounds> = (0..nrows)
+            .map(|i| ConstraintBounds {
+                lower: lower_vals[i],
+                upper: upper_vals[i],
+            })
+            .collect();
+        let cons = state
+            .model
+            .add_linear_rows_bulk(&row_ptr, &flat_vars, &flat_values, &row_bounds)
+            .map_err(map_model_error)?;
         if let Some(n) = name {
             state.array_names.insert(n.to_string());
+            state.index_explicit_name(n);
             for (i, con) in cons.iter().enumerate() {
                 state.con_names.insert(element_name(n, i), *con);
             }
@@ -1333,6 +1672,7 @@ fn lower_affine(
     Option<ValueExpr>,
 )> {
     use super::arrays::BoundSide;
+    let values = param_values(state);
     let mut lin = LinExpr::new();
     for term in &affine.terms {
         if state.model.variable_bounds(term.var).is_none() {
@@ -1344,24 +1684,23 @@ fn lower_affine(
         // Preflight: a coefficient that is non-finite at current values
         // would fail core insertion mid-batch. Reject the whole batch
         // before installing any row.
-        eval_expr(state, &coeff).map_err(map_model_error)?;
+        eval_expr(&values, &coeff).map_err(map_model_error)?;
         lin = lin.term(TermCoeff::from(coeff), term.var);
     }
     let const_expr = affine.constant.clone();
-    let eval_bound =
-        |state: &ModelState, e: &ValueExpr| -> Result<(f64, Option<ValueExpr>), ModelError> {
-            let shifted = e.clone() - const_expr.clone();
-            if shifted.dependencies().is_empty() {
-                let v = shifted.eval(|_| 0.0);
-                if !v.is_finite() {
-                    return Err(ModelError::NonFiniteValue("constraint bound"));
-                }
-                Ok((v, None))
-            } else {
-                let v = eval_expr(state, &shifted)?;
-                Ok((v, Some(simplify_value(shifted))))
+    let eval_bound = |e: &ValueExpr| -> Result<(f64, Option<ValueExpr>), ModelError> {
+        let shifted = e.clone() - const_expr.clone();
+        if shifted.dependencies().is_empty() {
+            let v = shifted.eval(|_| 0.0);
+            if !v.is_finite() {
+                return Err(ModelError::NonFiniteValue("constraint bound"));
             }
-        };
+            Ok((v, None))
+        } else {
+            let v = eval_expr(&values, &shifted)?;
+            Ok((v, Some(simplify_value(shifted))))
+        }
+    };
     let (lower_expr, upper_expr) = match side {
         BoundSide::Upper(u) => (None, Some(u.clone())),
         BoundSide::Lower(l) => (Some(l.clone()), None),
@@ -1369,14 +1708,14 @@ fn lower_affine(
     };
     let (lower_val, lower_sym) = match lower_expr {
         Some(e) => {
-            let (v, s) = eval_bound(state, &e).map_err(map_model_error)?;
+            let (v, s) = eval_bound(&e).map_err(map_model_error)?;
             (v, s)
         }
         None => (f64::NEG_INFINITY, None),
     };
     let (upper_val, upper_sym) = match upper_expr {
         Some(e) => {
-            let (v, s) = eval_bound(state, &e).map_err(map_model_error)?;
+            let (v, s) = eval_bound(&e).map_err(map_model_error)?;
             (v, s)
         }
         None => (f64::INFINITY, None),
@@ -1435,6 +1774,8 @@ mod lock_tests {
                 var_names: HashMap::new(),
                 param_names: HashMap::new(),
                 con_names: HashMap::new(),
+                var_array_lens: HashMap::new(),
+                explicit_indices: HashMap::new(),
                 array_names: std::collections::HashSet::new(),
                 param_array_shapes: HashMap::new(),
                 param_array_ids: HashMap::new(),

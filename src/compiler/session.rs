@@ -936,6 +936,46 @@ impl CompilationSession {
                     origin_additions.insert_constraint(id, EntityOrigin::UserConstraint(*con));
                 }
 
+                // P1A packed row block: at most one backend row op per row,
+                // with coefficients inline (already evaluated). Mirrors the
+                // scalar AddConstraint + per-cell SetCell sequence exactly:
+                // same row-id allocation order, same origin records, same
+                // coefficient values — without per-cell op traffic.
+                ModelOp::AddLinearRows { block } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental row-block addition",
+                    )?;
+                    for r in 0..block.constraints.len() {
+                        let con = block.constraints[r];
+                        let id = CompiledConstraintId(w.next_row_index);
+                        w.next_row_index += 1;
+                        let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                        let mut coefficients = Vec::with_capacity(e.saturating_sub(s));
+                        for (&var, &value) in block.vars[s..e].iter().zip(&block.values[s..e]) {
+                            let vid = *w.variable_ids.get(&var).ok_or_else(|| {
+                                CompileError::RebuildRequired(format!(
+                                    "AddLinearRows for unknown compiled variable ({var:?})"
+                                ))
+                            })?;
+                            coefficients.push((vid, value));
+                        }
+                        // Deterministic compiled order (by compiled id).
+                        coefficients.sort_by_key(|(vid, _)| *vid);
+                        operations.push(BackendOp::AddLinearRow(CompiledLinearRow {
+                            id,
+                            bounds: block.bounds[r],
+                            coefficients,
+                            name: None,
+                        }));
+                        w.row_ids.insert(con, id);
+                        w.compiled_to_row.insert(id, con);
+                        origin_additions.insert_constraint(id, EntityOrigin::UserConstraint(con));
+                    }
+                }
+
                 ModelOp::RemoveConstraint { con } => {
                     if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
                     {
@@ -990,6 +1030,98 @@ impl CompilationSession {
                 // A31: updates to pre-existing functions ride the ops. The
                 // cell's evaluated value at the batch's `to` revision is the
                 // exact coefficient to apply (SM-01.1).
+                //
+                // P0 bulk objective block: one packed op expands into
+                // per-cell backend operations in a single tight loop over
+                // already-evaluated values (no hashing beyond the mandatory
+                // compiled-id translation, no expression work). The compiled
+                // coefficient tracking is extended once and sorted once —
+                // never retain/push/sort per cell, which would be quadratic.
+                ModelOp::SetObjectiveCells { obj, cells } => {
+                    // SM-04.4 (WR-3): objective coefficient changes gate on
+                    // `IncrementalCoefficients`, never silently compiled.
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "objective coefficient changes",
+                    )?;
+                    let oid = *w.objective_ids.get(obj).ok_or_else(|| {
+                        CompileError::RebuildRequired(format!(
+                            "SetObjectiveCells for unknown compiled objective ({obj:?})"
+                        ))
+                    })?;
+                    operations.reserve(cells.len());
+                    let mut tracked: Vec<(CompiledVariableId, f64)> =
+                        Vec::with_capacity(cells.len());
+                    for (var, value) in cells.iter() {
+                        let vid = *w.variable_ids.get(var).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "SetObjectiveCells for unknown compiled variable ({var:?})"
+                            ))
+                        })?;
+                        operations.push(BackendOp::SetObjectiveCoefficient {
+                            objective: oid,
+                            variable: vid,
+                            value: *value,
+                        });
+                        tracked.push((vid, *value));
+                    }
+                    // WR-03: keep the compiled objective coefficient tracking
+                    // in sync (replace-by-cell semantics, deterministic
+                    // compiled order), extended in bulk: linear retain via a
+                    // membership set, then one sort — never per-cell
+                    // retain/push/sort, which would be quadratic.
+                    if let Some(existing) = w.compiled_objective_coefficients.get_mut(&oid) {
+                        let incoming: std::collections::HashSet<CompiledVariableId> =
+                            tracked.iter().map(|(vid, _)| *vid).collect();
+                        existing.retain(|(cid, _)| !incoming.contains(cid));
+                        existing.extend(tracked);
+                        existing.sort_by_key(|(cid, _)| *cid);
+                    }
+                }
+                ModelOp::SetObjectiveParamCells { obj, cells } => {
+                    // P1C-2 packed parametric block: same backend expansion
+                    // as `SetObjectiveCells`, reading the evaluated cache
+                    // carried per cell (no parameter lookups on the
+                    // projection path; updates arrive as `SetCell` ops with
+                    // fresh evaluated values, exactly like scalar cells).
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "objective coefficient changes",
+                    )?;
+                    let oid = *w.objective_ids.get(obj).ok_or_else(|| {
+                        CompileError::RebuildRequired(format!(
+                            "SetObjectiveParamCells for unknown compiled objective ({obj:?})"
+                        ))
+                    })?;
+                    operations.reserve(cells.len());
+                    let mut tracked: Vec<(CompiledVariableId, f64)> =
+                        Vec::with_capacity(cells.len());
+                    for cell in cells.iter() {
+                        let vid = *w.variable_ids.get(&cell.var).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "SetObjectiveParamCells for unknown compiled variable ({:?})",
+                                cell.var
+                            ))
+                        })?;
+                        operations.push(BackendOp::SetObjectiveCoefficient {
+                            objective: oid,
+                            variable: vid,
+                            value: cell.value,
+                        });
+                        tracked.push((vid, cell.value));
+                    }
+                    if let Some(existing) = w.compiled_objective_coefficients.get_mut(&oid) {
+                        let incoming: std::collections::HashSet<CompiledVariableId> =
+                            tracked.iter().map(|(vid, _)| *vid).collect();
+                        existing.retain(|(cid, _)| !incoming.contains(cid));
+                        existing.extend(tracked);
+                        existing.sort_by_key(|(cid, _)| *cid);
+                    }
+                }
                 ModelOp::SetCell {
                     cell_key,
                     evaluated_value,

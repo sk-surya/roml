@@ -175,6 +175,11 @@ impl ConstraintStore {
         }
     }
 
+    /// Reserve capacity for additional constraint rows (P1A bulk path).
+    pub fn reserve(&mut self, additional: usize) {
+        self.arena.reserve(additional);
+    }
+
     /// Add a new constraint and return its ID.
     pub fn add(&mut self, bounds: ConstraintBounds) -> ConId {
         let data = ConstraintData::new(bounds);

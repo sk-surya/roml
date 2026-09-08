@@ -81,6 +81,14 @@ impl<T> IdArena<T> {
         (index, generation)
     }
 
+    /// Reserve capacity for additional slots.
+    ///
+    /// Backs bulk-insertion paths that allocate many IDs at once so the
+    /// slot vector grows once instead of rehashing/growing repeatedly.
+    pub fn reserve(&mut self, additional: usize) {
+        self.slots.reserve(additional);
+    }
+
     /// Remove an entity by index and generation.
     ///
     /// Returns the data if the ID was valid, None if stale or out of bounds.
@@ -153,6 +161,10 @@ impl<T> IdArena<T> {
     }
 
     /// Iterate mutably over all occupied slots with their indices.
+    ///
+    /// Retained as shared-arena API (P1.5B no longer routes coefficient
+    /// iteration through it); covered by the arena's own unit test.
+    #[allow(dead_code)]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (u32, Generation, &mut T)> {
         self.slots.iter_mut().enumerate().filter_map(|(idx, slot)| {
             let generation = slot.generation;

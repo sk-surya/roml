@@ -206,6 +206,22 @@ impl ReferenceBackend {
             ModelOp::AddConstraint { con, bounds } => {
                 self.constraints.insert(*con, (*bounds, true));
             }
+            // P1A packed row block: same end state as replaying one
+            // `AddConstraint` plus one `SetCell` per cell (constant
+            // expression with its evaluated value).
+            ModelOp::AddLinearRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    self.constraints.insert(con, (block.bounds[r], true));
+                    let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                    for (&var, &value) in block.vars[s..e].iter().zip(&block.values[s..e]) {
+                        self.constraint_cells.insert(
+                            (CoefficientTarget::Constraint(con), var),
+                            (ValueExpr::constant(value), value),
+                        );
+                    }
+                }
+            }
             ModelOp::RemoveConstraint { con } => {
                 self.constraints.remove(con);
                 // Remove cells for this constraint
@@ -222,6 +238,36 @@ impl ReferenceBackend {
             ModelOp::SetConstraintActive { con, active } => {
                 if let Some(entry) = self.constraints.get_mut(con) {
                     entry.1 = *active;
+                }
+            }
+            // P0 bulk objective block: same end state as replaying one
+            // `SetCell` with an objective target per cell (constant
+            // expression, evaluated value, current objective constant).
+            ModelOp::SetObjectiveCells { obj, cells } => {
+                let constant = self.objective_constants.get(obj).copied().unwrap_or(0.0);
+                for (var, value) in cells.iter() {
+                    self.objective_cells.insert(
+                        (CoefficientTarget::Objective(*obj), *var),
+                        (ValueExpr::constant(*value), *value, constant),
+                    );
+                }
+            }
+            // P1C-2 packed parametric block: same end state as replaying
+            // one `SetCell` with an objective target per cell, keeping the
+            // canonical scaled-parameter expression form the scalar path
+            // stores (`ValueExpr::scaled_param`, which the snapshot and MPS
+            // writers consume bit-for-bit identically).
+            ModelOp::SetObjectiveParamCells { obj, cells } => {
+                let constant = self.objective_constants.get(obj).copied().unwrap_or(0.0);
+                for cell in cells.iter() {
+                    self.objective_cells.insert(
+                        (CoefficientTarget::Objective(*obj), cell.var),
+                        (
+                            ValueExpr::scaled_param(cell.scale, cell.param),
+                            cell.value,
+                            constant,
+                        ),
+                    );
                 }
             }
             ModelOp::SetCell {

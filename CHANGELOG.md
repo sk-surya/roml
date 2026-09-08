@@ -26,6 +26,123 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Structural variable-array naming (P2A, unreleased)
+- `m.vars()` no longer formats, hashes, or stores one string per
+  element. Arrays own a structural reservation (base name + length);
+  implicit `base[i]` names materialize on demand at handle creation,
+  and a compact reverse index answers prospective-array collisions
+  without string scans. Collision semantics are unchanged (including
+  the constraint-names-vs-variable-elements asymmetry, out-of-range
+  and zero-length behavior, and bracketed bases), as is atomic
+  rejection. `repr(model)` counts come from canonical entity state.
+  As a focused correction, sliced-view scalars now display the root
+  ordinal (`x[2:7][0]` is `x[2]`, previously mislabeled `x[0]`; values
+  always flowed by identity). 1M vars: ~330 ms → ~70 ms with
+  substantially lower peak RSS. No public API or spelling change.
+
+#### Lazy sinks converge onto bulk primitives (P1E, unreleased)
+- Model sinks now classify a persistent lazy tree once and lower
+  directly into the cheapest matching core primitive: all-numeric
+  objectives into `set_linear_objective_bulk`, `scale × Param`
+  objectives into `set_linear_objective_param_bulk`, and all-numeric
+  single-row comparisons into one-row `add_linear_rows_bulk`.
+  Classification is a single iterative walk that preserves structural
+  information (numeric buffers never become per-term `ValueExpr`s on
+  the fast paths); genuinely general expressions keep the unchanged
+  general `Affine` path, including the core's documented duplicate
+  handling. A 1M scalar chain inserts in ~81 ms instead of ~412 ms,
+  and the previously stalled 200k general-path solve now syncs like
+  the packed equivalent. No public API or spelling change.
+
+#### Persistent lazy scalar expressions (P1D, unreleased)
+- Scalar `Var`/`Param`/`Expr` algebra now builds a persistent immutable
+  expression tree (`O(1)` per operator, structural sharing, no term
+  copying, no per-operation canonicalization) instead of cloning and
+  re-canonicalizing a flat term vector on every `+`. The old
+  `total = total + v` loop was `O(N²)` (100k terms: ~31 s); it is now
+  linear (100k: ~0.33 s, 1M: ~3.3 s, fitted exponent `p ≈ 0.94`).
+- Packed forms stay packed through surrounding algebra (`rm.sum(x) + 5`,
+  `2 * rm.sum(x)`) instead of materializing a million `ExprTerm`s at
+  each step. Exactly one iterative flattening (explicit stack, no
+  recursion) plus duplicate combination runs at each model sink, and
+  deep-tree teardown is iterative as well.
+- No public API or spelling change: construction-time nonlinear,
+  foreign-model, finiteness, and division errors raise exactly as
+  before; sinks lower to the identical canonical `Affine` handling.
+
+#### Packed parameterized objectives (P1C-2, unreleased)
+- New `Model::set_linear_objective_param_bulk(sense, vars, params, scales,
+  constant)`: one fused validation scan, one packed parametric append
+  (`scale * parameter` cells with evaluated caches plus a compact reverse
+  parameter index, no `ValueExpr` per cell), one packed
+  `Change::BulkObjectiveParamCoefficients` journal entry compiling to a
+  single `ModelOp::SetObjectiveParamCells` delta op. Canonical state is
+  identical to the scalar path (same-variable/same-parameter scales sum;
+  same variable with distinct parameters installs through the general
+  overlay with the combined expression). Packed parametric cells propagate
+  parameter updates through the reverse index and shadow into the general
+  overlay under the same identity on arbitrary symbolic mutation, exactly
+  like packed constants.
+- New `ValueExpr::scaled_param(scale, param)` canonical constructor (bare
+  `Param` at unit scale, otherwise `Constant * Param` — the exact scalar
+  fold shape, so snapshot/delta forms agree bit-for-bit).
+- Python `rm.dot` with structurally cheap parameter-only coefficients
+  (`ParamArray`, broadcast scalar `Param`, trivially representable
+  parameter scalar expressions) over packed numeric decision arrays now
+  lowers without per-element `Affine` expansion and inserts through the
+  parametric bulk primitive. Mixed, general-expression, and
+  parameter-dependent-constant cases keep the existing lowering with
+  identical semantics; the public Python API is unchanged.
+
+#### Packed array expressions (P1C-1, unreleased)
+
+- Array arithmetic over `VarArray`s (`+`, `-`, negation, numeric
+  scaling/division, slicing) and numeric comparisons now stay in a packed
+  structural form until `m.add()`, which inserts through the bulk row
+  primitive in one call. No per-element expression objects on this path.
+  Anything parameterized, mixed, or densely-bounded falls back to the
+  existing per-element machinery with identical semantics; the public
+  Python API is unchanged.
+
+#### Bulk linear rows (P1A/P1B, unreleased)
+- New `Model::add_linear_rows_bulk(row_ptr, vars, values, bounds)`:
+  whole-batch validation, per-row canonicalization (sorted variables,
+  duplicate accumulation, near-zero drop — exactly matching the scalar
+  row path), one packed `Change::BulkLinearRows` journal entry compiling
+  to a single `ModelOp::AddLinearRows` delta op (at most one backend row
+  op per row with coefficients inline).
+- Python `Model.add_linear_rows` keeps its exact public contract and now
+  routes directly to the bulk primitive (no per-row expression objects).
+- Behavior note: CSR rows with sub-`EPSILON` nonzero coefficients are now
+  dropped exactly like scalar-built rows (previously only exact zeros
+  were dropped on the CSR path). Cancellation-to-zero and duplicate
+  accumulation are unchanged.
+
+#### Packed coefficient store (P1.5B, unreleased)
+- Internal coefficient storage is now a packed constant base plus a sparse
+  mutation overlay under stable generational `CoeffId` identities. Canonical
+  cells, algebraic combine, removal cleanup, parameter propagation, stale-ID
+  errors, and snapshot/delta equivalence are unchanged; per-cell hash
+  topology is gone (bulk construction appends contiguously, the global
+  variable index builds lazily on first use).
+- `Model::coefficient()` now returns an owned `CoefficientData` snapshot
+  instead of a reference (packed cells have no per-cell record to borrow);
+  field reads work exactly as before.
+- `Model::set_linear_objective_bulk` routes into packed construction.
+
+#### Bulk constant-objective insertion (P0, unreleased)
+- New `Model::set_linear_objective_bulk(sense, vars, coeffs, constant)`:
+  one fused validation scan, one storage reservation, one packed
+  `Change::BulkObjectiveCoefficients` journal entry compiling to a single
+  `ModelOp::SetObjectiveCells` delta op — instead of one `simplify` plus
+  one general coefficient mutation per term. Canonical state is identical
+  to `minimize`/`maximize`; duplicates fall back to algebraic combine
+  (R2.2); rejection is atomic (API-06.5).
+- New `ModelError::MismatchedBulkLengths` for mismatched bulk inputs.
+- Python: `rm.sum(VarArray)` / `rm.dot(numeric, VarArray)` stay packed
+  into the core bulk primitive (no per-term `Affine` normalization);
+  all other expressions keep the general path with identical semantics.
+
 #### Python interface over persistent sessions (MPY, unreleased)
 
 - New `roml-python` crate (PyO3 + maturin, `pip install roml-python`)

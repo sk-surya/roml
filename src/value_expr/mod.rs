@@ -62,6 +62,22 @@ impl ValueExpr {
         Self::Param(id)
     }
 
+    /// Canonical scaled-parameter form for packed parametric storage
+    /// (P1C-2): bare [`Self::Param`] at unit scale, otherwise
+    /// `Constant(scale) * Param`, which is exactly what the scalar path
+    /// stores (`simplify(Constant(rc) * Param)` folds unit scales away and
+    /// keeps `Mul(Constant, Param)` otherwise). Snapshot, delta-replay,
+    /// and MPS writers that consume this form agree bit-for-bit with the
+    /// scalar path by construction. Also used by the Python binding to
+    /// expand packed-symbolic objectives identically.
+    pub fn scaled_param(scale: f64, id: ParamId) -> Self {
+        if scale == 1.0 {
+            Self::Param(id)
+        } else {
+            Self::Mul(Box::new(Self::Constant(scale)), Box::new(Self::Param(id)))
+        }
+    }
+
     /// Create an addition expression.
     #[allow(clippy::should_implement_trait)]
     pub fn add(left: Self, right: Self) -> Self {
