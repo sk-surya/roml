@@ -111,7 +111,7 @@ pub(crate) struct PackedVars {
 
 /// Coefficient storage for [`PackedVars`]; always finite numerics by
 /// construction (parameterized coefficients stay on the general path).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum PackedCoeffs {
     /// All-ones (from `rm.sum`).
     One,

@@ -26,8 +26,17 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
-#### Bulk linear rows (P1A/P1B, unreleased)
+#### Packed array expressions (P1C-1, unreleased)
 
+- Array arithmetic over `VarArray`s (`+`, `-`, negation, numeric
+  scaling/division, slicing) and numeric comparisons now stay in a packed
+  structural form until `m.add()`, which inserts through the bulk row
+  primitive in one call. No per-element expression objects on this path.
+  Anything parameterized, mixed, or densely-bounded falls back to the
+  existing per-element machinery with identical semantics; the public
+  Python API is unchanged.
+
+#### Bulk linear rows (P1A/P1B, unreleased)
 - New `Model::add_linear_rows_bulk(row_ptr, vars, values, bounds)`:
   whole-batch validation, per-row canonicalization (sorted variables,
   duplicate accumulation, near-zero drop — exactly matching the scalar

@@ -18,7 +18,7 @@ use roml::{
 };
 
 use super::errors::{InvalidHandleError, InvalidModelError, ShapeError};
-use super::expressions::{simplify_value, to_scalar, Comparison, Scalar};
+use super::expressions::{simplify_value, to_scalar, Comparison, PackedCoeffs, Scalar};
 use super::handles::{Constraint, Objective, Param, Var};
 
 /// A parameter-derived constraint bound: the numeric bound installed in the
@@ -957,13 +957,16 @@ impl Model {
     }
 
     /// Array insertion: lower every element first (all-or-none), then
-    /// commit all rows.
+    /// commit all rows. Packed comparisons bypass per-element lowering and
+    /// insert through the core bulk primitive in one call.
     pub(crate) fn add_array(
         slf: &Bound<'_, Self>,
         comparison: &Bound<'_, PyAny>,
         name: Option<&str>,
     ) -> PyResult<super::arrays::ConstraintArray> {
-        use super::arrays::{element_name, ComparisonArray, ConstraintArray};
+        use super::arrays::{
+            element_name, numel, ComparisonArray, ComparisonArrayRepr, ConstraintArray,
+        };
         if let Some(n) = name {
             if n.is_empty() {
                 return Err(InvalidModelError::new_err(
@@ -977,7 +980,16 @@ impl Model {
         let borrowed_arr = arr.borrow();
         super::handles::check_owner(&borrowed_arr.owner, slf)?;
         let shape = borrowed_arr.shape.clone();
-        let items = borrowed_arr.items.clone();
+        let nelems = numel(&shape);
+        // Clone the packed form out (if any) before taking the model lock.
+        let packed = match &borrowed_arr.repr {
+            ComparisonArrayRepr::Packed(p) => Some(p.clone()),
+            ComparisonArrayRepr::Materialized(_) => None,
+        };
+        let items = match &borrowed_arr.repr {
+            ComparisonArrayRepr::Materialized(items) => Some(items.clone()),
+            ComparisonArrayRepr::Packed(_) => None,
+        };
         drop(borrowed_arr);
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
@@ -991,7 +1003,7 @@ impl Model {
                     "duplicate constraint name {n:?}"
                 )));
             }
-            for i in 0..items.len() {
+            for i in 0..nelems {
                 let ename = element_name(n, i);
                 if state.con_names.contains_key(&ename)
                     || state.var_names.contains_key(&ename)
@@ -1004,6 +1016,23 @@ impl Model {
                 }
             }
         }
+        if let Some(packed) = packed {
+            let cons = Self::insert_packed_comparison(&mut state, &packed)?;
+            if let Some(n) = name {
+                state.array_names.insert(n.to_string());
+                for (i, con) in cons.iter().enumerate() {
+                    state.con_names.insert(element_name(n, i), *con);
+                }
+            }
+            state.pending = true;
+            state.py_revision += 1;
+            return Ok(ConstraintArray {
+                owner: slf.clone().unbind(),
+                shape,
+                cons,
+            });
+        }
+        let items = items.expect("packed xor materialized");
         // Lower everything before inserting anything.
         let mut lowered = Vec::with_capacity(items.len());
         for (affine, side) in &items {
@@ -1037,6 +1066,55 @@ impl Model {
             shape,
             cons,
         })
+    }
+
+    /// Insert a packed numeric comparison array through the core bulk row
+    /// primitive (P1C-1): one flat row block, no per-element lowering.
+    /// Bounds fold the packed scalar constant exactly like `lower_affine`
+    /// (`bound - constant`, finiteness-checked); the core canonicalizes
+    /// each row exactly like scalar insertion.
+    fn insert_packed_comparison(
+        state: &mut ModelState,
+        packed: &super::arrays::PackedComparison,
+    ) -> PyResult<Vec<ConId>> {
+        use super::arrays::{numel, PackedSense};
+        let n = numel(&packed.shape);
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let mut row_ptr: Vec<u32> = Vec::with_capacity(n + 1);
+        let mut flat_vars: Vec<VarId> = Vec::with_capacity(packed.array.terms.len() * n);
+        let mut flat_values: Vec<f64> = Vec::with_capacity(packed.array.terms.len() * n);
+        let mut row_bounds: Vec<ConstraintBounds> = Vec::with_capacity(n);
+        row_ptr.push(0);
+        for i in 0..n {
+            for term in &packed.array.terms {
+                let c = match &term.coeffs {
+                    PackedCoeffs::One => 1.0,
+                    PackedCoeffs::Scalar(c) => *c,
+                    PackedCoeffs::Dense(v) => v[i],
+                };
+                flat_vars.push(term.vars[i]);
+                flat_values.push(c);
+            }
+            let shifted = packed.bound - packed.array.constant;
+            if !shifted.is_finite() {
+                return Err(map_model_error(ModelError::NonFiniteValue(
+                    "constraint bound",
+                )));
+            }
+            let (lower, upper) = match packed.sense {
+                PackedSense::Le => (f64::NEG_INFINITY, shifted),
+                PackedSense::Ge => (shifted, f64::INFINITY),
+                PackedSense::Eq => (shifted, shifted),
+            };
+            row_bounds.push(ConstraintBounds { lower, upper });
+            row_ptr.push(flat_vars.len() as u32);
+        }
+        state
+            .model
+            .add_linear_rows_bulk(&row_ptr, &flat_vars, &flat_values, &row_bounds)
+            .map_err(map_model_error)
     }
 }
 
