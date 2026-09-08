@@ -95,22 +95,30 @@ fn operand_numeric(value: &Bound<'_, PyAny>, op: &str) -> PyResult<f64> {
 
 /// Packed constant-coefficient vector form (P0 bulk path).
 ///
-/// Produced by `rm.sum(VarArray)` and `rm.dot(numeric, VarArray)`: it retains
-/// the variable vector and dense/unit coefficients WITHOUT expanding them
-/// into per-term `Affine` structures, so a million-term objective crosses
-/// into the core as two flat buffers. Any arithmetic on a packed value
-/// materializes it to a general `Affine` first; only `minimize`/`maximize`
-/// consume the packed form directly.
+/// Produced by `rm.sum(VarArray)` and numeric `rm.dot` reductions: it retains
+/// the owner plus a structural multi-term array WITHOUT expanding it into
+/// per-term `Affine` structures, so a million-term objective crosses into
+/// the core as flat buffers. Any arithmetic on a packed value materializes
+/// it to a general `Affine` first; only `minimize`/`maximize` consume the
+/// packed form directly.
 #[derive(Debug)]
 pub(crate) struct PackedVars {
     pub owner: Py<Model>,
-    pub vars: Vec<VarId>,
-    pub coeffs: PackedCoeffs,
-    pub constant: f64,
+    pub array: PackedLinearArray,
 }
 
-/// Coefficient storage for [`PackedVars`]; always finite numerics by
-/// construction (parameterized coefficients stay on the general path).
+impl Clone for PackedVars {
+    fn clone(&self) -> Self {
+        Python::attach(|py| Self {
+            owner: self.owner.clone_ref(py),
+            array: self.array.clone(),
+        })
+    }
+}
+
+/// Coefficient storage for packed forms; always finite numerics by
+/// construction (parameterized coefficients stay on the general path...
+/// and on [`Scalar::PackedSymbolic`] in P1C-2).
 #[derive(Clone, Debug)]
 pub(crate) enum PackedCoeffs {
     /// All-ones (from `rm.sum`).
@@ -121,8 +129,151 @@ pub(crate) enum PackedCoeffs {
     Dense(Vec<f64>),
 }
 
+/// One elementwise term of a packed array: `coeffs[i] * vars[i]` per
+/// element, C-order aligned with the array shape.
+#[derive(Clone, Debug)]
+pub(crate) struct PackedArrayTerm {
+    pub vars: Vec<VarId>,
+    pub coeffs: PackedCoeffs,
+}
+
+/// Structural packed linear array (P1C-1): elementwise terms plus a numeric
+/// scalar constant. Coefficients are numeric-only (`One` / `Scalar` /
+/// `Dense`); anything parameterized stays on the general `Vec<Affine>`
+/// path. Term vectors align elementwise; construction never allocates
+/// per-element expression objects.
+#[derive(Clone, Debug)]
+pub(crate) struct PackedLinearArray {
+    pub shape: Vec<usize>,
+    pub terms: Vec<PackedArrayTerm>,
+    pub constant: f64,
+}
+
+impl PackedLinearArray {
+    pub(crate) fn numel(&self) -> usize {
+        self.shape.iter().product()
+    }
+
+    /// Single unit-coefficient term over a variable vector.
+    pub(crate) fn from_vars(vars: Vec<VarId>, shape: Vec<usize>) -> Self {
+        debug_assert_eq!(vars.len(), shape.iter().product::<usize>());
+        Self {
+            shape,
+            terms: vec![PackedArrayTerm {
+                vars,
+                coeffs: PackedCoeffs::One,
+            }],
+            constant: 0.0,
+        }
+    }
+
+    /// Scale every coefficient and the constant by a finite factor.
+    pub(crate) fn scale(&mut self, factor: f64) {
+        for term in &mut self.terms {
+            term.coeffs = match std::mem::replace(&mut term.coeffs, PackedCoeffs::One) {
+                PackedCoeffs::One => PackedCoeffs::Scalar(factor),
+                PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(c * factor),
+                PackedCoeffs::Dense(v) => {
+                    PackedCoeffs::Dense(v.into_iter().map(|x| x * factor).collect())
+                }
+            };
+        }
+        self.constant *= factor;
+    }
+
+    /// Elementwise dense scaling. Requires a zero scalar constant (a dense
+    /// factor would otherwise densify it); callers fall back to the general
+    /// path when the constant is nonzero.
+    pub(crate) fn scale_dense(&mut self, s: &[f64]) {
+        debug_assert_eq!(s.len(), self.numel());
+        debug_assert_eq!(self.constant, 0.0);
+        for term in &mut self.terms {
+            term.coeffs = match std::mem::replace(&mut term.coeffs, PackedCoeffs::One) {
+                PackedCoeffs::One => PackedCoeffs::Dense(s.to_vec()),
+                PackedCoeffs::Scalar(c) => PackedCoeffs::Dense(s.iter().map(|x| x * c).collect()),
+                PackedCoeffs::Dense(v) => {
+                    PackedCoeffs::Dense(v.into_iter().zip(s.iter()).map(|(a, b)| a * b).collect())
+                }
+            };
+        }
+    }
+
+    /// Add a scalar to the constant.
+    pub(crate) fn add_scalar(&mut self, v: f64) {
+        self.constant += v;
+    }
+
+    /// Add (`sign` +1) or subtract (−1) another same-shape packed array.
+    pub(crate) fn combine(&mut self, other: &PackedLinearArray, sign: f64) {
+        debug_assert_eq!(self.shape, other.shape);
+        for term in &other.terms {
+            let coeffs = match &term.coeffs {
+                PackedCoeffs::One => PackedCoeffs::Scalar(sign),
+                PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(c * sign),
+                PackedCoeffs::Dense(v) => PackedCoeffs::Dense(v.iter().map(|x| x * sign).collect()),
+            };
+            self.terms.push(PackedArrayTerm {
+                vars: term.vars.clone(),
+                coeffs,
+            });
+        }
+        self.constant += sign * other.constant;
+    }
+
+    /// Sub-select C-order flat positions into a new shape.
+    pub(crate) fn select(&self, flat: &[usize], shape: Vec<usize>) -> Self {
+        debug_assert_eq!(flat.len(), shape.iter().product::<usize>());
+        let terms = self
+            .terms
+            .iter()
+            .map(|t| {
+                let vars = flat.iter().map(|&f| t.vars[f]).collect();
+                let coeffs = match &t.coeffs {
+                    PackedCoeffs::One => PackedCoeffs::One,
+                    PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(*c),
+                    PackedCoeffs::Dense(v) => {
+                        PackedCoeffs::Dense(flat.iter().map(|&f| v[f]).collect())
+                    }
+                };
+                PackedArrayTerm { vars, coeffs }
+            })
+            .collect();
+        Self {
+            shape,
+            terms,
+            constant: self.constant,
+        }
+    }
+
+    /// Expand to per-element affines (fallback/materialization boundary).
+    pub(crate) fn materialize(&self, py: Python<'_>, owner: &pyo3::Py<Model>) -> Vec<Affine> {
+        let n = self.numel();
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut terms = Vec::with_capacity(self.terms.len());
+            for t in &self.terms {
+                let c = match &t.coeffs {
+                    PackedCoeffs::One => 1.0,
+                    PackedCoeffs::Scalar(c) => *c,
+                    PackedCoeffs::Dense(v) => v[i],
+                };
+                terms.push(ExprTerm {
+                    var: t.vars[i],
+                    coeff: ValueExpr::constant(c),
+                });
+            }
+            out.push(Affine {
+                owner: owner.clone_ref(py),
+                terms,
+                constant: ValueExpr::constant(self.constant),
+            });
+        }
+        out
+    }
+}
+
 /// A scalar objective/expression form: either a general `Affine` or a
-/// packed constant-coefficient vector.
+/// packed constant-coefficient array.
 #[derive(Debug)]
 pub(crate) enum Scalar {
     Affine(Affine),
@@ -136,13 +287,7 @@ impl Clone for Scalar {
             Self::Packed(p) => Python::attach(|py| {
                 Self::Packed(PackedVars {
                     owner: p.owner.clone_ref(py),
-                    vars: p.vars.clone(),
-                    coeffs: match &p.coeffs {
-                        PackedCoeffs::One => PackedCoeffs::One,
-                        PackedCoeffs::Scalar(v) => PackedCoeffs::Scalar(*v),
-                        PackedCoeffs::Dense(v) => PackedCoeffs::Dense(v.clone()),
-                    },
-                    constant: p.constant,
+                    array: p.array.clone(),
                 })
             }),
         }
@@ -158,44 +303,47 @@ impl Scalar {
         }
     }
 
-    /// General `Affine` view, expanding packed vectors term-by-term.
+    /// General `Affine` view, expanding packed arrays term-by-term.
     /// Only non-bulk consumers pay this; `minimize`/`maximize` match on
     /// [`Scalar::Packed`] directly.
     pub(crate) fn materialize(&self, py: Python<'_>) -> Affine {
         match self {
             Self::Affine(a) => a.clone(),
             Self::Packed(p) => {
-                let terms = match &p.coeffs {
-                    PackedCoeffs::One => p
-                        .vars
-                        .iter()
-                        .map(|v| ExprTerm {
-                            var: *v,
-                            coeff: ValueExpr::constant(1.0),
-                        })
-                        .collect(),
-                    PackedCoeffs::Scalar(c) => p
-                        .vars
-                        .iter()
-                        .map(|v| ExprTerm {
-                            var: *v,
-                            coeff: ValueExpr::constant(*c),
-                        })
-                        .collect(),
-                    PackedCoeffs::Dense(values) => p
-                        .vars
-                        .iter()
-                        .zip(values.iter())
-                        .map(|(v, c)| ExprTerm {
-                            var: *v,
-                            coeff: ValueExpr::constant(*c),
-                        })
-                        .collect(),
-                };
+                let array = &p.array;
+                let mut terms = Vec::with_capacity(array.terms.iter().map(|t| t.vars.len()).sum());
+                for t in &array.terms {
+                    match &t.coeffs {
+                        PackedCoeffs::One => {
+                            for v in &t.vars {
+                                terms.push(ExprTerm {
+                                    var: *v,
+                                    coeff: ValueExpr::constant(1.0),
+                                });
+                            }
+                        }
+                        PackedCoeffs::Scalar(c) => {
+                            for v in &t.vars {
+                                terms.push(ExprTerm {
+                                    var: *v,
+                                    coeff: ValueExpr::constant(*c),
+                                });
+                            }
+                        }
+                        PackedCoeffs::Dense(values) => {
+                            for (v, c) in t.vars.iter().zip(values.iter()) {
+                                terms.push(ExprTerm {
+                                    var: *v,
+                                    coeff: ValueExpr::constant(*c),
+                                });
+                            }
+                        }
+                    }
+                }
                 Affine {
                     owner: p.owner.clone_ref(py),
                     terms,
-                    constant: ValueExpr::constant(p.constant),
+                    constant: ValueExpr::constant(array.constant),
                 }
             }
         }
@@ -211,7 +359,7 @@ impl Expr {
     fn inner_term_count(&self) -> usize {
         match &self.inner {
             Scalar::Affine(a) => a.terms.len(),
-            Scalar::Packed(p) => p.vars.len(),
+            Scalar::Packed(p) => p.array.numel(),
         }
     }
 }

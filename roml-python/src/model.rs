@@ -98,16 +98,28 @@ pub(crate) fn map_model_error(err: ModelError) -> PyErr {
     }
 }
 
-/// Evaluate a bound/value expression against committed parameter values.
-/// Committed values are always fresh: update() commits accepted batches
-/// before returning, so no queued-but-uncommitted state can exist outside
-/// update/solve internals.
-pub(crate) fn eval_expr(state: &ModelState, expr: &ValueExpr) -> Result<f64, ModelError> {
-    let values: HashMap<ParamId, f64> = state
+/// Snapshot of committed parameter values for preflight evaluation.
+///
+/// Built ONCE per lowering call and shared across all coefficient/bound
+/// evaluations within it: rebuilding it per term is quadratic in the
+/// parameter count (P1C-2 instrumentation). Values cannot change mid-call
+/// (the model lock is held throughout), so sharing is exact.
+pub(crate) fn param_values(state: &ModelState) -> HashMap<ParamId, f64> {
+    state
         .param_names
         .values()
         .map(|id| (*id, state.model.parameter_value(*id).unwrap_or(0.0)))
-        .collect();
+        .collect()
+}
+
+/// Evaluate a value expression against a prebuilt parameter snapshot.
+/// Committed values are always fresh: update() commits accepted batches
+/// before returning, so no queued-but-uncommitted state can exist outside
+/// update/solve internals.
+pub(crate) fn eval_expr(
+    values: &HashMap<ParamId, f64>,
+    expr: &ValueExpr,
+) -> Result<f64, ModelError> {
     for dep in expr.dependencies() {
         if !values.contains_key(&dep) {
             return Err(ModelError::ParameterNotFound(dep));
@@ -801,15 +813,16 @@ impl Model {
                 "parameter-dependent objective constants are not supported; move the parameter into a coefficient or a constraint bound",
             ));
         }
+        let values = param_values(&state);
         let mut lin = LinExpr::new();
         for term in &e.terms {
             let coeff = simplify_value(term.coeff.clone());
             // Preflight mirroring lower_affine: non-finite coefficients
             // fail here, not inside core insertion.
-            eval_expr(&state, &coeff).map_err(map_model_error)?;
+            eval_expr(&values, &coeff).map_err(map_model_error)?;
             lin = lin.term(TermCoeff::from(coeff), term.var);
         }
-        let const_now = eval_expr(&state, &const_simp).map_err(map_model_error)?;
+        let const_now = eval_expr(&values, &const_simp).map_err(map_model_error)?;
         lin = lin.constant(const_now);
         let obj = match sense {
             Sense::Minimize => state.model.minimize(lin),
@@ -840,17 +853,31 @@ impl Model {
         sense: Sense,
     ) -> PyResult<Objective> {
         use super::expressions::PackedCoeffs;
-        if !packed.constant.is_finite() {
+        if !packed.array.constant.is_finite() {
             return Err(InvalidModelError::new_err(
                 "objective constant must be finite",
             ));
         }
-        let n = packed.vars.len();
-        let coeffs: Vec<f64> = match &packed.coeffs {
-            PackedCoeffs::One => vec![1.0; n],
-            PackedCoeffs::Scalar(v) => vec![*v; n],
-            PackedCoeffs::Dense(values) => values.clone(),
-        };
+        // Flatten term blocks into parallel buffers for the core bulk
+        // primitive (single-term inputs stay a single contiguous run).
+        let mut vars: Vec<VarId> = Vec::new();
+        let mut coeffs: Vec<f64> = Vec::new();
+        for term in &packed.array.terms {
+            match &term.coeffs {
+                PackedCoeffs::One => {
+                    vars.extend_from_slice(&term.vars);
+                    coeffs.extend(std::iter::repeat_n(1.0, term.vars.len()));
+                }
+                PackedCoeffs::Scalar(v) => {
+                    vars.extend_from_slice(&term.vars);
+                    coeffs.extend(std::iter::repeat_n(*v, term.vars.len()));
+                }
+                PackedCoeffs::Dense(values) => {
+                    vars.extend_from_slice(&term.vars);
+                    coeffs.extend_from_slice(values);
+                }
+            }
+        }
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
         let core_sense = match sense {
@@ -859,7 +886,7 @@ impl Model {
         };
         let obj = state
             .model
-            .set_linear_objective_bulk(core_sense, &packed.vars, &coeffs, packed.constant)
+            .set_linear_objective_bulk(core_sense, &vars, &coeffs, packed.array.constant)
             .map_err(map_model_error)?;
         state.pending = true;
         state.py_revision += 1;
@@ -1454,6 +1481,7 @@ fn lower_affine(
     Option<ValueExpr>,
 )> {
     use super::arrays::BoundSide;
+    let values = param_values(state);
     let mut lin = LinExpr::new();
     for term in &affine.terms {
         if state.model.variable_bounds(term.var).is_none() {
@@ -1465,24 +1493,23 @@ fn lower_affine(
         // Preflight: a coefficient that is non-finite at current values
         // would fail core insertion mid-batch. Reject the whole batch
         // before installing any row.
-        eval_expr(state, &coeff).map_err(map_model_error)?;
+        eval_expr(&values, &coeff).map_err(map_model_error)?;
         lin = lin.term(TermCoeff::from(coeff), term.var);
     }
     let const_expr = affine.constant.clone();
-    let eval_bound =
-        |state: &ModelState, e: &ValueExpr| -> Result<(f64, Option<ValueExpr>), ModelError> {
-            let shifted = e.clone() - const_expr.clone();
-            if shifted.dependencies().is_empty() {
-                let v = shifted.eval(|_| 0.0);
-                if !v.is_finite() {
-                    return Err(ModelError::NonFiniteValue("constraint bound"));
-                }
-                Ok((v, None))
-            } else {
-                let v = eval_expr(state, &shifted)?;
-                Ok((v, Some(simplify_value(shifted))))
+    let eval_bound = |e: &ValueExpr| -> Result<(f64, Option<ValueExpr>), ModelError> {
+        let shifted = e.clone() - const_expr.clone();
+        if shifted.dependencies().is_empty() {
+            let v = shifted.eval(|_| 0.0);
+            if !v.is_finite() {
+                return Err(ModelError::NonFiniteValue("constraint bound"));
             }
-        };
+            Ok((v, None))
+        } else {
+            let v = eval_expr(&values, &shifted)?;
+            Ok((v, Some(simplify_value(shifted))))
+        }
+    };
     let (lower_expr, upper_expr) = match side {
         BoundSide::Upper(u) => (None, Some(u.clone())),
         BoundSide::Lower(l) => (Some(l.clone()), None),
@@ -1490,14 +1517,14 @@ fn lower_affine(
     };
     let (lower_val, lower_sym) = match lower_expr {
         Some(e) => {
-            let (v, s) = eval_bound(state, &e).map_err(map_model_error)?;
+            let (v, s) = eval_bound(&e).map_err(map_model_error)?;
             (v, s)
         }
         None => (f64::NEG_INFINITY, None),
     };
     let (upper_val, upper_sym) = match upper_expr {
         Some(e) => {
-            let (v, s) = eval_bound(state, &e).map_err(map_model_error)?;
+            let (v, s) = eval_bound(&e).map_err(map_model_error)?;
             (v, s)
         }
         None => (f64::INFINITY, None),

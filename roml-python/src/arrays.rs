@@ -8,11 +8,13 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PySequence, PyTuple};
-use roml::{ValueExpr, VarId};
+use roml::{ParamId, ValueExpr, VarId};
 
 use super::errors::{InvalidModelError, ModelMismatchError, ShapeError};
 pub(crate) use super::expressions::BoundSide;
-use super::expressions::{simplify_value, Affine, PackedCoeffs, PackedVars, Scalar};
+use super::expressions::{
+    simplify_value, Affine, PackedArrayTerm, PackedCoeffs, PackedLinearArray, PackedVars, Scalar,
+};
 use super::expressions::{Comparison, ExprTerm};
 use super::handles::{Param, Var};
 use super::model::Model;
@@ -577,149 +579,6 @@ fn var_affine_of(py: Python<'_>, owner: &pyo3::Py<Model>, var: VarId) -> Affine 
 enum Operand {
     Scalar(Affine),
     Vector(Vec<usize>, Vec<Affine>),
-}
-
-/// One elementwise term of a packed array: `coeffs[i] * vars[i]` per
-/// element, C-order aligned with the array shape.
-#[derive(Clone, Debug)]
-pub(crate) struct PackedArrayTerm {
-    pub vars: Vec<VarId>,
-    pub coeffs: PackedCoeffs,
-}
-
-/// Structural packed linear array (P1C-1): elementwise terms plus a numeric
-/// scalar constant. Coefficients are numeric-only (`One` / `Scalar` /
-/// `Dense`); anything parameterized stays on the general `Vec<Affine>`
-/// path. Term vectors align elementwise; construction never allocates
-/// per-element expression objects.
-#[derive(Clone, Debug)]
-pub(crate) struct PackedLinearArray {
-    pub shape: Vec<usize>,
-    pub terms: Vec<PackedArrayTerm>,
-    pub constant: f64,
-}
-
-impl PackedLinearArray {
-    pub(crate) fn numel(&self) -> usize {
-        numel(&self.shape)
-    }
-
-    /// Single unit-coefficient term over a variable vector.
-    pub(crate) fn from_vars(vars: Vec<VarId>, shape: Vec<usize>) -> Self {
-        debug_assert_eq!(vars.len(), numel(&shape));
-        Self {
-            shape,
-            terms: vec![PackedArrayTerm {
-                vars,
-                coeffs: PackedCoeffs::One,
-            }],
-            constant: 0.0,
-        }
-    }
-
-    /// Scale every coefficient and the constant by a finite factor.
-    pub(crate) fn scale(&mut self, factor: f64) {
-        for term in &mut self.terms {
-            term.coeffs = match std::mem::replace(&mut term.coeffs, PackedCoeffs::One) {
-                PackedCoeffs::One => PackedCoeffs::Scalar(factor),
-                PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(c * factor),
-                PackedCoeffs::Dense(v) => {
-                    PackedCoeffs::Dense(v.into_iter().map(|x| x * factor).collect())
-                }
-            };
-        }
-        self.constant *= factor;
-    }
-
-    /// Elementwise dense scaling. Requires a zero scalar constant (a dense
-    /// factor would otherwise densify it); callers fall back to the general
-    /// path when the constant is nonzero.
-    pub(crate) fn scale_dense(&mut self, s: &[f64]) {
-        debug_assert_eq!(s.len(), self.numel());
-        debug_assert_eq!(self.constant, 0.0);
-        for term in &mut self.terms {
-            term.coeffs = match std::mem::replace(&mut term.coeffs, PackedCoeffs::One) {
-                PackedCoeffs::One => PackedCoeffs::Dense(s.to_vec()),
-                PackedCoeffs::Scalar(c) => PackedCoeffs::Dense(s.iter().map(|x| x * c).collect()),
-                PackedCoeffs::Dense(v) => {
-                    PackedCoeffs::Dense(v.into_iter().zip(s.iter()).map(|(a, b)| a * b).collect())
-                }
-            };
-        }
-    }
-
-    /// Add a scalar to the constant.
-    pub(crate) fn add_scalar(&mut self, v: f64) {
-        self.constant += v;
-    }
-
-    /// Add (`sign` +1) or subtract (−1) another same-shape packed array.
-    pub(crate) fn combine(&mut self, other: &PackedLinearArray, sign: f64) {
-        debug_assert_eq!(self.shape, other.shape);
-        for term in &other.terms {
-            let coeffs = match &term.coeffs {
-                PackedCoeffs::One => PackedCoeffs::Scalar(sign),
-                PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(c * sign),
-                PackedCoeffs::Dense(v) => PackedCoeffs::Dense(v.iter().map(|x| x * sign).collect()),
-            };
-            self.terms.push(PackedArrayTerm {
-                vars: term.vars.clone(),
-                coeffs,
-            });
-        }
-        self.constant += sign * other.constant;
-    }
-
-    /// Sub-select C-order flat positions into a new shape.
-    pub(crate) fn select(&self, flat: &[usize], shape: Vec<usize>) -> Self {
-        debug_assert_eq!(flat.len(), numel(&shape));
-        let terms = self
-            .terms
-            .iter()
-            .map(|t| {
-                let vars = flat.iter().map(|&f| t.vars[f]).collect();
-                let coeffs = match &t.coeffs {
-                    PackedCoeffs::One => PackedCoeffs::One,
-                    PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(*c),
-                    PackedCoeffs::Dense(v) => {
-                        PackedCoeffs::Dense(flat.iter().map(|&f| v[f]).collect())
-                    }
-                };
-                PackedArrayTerm { vars, coeffs }
-            })
-            .collect();
-        Self {
-            shape,
-            terms,
-            constant: self.constant,
-        }
-    }
-
-    /// Expand to per-element affines (fallback/materialization boundary).
-    pub(crate) fn materialize(&self, py: Python<'_>, owner: &pyo3::Py<Model>) -> Vec<Affine> {
-        let n = self.numel();
-        let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            let mut terms = Vec::with_capacity(self.terms.len());
-            for t in &self.terms {
-                let c = match &t.coeffs {
-                    PackedCoeffs::One => 1.0,
-                    PackedCoeffs::Scalar(c) => *c,
-                    PackedCoeffs::Dense(v) => v[i],
-                };
-                terms.push(ExprTerm {
-                    var: t.vars[i],
-                    coeff: ValueExpr::constant(c),
-                });
-            }
-            out.push(Affine {
-                owner: owner.clone_ref(py),
-                terms,
-                constant: ValueExpr::constant(self.constant),
-            });
-        }
-        out
-    }
 }
 
 /// Internal representation of an expression array: packed structural form
@@ -2368,9 +2227,7 @@ pub(crate) fn sum(obj: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if !arr.vars.is_empty() {
             let packed = PackedVars {
                 owner: arr.owner.clone_ref(py),
-                vars: arr.vars.clone(),
-                coeffs: PackedCoeffs::One,
-                constant: 0.0,
+                array: PackedLinearArray::from_vars(arr.vars.clone(), arr.shape.clone()),
             };
             return Ok(super::expressions::Expr {
                 inner: Scalar::Packed(packed),
@@ -2456,6 +2313,255 @@ fn array_affines(obj: &Bound<'_, PyAny>) -> PyResult<(pyo3::Py<Model>, Vec<Affin
     ))
 }
 
+/// One analyzed dot-product left coefficient (P1C-2 phase 1 keeps the
+/// full expression, exactly as the general fold would).
+#[derive(Clone, Debug)]
+enum DotLeft {
+    Num(f64),
+    Sym(DotSym),
+}
+
+/// A parameter-only coefficient in original form.
+#[derive(Clone, Debug)]
+enum DotSym {
+    /// Bare parameter reference.
+    Bare(ParamId),
+    /// Original parameter-only expression.
+    Expr(ValueExpr),
+}
+
+/// Structural dot-product lowering (P1C-2 phase 1).
+///
+/// The right side normalizes to packed form with no per-element `Affine`
+/// objects; the left side analyzes to per-element coefficients with no
+/// per-element `ValueExpr` vectors. An all-numeric result stays packed
+/// (P0 bulk objective path); a symbolic result builds one `Affine` with
+/// direct term pushes (no `HashMap` fold; the balanced-constant tree runs
+/// only when the right constant is nonzero, mirroring the general fold).
+/// Returns `None` when the general path must run (materialized or empty
+/// right side, or a left shape the general dense parser must reject).
+/// Every error raised here matches the general path exactly.
+fn dot_structural(
+    py: Python<'_>,
+    coefficients: &Bound<'_, PyAny>,
+    expressions: &Bound<'_, PyAny>,
+) -> PyResult<Option<Py<PyAny>>> {
+    use super::expressions::Expr as PyExpr;
+    // Right normalization: owned variable vector or packed array, nonempty.
+    let (owner, right): (pyo3::Py<Model>, PackedLinearArray) =
+        if let Ok(arr) = expressions.cast::<VarArray>() {
+            let arr = arr.borrow();
+            if arr.vars.is_empty() {
+                return Ok(None);
+            }
+            (
+                arr.owner.clone_ref(py),
+                PackedLinearArray::from_vars(arr.vars.clone(), arr.shape.clone()),
+            )
+        } else if let Ok(arr) = expressions.cast::<ExprArray>() {
+            let arr = arr.borrow();
+            match &arr.repr {
+                ExprArrayRepr::Packed(packed) if packed.numel() > 0 => {
+                    (arr.owner.clone_ref(py), packed.clone())
+                }
+                _ => return Ok(None),
+            }
+        } else {
+            return Ok(None);
+        };
+    let n = right.numel();
+    if coefficients.cast::<VarArray>().is_ok() || coefficients.cast::<Var>().is_ok() {
+        return Err(super::errors::UnsupportedExpressionError::new_err(
+            "dot coefficients must be numeric or parameter-only; decision-dependent coefficients multiplying decision expressions are nonlinear",
+        ));
+    }
+    // Left analysis (disjoint operand kinds; relative order is free).
+    let mut left: Vec<DotLeft> = Vec::with_capacity(n);
+    if let Ok(arr) = coefficients.cast::<ParamArray>() {
+        let arr = arr.borrow();
+        owners_match(&arr.owner, &owner)?;
+        if arr.shape != right.shape {
+            return Err(ShapeError::new_err(format!(
+                "dot: coefficient shape {:?} does not match expression shape {:?}",
+                arr.shape, right.shape
+            )));
+        }
+        left.extend(arr.params.iter().map(|p| DotLeft::Sym(DotSym::Bare(*p))));
+    } else if let Ok(param) = coefficients.cast::<super::handles::Param>() {
+        let param = param.borrow();
+        owners_match(&param.owner, &owner)?;
+        left.extend(std::iter::repeat_n(DotLeft::Sym(DotSym::Bare(param.id)), n));
+    } else if let Ok(arr) = coefficients.cast::<ExprArray>() {
+        let arr = arr.borrow();
+        owners_match(&arr.owner, &owner)?;
+        if arr.shape != right.shape {
+            return Err(ShapeError::new_err(format!(
+                "dot: coefficient shape {:?} does not match expression shape {:?}",
+                arr.shape, right.shape
+            )));
+        }
+        match &arr.repr {
+            // Packed left arrays always carry decision variables.
+            ExprArrayRepr::Packed(_) => {
+                return Err(super::errors::UnsupportedExpressionError::new_err(
+                    "dot coefficients must be numeric or parameter-only; decision-dependent coefficients multiplying decision expressions are nonlinear",
+                ));
+            }
+            ExprArrayRepr::Materialized(exprs) => {
+                for e in exprs.iter() {
+                    if !e.terms.is_empty() {
+                        return Err(super::errors::UnsupportedExpressionError::new_err(
+                            "dot coefficients must be numeric or parameter-only; decision-dependent coefficients multiplying decision expressions are nonlinear",
+                        ));
+                    }
+                    if e.constant.dependencies().is_empty() {
+                        left.push(DotLeft::Num(e.constant.eval(|_| 0.0)));
+                    } else {
+                        left.push(DotLeft::Sym(DotSym::Expr(e.constant.clone())));
+                    }
+                }
+            }
+        }
+    } else if let Ok(expr) = coefficients.cast::<PyExpr>() {
+        let expr = expr.borrow();
+        let inner = expr.inner.materialize(py);
+        owners_match(&inner.owner, &owner)?;
+        if !inner.terms.is_empty() {
+            return Err(super::errors::UnsupportedExpressionError::new_err(
+                "dot coefficients must be numeric or parameter-only; decision-dependent coefficients multiplying decision expressions are nonlinear",
+            ));
+        }
+        if inner.constant.dependencies().is_empty() {
+            left.extend(std::iter::repeat_n(
+                DotLeft::Num(inner.constant.eval(|_| 0.0)),
+                n,
+            ));
+        } else {
+            left.extend(std::iter::repeat_n(
+                DotLeft::Sym(DotSym::Expr(inner.constant.clone())),
+                n,
+            ));
+        }
+    } else if let Some(v) = packed_scalar_number(coefficients) {
+        left.extend(std::iter::repeat_n(DotLeft::Num(v), n));
+    } else if is_numpy_array(coefficients) || coefficients.cast::<PySequence>().is_ok() {
+        let parsed = parse_numeric(py, coefficients, NumericMode::Finite, "dot coefficients")?;
+        if parsed.shape != right.shape {
+            return Err(ShapeError::new_err(format!(
+                "dot: coefficient shape {:?} does not match expression shape {:?}",
+                parsed.shape, right.shape
+            )));
+        }
+        left.extend(parsed.values.into_iter().map(DotLeft::Num));
+    } else {
+        // Anything else (including junk the general dense parser rejects):
+        // the general path owns the error.
+        return Ok(None);
+    }
+    debug_assert_eq!(left.len(), n);
+    let left_as_expr = |c: &DotLeft| -> ValueExpr {
+        match c {
+            DotLeft::Num(v) => ValueExpr::constant(*v),
+            DotLeft::Sym(DotSym::Bare(p)) => ValueExpr::param(*p),
+            DotLeft::Sym(DotSym::Expr(e)) => e.clone(),
+        }
+    };
+    if left.iter().all(|c| matches!(c, DotLeft::Num(_))) {
+        // All-numeric result stays packed (P0 bulk objective path).
+        let mut result = PackedLinearArray {
+            shape: right.shape.clone(),
+            terms: Vec::with_capacity(right.terms.len()),
+            constant: 0.0,
+        };
+        for term in &right.terms {
+            let mut vals = Vec::with_capacity(n);
+            for i in 0..n {
+                let rc = match &term.coeffs {
+                    PackedCoeffs::One => 1.0,
+                    PackedCoeffs::Scalar(c) => *c,
+                    PackedCoeffs::Dense(v) => v[i],
+                };
+                let lc = match &left[i] {
+                    DotLeft::Num(v) => *v,
+                    DotLeft::Sym(_) => unreachable!(),
+                };
+                vals.push(rc * lc);
+            }
+            result.terms.push(PackedArrayTerm {
+                vars: term.vars.clone(),
+                coeffs: PackedCoeffs::Dense(vals),
+            });
+        }
+        // Mirror the general fold's constant handling exactly (per-element
+        // products through the same balanced tree); the common
+        // zero-constant case folds to zero with no work and no NaN hazard.
+        result.constant = if right.constant == 0.0 {
+            0.0
+        } else {
+            balanced_sum(
+                left.iter()
+                    .map(|c| match c {
+                        DotLeft::Num(v) => {
+                            ValueExpr::constant(right.constant) * ValueExpr::constant(*v)
+                        }
+                        DotLeft::Sym(_) => unreachable!(),
+                    })
+                    .collect(),
+            )
+            .eval(|_| 0.0)
+        };
+        return Ok(Some(
+            PyExpr {
+                inner: Scalar::Packed(PackedVars {
+                    owner: owner.clone_ref(py),
+                    array: result,
+                }),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        ));
+    }
+    // Symbolic result: direct term pushes, no HashMap fold. Coefficient
+    // construction mirrors the general fold exactly
+    // (`right * left`, simplified per term).
+    let mut terms = Vec::with_capacity(n * right.terms.len().max(1));
+    for term in &right.terms {
+        for (i, var) in term.vars.iter().enumerate() {
+            let rc = match &term.coeffs {
+                PackedCoeffs::One => 1.0,
+                PackedCoeffs::Scalar(c) => *c,
+                PackedCoeffs::Dense(v) => v[i],
+            };
+            terms.push(ExprTerm {
+                var: *var,
+                coeff: simplify_value(ValueExpr::constant(rc) * left_as_expr(&left[i])),
+            });
+        }
+    }
+    let constant = if right.constant == 0.0 {
+        ValueExpr::constant(0.0)
+    } else {
+        balanced_sum(
+            (0..n)
+                .map(|i| ValueExpr::constant(right.constant) * left_as_expr(&left[i]))
+                .collect(),
+        )
+    };
+    Ok(Some(
+        PyExpr {
+            inner: Scalar::Affine(Affine {
+                owner,
+                terms,
+                constant,
+            }),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind(),
+    ))
+}
+
 /// Scalar dot product of identical-shape arrays in C order: numeric or
 /// parameter-only coefficients times a `VarArray` or affine `ExprArray`.
 /// Two decision-dependent inputs reject as nonlinear.
@@ -2488,9 +2594,14 @@ pub(crate) fn dot(
             if let Some(coeffs) = packed_dot_coefficients(py, &coefficients, &arr.shape)? {
                 let packed = PackedVars {
                     owner: arr.owner.clone_ref(py),
-                    vars: arr.vars.clone(),
-                    coeffs,
-                    constant: 0.0,
+                    array: PackedLinearArray {
+                        shape: arr.shape.clone(),
+                        terms: vec![PackedArrayTerm {
+                            vars: arr.vars.clone(),
+                            coeffs,
+                        }],
+                        constant: 0.0,
+                    },
                 };
                 return Ok(super::expressions::Expr {
                     inner: Scalar::Packed(packed),
@@ -2500,6 +2611,14 @@ pub(crate) fn dot(
                 .unbind());
             }
         }
+    }
+    // P1C-2 structural path: normalize the right side to packed form
+    // without per-element Affines, analyze the left side without
+    // per-element ValueExpr vectors, and lower directly. Falls through to
+    // the general path below (untouched) whenever the shape is not
+    // structural; every error raised here matches the general path.
+    if let Some(out) = dot_structural(py, &coefficients, &expressions)? {
+        return Ok(out);
     }
     // Right side: decision expressions with a concrete shape.
     let (owner, right_shape, right) = {
