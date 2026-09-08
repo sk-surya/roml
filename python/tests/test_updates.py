@@ -227,3 +227,86 @@ def test_zero_dimensional_update_round_trip():
         with pytest.raises(rm.ShapeError):
             m.update(p=np.array([4.0]))
         assert solver.solve(m).objective == pytest.approx(3.0)
+
+
+def test_consecutive_updates_before_solve():
+    # P1 (owner repro): the second update must validate against the
+    # first update's accepted values, not stale committed ones.
+    m = rm.Model()
+    x = m.var("x", ub=100.0)
+    a = m.param("a", 1.0)
+    b = m.param("b", 1.0)
+    m.add(x <= a + b)
+    m.maximize(x)
+    with rm.Highs() as solver:
+        assert solver.solve(m).objective == pytest.approx(2.0)
+        m.update(a=2.0)
+        m.update(b=3.0)
+        assert solver.solve(m).objective == pytest.approx(5.0)
+
+
+def test_sequential_equals_combined_batch():
+    import numpy as np
+
+    # Scalar path.
+    m1 = rm.Model()
+    m2 = rm.Model()
+    for m in (m1, m2):
+        x = m.var("x", ub=100.0)
+        a = m.param("a", 1.0)
+        b = m.param("b", 1.0)
+        m.add(x <= a + b)
+        m.maximize(x)
+    m1.update(a=2.0, b=3.0)
+    m2.update(a=2.0)
+    m2.update(b=3.0)
+    with rm.Highs() as s1, rm.Highs() as s2:
+        assert s1.solve(m1).objective == pytest.approx(s2.solve(m2).objective)
+        assert s1.solve(m1).objective == pytest.approx(5.0)
+
+    # Array path: objective coefficients updated in one vs two batches.
+    n1 = rm.Model()
+    n2 = rm.Model()
+    for m in (n1, n2):
+        x = m.vars("x", 2, ub=100.0)
+        p = m.params("p", [1.0, 1.0])
+        m.add(x[0] + x[1] <= 100.0)
+        m.maximize(rm.dot(p, x))
+    n1.update(p=np.array([2.0, 3.0]))
+    n2.update(p=np.array([2.0, 1.0]))
+    n2.update(p=np.array([2.0, 3.0]))
+    with rm.Highs() as s1, rm.Highs() as s2:
+        assert s1.solve(n1).objective == pytest.approx(s2.solve(n2).objective)
+
+
+def test_second_update_overflow_rejects_then_solves():
+    # Overflow on the second update rejects without corrupting the
+    # first update's accepted state; the model still solves.
+    # (Magnitudes stay inside the backend's tractable finite range so
+    # the surviving state solves cleanly.)
+    m = rm.Model()
+    x = m.var("x", ub=1e308)
+    a = m.param("a", 1.0)
+    b = m.param("b", 1.0)
+    m.add((a * b) * x <= 10)
+    m.maximize(x)
+    with rm.Highs() as solver:
+        m.update(a=1e10)
+        with pytest.raises(rm.InvalidModelError):
+            m.update(b=1e300)
+        result = solver.solve(m)
+        assert result.is_optimal
+        assert result.objective == pytest.approx(10.0 / 1e10)
+
+
+def test_lowering_after_pending_update_uses_fresh_values():
+    # Expression lowering after an accepted-but-uncommitted update must
+    # see the pending values, not stale committed ones.
+    m = rm.Model()
+    x = m.var("x", ub=100.0)
+    a = m.param("a", 1.0)
+    m.update(a=4.0)
+    m.add(x <= a)
+    m.maximize(x)
+    with rm.Highs() as solver:
+        assert solver.solve(m).objective == pytest.approx(4.0)

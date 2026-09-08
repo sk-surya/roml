@@ -52,28 +52,29 @@ Canonical release-wheel numbers, quiet host (see
 
 Wrapper overhead on matched MILP: ~0.55 ms/gate (~14% over direct
 highspy); gate-by-gate objectives agree exactly. PY-27 gate passes
-(2.95 <= 5.53 ms). Bulk: vars 3.1x, per-coefficient ~2.3x,
-end-to-end fixture ~1.3x (core entity costs dominate — fixture
-property, see open gates). Memory soak: FAIL (see below).
+(2.95 <= 5.53 ms). Bulk: amended contract in `BULK-CONTRACT.md`
+(release-measured; end-to-end 1.4x, eliminable-work benefit 2.9x).
+Memory soak: PASSES (0.0 MiB/10k after the #54 journal fix).
 
-## Open gates requiring owner disposition
+## Gate dispositions (owner; closed)
 
-1. **Bulk 3x end-to-end (QUALIFICATION):** unachievable as specified;
-   ~85% of wall time is identical core insertion work in both arms.
-   Mechanism + numbers recorded. Options: amend threshold to a
-   per-coefficient or no-fixed-cost formulation, or authorize core
-   batch-insert work.
-2. **Memory soak (QUALIFICATION):** FAILS — unbounded core journal
-   retention (~20 KB/committed-change cycle; 203 MiB/10k). Not a
-   binding leak (Rust arms identical; highspy flat). Deliberately not
-   worked around. Options: amend threshold, authorize a
-   journal-bounding (cursor-acknowledged pruning) core design, or
-   accept periodic model recycling with explicit semantics.
+1. **Bulk 3x end-to-end — AMENDED AND PASSING** under the restated
+   gate (no interpreter loops; vars/rows/eliminable-work rates with
+   corrected Amdahl reconciliation in `BULK-CONTRACT.md`).
+2. **Memory soak — FIXED AND MERGED (#54).** Count-bounded replay
+   journal with snapshot recovery; soak PASSES (0.0 MiB/10k).
 
-Neither gate was silently waived; both block MPY completion pending
-disposition.
+## Remediation round 2 (owner independent review, 2026-09-08)
 
-## Remediation round (owner independent review, 2026-09-08)
+Consecutive updates validated against stale committed values (P1):
+the proposed environment now layers accepted-pending updates over
+committed values, and expression lowering reads the same effective
+view. Backend error categories preserved explicitly (follow-up).
+Regressions: consecutive updates, sequential-vs-combined equivalence,
+second-update overflow rejection with successful solve after,
+lowering-after-pending (scalar and array paths).
+
+## Remediation round 1 (owner independent review, 2026-09-08)
 
 The owner's independent review of #53 found three P1 correctness
 blockers and four P2s on the previously-reported head; MPY completion
@@ -109,8 +110,10 @@ was reopened. All seven are remediated here with regression tests:
 - Parameter-dependent objective constants rejected explicitly.
 - Timing metadata records binding-measured total + sync mode; native
   segments are not separately observable without core hooks.
-- Candidate rule is values-presence (HiGHS-verified); exact
-  termination-based evidence is a labeled follow-up.
+- Candidate rule is native incumbent evidence: extraction requires
+  HiGHS `primal_solution_status == feasible`; buffer contents alone
+  never establish feasibility (remediation round 1 corrected the
+  earlier values-presence proxy).
 - The Python surface exposes primitive-only updates, so every solve
   reports honest `Delta`/`NoChange` synchronization after warmup
   (asserted in `test_mpc.py`); construct-dependent rebuilds are
@@ -131,7 +134,7 @@ python python/examples/bess_mpc.py
 No packages published, no releases created, no merges performed
 without authorization. Implementation PR stays reviewable.
 
-## Final qualifications (owner, 2026-09-07)
+## Final qualifications (owner, 2026-09-07; re-verified 2026-09-08)
 
 - **Oracle tests:** `importorskip` is appropriate where highspy is
   optional, but mandatory qualification CI now fails if `test_mpc`

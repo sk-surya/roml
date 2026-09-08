@@ -126,7 +126,14 @@ impl SolverFailure {
         use roml::{ErrorCategory, HealthEffect};
         let category = match err.category {
             ErrorCategory::InvalidInput => "backend-invalid-input",
-            _ => "backend-internal",
+            ErrorCategory::Unsupported => "backend-unsupported",
+            ErrorCategory::LibraryNotFound => "backend-library-not-found",
+            ErrorCategory::LicenseFailure => "backend-license-failure",
+            ErrorCategory::Numerical => "backend-numerical",
+            ErrorCategory::OutOfMemory => "backend-out-of-memory",
+            ErrorCategory::Internal => "backend-internal",
+            ErrorCategory::Limit => "backend-limit",
+            ErrorCategory::Unknown => "backend-unknown",
         }
         .to_string();
         let health_effect = match err.health_effect {
@@ -654,6 +661,7 @@ impl Session {
             }
         };
         guard.pending = false;
+        guard.pending_params.clear();
         let metadata = solved.metadata();
         let sync_mode = metadata.synchronization;
         let warm_start = match start {

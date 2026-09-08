@@ -46,6 +46,13 @@ pub(crate) struct ModelState {
     /// C order, so batch updates address elements without reformatting
     /// names or re-hashing per element.
     pub param_array_ids: HashMap<String, Vec<ParamId>>,
+    /// Accepted-but-uncommitted parameter values (installed by update(),
+    /// committed at the next solve). The effective parameter view layers
+    /// these over committed values so consecutive updates and expression
+    /// lowering never validate against stale state. Entries always equal
+    /// accepted values, so overlaying them after an implicit commit is a
+    /// harmless no-op; cleared on successful solve.
+    pub pending_params: HashMap<ParamId, f64>,
     /// Coefficient templates for derived-overflow pre-validation on update:
     /// every parameter-dependent coefficient the binding lowered, keyed by
     /// target. Coefficients update natively in the core; these copies exist
@@ -98,12 +105,23 @@ pub(crate) fn map_model_error(err: ModelError) -> PyErr {
     }
 }
 
-/// Evaluate a bound/value expression against current parameter values.
+/// Effective parameter value: accepted-pending updates layered over
+/// committed values. Consecutive updates and expression lowering must
+/// use this, never committed values alone.
+pub(crate) fn effective_value(state: &ModelState, param: ParamId) -> f64 {
+    state
+        .pending_params
+        .get(&param)
+        .copied()
+        .unwrap_or_else(|| state.model.parameter_value(param).unwrap_or(0.0))
+}
+
+/// Evaluate a bound/value expression against effective parameter values.
 pub(crate) fn eval_expr(state: &ModelState, expr: &ValueExpr) -> Result<f64, ModelError> {
     let values: HashMap<ParamId, f64> = state
         .param_names
         .values()
-        .map(|id| (*id, state.model.parameter_value(*id).unwrap_or(0.0)))
+        .map(|id| (*id, effective_value(state, *id)))
         .collect();
     for dep in expr.dependencies() {
         if !values.contains_key(&dep) {
@@ -191,6 +209,7 @@ impl Model {
                     param_array_ids: HashMap::new(),
                     obj_coeffs: HashMap::new(),
                     con_coeffs: HashMap::new(),
+                    pending_params: HashMap::new(),
                     has_complex_deps: false,
                     has_discrete: false,
                     pending: true,
@@ -423,10 +442,13 @@ impl Model {
         let needs_proposed = !state.bound_deps.is_empty() || state.has_complex_deps;
         let mut proposed: HashMap<ParamId, f64> = HashMap::new();
         if needs_proposed {
+            // Base is the effective view (committed plus accepted
+            // pending), overlaid with the proposed batch.
+            let current: &ModelState = &state;
             proposed = state
                 .param_names
                 .values()
-                .map(|id| (*id, state.model.parameter_value(*id).unwrap_or(0.0)))
+                .map(|id| (*id, effective_value(current, *id)))
                 .collect();
             for (id, v) in &batch {
                 proposed.insert(*id, *v);
@@ -543,6 +565,11 @@ impl Model {
                     },
                 )
                 .map_err(map_model_error)?;
+        }
+        // Record accepted values as pending (committed at next solve) so
+        // consecutive updates validate against them, not stale commits.
+        for (id, v) in &batch {
+            state.pending_params.insert(*id, *v);
         }
         state.pending = true;
         state.py_revision += 1;
@@ -1428,6 +1455,7 @@ mod lock_tests {
                 param_array_shapes: HashMap::new(),
                 param_array_ids: HashMap::new(),
                 obj_coeffs: HashMap::new(),
+                pending_params: HashMap::new(),
                 con_coeffs: HashMap::new(),
                 has_complex_deps: false,
                 bound_deps: Vec::new(),
