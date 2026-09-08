@@ -206,3 +206,55 @@ def test_update_unknown_name_errors_preserved():
         m.update(x=1.0)
     with pytest.raises(rm.InvalidModelError):
         m.update(nope=1.0)
+
+
+def test_param_view_scalars_show_root_ordinal():
+    import numpy as np
+
+    m = rm.Model()
+    p = m.params("p", np.arange(10.0))
+    assert repr(p[0]) == 'Param("p[0]")'
+    v = p[2:7]
+    assert repr(v[0]) == 'Param("p[2]")'
+    assert repr(v[4]) == 'Param("p[6]")'
+    # Nested views retain the original root ordinal.
+    w = v[1:3]
+    assert repr(w[0]) == 'Param("p[3]")'
+    assert repr(w[1]) == 'Param("p[4]")'
+    # Identity and values follow the root variable, not the label.
+    x = m.vars("x", 10, ub=5.0)
+    m.add(x[0] + x[1] <= 6.0)
+    m.maximize(v[0] * x[0] + v[4] * x[1])
+    with rm.Highs() as s:
+        assert s.solve(m).objective == pytest.approx(2.0 * 1.0 + 6.0 * 5.0)
+    # Negative steps are unsupported (documents the boundary).
+    with pytest.raises(rm.ShapeError):
+        p[::-1][0]
+
+
+def test_param_view_2d_flat_ordinals():
+    import numpy as np
+
+    m = rm.Model()
+    p = m.params("q", np.arange(6.0).reshape(2, 3))
+    assert repr(p[0, 0]) == 'Param("q[0]")'
+    assert repr(p[1, 0]) == 'Param("q[3]")'
+    v = p[:, 1:]
+    assert v.shape == (2, 2)
+    assert repr(v[0, 0]) == 'Param("q[1]")'
+    assert repr(v[1, 1]) == 'Param("q[5]")'
+
+
+def test_param_updates_after_views_unchanged():
+    import numpy as np
+
+    m = rm.Model()
+    p = m.params("p", np.arange(4.0))
+    v = p[1:3]
+    x = m.vars("x", 4, ub=5.0)
+    m.add(rm.sum(x) <= 8.0)
+    m.maximize(v[0] * x[1] + v[1] * x[2])
+    with rm.Highs() as s:
+        assert s.solve(m).objective == pytest.approx(1.0 * 3.0 + 2.0 * 5.0)
+        m.update(p=np.arange(4.0) * 10.0)
+        assert s.solve(m).objective == pytest.approx(10.0 * 3.0 + 20.0 * 5.0)

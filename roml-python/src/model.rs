@@ -788,6 +788,8 @@ impl Model {
             shape: parsed.shape,
             params,
             base_name: name.to_string(),
+            // Root arrays own the identity mapping: no side vector.
+            ordinals: None,
         })
     }
 

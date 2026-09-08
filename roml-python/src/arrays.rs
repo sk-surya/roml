@@ -460,6 +460,12 @@ pub struct ParamArray {
     pub shape: Vec<usize>,
     pub params: Vec<roml::ParamId>,
     pub base_name: String,
+    /// Root flat ordinals parallel to [`ParamArray::params`] (same
+    /// principle as `VarArray` ordinals): `None` on roots (identity, no
+    /// side vector); views gather root ordinals so scalar handles
+    /// display the canonical name. Parameter namespace storage stays
+    /// eager — this field carries view lineage only.
+    pub ordinals: Option<Vec<usize>>,
 }
 
 /// Shaped affine expression array.
@@ -1682,19 +1688,29 @@ impl ParamArray {
         let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
         if scalar {
             let id = borrowed.params[flat[0]];
+            let ordinal = borrowed
+                .ordinals
+                .as_ref()
+                .map(|o| o[flat[0]])
+                .unwrap_or(flat[0]);
             let param = super::handles::Param {
                 owner: borrowed.owner.clone_ref(py),
                 id,
-                name: element_name(&borrowed.base_name, flat[0]),
+                name: element_name(&borrowed.base_name, ordinal),
             };
             Ok(param.into_pyobject(py)?.into_any().unbind())
         } else {
             let params = flat.iter().map(|f| borrowed.params[*f]).collect();
+            let ordinals = Some(match &borrowed.ordinals {
+                Some(o) => flat.iter().map(|f| o[*f]).collect(),
+                None => flat.clone(),
+            });
             let view = ParamArray {
                 owner: borrowed.owner.clone_ref(py),
                 shape: result_shape,
                 params,
                 base_name: borrowed.base_name.clone(),
+                ordinals,
             };
             Ok(view.into_pyobject(py)?.into_any().unbind())
         }
