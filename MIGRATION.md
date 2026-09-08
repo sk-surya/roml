@@ -45,7 +45,12 @@ before any merge/release so downstream users can adapt early.
   `Model::add_linear_rows_bulk`, `ModelError::MismatchedBulkLengths`,
   `ModelError::MismatchedRowBlock`, `ModelOp::SetObjectiveCells`,
   `ModelOp::AddLinearRows`, `Change::BulkObjectiveCoefficients`,
-  `Change::BulkLinearRows`, `LinearRowBlock`.
+  `Change::BulkLinearRows`, `LinearRowBlock`,
+  `Model::set_linear_objective_param_bulk` (parallel `scale × parameter`
+  slices with the same atomicity/duplicate semantics),
+  `ValueExpr::scaled_param` (canonical scaled-parameter constructor),
+  `ParamCoeffCell`, `ModelOp::SetObjectiveParamCells`,
+  `Change::BulkObjectiveParamCoefficients`.
 
 ## Variable and parameter creation
 
