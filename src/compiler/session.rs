@@ -936,6 +936,46 @@ impl CompilationSession {
                     origin_additions.insert_constraint(id, EntityOrigin::UserConstraint(*con));
                 }
 
+                // P1A packed row block: at most one backend row op per row,
+                // with coefficients inline (already evaluated). Mirrors the
+                // scalar AddConstraint + per-cell SetCell sequence exactly:
+                // same row-id allocation order, same origin records, same
+                // coefficient values — without per-cell op traffic.
+                ModelOp::AddLinearRows { block } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental row-block addition",
+                    )?;
+                    for r in 0..block.constraints.len() {
+                        let con = block.constraints[r];
+                        let id = CompiledConstraintId(w.next_row_index);
+                        w.next_row_index += 1;
+                        let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                        let mut coefficients = Vec::with_capacity(e.saturating_sub(s));
+                        for (&var, &value) in block.vars[s..e].iter().zip(&block.values[s..e]) {
+                            let vid = *w.variable_ids.get(&var).ok_or_else(|| {
+                                CompileError::RebuildRequired(format!(
+                                    "AddLinearRows for unknown compiled variable ({var:?})"
+                                ))
+                            })?;
+                            coefficients.push((vid, value));
+                        }
+                        // Deterministic compiled order (by compiled id).
+                        coefficients.sort_by_key(|(vid, _)| *vid);
+                        operations.push(BackendOp::AddLinearRow(CompiledLinearRow {
+                            id,
+                            bounds: block.bounds[r],
+                            coefficients,
+                            name: None,
+                        }));
+                        w.row_ids.insert(con, id);
+                        w.compiled_to_row.insert(id, con);
+                        origin_additions.insert_constraint(id, EntityOrigin::UserConstraint(con));
+                    }
+                }
+
                 ModelOp::RemoveConstraint { con } => {
                     if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
                     {

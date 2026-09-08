@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use super::ModelError;
 use crate::id::{CoeffId, ConId, IdArena, ObjId, ParamId, VarId};
 use crate::value_expr::ValueExpr;
 
@@ -149,6 +150,33 @@ fn bit_set(bits: &mut Vec<u64>, i: u32) {
     bits[i as usize / 64] |= 1u64 << (i % 64);
 }
 
+/// Slice list for one target in the packed-base directory.
+///
+/// A single slice is stored inline without allocation; the multi-slice
+/// form exists for future multi-block targets (P1 rows). Slice starts are
+/// strictly increasing (append-only base), which the position resolver
+/// relies on for binary search.
+#[derive(Clone, Debug)]
+enum TargetSlices {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+impl TargetSlices {
+    fn push(&mut self, slice_idx: usize) {
+        match self {
+            TargetSlices::One(first) => *self = TargetSlices::Many(vec![*first, slice_idx]),
+            TargetSlices::Many(list) => list.push(slice_idx),
+        }
+    }
+
+    fn as_slice(&self) -> &[usize] {
+        match self {
+            TargetSlices::One(first) => std::slice::from_ref(first),
+            TargetSlices::Many(list) => list,
+        }
+    }
+}
 /// Packed-base plus sparse-overlay coefficient storage.
 ///
 /// Provides the same canonical contract as the former fully-indexed store:
@@ -169,7 +197,7 @@ pub(crate) struct CoefficientIndex {
     base_values: Vec<f64>,
     base_ids: Vec<CoeffId>,
     slices: Vec<TargetSlice>,
-    directory: HashMap<CoefficientTarget, Vec<usize>>,
+    directory: HashMap<CoefficientTarget, TargetSlices>,
     shadowed: Vec<u64>,
     dead: Vec<u64>,
     /// Sparse overlay: every post-build mutation lives here.
@@ -217,10 +245,35 @@ impl CoefficientIndex {
         self.overlay_by_cell.get(key).copied()
     }
 
+    /// Slice indices covering one target (empty when the target has no
+    /// packed cells).
+    fn slices_for(&self, target: CoefficientTarget) -> &[usize] {
+        self.directory
+            .get(&target)
+            .map(TargetSlices::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Target owning a packed position, via binary search over slice starts
+    /// (O(log slices); starts are strictly increasing on the append-only
+    /// base). Returns `None` for out-of-range positions.
+    fn target_at_position(&self, pos: u32) -> Option<CoefficientTarget> {
+        let idx = self
+            .slices
+            .partition_point(|s| s.start <= pos)
+            .checked_sub(1)?;
+        let slice = &self.slices[idx];
+        if pos < slice.start + slice.len {
+            Some(slice.target)
+        } else {
+            None
+        }
+    }
+
     /// Base position for a live packed cell: present slice, sorted hit,
     /// neither dead nor shadowed.
     fn base_position(&self, target: CoefficientTarget, var: VarId) -> Option<u32> {
-        let slices = self.directory.get(&target)?;
+        let slices = self.slices_for(target);
         for &si in slices {
             let slice = &self.slices[si];
             let base = &self.base_vars[slice.start as usize..(slice.start + slice.len) as usize];
@@ -324,7 +377,147 @@ impl CoefficientIndex {
             start,
             len: n as u32,
         });
-        self.directory.entry(target).or_default().push(slice_idx);
+        match self.directory.entry(target) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(slice_idx),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(TargetSlices::One(slice_idx));
+            }
+        }
+    }
+
+    /// Canonicalize one constant row: sorted order, duplicates summed
+    /// (R2.2), near-zero totals dropped exactly like `LinExpr::simplify`.
+    /// Merged totals are finiteness-checked. Pure function (no mutation),
+    /// shared by validation and insertion so both agree bit-for-bit.
+    pub(crate) fn canonicalize_constant_row(
+        vars: &[VarId],
+        values: &[f64],
+    ) -> Result<Vec<(VarId, f64)>, ModelError> {
+        debug_assert_eq!(vars.len(), values.len());
+        if vars.windows(2).all(|w| w[0] < w[1]) {
+            return Ok(vars
+                .iter()
+                .zip(values.iter())
+                .filter(|(_, v)| v.abs() >= f64::EPSILON)
+                .map(|(var, value)| (*var, *value))
+                .collect());
+        }
+        let mut order: Vec<usize> = (0..vars.len()).collect();
+        order.sort_by_key(|&i| vars[i]);
+        let mut merged: Vec<(VarId, f64)> = Vec::with_capacity(vars.len());
+        for i in order {
+            let (var, value) = (vars[i], values[i]);
+            if let Some(last) = merged.last_mut() {
+                if last.0 == var {
+                    last.1 += value;
+                    continue;
+                }
+            }
+            merged.push((var, value));
+        }
+        for (_, v) in &merged {
+            if !v.is_finite() {
+                return Err(ModelError::NonFiniteValue("merged row coefficient"));
+            }
+        }
+        merged.retain(|(_, v)| v.abs() >= f64::EPSILON);
+        Ok(merged)
+    }
+
+    /// Append a multi-row block of constant coefficients (P1A).
+    ///
+    /// `targets[r]` owns `vars[row_ptr[r]..row_ptr[r+1]]` with the parallel
+    /// `values` slice. The whole block is canonicalized first via
+    /// [`Self::canonicalize_constant_row`] (sorted order, duplicate merge,
+    /// zero drop, merged-finite check), so rejection is atomic — no partial
+    /// rows, slices, or identities are installed on error. Each kept row
+    /// appends one target slice; empty rows append an empty slice.
+    pub fn append_row_block(
+        &mut self,
+        targets: &[CoefficientTarget],
+        row_ptr: &[u32],
+        vars: &[VarId],
+        values: &[f64],
+    ) -> Result<(), ModelError> {
+        if targets.len() + 1 != row_ptr.len()
+            || row_ptr.last().copied().unwrap_or(0) as usize != vars.len()
+            || vars.len() != values.len()
+        {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: vars.len(),
+                coeffs: values.len(),
+            });
+        }
+        // Phase 1 (pure): canonicalize every row, checking merged finiteness.
+        let mut canon_ptr: Vec<u32> = Vec::with_capacity(row_ptr.len());
+        let mut canon_vars: Vec<VarId> = Vec::new();
+        let mut canon_values: Vec<f64> = Vec::new();
+        canon_ptr.push(0);
+        for r in 0..targets.len() {
+            let (s, e) = (row_ptr[r] as usize, row_ptr[r + 1] as usize);
+            for (var, value) in Self::canonicalize_constant_row(&vars[s..e], &values[s..e])? {
+                canon_vars.push(var);
+                canon_values.push(value);
+            }
+            canon_ptr.push(canon_vars.len() as u32);
+        }
+        // Phase 2: reserve once, append sequentially.
+        self.append_canonical_block(targets, &canon_ptr, &canon_vars, &canon_values);
+        Ok(())
+    }
+
+    /// Append pre-canonicalized rows: `targets[r]` owns
+    /// `vars[row_ptr[r]..row_ptr[r+1]]`, each row sorted, unique,
+    /// zero-dropped, and finite (debug-checked). Used by the model layer,
+    /// which canonicalizes once during validation and journals the same
+    /// buffers — no double canonicalization on the production path.
+    pub(crate) fn append_canonical_block(
+        &mut self,
+        targets: &[CoefficientTarget],
+        row_ptr: &[u32],
+        vars: &[VarId],
+        values: &[f64],
+    ) {
+        debug_assert_eq!(targets.len() + 1, row_ptr.len());
+        debug_assert_eq!(row_ptr.last().copied().unwrap_or(0) as usize, vars.len());
+        debug_assert_eq!(vars.len(), values.len());
+        #[cfg(debug_assertions)]
+        for r in 0..targets.len() {
+            let (s, e) = (row_ptr[r] as usize, row_ptr[r + 1] as usize);
+            debug_assert!(vars[s..e].windows(2).all(|w| w[0] < w[1]));
+            debug_assert!(values[s..e].iter().all(|v| v.is_finite()));
+        }
+        let total: usize = row_ptr.windows(2).map(|w| (w[1] - w[0]) as usize).sum();
+        self.ids.reserve(total);
+        self.base_vars.reserve(total);
+        self.base_values.reserve(total);
+        self.base_ids.reserve(total);
+        self.slices.reserve(targets.len());
+        for r in 0..targets.len() {
+            let (s, e) = (row_ptr[r] as usize, row_ptr[r + 1] as usize);
+            let start = self.base_vars.len() as u32;
+            for (&var, &value) in vars[s..e].iter().zip(&values[s..e]) {
+                let pos = self.base_vars.len() as u32;
+                let (index, generation) = self.ids.allocate(CellLocation::Packed(pos));
+                let id = CoeffId::new(index, generation);
+                self.base_vars.push(var);
+                self.base_values.push(value);
+                self.base_ids.push(id);
+                self.live += 1;
+            }
+            let slice_idx = self.slices.len();
+            self.slices.push(TargetSlice {
+                target: targets[r],
+                start,
+                len: (e - s) as u32,
+            });
+            match self.directory.entry(targets[r]) {
+                std::collections::hash_map::Entry::Occupied(mut e2) => e2.get_mut().push(slice_idx),
+                std::collections::hash_map::Entry::Vacant(e2) => {
+                    e2.insert(TargetSlices::One(slice_idx));
+                }
+            }
+        }
     }
 
     // ========== Scalar general path (overlay) ==========
@@ -445,14 +638,10 @@ impl CoefficientIndex {
             }
             CellLocation::Packed(pos) => {
                 bit_set(&mut self.shadowed, pos);
-                let (var, target) = {
-                    let slice = self
-                        .slices
-                        .iter()
-                        .find(|s| pos >= s.start && pos < s.start + s.len)
-                        .expect("packed position always in a slice");
-                    (self.base_vars[pos as usize], slice.target)
-                };
+                let target = self
+                    .target_at_position(pos)
+                    .expect("packed position always in a slice");
+                let var = self.base_vars[pos as usize];
                 let oi = self.overlay.len() as u32;
                 if let Some(slot) = self.ids.get_mut(id.index(), id.generation()) {
                     *slot = CellLocation::Overlay(oi);
@@ -496,10 +685,7 @@ impl CoefficientIndex {
                 let var = self.base_vars[pos as usize];
                 let value = self.base_values[pos as usize];
                 let target = self
-                    .slices
-                    .iter()
-                    .find(|s| pos >= s.start && pos < s.start + s.len)
-                    .map(|s| s.target)
+                    .target_at_position(pos)
                     .expect("packed position always in a slice");
                 let oi = self.overlay.len() as u32;
                 self.overlay.push(OverlaySlot {
@@ -540,10 +726,7 @@ impl CoefficientIndex {
                 }
                 let value = self.base_values[pos as usize];
                 let target = self
-                    .slices
-                    .iter()
-                    .find(|s| pos >= s.start && pos < s.start + s.len)
-                    .map(|s| s.target)
+                    .target_at_position(pos)
                     .expect("packed position always in a slice");
                 Some(CoefficientData::new(
                     self.base_vars[pos as usize],
@@ -662,16 +845,14 @@ impl CoefficientIndex {
     /// mutation order. Deterministic (the old order was hash-random).
     fn live_ids_for_target(&self, target: CoefficientTarget) -> Vec<CoeffId> {
         let mut out = Vec::new();
-        if let Some(slices) = self.directory.get(&target) {
-            for &si in slices {
-                let slice = &self.slices[si];
-                for k in 0..slice.len {
-                    let idx = slice.start + k;
-                    if bit_get(&self.dead, idx) || bit_get(&self.shadowed, idx) {
-                        continue;
-                    }
-                    out.push(self.base_ids[idx as usize]);
+        for &si in self.slices_for(target) {
+            let slice = &self.slices[si];
+            for k in 0..slice.len {
+                let idx = slice.start + k;
+                if bit_get(&self.dead, idx) || bit_get(&self.shadowed, idx) {
+                    continue;
                 }
+                out.push(self.base_ids[idx as usize]);
             }
         }
         if let Some(list) = self.overlay_by_target.get(&target) {
@@ -718,16 +899,14 @@ impl CoefficientIndex {
     pub fn objective_cells(&self, obj: ObjId) -> Vec<(VarId, f64)> {
         let target = CoefficientTarget::Objective(obj);
         let mut out = Vec::new();
-        if let Some(slices) = self.directory.get(&target) {
-            for &si in slices {
-                let slice = &self.slices[si];
-                for k in 0..slice.len {
-                    let idx = slice.start + k;
-                    if bit_get(&self.dead, idx) || bit_get(&self.shadowed, idx) {
-                        continue;
-                    }
-                    out.push((self.base_vars[idx as usize], self.base_values[idx as usize]));
+        for &si in self.slices_for(target) {
+            let slice = &self.slices[si];
+            for k in 0..slice.len {
+                let idx = slice.start + k;
+                if bit_get(&self.dead, idx) || bit_get(&self.shadowed, idx) {
+                    continue;
                 }
+                out.push((self.base_vars[idx as usize], self.base_values[idx as usize]));
             }
         }
         if let Some(list) = self.overlay_by_target.get(&target) {
@@ -784,26 +963,26 @@ impl CoefficientIndex {
     }
 
     /// Iterate over all live coefficients with owned data.
+    /// Iterate over all live coefficients with owned data, slice by slice
+    /// (slice outer loop, cells inner loop) so iteration itself is linear
+    /// in the live cells — never a scan per coefficient.
     pub fn iter(&self) -> impl Iterator<Item = (CoeffId, CoefficientData)> + '_ {
-        let base = (0..self.base_vars.len() as u32).filter_map(|idx| {
-            if bit_get(&self.dead, idx) || bit_get(&self.shadowed, idx) {
-                return None;
-            }
-            let target = self
-                .slices
-                .iter()
-                .find(|s| idx >= s.start && idx < s.start + s.len)
-                .map(|s| s.target)?;
-            let value = self.base_values[idx as usize];
-            Some((
-                self.base_ids[idx as usize],
-                CoefficientData::new(
-                    self.base_vars[idx as usize],
-                    target,
-                    ValueExpr::constant(value),
-                    value,
-                ),
-            ))
+        let base = self.slices.iter().flat_map(|slice| {
+            (slice.start..slice.start + slice.len).filter_map(|idx| {
+                if bit_get(&self.dead, idx) || bit_get(&self.shadowed, idx) {
+                    return None;
+                }
+                let value = self.base_values[idx as usize];
+                Some((
+                    self.base_ids[idx as usize],
+                    CoefficientData::new(
+                        self.base_vars[idx as usize],
+                        slice.target,
+                        ValueExpr::constant(value),
+                        value,
+                    ),
+                ))
+            })
         });
         let over = self.overlay.iter().filter_map(|slot| {
             if slot.tombstone {
@@ -858,7 +1037,7 @@ impl CoefficientIndex {
                 *slot_covered = true;
             }
             match self.directory.get(&slice.target) {
-                Some(list) if list.contains(&si) => {}
+                Some(list) if list.as_slice().contains(&si) => {}
                 _ => violations.push(format!("slice {si} missing from directory")),
             }
         }
@@ -1218,7 +1397,9 @@ mod perf_probe_tests {
         use std::time::Instant;
         let n = 1_000_000usize;
         let obj = ObjId::new(0, Generation::new());
-        let vars: Vec<VarId> = (0..n as u32).map(|i| VarId::new(i, Generation::new())).collect();
+        let vars: Vec<VarId> = (0..n as u32)
+            .map(|i| VarId::new(i, Generation::new()))
+            .collect();
         let vals: Vec<f64> = (0..n).map(|i| (i % 97) as f64 + 0.5).collect();
         let cells: Vec<(VarId, f64)> = vars.into_iter().zip(vals).collect();
         let mut index = CoefficientIndex::new();
@@ -1227,5 +1408,138 @@ mod perf_probe_tests {
         let dt = t0.elapsed();
         assert_eq!(index.len(), n);
         println!("store append 1M: {:.1} ms", dt.as_secs_f64() * 1e3);
+    }
+}
+
+#[cfg(test)]
+mod row_block_tests {
+    //! P1A locks: bulk row-block append semantics.
+    use super::*;
+    use crate::id::Generation;
+
+    fn var(i: u32) -> VarId {
+        VarId::new(i, Generation::new())
+    }
+    fn con(i: u32) -> ConId {
+        ConId::new(i, Generation::new())
+    }
+    fn tgt(i: u32) -> CoefficientTarget {
+        CoefficientTarget::Constraint(con(i))
+    }
+
+    #[test]
+    fn canonical_rows_append_directly() {
+        let mut index = CoefficientIndex::new();
+        let targets = [tgt(0), tgt(1), tgt(2)];
+        // Row 1 empty; rows canonical and sorted.
+        let row_ptr = [0, 2, 2, 5];
+        let vars = [var(0), var(1), var(4), var(2), var(3)];
+        let vals = [1.0, 2.0, 4.0, 2.0, 3.0];
+        index
+            .append_row_block(&targets, &row_ptr, &vars, &vals)
+            .unwrap();
+        assert_eq!(index.len(), 5);
+        assert_eq!(
+            index
+                .for_cell(tgt(0), var(1))
+                .map(|id| index.cached_value(id).unwrap()),
+            Some(2.0)
+        );
+        // Empty row resolves nothing but exists structurally.
+        assert!(index.for_cell(tgt(1), var(0)).is_none());
+        // Row 2 input is unsorted ([4,2,3]): exercises the fallback
+        // canonicalization, still 3 cells.
+        let row2: Vec<(VarId, f64)> = index
+            .for_constraint(con(2))
+            .map(|id| {
+                let d = index.get(id).unwrap();
+                (d.var, d.cached_value)
+            })
+            .collect();
+        assert_eq!(row2.len(), 3);
+    }
+
+    #[test]
+    fn shuffled_and_duplicated_rows_canonicalize() {
+        let mut index = CoefficientIndex::new();
+        let targets = [tgt(0)];
+        // Shuffled with a duplicate pair summing to 3.0.
+        let row_ptr = [0, 4];
+        let vars = [var(5), var(1), var(5), var(3)];
+        let vals = [1.0, 2.0, 2.0, 3.0];
+        index
+            .append_row_block(&targets, &row_ptr, &vars, &vals)
+            .unwrap();
+        assert_eq!(index.len(), 3);
+        // Merged duplicate reads back combined.
+        let id = index.for_cell(tgt(0), var(5)).unwrap();
+        assert_eq!(index.cached_value(id).unwrap(), 3.0);
+        // Canonical order observable through iteration.
+        let seen: Vec<VarId> = index
+            .for_constraint(con(0))
+            .map(|id| index.get(id).unwrap().var)
+            .collect();
+        let mut sorted = seen.clone();
+        sorted.sort();
+        assert_eq!(seen, sorted);
+    }
+
+    #[test]
+    fn cancellation_and_merged_overflow() {
+        let mut index = CoefficientIndex::new();
+        let targets = [tgt(0), tgt(1)];
+        let row_ptr = [0, 2, 4];
+        // Row 0 cancels to zero (dropped); row 1 overflows on merge.
+        let vars = [var(0), var(0), var(1), var(1)];
+        let vals = [1.0, -1.0, f64::MAX, f64::MAX];
+        let before = index.len();
+        let err = index
+            .append_row_block(&targets, &row_ptr, &vars, &vals)
+            .unwrap_err();
+        assert!(matches!(err, crate::model::ModelError::NonFiniteValue(_)));
+        // Atomic: nothing appended.
+        assert_eq!(index.len(), before);
+        assert!(index.for_cell(tgt(0), var(0)).is_none());
+        assert!(index.for_cell(tgt(1), var(1)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod perf_probe_rows_tests {
+    //! Manual release-only measurement harness (P1A gate evidence).
+    //! `#[ignore]`d; run explicitly with `-- --ignored --nocapture`.
+    use super::*;
+    use crate::id::Generation;
+
+    #[test]
+    #[ignore]
+    fn perf_probe_append_rows_100k() {
+        use std::time::Instant;
+        let nrows = 10_000usize;
+        let targets: Vec<CoefficientTarget> = (0..nrows as u32)
+            .map(|i| CoefficientTarget::Constraint(ConId::new(i, Generation::new())))
+            .collect();
+        let mut row_ptr = Vec::with_capacity(nrows + 1);
+        let mut vars = Vec::with_capacity(nrows * 10);
+        let mut vals = Vec::with_capacity(nrows * 10);
+        row_ptr.push(0);
+        for r in 0..nrows {
+            for k in 0..10 {
+                vars.push(VarId::new((10 * r + k) as u32, Generation::new()));
+                vals.push(1.0);
+            }
+            row_ptr.push(vars.len() as u32);
+        }
+        let mut index = CoefficientIndex::new();
+        let t0 = Instant::now();
+        index
+            .append_row_block(&targets, &row_ptr, &vars, &vals)
+            .unwrap();
+        let dt = t0.elapsed();
+        assert_eq!(index.len(), nrows * 10);
+        println!(
+            "store append 100kx10 rows: {:.1} ms",
+            dt.as_secs_f64() * 1e3
+        );
     }
 }

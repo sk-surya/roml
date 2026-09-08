@@ -53,7 +53,7 @@ use crate::construct::{
     PenaltyTarget, PiecewiseLinearConstraint, ProductOperand, PwlPoint, PwlRelation,
     ReificationConstraint, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
 };
-use crate::delta::{DeltaBatch, ModelOp};
+use crate::delta::{DeltaBatch, LinearRowBlock, ModelOp};
 use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
@@ -217,6 +217,17 @@ pub enum ModelError {
         /// Number of coefficients supplied.
         coeffs: usize,
     },
+    /// A bulk row call received inconsistent row shapes.
+    MismatchedRowBlock {
+        /// Number of rows (bounds entries) supplied.
+        rows: usize,
+        /// Number of row-pointer entries supplied.
+        ptr: usize,
+        /// Number of variables supplied.
+        vars: usize,
+        /// Number of coefficients supplied.
+        values: usize,
+    },
     /// An opaque identity counter was exhausted (ids never wrap).
     IdentityOverflow,
 }
@@ -365,6 +376,16 @@ impl std::fmt::Display for ModelError {
             Self::MismatchedBulkLengths { vars, coeffs } => write!(
                 f,
                 "bulk coefficient input length mismatch: {vars} variables vs {coeffs} coefficients"
+            ),
+            Self::MismatchedRowBlock {
+                rows,
+                ptr,
+                vars,
+                values,
+            } => write!(
+                f,
+                "bulk row input shape mismatch: {rows} rows, {ptr} row pointers, \
+                 {vars} variables, {values} coefficients"
             ),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
@@ -2009,6 +2030,104 @@ impl Model {
         self.add_empty_constraint_internal(bounds, None)
     }
 
+    /// Insert a block of constant linear rows in one bulk operation (P1A).
+    ///
+    /// Row `r` owns `vars[row_ptr[r]..row_ptr[r+1]]` with the parallel
+    /// `values` slice and `bounds[r]`. This is the fast path for large
+    /// matrix-assembled models (e.g. a hundred thousand CSR rows): whole
+    /// batch validation, one storage reservation per array, one packed
+    /// [`Change::BulkLinearRows`] journal entry — instead of one expression
+    /// build plus general row/coefficient mutations per row. The resulting
+    /// canonical state is identical to adding the same rows one by one.
+    ///
+    /// # Semantics
+    ///
+    /// - Shapes must agree (`row_ptr.len() == bounds.len() + 1`,
+    ///   `row_ptr[last] == vars.len() == values.len()`, `row_ptr[0] == 0`,
+    ///   monotone pointers) or [`ModelError::MismatchedRowBlock`] results.
+    /// - Every coefficient must be finite ([`ModelError::NonFiniteValue`]);
+    ///   every variable must be live ([`ModelError::VariableNotFound`]);
+    ///   every bound must be valid ([`ModelError::InvalidBounds`]).
+    ///   All validation runs before any mutation (API-06.5 atomicity).
+    /// - Rows are canonicalized exactly like the scalar row path (sorted
+    ///   variables, duplicates summed, near-zero totals dropped); merged
+    ///   totals that overflow reject atomically.
+    /// - Constant coefficients only. Parameterized rows keep the scalar
+    ///   expression path.
+    pub fn add_linear_rows_bulk(
+        &mut self,
+        row_ptr: &[u32],
+        vars: &[VarId],
+        values: &[f64],
+        bounds: &[ConstraintBounds],
+    ) -> Result<Vec<ConId>, ModelError> {
+        let nrows = bounds.len();
+        let shape_ok = row_ptr.len() == nrows + 1
+            && row_ptr.first().copied().unwrap_or(0) == 0
+            && row_ptr.windows(2).all(|w| w[0] <= w[1])
+            && row_ptr.last().copied().unwrap_or(0) as usize == vars.len()
+            && vars.len() == values.len();
+        if !shape_ok {
+            return Err(ModelError::MismatchedRowBlock {
+                rows: nrows,
+                ptr: row_ptr.len(),
+                vars: vars.len(),
+                values: values.len(),
+            });
+        }
+        for bound in bounds.iter() {
+            validate_constraint_bounds(*bound)?;
+        }
+        for value in values.iter() {
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("row coefficient"));
+            }
+        }
+        for var in vars.iter() {
+            if !self.variables.contains(*var) {
+                return Err(ModelError::VariableNotFound(*var));
+            }
+        }
+        // Canonicalize every row (pure; merged-overflow rejects atomically).
+        let mut canon_ptr: Vec<u32> = Vec::with_capacity(nrows + 1);
+        let mut canon_vars: Vec<VarId> = Vec::new();
+        let mut canon_values: Vec<f64> = Vec::new();
+        canon_ptr.push(0);
+        for r in 0..nrows {
+            let (s, e) = (row_ptr[r] as usize, row_ptr[r + 1] as usize);
+            for (var, value) in
+                CoefficientIndex::canonicalize_constant_row(&vars[s..e], &values[s..e])?
+            {
+                canon_vars.push(var);
+                canon_values.push(value);
+            }
+            canon_ptr.push(canon_vars.len() as u32);
+        }
+        // Allocate row identities sequentially.
+        self.constraints.reserve(nrows);
+        let mut cons = Vec::with_capacity(nrows);
+        for bound in bounds.iter() {
+            cons.push(self.constraints.add(*bound));
+        }
+        // Append the coefficient block (no per-cell probing/journaling).
+        let targets: Vec<CoefficientTarget> = cons
+            .iter()
+            .map(|&con| CoefficientTarget::Constraint(con))
+            .collect();
+        self.coefficients
+            .append_canonical_block(&targets, &canon_ptr, &canon_vars, &canon_values);
+        // Journal one packed change.
+        let block = Arc::new(LinearRowBlock {
+            constraints: cons.clone(),
+            bounds: bounds.to_vec(),
+            row_ptr: canon_ptr,
+            vars: canon_vars,
+            values: canon_values,
+        });
+        self.changelog.push(Change::BulkLinearRows { block });
+        Ok(cons)
+    }
+
     /// Private primitive: insert an empty constraint with the given bounds and
     /// optional name, pushing the changelog event.
     pub(crate) fn add_empty_constraint_internal(
@@ -3512,6 +3631,7 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::BulkObjectiveCoefficients { obj, cells } => {
             Ok(ModelOp::SetObjectiveCells { obj, cells })
         }
+        Change::BulkLinearRows { block } => Ok(ModelOp::AddLinearRows { block }),
         Change::CoefficientValueChanged {
             var,
             target,

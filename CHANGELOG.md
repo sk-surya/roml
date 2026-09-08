@@ -26,8 +26,22 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
-#### Packed coefficient store (P1.5B, unreleased)
+#### Bulk linear rows (P1A/P1B, unreleased)
 
+- New `Model::add_linear_rows_bulk(row_ptr, vars, values, bounds)`:
+  whole-batch validation, per-row canonicalization (sorted variables,
+  duplicate accumulation, near-zero drop — exactly matching the scalar
+  row path), one packed `Change::BulkLinearRows` journal entry compiling
+  to a single `ModelOp::AddLinearRows` delta op (at most one backend row
+  op per row with coefficients inline).
+- Python `Model.add_linear_rows` keeps its exact public contract and now
+  routes directly to the bulk primitive (no per-row expression objects).
+- Behavior note: CSR rows with sub-`EPSILON` nonzero coefficients are now
+  dropped exactly like scalar-built rows (previously only exact zeros
+  were dropped on the CSR path). Cancellation-to-zero and duplicate
+  accumulation are unchanged.
+
+#### Packed coefficient store (P1.5B, unreleased)
 - Internal coefficient storage is now a packed constant base plus a sparse
   mutation overlay under stable generational `CoeffId` identities. Canonical
   cells, algebraic combine, removal cleanup, parameter propagation, stale-ID

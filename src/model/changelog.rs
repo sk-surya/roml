@@ -8,6 +8,7 @@
 //! The model never mutates solver state directly. All changes go through the ChangeLog.
 
 use crate::construct::{Construct, ConstructKind, FormulationPreference};
+use crate::delta::LinearRowBlock;
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::model::coefficient::CoefficientTarget;
 use crate::model::constraint::ConstraintBounds;
@@ -185,6 +186,19 @@ pub enum Change {
         obj: ObjId,
         /// Packed `(variable, constant value)` cells in insertion order.
         cells: Arc<[(VarId, f64)]>,
+    },
+
+    /// A packed block of constant linear rows was inserted at once.
+    ///
+    /// P1A bulk path: `Model::add_linear_rows_bulk` journals one packed
+    /// change instead of per-row `ConstraintAdded` plus per-cell
+    /// `CoefficientAdded` events. The payload is a shared `Arc` slice so
+    /// `commit()` clones it by bumping a refcount. Rows are canonical
+    /// (sorted, unique, zero-dropped, finite) exactly as the scalar row
+    /// path stores them.
+    BulkLinearRows {
+        /// The packed row block (shared).
+        block: Arc<LinearRowBlock>,
     },
 
     // ========== Objective Changes ==========

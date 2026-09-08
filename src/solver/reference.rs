@@ -206,6 +206,22 @@ impl ReferenceBackend {
             ModelOp::AddConstraint { con, bounds } => {
                 self.constraints.insert(*con, (*bounds, true));
             }
+            // P1A packed row block: same end state as replaying one
+            // `AddConstraint` plus one `SetCell` per cell (constant
+            // expression with its evaluated value).
+            ModelOp::AddLinearRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    self.constraints.insert(con, (block.bounds[r], true));
+                    let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                    for (&var, &value) in block.vars[s..e].iter().zip(&block.values[s..e]) {
+                        self.constraint_cells.insert(
+                            (CoefficientTarget::Constraint(con), var),
+                            (ValueExpr::constant(value), value),
+                        );
+                    }
+                }
+            }
             ModelOp::RemoveConstraint { con } => {
                 self.constraints.remove(con);
                 // Remove cells for this constraint

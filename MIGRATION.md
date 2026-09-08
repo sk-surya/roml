@@ -29,6 +29,24 @@ Deprecation notes on the code point to the sections here (`MIGRATION.md ->
 Pure builders `constraint!` and `objective!` are NOT deprecated; they remain
 optional syntax sugar for building specs (D1/API-04.4).
 
+## Unreleased breaking changes (pending review, not yet merged)
+
+These pre-1.0 changes alter public signatures. They are recorded here
+before any merge/release so downstream users can adapt early.
+
+- `Model::coefficient()` now returns `Option<CoefficientData>` (owned
+  snapshot) instead of `Option<&CoefficientData>`. Rationale: packed-base
+  coefficient cells have no per-cell record to borrow; the constant
+  expression materializes inline. Field reads (`.var`, `.target`,
+  `.value_expr`, `.cached_value`) work exactly as before; only code that
+  holds the reference across calls or matches on reference identity needs
+  updating (bind the owned value instead).
+- New additive APIs (non-breaking): `Model::set_linear_objective_bulk`,
+  `Model::add_linear_rows_bulk`, `ModelError::MismatchedBulkLengths`,
+  `ModelError::MismatchedRowBlock`, `ModelOp::SetObjectiveCells`,
+  `ModelOp::AddLinearRows`, `Change::BulkObjectiveCoefficients`,
+  `Change::BulkLinearRows`, `LinearRowBlock`.
+
 ## Variable and parameter creation
 
 **Before**

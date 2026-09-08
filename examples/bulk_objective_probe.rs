@@ -169,6 +169,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // --- P1A: native bulk rows (vars scalar, rows via add_linear_rows_bulk).
+    if which == "rowsbulk" {
+        let mut model = Model::named("probe");
+        let t0 = Instant::now();
+        let mut vars = Vec::with_capacity(n);
+        for _ in 0..n {
+            vars.push(model.add_variable(continuous())?);
+        }
+        let t_vars = t0.elapsed();
+        let nrows = n / 10;
+        let mut row_ptr: Vec<u32> = Vec::with_capacity(nrows + 1);
+        let mut flat_vars: Vec<VarId> = Vec::with_capacity(n);
+        let mut flat_vals: Vec<f64> = Vec::with_capacity(n);
+        let mut bounds: Vec<ConstraintBounds> = Vec::with_capacity(nrows);
+        row_ptr.push(0);
+        for r in 0..nrows {
+            for k in 0..10 {
+                flat_vars.push(vars[10 * r + k]);
+                flat_vals.push(1.0);
+            }
+            row_ptr.push(flat_vars.len() as u32);
+            bounds.push(ConstraintBounds::le(10.0));
+        }
+        let t1 = Instant::now();
+        let cons = model.add_linear_rows_bulk(&row_ptr, &flat_vars, &flat_vals, &bounds)?;
+        let t_api = t1.elapsed();
+        assert_eq!(cons.len(), nrows);
+        let (_, hwm) = rss_bytes();
+        println!(
+            "{{\"arm\":\"rowsbulk\",\"n\":{n},\"vars_ms\":{:.1},\"api_ms\":{:.1},\"peak_rss_mb\":{:.0}}}",
+            t_vars.as_secs_f64() * 1e3,
+            t_api.as_secs_f64() * 1e3,
+            hwm as f64 / 2f64.powi(20),
+        );
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let t2 = Instant::now();
+        model.commit()?;
+        let t_commit = t2.elapsed();
+        let t3 = Instant::now();
+        let snap = model.take_snapshot()?;
+        let t_snapshot = t3.elapsed();
+        let (_, hwm) = rss_bytes();
+        println!(
+            "{{\"arm\":\"rowsbulk\",\"n\":{n},\"stage\":\"committed\",\"commit_ms\":{:.1},\
+             \"snapshot_ms\":{:.1},\"peak_rss_mb\":{:.0},\"cells\":{}}}",
+            t_commit.as_secs_f64() * 1e3,
+            t_snapshot.as_secs_f64() * 1e3,
+            hwm as f64 / 2f64.powi(20),
+            snap.cells.len(),
+        );
+    }
+
     // --- AFTER: bulk path (constant only) ---
     if which == "both" || which == "bulk" {
         let (mut bmodel, bvars) = build_base(n)?;

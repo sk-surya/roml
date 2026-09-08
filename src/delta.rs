@@ -15,6 +15,27 @@ use crate::revision::ModelRevision;
 use crate::value_expr::ValueExpr;
 use std::sync::Arc;
 
+/// A packed block of constant linear constraint rows.
+///
+/// Canonical journal/delta payload for bulk row insertion (P1A): row
+/// `r` owns `vars[row_ptr[r]..row_ptr[r+1]]` with the parallel `values`
+/// slice, all canonical (sorted, unique, zero-dropped, finite — exactly
+/// what the scalar row path stores). One `Arc` shares the whole block
+/// across changelog, delta batch, and cursor fan-out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearRowBlock {
+    /// Row identities in block order.
+    pub constraints: Vec<ConId>,
+    /// Final bounds per row.
+    pub bounds: Vec<ConstraintBounds>,
+    /// CSR row pointers over `vars`/`values` (`len == constraints.len()+1`).
+    pub row_ptr: Vec<u32>,
+    /// Canonical variable runs, concatenated.
+    pub vars: Vec<VarId>,
+    /// Evaluated constant coefficients, parallel to `vars`.
+    pub values: Vec<f64>,
+}
+
 /// A typed model operation for solver synchronization.
 ///
 /// Unlike the raw `Change` enum (which captures fine-grained events),
@@ -132,6 +153,18 @@ pub enum ModelOp {
     RemoveCell {
         /// The canonical cell coordinate.
         cell_key: CellKey,
+    },
+
+    /// Insert a packed block of constant linear rows at once.
+    ///
+    /// P1A bulk path: compiles from `Change::BulkLinearRows` so a
+    /// hundred-thousand-row block journals and replays as one packed
+    /// operation instead of per-row `AddConstraint` plus per-cell
+    /// `SetCell` ops. Adapters expand it into at most one backend row op
+    /// per row over already-evaluated values.
+    AddLinearRows {
+        /// The packed row block (shared).
+        block: Arc<LinearRowBlock>,
     },
 
     /// Add a new objective.
@@ -389,12 +422,15 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
         folded: HashMap<ConId, ConstraintBounds>,
         /// `SetCell` terms per constraint target, in op encounter order.
         cells: HashMap<ConId, Vec<(VarId, ValueExpr)>>,
+        /// Packed row blocks, in op encounter order (P1A).
+        row_blocks: Vec<Arc<LinearRowBlock>>,
     }
     let mut acc = Accumulator {
         added: Vec::new(),
         removed: HashSet::new(),
         folded: HashMap::new(),
         cells: HashMap::new(),
+        row_blocks: Vec::new(),
     };
     for op in operations {
         match op {
@@ -421,6 +457,9 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
                         .or_default()
                         .push((cell_key.1, value_expr.clone()));
                 }
+            }
+            ModelOp::AddLinearRows { block } => {
+                acc.row_blocks.push(block.clone());
             }
             _ => {}
         }
@@ -450,6 +489,36 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
             function: ScalarFunction::Linear(expr),
             set,
         });
+    }
+    // P1A packed row blocks: one entry per row, honoring the same
+    // removal and bounds-folding rules as scalar rows. Block rows are
+    // canonical (sorted) by construction; the defensive re-sort keeps
+    // bit-identity with the scalar path at negligible cost.
+    for block in &acc.row_blocks {
+        for r in 0..block.constraints.len() {
+            let con = block.constraints[r];
+            if acc.removed.contains(&con) {
+                continue;
+            }
+            let effective = acc.folded.get(&con).copied().unwrap_or(block.bounds[r]);
+            let set = ScalarSet::from(effective);
+            let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+            let mut symbolic: Vec<(VarId, ValueExpr)> = block.vars[s..e]
+                .iter()
+                .zip(&block.values[s..e])
+                .map(|(var, value)| (*var, ValueExpr::constant(*value)))
+                .collect();
+            symbolic.sort_by_key(|(var, _)| *var);
+            let mut expr = LinExpr::new();
+            for (var, value_expr) in symbolic {
+                expr = expr.term(TermCoeff::Expr(value_expr), var);
+            }
+            entries.push(FunctionEntry {
+                constraint: con,
+                function: ScalarFunction::Linear(expr),
+                set,
+            });
+        }
     }
     entries.sort_by_key(|f| f.constraint);
     entries

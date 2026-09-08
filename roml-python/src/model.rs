@@ -1057,7 +1057,6 @@ impl Model {
         name: Option<&str>,
     ) -> PyResult<super::arrays::ConstraintArray> {
         use super::arrays::{element_name, parse_numeric, ConstraintArray, NumericMode};
-        use std::collections::HashMap;
         if let Some(n) = name {
             if n.is_empty() {
                 return Err(InvalidModelError::new_err(
@@ -1161,42 +1160,33 @@ impl Model {
                 ));
             }
         }
-        // Lower all rows (algebraic duplicate accumulation), then commit.
-        let mut lowered: Vec<(LinExpr, ConstraintBounds)> = Vec::with_capacity(nrows);
+        // Pack rows flat in CSR order and insert once through the core bulk
+        // primitive (P1B). Per-row canonicalization (sorted variables,
+        // duplicate accumulation, zero drop, merged-overflow rejection)
+        // happens inside the core exactly like the scalar row path; no
+        // per-row Affine/LinExpr objects are built here.
+        let mut row_ptr: Vec<u32> = Vec::with_capacity(nrows + 1);
+        let mut flat_vars: Vec<VarId> = Vec::with_capacity(indices.len());
+        let mut flat_values: Vec<f64> = Vec::with_capacity(data.values.len());
+        row_ptr.push(0);
         for i in 0..nrows {
             let (start, end) = (indptr[i] as usize, indptr[i + 1] as usize);
-            let mut cells: HashMap<VarId, f64> = HashMap::new();
             for k in start..end {
-                let var = columns[indices[k] as usize];
-                *cells.entry(var).or_insert(0.0) += data.values[k];
+                flat_vars.push(columns[indices[k] as usize]);
+                flat_values.push(data.values[k]);
             }
-            let mut lin = LinExpr::new();
-            let mut order: Vec<VarId> = cells.keys().copied().collect();
-            order.sort();
-            for var in order {
-                let coef = cells[&var];
-                if !coef.is_finite() {
-                    return Err(InvalidModelError::new_err(format!(
-                        "accumulated CSR coefficient at row {i} is not finite"
-                    )));
-                }
-                if coef != 0.0 {
-                    lin = lin.term(coef, var);
-                }
-            }
-            lowered.push((
-                lin,
-                ConstraintBounds {
-                    lower: lower_vals[i],
-                    upper: upper_vals[i],
-                },
-            ));
+            row_ptr.push(flat_vars.len() as u32);
         }
-        let mut cons = Vec::with_capacity(nrows);
-        for (lin, bounds) in lowered {
-            let spec = ConstraintSpec::new(lin, bounds);
-            cons.push(state.model.add_constraint(spec).map_err(map_model_error)?);
-        }
+        let row_bounds: Vec<ConstraintBounds> = (0..nrows)
+            .map(|i| ConstraintBounds {
+                lower: lower_vals[i],
+                upper: upper_vals[i],
+            })
+            .collect();
+        let cons = state
+            .model
+            .add_linear_rows_bulk(&row_ptr, &flat_vars, &flat_values, &row_bounds)
+            .map_err(map_model_error)?;
         if let Some(n) = name {
             state.array_names.insert(n.to_string());
             for (i, con) in cons.iter().enumerate() {
