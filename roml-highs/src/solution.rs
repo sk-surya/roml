@@ -47,9 +47,9 @@ use roml::solver::request::SolveSolution;
 /// # Feasible incumbent check
 ///
 /// For MIP outcomes `MODEL_STATUS_OBJECTIVE_BOUND` and
-/// `MODEL_STATUS_OBJECTIVE_TARGET`, the function checks whether a
-/// feasible solution is available via [`has_feasible_solution`]. If no
-/// feasible solution exists, returns [`TerminationStatus::Error`].
+/// `MODEL_STATUS_OBJECTIVE_TARGET`, the function checks the native
+/// incumbent evidence via [`has_native_incumbent`]. If no feasible
+/// incumbent exists, returns [`TerminationStatus::Error`].
 ///
 /// # Safety
 ///
@@ -79,9 +79,10 @@ pub(crate) fn map_termination_status(raw: *mut c_void, run_status: HighsInt) -> 
         MODEL_STATUS_UNBOUNDED => TerminationStatus::Unbounded,
 
         MODEL_STATUS_OBJECTIVE_BOUND | MODEL_STATUS_OBJECTIVE_TARGET => {
-            // MIP: objective bound/target reached. Check if a feasible
-            // incumbent exists. If not, treat as error.
-            if has_feasible_solution(raw) {
+            // MIP: objective bound/target reached. Check the native
+            // incumbent evidence (not buffer contents). If no feasible
+            // incumbent exists, treat as error.
+            if has_native_incumbent(raw as *const c_void) {
                 TerminationStatus::Feasible
             } else {
                 TerminationStatus::Error
@@ -113,52 +114,30 @@ pub(crate) fn map_termination_status(raw: *mut c_void, run_status: HighsInt) -> 
     }
 }
 
-/// Check if HiGHS has a feasible solution available via
-/// [`Highs_getSolution`].
+/// Query HiGHS' native primal-solution status (`primal_solution_status`
+/// info): whether the solver holds a feasible incumbent. This is the
+/// authoritative incumbent evidence — buffer contents alone (which may
+/// hold default zeros with no incumbent, e.g. after a time limit) must
+/// never establish feasibility.
 ///
-/// Used for [`TerminationStatus::Feasible`] determination when the model
-/// status is `MODEL_STATUS_OBJECTIVE_BOUND` or `MODEL_STATUS_OBJECTIVE_TARGET`.
-///
-/// Returns `false` if the query fails or no valid primal values are found.
+/// Returns true only for `kHighsSolutionStatusFeasible`. Any query
+/// failure fails closed (false).
 ///
 /// # Safety
 ///
 /// `raw` must be a valid HiGHS instance handle.
-fn has_feasible_solution(raw: *mut c_void) -> bool {
-    // SAFETY: `raw` is guaranteed valid by the caller.
-    // Highs_getNumCol reads an internal field without mutation.
-    let num_col = unsafe { Highs_getNumCol(raw) };
-    if num_col <= 0 {
-        return false;
-    }
-
-    let n = num_col as usize;
-    let mut col_value = vec![f64::NAN; n];
-    let mut col_dual = vec![f64::NAN; n];
-
-    // SAFETY:
-    // - `raw` is a valid HiGHS instance handle.
-    // - `col_value` and `col_dual` are pre-allocated to `num_col` elements.
-    // - `row_value` and `row_dual` are null pointers because we only need
-    //   column primal values for the feasibility check. HiGHS accepts null
-    //   for output arrays it should skip.
-    let ret = unsafe {
-        Highs_getSolution(
-            raw,
-            col_value.as_mut_ptr(),
-            col_dual.as_mut_ptr(),
-            std::ptr::null_mut(), // row_value — not needed
-            std::ptr::null_mut(), // row_dual — not needed
-        )
+fn has_native_incumbent(raw: *const c_void) -> bool {
+    use std::ffi::CString;
+    let name = match CString::new("primal_solution_status") {
+        Ok(name) => name,
+        Err(_) => return false,
     };
-
-    if ret != STATUS_OK {
-        return false;
-    }
-
-    // A feasible solution is present if at least one primal value is
-    // a valid (non-NaN, non-infinite) number.
-    col_value.iter().any(|v| !v.is_nan() && !v.is_infinite())
+    let mut status: HighsInt = kHighsSolutionStatusNone;
+    // SAFETY: `raw` is guaranteed valid by the caller; `name` is a valid
+    // NUL-terminated string; `status` points to a live integer.
+    // `Highs_getIntInfoValue` is read-only.
+    let ret = unsafe { Highs_getIntInfoValue(raw, name.as_ptr(), &mut status) };
+    ret == STATUS_OK && status == kHighsSolutionStatusFeasible
 }
 
 // ── Solution Extraction ─────────────────────────────────────────────────────────
@@ -205,6 +184,14 @@ pub(crate) fn extract_solution(
         | TerminationStatus::TimeLimit
         | TerminationStatus::IterationLimit => {}
         _ => return None,
+    }
+
+    // Incumbent evidence: extraction requires a solver-reported feasible
+    // primal solution. Buffer contents alone prove nothing — HiGHS leaves
+    // default (e.g. zero) entries when no incumbent exists, and exposing
+    // them would fabricate a primal result (notably on bare time limits).
+    if !has_native_incumbent(raw as *const c_void) {
+        return None;
     }
 
     // SAFETY: `raw` is guaranteed valid by the caller.

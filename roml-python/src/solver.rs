@@ -1,0 +1,756 @@
+//! Persistent model-bound HiGHS sessions (DESIGN §5, preliminary).
+//!
+//! MPY-02 provides a blocking solve sufficient for the golden LP: the
+//! session owns a `Mutex`-guarded `SolverSession<HighsSession>`, binds its
+//! first model, applies constructor defaults with per-call overrides, and
+//! returns immutable snapshots. MPY-04 completes the contract: detached
+//! native execution, deterministic busy errors, exact-once destruction,
+//! warm starts, and structured diagnostics.
+
+use std::sync::Mutex;
+use std::time::Duration;
+
+use pyo3::prelude::*;
+use roml::{ModelInstanceId, SolveOptions, SolverSession};
+use roml_highs::HighsSession;
+
+use super::errors::{ClosedSessionError, InvalidModelError, ModelMismatchError, SolverError};
+use super::model::{py_numeric, Model};
+use super::solution::{Snapshot, Solution};
+
+type CoreSession = SolverSession<HighsSession>;
+
+#[derive(Clone, Debug, Default)]
+struct StoredOptions {
+    threads: Option<i32>,
+    output: Option<bool>,
+    time_limit_secs: Option<f64>,
+    relative_gap: Option<f64>,
+    absolute_gap: Option<f64>,
+    random_seed: Option<i32>,
+}
+
+impl StoredOptions {
+    fn build(&self) -> PyResult<SolveOptions> {
+        let mut options = SolveOptions::new();
+        if let Some(threads) = self.threads {
+            options = options.threads(threads);
+        }
+        if let Some(output) = self.output {
+            options = options.output(output);
+        }
+        if let Some(limit) = self.time_limit_secs {
+            options = options.time_limit(check_duration(limit, "time_limit")?);
+        }
+        if let Some(gap) = self.relative_gap {
+            options = options.relative_gap(gap);
+        }
+        if let Some(gap) = self.absolute_gap {
+            options = options.absolute_gap(gap);
+        }
+        if let Some(seed) = self.random_seed {
+            options = options.random_seed(seed);
+        }
+        Ok(options)
+    }
+}
+
+struct SessionState {
+    /// Owned native session, taken (and thereby destroyed) by `close`.
+    /// `None` after close; solves check `closed` first, so a missing
+    /// session here always coincides with the closed flag.
+    session: Option<CoreSession>,
+    bound: Option<ModelInstanceId>,
+    options: StoredOptions,
+    closed: bool,
+}
+
+/// GIL-independent shared session state (see `SharedModel`): the `Arc`
+/// crosses the detach boundary; locks are acquired and released inside.
+#[derive(Clone)]
+struct SharedSession {
+    state: std::sync::Arc<Mutex<SessionState>>,
+    poison: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[pyclass(frozen, name = "Highs")]
+pub struct Session {
+    shared: SharedSession,
+}
+
+/// Operational failure inside detached native work, converted to a Python
+/// error only after reattachment (`PyErr` needs the GIL).
+#[derive(Debug)]
+enum NativeError {
+    SessionBusy,
+    ModelBusy,
+    Closed,
+    Mismatch(String),
+    Solver(SolverFailure),
+    Poisoned(&'static str),
+}
+
+/// Structured operational failure preserved across the detach boundary.
+/// The Python `SolverError` carries these as attributes so callers never
+/// parse the message to classify failures.
+#[derive(Debug)]
+struct SolverFailure {
+    message: String,
+    /// Stable category string (`backend-invalid-input`,
+    /// `backend-internal`, `commit`, `invalid-options`,
+    /// `no-active-objective`, `status`, `compilation-mismatch`,
+    /// `license`, `internal`).
+    category: String,
+    /// Backend health effect (`none`, `recoverable`, `requires-rebuild`,
+    /// `terminal`, `unknown`).
+    health_effect: String,
+    /// Whether the session needs a snapshot rebuild (derived from health,
+    /// explicit so callers need no health-effect table).
+    requires_rebuild: bool,
+    /// Native solver code when the backend reported one.
+    native_code: Option<i32>,
+}
+
+impl SolverFailure {
+    fn internal(message: String) -> Self {
+        Self {
+            message,
+            category: "internal".to_string(),
+            health_effect: "unknown".to_string(),
+            requires_rebuild: false,
+            native_code: None,
+        }
+    }
+
+    fn from_backend(message: String, err: &roml::BackendError) -> Self {
+        use roml::{ErrorCategory, HealthEffect};
+        let category = match err.category {
+            ErrorCategory::InvalidInput => "backend-invalid-input",
+            ErrorCategory::Unsupported => "backend-unsupported",
+            ErrorCategory::LibraryNotFound => "backend-library-not-found",
+            ErrorCategory::LicenseFailure => "backend-license-failure",
+            ErrorCategory::Numerical => "backend-numerical",
+            ErrorCategory::OutOfMemory => "backend-out-of-memory",
+            ErrorCategory::Internal => "backend-internal",
+            ErrorCategory::Limit => "backend-limit",
+            ErrorCategory::Unknown => "backend-unknown",
+        }
+        .to_string();
+        let health_effect = match err.health_effect {
+            HealthEffect::None => "none",
+            HealthEffect::Recoverable => "recoverable",
+            HealthEffect::RequiresRebuild => "requires-rebuild",
+            HealthEffect::Terminal => "terminal",
+        }
+        .to_string();
+        Self {
+            message,
+            category,
+            requires_rebuild: matches!(
+                err.health_effect,
+                HealthEffect::RequiresRebuild | HealthEffect::Terminal
+            ),
+            health_effect,
+            native_code: err.native_code,
+        }
+    }
+
+    fn from_solve_error(err: &roml::SolveError) -> Self {
+        use roml::SolveError;
+        match err {
+            SolveError::Commit(e) => Self {
+                message: e.to_string(),
+                category: "commit".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::InvalidOptions(reason) => Self {
+                message: reason.clone(),
+                category: "invalid-options".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::NoActiveObjective => Self {
+                message: "the model has no active objective".to_string(),
+                category: "no-active-objective".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::Synchronization(e) | SolveError::Solve(e) | SolveError::License(e) => {
+                Self::from_backend(err.to_string(), e)
+            }
+            SolveError::Status(status) => Self {
+                message: format!("backend terminated in an uninterpretable status: {status:?}"),
+                category: "status".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::CompilationMismatch { .. } => Self {
+                message: err.to_string(),
+                category: "compilation-mismatch".to_string(),
+                health_effect: "requires-rebuild".to_string(),
+                requires_rebuild: true,
+                native_code: None,
+            },
+            SolveError::Overlay(e) => Self {
+                message: format!("{e:?}"),
+                category: "overlay".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::Rollback(e) => Self::from_backend(err.to_string(), e),
+            SolveError::Plan(e) => Self {
+                message: format!("{e:?}"),
+                category: "plan".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+        }
+    }
+}
+
+/// Owned native result data. Everything here is plain `Send` data: no
+/// `MutexGuard` and no Python object crosses the detach boundary.
+#[allow(clippy::too_many_arguments)]
+struct NativeSolve {
+    status: roml::SolveStatus,
+    objective: Option<f64>,
+    values: std::collections::HashMap<roml::VarId, f64>,
+    has_candidate: bool,
+    backend: String,
+    instance: ModelInstanceId,
+    lineage: roml::ModelLineageId,
+    revision: roml::ModelRevision,
+    py_revision: u64,
+    duals: Option<std::collections::HashMap<roml::ConId, f64>>,
+    reduced_costs: Option<std::collections::HashMap<roml::VarId, f64>>,
+    wall_seconds: f64,
+    warm_start: super::solution::WarmStart,
+    discrete: bool,
+    sync_mode: roml::SynchronizationMode,
+    compilation_id: Option<String>,
+    effective: StoredOptions,
+}
+
+/// Destroy the native session and mark closed. Idempotent: taking an
+/// already-absent session is a no-op. The Python wrapper may stay
+/// referenced; only the native resources are released here.
+fn close_state(state: &mut SessionState) {
+    state.closed = true;
+    state.session.take();
+}
+
+/// Nonblocking session-state acquisition with poison fusion.
+fn lock_session(
+    shared: &SharedSession,
+) -> Result<std::sync::MutexGuard<'_, SessionState>, NativeError> {
+    use std::sync::atomic::Ordering;
+    if shared.poison.load(Ordering::SeqCst) {
+        return Err(NativeError::Poisoned("session"));
+    }
+    match shared.state.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(NativeError::SessionBusy),
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            shared.poison.store(true, Ordering::SeqCst);
+            Err(NativeError::Poisoned("session"))
+        }
+    }
+}
+
+fn optional_finite(value: Option<Bound<'_, PyAny>>, what: &str) -> PyResult<Option<f64>> {
+    match value {
+        None => Ok(None),
+        Some(v) => {
+            if v.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(py_numeric(&v, what)?))
+        }
+    }
+}
+
+/// Convert a finite positive seconds value to a Duration, rejecting
+/// values outside the representable range instead of panicking in
+/// `Duration::from_secs_f64` (which aborts on NaN/negative/overflow).
+fn check_duration(value: f64, what: &str) -> PyResult<Duration> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(InvalidModelError::new_err(format!(
+            "{what} must be a positive finite number of seconds"
+        )));
+    }
+    Duration::try_from_secs_f64(value).map_err(|_| {
+        InvalidModelError::new_err(format!("{what} exceeds the representable duration range"))
+    })
+}
+
+/// Gap and seed validation shared by constructor defaults and per-call
+/// overrides so both paths reject identically.
+fn check_relative_gap(gap: Option<f64>) -> PyResult<Option<f64>> {
+    if let Some(g) = gap {
+        if !(0.0..=1.0).contains(&g) {
+            return Err(InvalidModelError::new_err(
+                "relative_gap must lie in [0, 1]",
+            ));
+        }
+    }
+    Ok(gap)
+}
+
+fn check_absolute_gap(gap: Option<f64>) -> PyResult<Option<f64>> {
+    if let Some(g) = gap {
+        if g < 0.0 {
+            return Err(InvalidModelError::new_err(
+                "absolute_gap must be nonnegative",
+            ));
+        }
+    }
+    Ok(gap)
+}
+
+fn check_seed(value: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let s = py_numeric(value, "random_seed")?;
+    if s.fract() != 0.0 || !(-2147483648.0..=2147483647.0).contains(&s) {
+        return Err(InvalidModelError::new_err("random_seed must be an integer"));
+    }
+    Ok(s as i32)
+}
+
+#[pymethods]
+impl Session {
+    #[new]
+    #[pyo3(signature = (*, threads = None, output = None, time_limit = None, relative_gap = None, absolute_gap = None, random_seed = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        threads: Option<Bound<'_, PyAny>>,
+        output: Option<Bound<'_, PyAny>>,
+        time_limit: Option<Bound<'_, PyAny>>,
+        relative_gap: Option<Bound<'_, PyAny>>,
+        absolute_gap: Option<Bound<'_, PyAny>>,
+        random_seed: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let threads_value = match threads {
+            Some(v) => {
+                let t = py_numeric(&v, "threads")?;
+                if t < 1.0 || t.fract() != 0.0 || t > 2147483647.0 {
+                    return Err(InvalidModelError::new_err(
+                        "threads must be a positive integer",
+                    ));
+                }
+                t as i32
+            }
+            None => 1,
+        };
+        let output_value: bool = match output {
+            Some(v) => v
+                .extract()
+                .map_err(|_| InvalidModelError::new_err("output must be a bool"))?,
+            None => false,
+        };
+        let limit = optional_finite(time_limit, "time_limit")?;
+        if let Some(t) = limit {
+            // Eager range validation: unrepresentable limits must fail
+            // here, not panic inside Duration conversion at solve time.
+            check_duration(t, "time_limit")?;
+        }
+        let relative_gap = check_relative_gap(optional_finite(relative_gap, "relative_gap")?)?;
+        let absolute_gap = check_absolute_gap(optional_finite(absolute_gap, "absolute_gap")?)?;
+        let seed = match random_seed {
+            None => None,
+            Some(v) => {
+                if v.is_none() {
+                    None
+                } else {
+                    Some(check_seed(&v)?)
+                }
+            }
+        };
+        let backend = HighsSession::try_new().map_err(|e| SolverError::new_err(e.to_string()))?;
+        Ok(Self {
+            shared: SharedSession {
+                state: std::sync::Arc::new(Mutex::new(SessionState {
+                    session: Some(SolverSession::new(backend)),
+                    bound: None,
+                    options: StoredOptions {
+                        threads: Some(threads_value),
+                        output: Some(output_value),
+                        time_limit_secs: limit,
+                        relative_gap,
+                        absolute_gap,
+                        random_seed: seed,
+                    },
+                    closed: false,
+                })),
+                poison: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        })
+    }
+
+    fn close(&self) -> PyResult<()> {
+        // Close while a solve holds the session fails deterministically
+        // instead of waiting. On success the native session is destroyed
+        // immediately (taken out of the state), even though the Python
+        // wrapper may stay referenced: deterministic cleanup, not GC.
+        // Idempotent: closing twice is a no-op.
+        match lock_session(&self.shared) {
+            Ok(mut state) => {
+                close_state(&mut state);
+                Ok(())
+            }
+            Err(NativeError::SessionBusy) => Err(super::errors::SessionBusyError::new_err(
+                "cannot close a Highs session while it is solving",
+            )),
+            Err(e) => Err(native_error(e)),
+        }
+    }
+
+    fn __enter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        _exc_type: Bound<'_, PyAny>,
+        _exc_value: Bound<'_, PyAny>,
+        _traceback: Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        self.close()?;
+        Ok(false)
+    }
+
+    #[pyo3(signature = (model, *, time_limit = None, relative_gap = None, absolute_gap = None, random_seed = None, start = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn solve(
+        &self,
+        model: Bound<'_, Model>,
+        time_limit: Option<Bound<'_, PyAny>>,
+        relative_gap: Option<Bound<'_, PyAny>>,
+        absolute_gap: Option<Bound<'_, PyAny>>,
+        random_seed: Option<Bound<'_, PyAny>>,
+        start: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Solution> {
+        // Attached phase: validate options and the start request. No locks
+        // are held here; per-call overrides never leak into the session.
+        let mut merged = {
+            let state = lock_session(&self.shared).map_err(native_error)?;
+            if state.closed {
+                return Err(ClosedSessionError::new_err("this Highs session is closed"));
+            }
+            state.options.clone()
+        };
+        if let Some(v) = optional_finite(time_limit, "time_limit")? {
+            if v <= 0.0 {
+                return Err(InvalidModelError::new_err(
+                    "time_limit must be positive when supplied",
+                ));
+            }
+            merged.time_limit_secs = Some(v);
+        }
+        if let Some(v) = check_relative_gap(optional_finite(relative_gap, "relative_gap")?)? {
+            merged.relative_gap = Some(v);
+        }
+        if let Some(v) = check_absolute_gap(optional_finite(absolute_gap, "absolute_gap")?)? {
+            merged.absolute_gap = Some(v);
+        }
+        if let Some(v) = random_seed {
+            if !v.is_none() {
+                merged.random_seed = Some(check_seed(&v)?);
+            }
+        }
+        let effective = merged.clone();
+        let options = merged.build()?;
+        // Start requests validate cheaply here (type + primal presence);
+        // same-model identity is enforced inside, before any mutation.
+        let start_data: Option<StartData> = match start {
+            None => None,
+            Some(s) if s.is_none() => None,
+            Some(s) => {
+                let requested = s.cast::<super::solution::Solution>().map_err(|_| {
+                    InvalidModelError::new_err("start must be a Solution from a previous solve")
+                })?;
+                let snapshot = &requested.borrow().snapshot;
+                if !snapshot.has_candidate {
+                    return Err(InvalidModelError::new_err(
+                        "start solution carries no primal values",
+                    ));
+                }
+                Some(StartData {
+                    values: snapshot.values.clone(),
+                    instance: snapshot.instance,
+                    revision: snapshot.revision,
+                })
+            }
+        };
+        // Lock ordering is fixed (session, then model) and every
+        // acquisition is a nonblocking try_lock, so contention fails fast
+        // instead of deadlocking. No guard crosses the detach boundary:
+        // locks are acquired and released inside the closure, which moves
+        // only owned `Send` data.
+        let wall_start = std::time::Instant::now();
+        let session_shared = self.shared.clone();
+        let model_shared = model.borrow().shared.clone();
+        let native = Python::attach(|py| {
+            py.detach(|| {
+                Self::solve_detached(
+                    &session_shared,
+                    &model_shared,
+                    &options,
+                    start_data.as_ref(),
+                    effective,
+                )
+            })
+        });
+        let wall_seconds = wall_start.elapsed().as_secs_f64();
+        match native {
+            Err(e) => Err(native_error(e)),
+            Ok(mut solved) => {
+                solved.wall_seconds = wall_seconds;
+                Ok(Solution {
+                    snapshot: Snapshot {
+                        status: solved.status,
+                        objective: solved.objective,
+                        values: solved.values,
+                        has_candidate: solved.has_candidate,
+                        backend: solved.backend,
+                        instance: solved.instance,
+                        lineage: solved.lineage,
+                        revision: solved.revision,
+                        py_revision: solved.py_revision,
+                        duals: solved.duals,
+                        reduced_costs: solved.reduced_costs,
+                        effective_time_limit: solved.effective.time_limit_secs,
+                        wall_seconds: solved.wall_seconds,
+                        warm_start: solved.warm_start,
+                        discrete: solved.discrete,
+                        compilation_id: solved.compilation_id,
+                        effective_threads: solved.effective.threads,
+                        effective_output: solved.effective.output,
+                        effective_relative_gap: solved.effective.relative_gap,
+                        effective_absolute_gap: solved.effective.absolute_gap,
+                        effective_random_seed: solved.effective.random_seed,
+                        sync_mode: solved.sync_mode,
+                    },
+                })
+            }
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        "Highs(<session>)".to_string()
+    }
+}
+
+/// Owned warm-start request data (no Python objects, no guards). Carries
+/// the start solution's own revision for honest provenance: a
+/// changed-revision start is accepted as a checked assignment (DESIGN §7),
+/// never relabeled as current.
+struct StartData {
+    values: std::collections::HashMap<roml::VarId, f64>,
+    instance: ModelInstanceId,
+    revision: roml::ModelRevision,
+}
+
+fn native_error(err: NativeError) -> PyErr {
+    match err {
+        NativeError::SessionBusy => super::errors::SessionBusyError::new_err(
+            "this Highs session is busy with another solve",
+        ),
+        NativeError::ModelBusy => {
+            super::errors::ModelBusyError::new_err("model is busy with another operation")
+        }
+        NativeError::Closed => ClosedSessionError::new_err("this Highs session is closed"),
+        NativeError::Mismatch(msg) => ModelMismatchError::new_err(msg),
+        NativeError::Solver(failure) => Python::attach(|py| {
+            let err = SolverError::new_err(failure.message.clone());
+            let value = err.value(py);
+            let _ = value.setattr("category", failure.category.clone());
+            let _ = value.setattr("health_effect", failure.health_effect.clone());
+            let _ = value.setattr("requires_rebuild", failure.requires_rebuild);
+            let _ = value.setattr("native_code", failure.native_code);
+            err
+        }),
+        NativeError::Poisoned(what) => {
+            SolverError::new_err(format!("{what} state is poisoned and cannot be reused"))
+        }
+    }
+}
+
+impl Session {
+    /// Execute one solve with the GIL released. Locks are acquired in
+    /// fixed order (session, then model) with nonblocking `try_lock`;
+    /// every guard drops before the closure returns. No Python API runs
+    /// in here and no guard escapes.
+    fn solve_detached(
+        session_shared: &SharedSession,
+        model_shared: &super::model::SharedModel,
+        options: &SolveOptions,
+        start: Option<&StartData>,
+        effective: StoredOptions,
+    ) -> Result<NativeSolve, NativeError> {
+        let mut session = lock_session(session_shared)?;
+        if session.closed {
+            return Err(NativeError::Closed);
+        }
+        let mut guard = super::model::try_model_state(model_shared).map_err(|fail| match fail {
+            super::model::ModelLockFail::Busy => NativeError::ModelBusy,
+            super::model::ModelLockFail::Poisoned => NativeError::Poisoned("model"),
+        })?;
+        let instance = guard.model.instance();
+        // A solver binds to its first model and rejects another model
+        // before any backend mutation.
+        match session.bound {
+            Some(bound) if bound != instance => {
+                return Err(NativeError::Mismatch(
+                    "this solver is bound to a different model".to_string(),
+                ))
+            }
+            Some(_) => {}
+            None => session.bound = Some(instance),
+        }
+        if let Some(requested) = start {
+            if requested.instance != instance {
+                return Err(NativeError::Mismatch(
+                    "warm-start solution belongs to a different model".to_string(),
+                ));
+            }
+        }
+        let solved = match start {
+            None => {
+                let backend = session.session.as_mut().ok_or(NativeError::Closed)?;
+                backend
+                    .solve_with(&mut guard.model, options.clone())
+                    .map_err(|e| NativeError::Solver(SolverFailure::from_solve_error(&e)))?
+            }
+            Some(requested) => {
+                let assignment = roml::PrimalAssignment {
+                    lineage: guard.model.lineage(),
+                    source_instance: Some(instance),
+                    source_revision: Some(requested.revision),
+                    values: requested.values.iter().map(|(v, x)| (*v, *x)).collect(),
+                };
+                let plan = roml::SolvePlan {
+                    options: options.clone(),
+                    overlay: roml::SolveOverlay::new(
+                        std::collections::BTreeMap::new(),
+                        vec![],
+                        vec![],
+                        vec![],
+                    )
+                    .map_err(|e| NativeError::Solver(SolverFailure::internal(format!("{e:?}"))))?,
+                    mip_starts: vec![roml::MipStart::new(
+                        assignment,
+                        roml::RepairPolicy::BackendDefault,
+                    )],
+                    hints: roml::VariableHints::default(),
+                    objective_override: None,
+                    lex_stage_policy: roml::LexStagePolicy::RequireOptimal,
+                    unsupported: roml::UnsupportedFeaturePolicy::Reject,
+                };
+                session
+                    .session
+                    .as_mut()
+                    .ok_or(NativeError::Closed)?
+                    .solve_plan(&mut guard.model, plan)
+                    .map_err(|e| NativeError::Solver(SolverFailure::from_solve_error(&e)))?
+            }
+        };
+        guard.pending = false;
+        let metadata = solved.metadata();
+        let sync_mode = metadata.synchronization;
+        let warm_start = match start {
+            None => super::solution::WarmStart::None,
+            Some(_) => {
+                let applied = metadata
+                    .effective_plan
+                    .applied_features
+                    .iter()
+                    .any(|f| f.feature == "mip_start");
+                if applied {
+                    super::solution::WarmStart::Applied
+                } else {
+                    super::solution::WarmStart::RequestedNotApplied
+                }
+            }
+        };
+        Ok(NativeSolve {
+            status: solved.status(),
+            objective: solved.objective_value(),
+            has_candidate: !solved.values().is_empty(),
+            values: solved.values().clone(),
+            backend: metadata.backend_name.clone(),
+            instance: metadata.model_instance,
+            lineage: metadata.model_lineage,
+            revision: metadata.model_revision,
+            py_revision: guard.py_revision,
+            duals: solved.duals().cloned(),
+            reduced_costs: solved.reduced_costs().cloned(),
+            discrete: guard.has_discrete,
+            sync_mode,
+            compilation_id: metadata.compilation_id.map(|c| format!("{c:?}")),
+            effective,
+            wall_seconds: 0.0,
+            warm_start,
+        })
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    /// Session contention fails deterministically: holding the session
+    /// guard makes a second acquisition (as `close` performs) report
+    /// `SessionBusy` instead of waiting.
+    #[test]
+    fn close_destroys_native_session_and_is_idempotent() {
+        let mut state = SessionState {
+            session: Some(CoreSession::new(
+                HighsSession::try_new().expect("bundled HiGHS available"),
+            )),
+            bound: None,
+            options: StoredOptions::default(),
+            closed: false,
+        };
+        close_state(&mut state);
+        assert!(state.closed);
+        assert!(state.session.is_none());
+        // Second close is a no-op, not a failure.
+        close_state(&mut state);
+        assert!(state.closed);
+        assert!(state.session.is_none());
+    }
+
+    #[test]
+    fn solver_failure_mapping_preserves_structure() {
+        let failure = SolverFailure::from_solve_error(&roml::SolveError::NoActiveObjective);
+        assert_eq!(failure.category, "no-active-objective");
+        assert!(!failure.requires_rebuild);
+        assert_eq!(failure.native_code, None);
+    }
+
+    #[test]
+    fn session_try_lock_contention_is_busy() {
+        let shared = SharedSession {
+            state: std::sync::Arc::new(Mutex::new(SessionState {
+                session: Some(CoreSession::new(
+                    HighsSession::try_new().expect("bundled HiGHS available"),
+                )),
+                bound: None,
+                options: StoredOptions::default(),
+                closed: false,
+            })),
+            poison: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let _held = lock_session(&shared).expect("first acquisition succeeds");
+        assert!(matches!(
+            lock_session(&shared),
+            Err(NativeError::SessionBusy)
+        ));
+    }
+}

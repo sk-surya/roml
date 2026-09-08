@@ -15,6 +15,13 @@ MPY-01 (binding toolchain and package boundary) is authorized.
 | Phase | State | Evidence |
 |---|---|---|
 | MPY-00 | complete | `evidence/PR-INVENTORY.md`; PR #49 merge `4cbe13c`; PR #51 merge `17e8b79` |
+| MPY-01 | complete | `evidence/DEPENDENCIES.md`; import from built wheel; independent CLEAR review |
+| MPY-02 | complete | golden LP, identity/errors, production.py, ergonomics review |
+| MPY-03 | complete | arrays/CSR, atomic updates, 39 tests, interface review, perf notes |
+| MPY-04 | complete | detached solves, outcomes, warm starts, duals, 61 tests, lifecycle review |
+| MPY-05 | complete | BESS MPC, oracle equivalence, benchmark matrix; bulk gate amended (pass); memory gate fixed via #54, soak PASSES |
+| MPY-06 | open (remediation round 3) | stale-insertion P1 fixed via commit-in-update (pending overlay removed); owner repro verified both halves; release wheel 77 green + soak PASS; #53 draft, no merge/publication |
+| MPY-J | complete | journal-bounding correction designed, reviewed, implemented, merged (#54); soak PASSES |
 | MPY-01 | not started | none |
 | MPY-02 | not started | none |
 | MPY-03 | not started | none |
