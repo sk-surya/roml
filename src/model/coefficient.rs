@@ -1888,6 +1888,7 @@ mod perf_probe_tests {
     use crate::id::Generation;
 
     #[test]
+    // quality-exception: manual release-only performance probe; CI must not depend on wall time.
     #[ignore]
     fn perf_probe_append_1m() {
         use std::time::Instant;
@@ -2008,6 +2009,7 @@ mod perf_probe_rows_tests {
     use crate::id::Generation;
 
     #[test]
+    // quality-exception: manual release-only performance probe; CI must not depend on wall time.
     #[ignore]
     fn perf_probe_append_rows_100k() {
         use std::time::Instant;
