@@ -13,6 +13,7 @@ use crate::model::coefficient::CoefficientTarget;
 use crate::model::constraint::ConstraintBounds;
 use crate::model::objective::Sense;
 use crate::model::variable::{Bounds, VarType, VariableFixing};
+use std::sync::Arc;
 
 /// A single atomic change to the model.
 ///
@@ -167,6 +168,23 @@ pub enum Change {
         old: f64,
         /// New resolved value.
         new: f64,
+    },
+
+    /// A block of constant objective coefficients was inserted at once.
+    ///
+    /// P0 bulk path: `Model::set_linear_objective_bulk` journals one packed
+    /// change instead of one `CoefficientAdded` per cell. The payload is a
+    /// shared `Arc` slice so `commit()`'s changelog snapshot and per-change
+    /// compilation clone it by bumping a refcount instead of deep-cloning a
+    /// million entries. Every cell is a constant (`ValueExpr::Constant`) for
+    /// a variable with no pre-existing cell at `(Objective(obj), var)`;
+    /// near-zero values (`|v| < f64::EPSILON`) are already dropped, exactly
+    /// matching `LinExpr::simplify` filtering on the scalar path.
+    BulkObjectiveCoefficients {
+        /// The objective the block belongs to.
+        obj: ObjId,
+        /// Packed `(variable, constant value)` cells in insertion order.
+        cells: Arc<[(VarId, f64)]>,
     },
 
     // ========== Objective Changes ==========

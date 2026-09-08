@@ -26,6 +26,20 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Bulk constant-objective insertion (P0, unreleased)
+
+- New `Model::set_linear_objective_bulk(sense, vars, coeffs, constant)`:
+  one fused validation scan, one storage reservation, one packed
+  `Change::BulkObjectiveCoefficients` journal entry compiling to a single
+  `ModelOp::SetObjectiveCells` delta op — instead of one `simplify` plus
+  one general coefficient mutation per term. Canonical state is identical
+  to `minimize`/`maximize`; duplicates fall back to algebraic combine
+  (R2.2); rejection is atomic (API-06.5).
+- New `ModelError::MismatchedBulkLengths` for mismatched bulk inputs.
+- Python: `rm.sum(VarArray)` / `rm.dot(numeric, VarArray)` stay packed
+  into the core bulk primitive (no per-term `Affine` normalization);
+  all other expressions keep the general path with identical semantics.
+
 #### Python interface over persistent sessions (MPY, unreleased)
 
 - New `roml-python` crate (PyO3 + maturin, `pip install roml-python`)

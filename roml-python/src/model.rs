@@ -18,7 +18,7 @@ use roml::{
 };
 
 use super::errors::{InvalidHandleError, InvalidModelError, ShapeError};
-use super::expressions::{simplify_value, to_affine, Affine, Comparison};
+use super::expressions::{simplify_value, to_scalar, Comparison, Scalar};
 use super::handles::{Constraint, Objective, Param, Var};
 
 /// A parameter-derived constraint bound: the numeric bound installed in the
@@ -338,13 +338,13 @@ impl Model {
     }
 
     fn minimize(slf: &Bound<'_, Self>, expr: Bound<'_, PyAny>) -> PyResult<Objective> {
-        let affine = to_affine(slf, &expr)?;
-        Self::set_objective_impl(slf, affine, Sense::Minimize)
+        let scalar = to_scalar(slf, &expr)?;
+        Self::set_objective_impl(slf, scalar, Sense::Minimize)
     }
 
     fn maximize(slf: &Bound<'_, Self>, expr: Bound<'_, PyAny>) -> PyResult<Objective> {
-        let affine = to_affine(slf, &expr)?;
-        Self::set_objective_impl(slf, affine, Sense::Maximize)
+        let scalar = to_scalar(slf, &expr)?;
+        Self::set_objective_impl(slf, scalar, Sense::Maximize)
     }
 
     #[pyo3(signature = (**values))]
@@ -772,7 +772,16 @@ impl Model {
 }
 
 impl Model {
-    fn set_objective_impl(slf: &Bound<'_, Self>, e: Affine, sense: Sense) -> PyResult<Objective> {
+    fn set_objective_impl(slf: &Bound<'_, Self>, e: Scalar, sense: Sense) -> PyResult<Objective> {
+        // Packed constant-coefficient vectors bypass the term-by-term
+        // lowering entirely and go straight to the core bulk primitive
+        // (P0). Everything else keeps the existing general path.
+        if let Scalar::Packed(packed) = e {
+            return Self::set_objective_packed(slf, packed, sense);
+        }
+        let Scalar::Affine(e) = e else {
+            return Err(InvalidModelError::new_err("unsupported objective form"));
+        };
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
         for term in &e.terms {
@@ -808,6 +817,50 @@ impl Model {
         }
         .map_err(map_model_error)?;
         record_obj_coeffs(&mut state, obj, &e.terms);
+        state.pending = true;
+        state.py_revision += 1;
+        Ok(Objective {
+            owner: slf.clone().unbind(),
+            id: obj,
+        })
+    }
+
+    /// Packed constant-coefficient objective insertion (P0 bulk path).
+    ///
+    /// `rm.sum(VarArray)` / `rm.dot(numeric, VarArray)` arrive here without
+    /// any per-term `Affine` expansion. Coefficients are finite numerics by
+    /// construction; the core re-validates liveness/finiteness/uniqueness
+    /// (stale variables surface as `InvalidHandleError` through the shared
+    /// error mapping, exactly like the general path's preflight). No
+    /// parameter templates exist to record: packed coefficients admit no
+    /// parameter dependencies.
+    fn set_objective_packed(
+        slf: &Bound<'_, Self>,
+        packed: super::expressions::PackedVars,
+        sense: Sense,
+    ) -> PyResult<Objective> {
+        use super::expressions::PackedCoeffs;
+        if !packed.constant.is_finite() {
+            return Err(InvalidModelError::new_err(
+                "objective constant must be finite",
+            ));
+        }
+        let n = packed.vars.len();
+        let coeffs: Vec<f64> = match &packed.coeffs {
+            PackedCoeffs::One => vec![1.0; n],
+            PackedCoeffs::Scalar(v) => vec![*v; n],
+            PackedCoeffs::Dense(values) => values.clone(),
+        };
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        let core_sense = match sense {
+            Sense::Minimize => roml::Sense::Minimize,
+            Sense::Maximize => roml::Sense::Maximize,
+        };
+        let obj = state
+            .model
+            .set_linear_objective_bulk(core_sense, &packed.vars, &coeffs, packed.constant)
+            .map_err(map_model_error)?;
         state.pending = true;
         state.py_revision += 1;
         Ok(Objective {

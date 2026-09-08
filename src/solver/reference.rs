@@ -224,6 +224,18 @@ impl ReferenceBackend {
                     entry.1 = *active;
                 }
             }
+            // P0 bulk objective block: same end state as replaying one
+            // `SetCell` with an objective target per cell (constant
+            // expression, evaluated value, current objective constant).
+            ModelOp::SetObjectiveCells { obj, cells } => {
+                let constant = self.objective_constants.get(obj).copied().unwrap_or(0.0);
+                for (var, value) in cells.iter() {
+                    self.objective_cells.insert(
+                        (CoefficientTarget::Objective(*obj), *var),
+                        (ValueExpr::constant(*value), *value, constant),
+                    );
+                }
+            }
             ModelOp::SetCell {
                 cell_key,
                 value_expr,

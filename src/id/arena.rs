@@ -81,6 +81,14 @@ impl<T> IdArena<T> {
         (index, generation)
     }
 
+    /// Reserve capacity for additional slots.
+    ///
+    /// Backs bulk-insertion paths that allocate many IDs at once so the
+    /// slot vector grows once instead of rehashing/growing repeatedly.
+    pub fn reserve(&mut self, additional: usize) {
+        self.slots.reserve(additional);
+    }
+
     /// Remove an entity by index and generation.
     ///
     /// Returns the data if the ID was valid, None if stale or out of bounds.

@@ -68,6 +68,7 @@ use crate::solution::{SignedCorrection, Solution};
 use crate::value_expr::ValueExpr;
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use log::warn;
 
@@ -209,6 +210,13 @@ pub enum ModelError {
     ConstraintAlreadySoftened(ConId),
     /// Revision counter overflow.
     RevisionOverflow,
+    /// A bulk coefficient call received mismatched input lengths.
+    MismatchedBulkLengths {
+        /// Number of variables supplied.
+        vars: usize,
+        /// Number of coefficients supplied.
+        coeffs: usize,
+    },
     /// An opaque identity counter was exhausted (ids never wrap).
     IdentityOverflow,
 }
@@ -354,6 +362,10 @@ impl std::fmt::Display for ModelError {
                 write!(f, "constraint {id:?} is already persistently softened")
             }
             Self::RevisionOverflow => write!(f, "revision counter overflow"),
+            Self::MismatchedBulkLengths { vars, coeffs } => write!(
+                f,
+                "bulk coefficient input length mismatch: {vars} variables vs {coeffs} coefficients"
+            ),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
             }
@@ -2594,6 +2606,101 @@ impl Model {
         self.add_objective_coefficient(obj, var, value)
     }
 
+    /// Create and activate an objective from parallel constant-coefficient
+    /// slices in one bulk operation (P0).
+    ///
+    /// This is the fast path for large constant objectives (e.g. a
+    /// million-term sum): fused validation scans, one storage reservation,
+    /// one packed [`Change::BulkObjectiveCoefficients`] journal entry —
+    /// instead of one `simplify` plus one general coefficient mutation per
+    /// term. The resulting canonical state is identical to building the
+    /// same expression through [`Self::minimize`]/[`Self::maximize`].
+    ///
+    /// # Semantics
+    ///
+    /// - `vars.len() == coeffs.len()` is required
+    ///   ([`ModelError::MismatchedBulkLengths`]).
+    /// - Every coefficient and `constant` must be finite
+    ///   ([`ModelError::NonFiniteValue`]); every variable must be live
+    ///   ([`ModelError::VariableNotFound`]). All validation runs before any
+    ///   mutation, so rejection leaves no dangling objective, cells, or
+    ///   journal residue (API-06.5 atomicity).
+    /// - Coefficients with `|v| < f64::EPSILON` are dropped, exactly matching
+    ///   `LinExpr::simplify` filtering on the scalar path.
+    /// - Distinct variables take the bulk path. If a variable repeats, the
+    ///   call transparently falls back to the general path so duplicates
+    ///   combine algebraically (R2.2) rather than last-write-wins.
+    pub fn set_linear_objective_bulk(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        coeffs: &[f64],
+        constant: f64,
+    ) -> Result<ObjId, ModelError> {
+        if vars.len() != coeffs.len() {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: vars.len(),
+                coeffs: coeffs.len(),
+            });
+        }
+        if !constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("objective constant"));
+        }
+        // Fused validation + packing scan, before any mutation. Duplicates
+        // fall back to the general path (algebraic combine, R2.2); stale
+        // variables and non-finite values reject atomically (API-06.5).
+        // Near-zeros are dropped exactly like `LinExpr::simplify`.
+        let mut seen = HashSet::with_capacity(vars.len());
+        let mut packed: Vec<(VarId, f64)> = Vec::with_capacity(vars.len());
+        for (var, coeff) in vars.iter().zip(coeffs.iter()) {
+            if !coeff.is_finite() {
+                return Err(ModelError::NonFiniteValue("coefficient value"));
+            }
+            if !self.variables.contains(*var) {
+                return Err(ModelError::VariableNotFound(*var));
+            }
+            if !seen.insert(*var) {
+                return self.set_linear_objective_general(sense, vars, coeffs, constant);
+            }
+            if coeff.abs() >= f64::EPSILON {
+                packed.push((*var, *coeff));
+            }
+        }
+        let obj = self.add_objective_internal(sense, None);
+        let target = CoefficientTarget::Objective(obj);
+        self.coefficients.add_constant_unique_block(target, &packed);
+        let cells: Arc<[(VarId, f64)]> = packed.into();
+        self.changelog
+            .push(Change::BulkObjectiveCoefficients { obj, cells });
+        // Mirror the scalar path: report the constant iff it differs, then
+        // activate.
+        self.set_objective_constant_internal(obj, constant);
+        self.set_active_objective(obj)?;
+        Ok(obj)
+    }
+
+    /// General-path fallback for [`Self::set_linear_objective_bulk`] when
+    /// variables repeat: builds the expression term-by-term so duplicates
+    /// combine algebraically (R2.2). Inputs are already validated finite
+    /// with live variables by the caller.
+    fn set_linear_objective_general(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        coeffs: &[f64],
+        constant: f64,
+    ) -> Result<ObjId, ModelError> {
+        let mut expr = LinExpr::new();
+        for (var, coeff) in vars.iter().zip(coeffs.iter()) {
+            expr = expr.term(*coeff, *var);
+        }
+        expr = expr.constant(constant);
+        match sense {
+            Sense::Minimize => self.minimize(expr),
+            Sense::Maximize => self.maximize(expr),
+        }
+    }
+
     /// Advanced: set the coefficient cell at `(target, variable)` by
     /// coordinate, replacing any existing canonical cell with `value` (D11).
     ///
@@ -3445,6 +3552,9 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::CoefficientRemoved { var, target, .. } => Ok(ModelOp::RemoveCell {
             cell_key: (target, var),
         }),
+        Change::BulkObjectiveCoefficients { obj, cells } => {
+            Ok(ModelOp::SetObjectiveCells { obj, cells })
+        }
         Change::CoefficientValueChanged {
             var,
             target,
@@ -4339,5 +4449,117 @@ mod construct_tests {
             model.validate_invariants().is_ok(),
             "no orphaned construct metadata after removal"
         );
+    }
+}
+
+#[cfg(test)]
+mod bulk_objective_tests {
+    #![allow(deprecated)] // unit tests exercise the pre-1.0 compatibility surface
+    use super::*;
+    use crate::delta::ModelOp;
+    use crate::sync::AdapterCursor;
+
+    fn bulk_model(n: usize, constant: f64) -> (Model, ObjId, Vec<VarId>, Vec<f64>) {
+        let mut model = Model::new();
+        let vars: Vec<VarId> = (0..n).map(|_| model.add_var()).collect();
+        let coeffs: Vec<f64> = (1..=n).map(|i| i as f64).collect();
+        let obj = model
+            .set_linear_objective_bulk(Sense::Minimize, &vars, &coeffs, constant)
+            .unwrap();
+        (model, obj, vars, coeffs)
+    }
+
+    #[test]
+    fn bulk_journal_is_three_packed_entries() {
+        let (model, obj, vars, coeffs) = bulk_model(8, 0.0);
+        let changes = model.changelog.changes();
+        // 8 VariableAdded entries precede the 3 packed objective entries.
+        assert_eq!(changes.len(), 8 + 3, "packed journal, not per-cell events");
+        let changes = &changes[8..];
+        assert!(matches!(
+            changes[0],
+            Change::ObjectiveAdded { obj: o, .. } if o == obj
+        ));
+        match &changes[1] {
+            Change::BulkObjectiveCoefficients { obj: o, cells } => {
+                assert_eq!(*o, obj);
+                assert_eq!(cells.len(), 8);
+                for (i, (var, value)) in cells.iter().enumerate() {
+                    assert_eq!(*var, vars[i]);
+                    assert!((value - coeffs[i]).abs() < 1e-12);
+                }
+            }
+            other => panic!("expected packed bulk change, got {other:?}"),
+        }
+        assert!(matches!(changes[2], Change::ActiveObjectiveChanged { .. }));
+    }
+
+    #[test]
+    fn bulk_nonzero_constant_mirrors_scalar_journal() {
+        let (model, obj, _, _) = bulk_model(4, 2.5);
+        let changes = model.changelog.changes();
+        assert_eq!(changes.len(), 4 + 4);
+        let changes = &changes[4..];
+        assert!(matches!(
+            changes[2],
+            Change::ObjectiveConstantChanged { obj: o, .. } if o == obj
+        ));
+        assert!(matches!(changes[3], Change::ActiveObjectiveChanged { .. }));
+    }
+
+    #[test]
+    fn bulk_commit_batch_stays_packed() {
+        let (mut model, obj, _, _) = bulk_model(8, 1.5);
+        model.commit().unwrap();
+        let cursor = AdapterCursor::new();
+        let batches = model.coordinator.batches_for_cursor(&cursor).unwrap();
+        assert_eq!(batches.len(), 1);
+        let ops = &batches[0].operations;
+        // 8 AddVariable ops precede the 4 packed objective ops: no per-term
+        // op explosion in the delta.
+        assert_eq!(ops.len(), 8 + 4);
+        let ops = &ops[8..];
+        assert!(matches!(
+            &ops[0],
+            ModelOp::AddObjective { obj: o, .. } if *o == obj
+        ));
+        match &ops[1] {
+            ModelOp::SetObjectiveCells { obj: o, cells } => {
+                assert_eq!(*o, obj);
+                assert_eq!(cells.len(), 8);
+            }
+            other => panic!("expected packed delta op, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bulk_ids_follow_input_order() {
+        let (model, obj, vars, _) = bulk_model(16, 0.0);
+        let base = model
+            .coefficients
+            .for_cell(CoefficientTarget::Objective(obj), vars[0])
+            .map(|id| id.index())
+            .unwrap();
+        for (i, var) in vars.iter().enumerate() {
+            let id = model
+                .coefficients
+                .for_cell(CoefficientTarget::Objective(obj), *var)
+                .unwrap();
+            assert_eq!(
+                id.index(),
+                base + i as u32,
+                "input-order deterministic identities"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_empty_input_is_valid_noop() {
+        let mut model = Model::new();
+        let obj = model
+            .set_linear_objective_bulk(Sense::Minimize, &[], &[], 0.0)
+            .unwrap();
+        assert_eq!(model.active_objective(), Some(obj));
+        assert_eq!(model.num_coefficients(), 0);
     }
 }

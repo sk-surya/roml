@@ -990,6 +990,56 @@ impl CompilationSession {
                 // A31: updates to pre-existing functions ride the ops. The
                 // cell's evaluated value at the batch's `to` revision is the
                 // exact coefficient to apply (SM-01.1).
+                //
+                // P0 bulk objective block: one packed op expands into
+                // per-cell backend operations in a single tight loop over
+                // already-evaluated values (no hashing beyond the mandatory
+                // compiled-id translation, no expression work). The compiled
+                // coefficient tracking is extended once and sorted once —
+                // never retain/push/sort per cell, which would be quadratic.
+                ModelOp::SetObjectiveCells { obj, cells } => {
+                    // SM-04.4 (WR-3): objective coefficient changes gate on
+                    // `IncrementalCoefficients`, never silently compiled.
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "objective coefficient changes",
+                    )?;
+                    let oid = *w.objective_ids.get(obj).ok_or_else(|| {
+                        CompileError::RebuildRequired(format!(
+                            "SetObjectiveCells for unknown compiled objective ({obj:?})"
+                        ))
+                    })?;
+                    operations.reserve(cells.len());
+                    let mut tracked: Vec<(CompiledVariableId, f64)> =
+                        Vec::with_capacity(cells.len());
+                    for (var, value) in cells.iter() {
+                        let vid = *w.variable_ids.get(var).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "SetObjectiveCells for unknown compiled variable ({var:?})"
+                            ))
+                        })?;
+                        operations.push(BackendOp::SetObjectiveCoefficient {
+                            objective: oid,
+                            variable: vid,
+                            value: *value,
+                        });
+                        tracked.push((vid, *value));
+                    }
+                    // WR-03: keep the compiled objective coefficient tracking
+                    // in sync (replace-by-cell semantics, deterministic
+                    // compiled order), extended in bulk: linear retain via a
+                    // membership set, then one sort — never per-cell
+                    // retain/push/sort, which would be quadratic.
+                    if let Some(existing) = w.compiled_objective_coefficients.get_mut(&oid) {
+                        let incoming: std::collections::HashSet<CompiledVariableId> =
+                            tracked.iter().map(|(vid, _)| *vid).collect();
+                        existing.retain(|(cid, _)| !incoming.contains(cid));
+                        existing.extend(tracked);
+                        existing.sort_by_key(|(cid, _)| *cid);
+                    }
+                }
                 ModelOp::SetCell {
                     cell_key,
                     evaluated_value,

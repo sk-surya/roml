@@ -12,7 +12,7 @@ use roml::{ValueExpr, VarId};
 
 use super::errors::{InvalidModelError, ModelMismatchError, ShapeError};
 pub(crate) use super::expressions::BoundSide;
-use super::expressions::{simplify_value, Affine};
+use super::expressions::{simplify_value, Affine, PackedCoeffs, PackedVars, Scalar};
 use super::expressions::{Comparison, ExprTerm};
 use super::handles::{Param, Var};
 use super::model::Model;
@@ -656,8 +656,8 @@ fn normalize_operand(
     }
     if let Ok(expr) = obj.cast::<super::expressions::Expr>() {
         let expr = expr.borrow();
-        owners_match(&expr.inner.owner, owner)?;
-        return Ok(Operand::Scalar(expr.inner.clone()));
+        owners_match(&expr.inner.owner_ref(py), owner)?;
+        return Ok(Operand::Scalar(expr.inner.materialize(py)));
     }
     if obj.is_instance_of::<PyBool>() {
         return Err(InvalidModelError::new_err(format!(
@@ -1430,7 +1430,7 @@ impl ExprArray {
         let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
         if scalar {
             let expr = super::expressions::Expr {
-                inner: borrowed.exprs[flat[0]].clone(),
+                inner: super::expressions::Scalar::Affine(borrowed.exprs[flat[0]].clone()),
             };
             Ok(expr.into_pyobject(py)?.into_any().unbind())
         } else {
@@ -1662,9 +1662,31 @@ impl ConstraintArray {
 /// Scalar reduction implemented in Rust: sums all elements. Empty
 /// reductions are numeric zero. A fully constant result (no variables,
 /// no parameters) folds to a Python float.
+///
+/// P0: summing a nonempty `VarArray` returns a packed vector form instead
+/// of a million-term `Affine`, so `minimize`/`maximize` can take the core
+/// bulk path with no per-term normalization. All other inputs keep the
+/// existing fold.
 #[pyfunction]
 pub(crate) fn sum(obj: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let py = obj.py();
+    if let Ok(arr) = obj.cast::<VarArray>() {
+        let arr = arr.borrow();
+        if !arr.vars.is_empty() {
+            let packed = PackedVars {
+                owner: arr.owner.clone_ref(py),
+                vars: arr.vars.clone(),
+                coeffs: PackedCoeffs::One,
+                constant: 0.0,
+            };
+            return Ok(super::expressions::Expr {
+                inner: Scalar::Packed(packed),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind());
+        }
+    }
     let (owner, affines) = array_affines(&obj)?;
     let folded = fold_affines(
         py,
@@ -1682,10 +1704,12 @@ fn finish_scalar(py: Python<'_>, folded: Affine) -> PyResult<Py<PyAny>> {
         let v = folded.constant.eval(|_| 0.0);
         return Ok(v.into_pyobject(py)?.into_any().unbind());
     }
-    Ok(super::expressions::Expr { inner: folded }
-        .into_pyobject(py)?
-        .into_any()
-        .unbind())
+    Ok(super::expressions::Expr {
+        inner: super::expressions::Scalar::Affine(folded),
+    }
+    .into_pyobject(py)?
+    .into_any()
+    .unbind())
 }
 
 /// Collect (owner, element affines) from any supported sum/dot operand.
@@ -1731,7 +1755,8 @@ fn array_affines(obj: &Bound<'_, PyAny>) -> PyResult<(pyo3::Py<Model>, Vec<Affin
     }
     if let Ok(expr) = obj.cast::<super::expressions::Expr>() {
         let expr = expr.borrow();
-        return Ok((expr.inner.owner.clone_ref(py), vec![expr.inner.clone()]));
+        let inner = expr.inner.materialize(py);
+        return Ok((inner.owner.clone_ref(py), vec![inner]));
     }
     Err(InvalidModelError::new_err(
         "sum/dot operands must be arrays, variables, parameters, or expressions",
@@ -1757,6 +1782,29 @@ pub(crate) fn dot(
                 return Err(super::errors::ModelMismatchError::new_err(
                     "dot operands belong to different models",
                 ));
+            }
+        }
+    }
+    // P0 packed path: numeric coefficients over a nonempty `VarArray`
+    // right side bypass affine folding entirely. Anything else
+    // (parameters, decision-tailed coefficients, shape errors) falls
+    // through to the general path, which owns all error behavior.
+    if let Ok(arr) = expressions.cast::<VarArray>() {
+        let arr = arr.borrow();
+        if !arr.vars.is_empty() {
+            if let Some(coeffs) = packed_dot_coefficients(py, &coefficients, &arr.shape)? {
+                let packed = PackedVars {
+                    owner: arr.owner.clone_ref(py),
+                    vars: arr.vars.clone(),
+                    coeffs,
+                    constant: 0.0,
+                };
+                return Ok(super::expressions::Expr {
+                    inner: Scalar::Packed(packed),
+                }
+                .into_pyobject(py)?
+                .into_any()
+                .unbind());
             }
         }
     }
@@ -1823,13 +1871,14 @@ pub(crate) fn dot(
         out
     } else if let Ok(expr) = coefficients.cast::<super::expressions::Expr>() {
         let expr = expr.borrow();
-        owners_match(&expr.inner.owner, &owner)?;
-        if !expr.inner.terms.is_empty() {
+        let inner = expr.inner.materialize(py);
+        owners_match(&inner.owner, &owner)?;
+        if !inner.terms.is_empty() {
             return Err(super::errors::UnsupportedExpressionError::new_err(
                 "dot coefficients must be numeric or parameter-only; decision-dependent coefficients multiplying decision expressions are nonlinear",
             ));
         }
-        let c = expr.inner.constant.clone();
+        let c = inner.constant.clone();
         vec![c; right.len()]
     } else if let Ok(param) = coefficients.cast::<super::handles::Param>() {
         let param = param.borrow();
@@ -1874,6 +1923,32 @@ pub(crate) fn dot(
         constant,
     };
     finish_scalar(py, folded)
+}
+
+/// Packed-coefficient extraction for the `dot` fast path.
+///
+/// Returns `Some` only for finite-numeric left operands whose shape matches
+/// `right_shape` (scalar broadcast or dense array); every other left
+/// operand — parameters, decision-bearing handles, bools, shape mismatches —
+/// yields `None` so the general path (which owns all error behavior) runs.
+fn packed_dot_coefficients(
+    py: Python<'_>,
+    coefficients: &Bound<'_, PyAny>,
+    right_shape: &[usize],
+) -> PyResult<Option<PackedCoeffs>> {
+    if is_scalar_number(coefficients)? {
+        let v: f64 = coefficients
+            .extract()
+            .map_err(|_| InvalidModelError::new_err("dot: unsupported coefficient type"))?;
+        return Ok(Some(PackedCoeffs::Scalar(v)));
+    }
+    if is_numpy_array(coefficients) || coefficients.cast::<PySequence>().is_ok() {
+        let parsed = parse_numeric(py, coefficients, NumericMode::Finite, "dot coefficients")?;
+        if parsed.shape == right_shape {
+            return Ok(Some(PackedCoeffs::Dense(parsed.values)));
+        }
+    }
+    Ok(None)
 }
 
 /// True for plain numbers (finite): broadcastable scalar coefficients.
@@ -1992,7 +2067,7 @@ fn coefficient_owner(obj: &Bound<'_, PyAny>) -> PyResult<Option<pyo3::Py<Model>>
         return Ok(Some(param.borrow().owner.clone_ref(py)));
     }
     if let Ok(expr) = obj.cast::<super::expressions::Expr>() {
-        return Ok(Some(expr.borrow().inner.owner.clone_ref(py)));
+        return Ok(Some(expr.borrow().inner.owner_ref(py)));
     }
     Ok(None)
 }

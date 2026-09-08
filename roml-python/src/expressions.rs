@@ -93,9 +93,127 @@ fn operand_numeric(value: &Bound<'_, PyAny>, op: &str) -> PyResult<f64> {
     py_numeric(value, &format!("{op} operand"))
 }
 
+/// Packed constant-coefficient vector form (P0 bulk path).
+///
+/// Produced by `rm.sum(VarArray)` and `rm.dot(numeric, VarArray)`: it retains
+/// the variable vector and dense/unit coefficients WITHOUT expanding them
+/// into per-term `Affine` structures, so a million-term objective crosses
+/// into the core as two flat buffers. Any arithmetic on a packed value
+/// materializes it to a general `Affine` first; only `minimize`/`maximize`
+/// consume the packed form directly.
+#[derive(Debug)]
+pub(crate) struct PackedVars {
+    pub owner: Py<Model>,
+    pub vars: Vec<VarId>,
+    pub coeffs: PackedCoeffs,
+    pub constant: f64,
+}
+
+/// Coefficient storage for [`PackedVars`]; always finite numerics by
+/// construction (parameterized coefficients stay on the general path).
+#[derive(Debug)]
+pub(crate) enum PackedCoeffs {
+    /// All-ones (from `rm.sum`).
+    One,
+    /// Uniform scalar (from `rm.dot(scalar, ...)`).
+    Scalar(f64),
+    /// Dense per-variable values, C order (from `rm.dot(array, ...)`).
+    Dense(Vec<f64>),
+}
+
+/// A scalar objective/expression form: either a general `Affine` or a
+/// packed constant-coefficient vector.
+#[derive(Debug)]
+pub(crate) enum Scalar {
+    Affine(Affine),
+    Packed(PackedVars),
+}
+
+impl Clone for Scalar {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Affine(a) => Self::Affine(a.clone()),
+            Self::Packed(p) => Python::attach(|py| {
+                Self::Packed(PackedVars {
+                    owner: p.owner.clone_ref(py),
+                    vars: p.vars.clone(),
+                    coeffs: match &p.coeffs {
+                        PackedCoeffs::One => PackedCoeffs::One,
+                        PackedCoeffs::Scalar(v) => PackedCoeffs::Scalar(*v),
+                        PackedCoeffs::Dense(v) => PackedCoeffs::Dense(v.clone()),
+                    },
+                    constant: p.constant,
+                })
+            }),
+        }
+    }
+}
+
+impl Scalar {
+    /// Owner reference without materializing.
+    pub(crate) fn owner_ref(&self, py: Python<'_>) -> Py<Model> {
+        match self {
+            Self::Affine(a) => a.owner.clone_ref(py),
+            Self::Packed(p) => p.owner.clone_ref(py),
+        }
+    }
+
+    /// General `Affine` view, expanding packed vectors term-by-term.
+    /// Only non-bulk consumers pay this; `minimize`/`maximize` match on
+    /// [`Scalar::Packed`] directly.
+    pub(crate) fn materialize(&self, py: Python<'_>) -> Affine {
+        match self {
+            Self::Affine(a) => a.clone(),
+            Self::Packed(p) => {
+                let terms = match &p.coeffs {
+                    PackedCoeffs::One => p
+                        .vars
+                        .iter()
+                        .map(|v| ExprTerm {
+                            var: *v,
+                            coeff: ValueExpr::constant(1.0),
+                        })
+                        .collect(),
+                    PackedCoeffs::Scalar(c) => p
+                        .vars
+                        .iter()
+                        .map(|v| ExprTerm {
+                            var: *v,
+                            coeff: ValueExpr::constant(*c),
+                        })
+                        .collect(),
+                    PackedCoeffs::Dense(values) => p
+                        .vars
+                        .iter()
+                        .zip(values.iter())
+                        .map(|(v, c)| ExprTerm {
+                            var: *v,
+                            coeff: ValueExpr::constant(*c),
+                        })
+                        .collect(),
+                };
+                Affine {
+                    owner: p.owner.clone_ref(py),
+                    terms,
+                    constant: ValueExpr::constant(p.constant),
+                }
+            }
+        }
+    }
+}
+
 #[pyclass(frozen, name = "Expr")]
 pub struct Expr {
-    pub(crate) inner: Affine,
+    pub(crate) inner: Scalar,
+}
+
+impl Expr {
+    fn inner_term_count(&self) -> usize {
+        match &self.inner {
+            Scalar::Affine(a) => a.terms.len(),
+            Scalar::Packed(p) => p.vars.len(),
+        }
+    }
 }
 
 #[pymethods]
@@ -103,8 +221,8 @@ impl Expr {
     fn __repr__(&self) -> String {
         format!(
             "Expr({} terms{})",
-            self.inner.terms.len(),
-            if self.inner.terms.is_empty() {
+            self.inner_term_count(),
+            if self.inner_term_count() == 0 {
                 String::new()
             } else {
                 ", affine".to_string()
@@ -126,9 +244,15 @@ impl Expr {
 
     fn __neg__(slf: Py<Self>) -> PyResult<Py<Self>> {
         Python::attach(|py| {
-            let mut inner = slf.bind(py).borrow().inner.clone();
+            let mut inner = slf.bind(py).borrow().inner.materialize(py);
             inner.scale(-1.0)?;
-            Ok(Bound::new(py, Self { inner })?.unbind())
+            Ok(Bound::new(
+                py,
+                Self {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .unbind())
         })
     }
 
@@ -138,10 +262,17 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.clone();
+            let mut inner = base.inner.materialize(py);
             drop(base);
             add_operand(&mut inner, &other, 1.0)?;
-            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Self {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -155,10 +286,17 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.clone();
+            let mut inner = base.inner.materialize(py);
             drop(base);
             add_operand(&mut inner, &other, -1.0)?;
-            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Self {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -169,7 +307,7 @@ impl Expr {
             }
             let base = slf.bind(py).borrow();
             let mut inner = Affine {
-                owner: base.inner.owner.clone_ref(py),
+                owner: base.inner.owner_ref(py),
                 terms: Vec::new(),
                 constant: ValueExpr::constant(0.0),
             };
@@ -179,8 +317,17 @@ impl Expr {
             let mut result = inner;
             drop(neg);
             let orig = slf.bind(py).borrow();
-            result.add_terms(&orig.inner, -1.0)?;
-            Ok(Bound::new(py, Self { inner: result })?.into_any().unbind())
+            let orig_affine = orig.inner.materialize(py);
+            drop(orig);
+            result.add_terms(&orig_affine, -1.0)?;
+            Ok(Bound::new(
+                py,
+                Self {
+                    inner: Scalar::Affine(result),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -190,10 +337,17 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.clone();
+            let mut inner = base.inner.materialize(py);
             drop(base);
             mul_operand(&mut inner, &other)?;
-            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Self {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -211,10 +365,17 @@ impl Expr {
                 return Err(InvalidModelError::new_err("division by zero"));
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.clone();
+            let mut inner = base.inner.materialize(py);
             drop(base);
             inner.scale(1.0 / divisor)?;
-            Ok(Bound::new(py, Self { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Self {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -275,8 +436,11 @@ fn add_operand(inner: &mut Affine, other: &Bound<'_, PyAny>, sign: f64) -> PyRes
     }
     if let Ok(expr) = other.cast::<Expr>() {
         let expr = expr.borrow();
-        same_owner(&expr.inner.owner, &inner.owner)?;
-        inner.add_terms(&expr.inner, sign)?;
+        let py = other.py();
+        same_owner(&expr.inner.owner_ref(py), &inner.owner)?;
+        let other_affine = expr.inner.materialize(py);
+        drop(expr);
+        inner.add_terms(&other_affine, sign)?;
         return Ok(());
     }
     let v = operand_numeric(other, "addition")?;
@@ -312,21 +476,24 @@ fn mul_operand(inner: &mut Affine, other: &Bound<'_, PyAny>) -> PyResult<()> {
     }
     if let Ok(expr) = other.cast::<Expr>() {
         let expr = expr.borrow();
-        same_owner(&expr.inner.owner, &inner.owner)?;
-        if !inner.terms.is_empty() && !expr.inner.terms.is_empty() {
+        let py = other.py();
+        same_owner(&expr.inner.owner_ref(py), &inner.owner)?;
+        let other_affine = expr.inner.materialize(py);
+        drop(expr);
+        if !inner.terms.is_empty() && !other_affine.terms.is_empty() {
             return Err(nonlinear());
         }
         if inner.terms.is_empty() {
             // Parameter-only self times affine other.
             let mine = std::mem::replace(&mut inner.constant, ValueExpr::constant(0.0));
-            for term in &expr.inner.terms {
+            for term in &other_affine.terms {
                 inner.push_term(term.var, term.coeff.clone() * mine.clone())?;
             }
-            inner.constant = expr.inner.constant.clone() * mine;
+            inner.constant = other_affine.constant.clone() * mine;
             return Ok(());
         }
         // Affine self times parameter-only other.
-        let factor = expr.inner.constant.clone();
+        let factor = other_affine.constant.clone();
         for term in &mut inner.terms {
             term.coeff = term.coeff.clone() * factor.clone();
         }
@@ -356,7 +523,7 @@ fn compare_operand(slf: &Py<Expr>, other: &Bound<'_, PyAny>, sense: Sense) -> Py
         // Array operands never reach here: every comparison dunder
         // returns NotImplemented for them first.
         let base = slf.bind(py).borrow();
-        let mut lhs = base.inner.clone();
+        let mut lhs = base.inner.materialize(py);
         drop(base);
         add_operand(&mut lhs, other, -1.0)?;
         let rhs = match sense {
@@ -437,33 +604,34 @@ impl Comparison {
     }
 }
 
-/// Convert a scalar operand into an owned affine expression homed to
-/// `model`: `Var` lifts to a unit term, `Param` to a parameter-only
-/// expression, numerics to a constant, and `Expr` clones through.
+/// Convert a scalar operand into an owned scalar form homed to `model`:
+/// `Var` lifts to a unit term, `Param` to a parameter-only expression,
+/// numerics to a constant, and `Expr` clones through (preserving the packed
+/// form so `minimize`/`maximize` can take the bulk path).
 /// Foreign-model handles fail here, so `Model.minimize` never sees them.
-pub(crate) fn to_affine(model: &Bound<'_, Model>, other: &Bound<'_, PyAny>) -> PyResult<Affine> {
+pub(crate) fn to_scalar(model: &Bound<'_, Model>, other: &Bound<'_, PyAny>) -> PyResult<Scalar> {
     Python::attach(|py| {
         if let Ok(var) = other.cast::<Var>() {
             let var = var.borrow();
             same_owner(&var.owner, &model.clone().unbind())?;
-            return Ok(var_affine(py, &var));
+            return Ok(Scalar::Affine(var_affine(py, &var)));
         }
         if let Ok(param) = other.cast::<Param>() {
             let param = param.borrow();
             same_owner(&param.owner, &model.clone().unbind())?;
-            return Ok(param_affine(py, &param));
+            return Ok(Scalar::Affine(param_affine(py, &param)));
         }
         if let Ok(expr) = other.cast::<Expr>() {
             let expr = expr.borrow();
-            same_owner(&expr.inner.owner, &model.clone().unbind())?;
+            same_owner(&expr.inner.owner_ref(py), &model.clone().unbind())?;
             return Ok(expr.inner.clone());
         }
         let v = operand_numeric(other, "objective")?;
-        Ok(Affine {
+        Ok(Scalar::Affine(Affine {
             owner: model.clone().unbind(),
             terms: Vec::new(),
             constant: ValueExpr::constant(v),
-        })
+        }))
     })
 }
 
@@ -499,7 +667,13 @@ impl Var {
         Python::attach(|py| {
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             inner.scale(-1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .unbind())
         })
     }
 
@@ -510,7 +684,14 @@ impl Var {
             }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, 1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -525,7 +706,14 @@ impl Var {
             }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -546,7 +734,14 @@ impl Var {
             let single = var_affine(py, &orig);
             drop(orig);
             inner.add_terms(&single, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -557,7 +752,14 @@ impl Var {
             }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             mul_operand(&mut inner, &other)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -576,7 +778,14 @@ impl Var {
             }
             let mut inner = var_affine(py, &slf.bind(py).borrow());
             inner.scale(1.0 / divisor)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -586,7 +795,12 @@ impl Var {
                 return Ok(py.NotImplemented());
             }
             let inner = var_affine(py, &slf.bind(py).borrow());
-            let expr = Bound::new(py, Expr { inner })?;
+            let expr = Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?;
             let c = compare_operand(&expr.unbind(), &other, Sense::Le)?;
             Ok(Bound::new(py, c)?.into_any().unbind())
         })
@@ -598,7 +812,12 @@ impl Var {
                 return Ok(py.NotImplemented());
             }
             let inner = var_affine(py, &slf.bind(py).borrow());
-            let expr = Bound::new(py, Expr { inner })?;
+            let expr = Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?;
             let c = compare_operand(&expr.unbind(), &other, Sense::Ge)?;
             Ok(Bound::new(py, c)?.into_any().unbind())
         })
@@ -610,7 +829,12 @@ impl Var {
                 return Ok(py.NotImplemented());
             }
             let inner = var_affine(py, &slf.bind(py).borrow());
-            let expr = Bound::new(py, Expr { inner })?;
+            let expr = Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?;
             let c = compare_operand(&expr.unbind(), &other, Sense::Eq)?;
             Ok(Bound::new(py, c)?.into_any().unbind())
         })
@@ -652,7 +876,13 @@ impl Param {
         Python::attach(|py| {
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             inner.scale(-1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .unbind())
         })
     }
 
@@ -663,7 +893,14 @@ impl Param {
             }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, 1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -678,7 +915,14 @@ impl Param {
             }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             add_operand(&mut inner, &other, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -699,7 +943,14 @@ impl Param {
             let single = param_affine(py, &orig);
             drop(orig);
             inner.add_terms(&single, -1.0)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -710,7 +961,14 @@ impl Param {
             }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             mul_operand(&mut inner, &other)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 
@@ -729,7 +987,14 @@ impl Param {
             }
             let mut inner = param_affine(py, &slf.bind(py).borrow());
             inner.scale(1.0 / divisor)?;
-            Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
+            Ok(Bound::new(
+                py,
+                Expr {
+                    inner: Scalar::Affine(inner),
+                },
+            )?
+            .into_any()
+            .unbind())
         })
     }
 

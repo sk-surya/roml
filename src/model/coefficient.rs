@@ -190,6 +190,62 @@ impl CoefficientIndex {
         id
     }
 
+    /// Reserve index capacity for a bulk insertion of `additional` cells.
+    ///
+    /// Backs [`Self::add_constant_unique_block`]: every map grows once so a
+    /// million-cell block does not pay repeated rehashing.
+    pub fn reserve(&mut self, target: CoefficientTarget, additional: usize) {
+        self.arena.reserve(additional);
+        self.by_var.reserve(additional);
+        match target {
+            CoefficientTarget::Constraint(_) => {
+                self.by_constraint.reserve(additional);
+            }
+            CoefficientTarget::Objective(_) => {
+                self.by_objective.reserve(additional);
+            }
+        }
+        self.by_cell.reserve(additional);
+    }
+
+    /// Insert a block of constant coefficients for distinct, previously
+    /// empty cells.
+    ///
+    /// P0 bulk path. Unlike [`Self::add`], this performs no cell-existence
+    /// probes, no parameter-dependency work (constants have none, so
+    /// `by_param` is untouched), and no per-cell changelog handling — the
+    /// caller journals one packed change. Storage for all cells is reserved
+    /// once up front (see [`Self::reserve`]).
+    ///
+    /// # Caller contract
+    ///
+    /// Every `(target, var)` pair must be unique within `vars` and must not
+    /// already hold a cell; otherwise an existing `by_cell` entry would be
+    /// silently overwritten and its `CoeffId` leaked. The public bulk entry
+    /// point establishes this (fresh objective + uniqueness scan with a
+    /// general-path fallback for duplicates).
+    ///
+    /// Returns nothing; identities are deterministic (input order) and can
+    /// be recovered per cell with [`Self::for_cell`].
+    pub fn add_constant_unique_block(&mut self, target: CoefficientTarget, cells: &[(VarId, f64)]) {
+        self.reserve(target, cells.len());
+        for (var, value) in cells.iter() {
+            let data = CoefficientData::new(*var, target, ValueExpr::constant(*value), *value);
+            let (index, generation) = self.arena.allocate(data);
+            let id = CoeffId::new(index, generation);
+            self.by_var.entry(*var).or_default().insert(id);
+            match target {
+                CoefficientTarget::Constraint(con) => {
+                    self.by_constraint.entry(con).or_default().insert(id);
+                }
+                CoefficientTarget::Objective(obj) => {
+                    self.by_objective.entry(obj).or_default().insert(id);
+                }
+            }
+            self.by_cell.insert((target, *var), id);
+        }
+    }
+
     /// Replace an existing coefficient's value expression, maintaining the
     /// parameter dependency index.
     ///

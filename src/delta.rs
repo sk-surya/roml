@@ -13,6 +13,7 @@ use crate::model::coefficient::{CellKey, CoefficientTarget};
 use crate::model::{Bounds, ConstraintBounds, Sense, VarType, VariableFixing};
 use crate::revision::ModelRevision;
 use crate::value_expr::ValueExpr;
+use std::sync::Arc;
 
 /// A typed model operation for solver synchronization.
 ///
@@ -163,6 +164,21 @@ pub enum ModelOp {
         evaluated_value: f64,
         /// Objective constant (reported exactly once, API-03.5).
         constant: f64,
+    },
+
+    /// Insert a block of constant objective coefficient cells at once.
+    ///
+    /// P0 bulk path: compiles from `Change::BulkObjectiveCoefficients` so a
+    /// million-cell objective journals and replays as one packed operation
+    /// instead of a million `SetCell` ops. The payload is shared (`Arc`), so
+    /// batch construction, journaling, and cursor fan-out clone a refcount
+    /// rather than the block. Adapters expand it into per-cell backend
+    /// operations in one tight loop over already-evaluated values.
+    SetObjectiveCells {
+        /// The objective the block belongs to.
+        obj: ObjId,
+        /// Packed `(variable, constant value)` cells in insertion order.
+        cells: Arc<[(VarId, f64)]>,
     },
 
     /// Set the optimization sense of an objective.
