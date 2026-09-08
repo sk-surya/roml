@@ -443,6 +443,14 @@ pub struct VarArray {
     pub shape: Vec<usize>,
     pub vars: Vec<VarId>,
     pub base_name: String,
+    /// Root flat ordinals parallel to [`VarArray::vars`] (P2A).
+    ///
+    /// `None` means identity (`vars[i]` is element `i`): root arrays pay
+    /// nothing. Slices/views carry the gathered root ordinals so scalar
+    /// handles display the canonical root element name, not the
+    /// view-relative offset (previously `x[2:7][0]` mislabeled the
+    /// underlying `x[2]` as `x[0]`; values always flowed by `VarId`).
+    pub ordinals: Option<Vec<usize>>,
 }
 
 /// Shaped parameter array: shape inferred once and immutable.
@@ -930,12 +938,14 @@ fn var_view(
     base: &str,
     shape: Vec<usize>,
     vars: Vec<VarId>,
+    ordinals: Option<Vec<usize>>,
 ) -> VarArray {
     VarArray {
         owner: owner.clone_ref(py),
         shape,
         vars,
         base_name: base.to_string(),
+        ordinals,
     }
 }
 
@@ -1079,15 +1089,33 @@ impl VarArray {
         let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
         if scalar {
             let id = borrowed.vars[flat[0]];
+            // Root ordinal, not the view-relative offset: `x[2:7][0]` is
+            // `x[2]`. Roots carry no side vector (`None` = identity).
+            let ordinal = borrowed
+                .ordinals
+                .as_ref()
+                .map(|o| o[flat[0]])
+                .unwrap_or(flat[0]);
             let var = Var {
                 owner: borrowed.owner.clone_ref(py),
                 id,
-                name: element_name(&borrowed.base_name, flat[0]),
+                name: element_name(&borrowed.base_name, ordinal),
             };
             Ok(var.into_pyobject(py)?.into_any().unbind())
         } else {
             let vars = flat.iter().map(|f| borrowed.vars[*f]).collect();
-            let view = var_view(py, &borrowed.owner, &borrowed.base_name, result_shape, vars);
+            let ordinals = Some(match &borrowed.ordinals {
+                Some(o) => flat.iter().map(|f| o[*f]).collect(),
+                None => flat.clone(),
+            });
+            let view = var_view(
+                py,
+                &borrowed.owner,
+                &borrowed.base_name,
+                result_shape,
+                vars,
+                ordinals,
+            );
             Ok(view.into_pyobject(py)?.into_any().unbind())
         }
     }

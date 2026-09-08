@@ -26,6 +26,20 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Structural variable-array naming (P2A, unreleased)
+- `m.vars()` no longer formats, hashes, or stores one string per
+  element. Arrays own a structural reservation (base name + length);
+  implicit `base[i]` names materialize on demand at handle creation,
+  and a compact reverse index answers prospective-array collisions
+  without string scans. Collision semantics are unchanged (including
+  the constraint-names-vs-variable-elements asymmetry, out-of-range
+  and zero-length behavior, and bracketed bases), as is atomic
+  rejection. `repr(model)` counts come from canonical entity state.
+  As a focused correction, sliced-view scalars now display the root
+  ordinal (`x[2:7][0]` is `x[2]`, previously mislabeled `x[0]`; values
+  always flowed by identity). 1M vars: ~330 ms → ~70 ms with
+  substantially lower peak RSS. No public API or spelling change.
+
 #### Lazy sinks converge onto bulk primitives (P1E, unreleased)
 - Model sinks now classify a persistent lazy tree once and lower
   directly into the cheapest matching core primitive: all-numeric

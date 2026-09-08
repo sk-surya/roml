@@ -36,6 +36,15 @@ pub(crate) struct ModelState {
     pub var_names: HashMap<String, VarId>,
     pub param_names: HashMap<String, ParamId>,
     pub con_names: HashMap<String, ConId>,
+    /// Structural variable-array reservations: base name to element count
+    /// (P2A). Implicit generated names `base[i]` for `i < len` exist
+    /// without eagerly allocated strings; see [`crate::namespace`].
+    pub var_array_lens: HashMap<String, usize>,
+    /// Occupied generated-looking names that are NOT implicit variable
+    /// elements: explicit scalars, eager parameter elements, and array
+    /// bases of any kind, keyed by base. Constraint names excluded by
+    /// design (variable paths never consulted them).
+    pub explicit_indices: crate::namespace::ExplicitIndices,
     pub bound_deps: Vec<BoundDep>,
     /// Reserved array base names (including empty arrays, which contribute
     /// no element entries). Checked alongside the entity namespaces.
@@ -200,6 +209,8 @@ impl Model {
                     var_names: HashMap::new(),
                     param_names: HashMap::new(),
                     con_names: HashMap::new(),
+                    var_array_lens: HashMap::new(),
+                    explicit_indices: HashMap::new(),
                     bound_deps: Vec::new(),
                     array_names: std::collections::HashSet::new(),
                     param_array_shapes: HashMap::new(),
@@ -227,7 +238,7 @@ impl Model {
         match slf.borrow().shared.state.try_lock() {
             Ok(state) => format!(
                 "Model({} vars, {} params, {} constraints)",
-                state.var_names.len(),
+                state.variable_count(),
                 state.param_names.len(),
                 state.con_names.len()
             ),
@@ -285,10 +296,7 @@ impl Model {
         }
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
@@ -303,6 +311,7 @@ impl Model {
             state.has_discrete = true;
         }
         state.var_names.insert(name.to_string(), id);
+        state.index_explicit_name(name);
         state.pending = true;
         state.py_revision += 1;
         Ok(Var {
@@ -321,16 +330,14 @@ impl Model {
         let v = py_numeric(&value, "parameter value")?;
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
         }
         let id = state.model.add_parameter(v).map_err(map_model_error)?;
         state.param_names.insert(name.to_string(), id);
+        state.index_explicit_name(name);
         state.pending = true;
         state.py_revision += 1;
         Ok(Param {
@@ -357,6 +364,24 @@ impl Model {
     fn maximize(slf: &Bound<'_, Self>, expr: Bound<'_, PyAny>) -> PyResult<Objective> {
         let scalar = to_scalar(slf, &expr)?;
         Self::set_objective_impl(slf, scalar, Sense::Maximize)
+    }
+
+    /// Debug-only namespace cardinality probe (P2A evidence).
+    ///
+    /// Present in debug builds only; release wheels expose no such
+    /// surface. Returns `(var reservations, explicit var names,
+    /// explicit index entries)`: after `vars("x", 1M)` this reads
+    /// `(1, 0, 0)`, i.e. one structural reservation and zero stored
+    /// element strings anywhere in the namespace.
+    #[cfg(debug_assertions)]
+    fn _debug_namespace_counts(slf: &Bound<'_, Self>) -> PyResult<(usize, usize, usize)> {
+        let borrowed = slf.borrow();
+        let state = lock_state(&borrowed)?;
+        Ok((
+            state.var_array_lens.len(),
+            state.var_names.len(),
+            state.explicit_indices.values().map(|s| s.len()).sum(),
+        ))
     }
 
     #[pyo3(signature = (**values))]
@@ -415,7 +440,10 @@ impl Model {
                 }
                 continue;
             }
-            if state.var_names.contains_key(&name) || state.array_names.contains(&name) {
+            if state.var_names.contains_key(&name)
+                || state.array_names.contains(&name)
+                || state.implicit_var_element(&name)
+            {
                 return Err(InvalidModelError::new_err(format!(
                     "unknown parameter {name:?} (only parameters can be updated)"
                 )));
@@ -581,7 +609,7 @@ impl Model {
         ub: Option<Bound<'_, PyAny>>,
         kind: &str,
     ) -> PyResult<super::arrays::VarArray> {
-        use super::arrays::{element_name, numel, parse_bound_array, parse_shape};
+        use super::arrays::{numel, parse_bound_array, parse_shape};
         if name.is_empty() {
             return Err(InvalidModelError::new_err(
                 "variable array name must be a nonempty string",
@@ -627,42 +655,39 @@ impl Model {
         }
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        // Reserve the base name and every element name before mutation.
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        // Reserve the base structurally (P2A): the base itself goes
+        // through the unified explicit-name check (exact occupancy or an
+        // implicit element of another reservation, e.g. base "x[5]"), and
+        // the reverse index answers prospective-element collisions without
+        // formatting N strings. All validation runs before any mutation,
+        // preserving the old atomicity (no partial reservation, variables,
+        // or revision changes on rejection).
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
         }
-        let mut element_ids = Vec::with_capacity(n);
-        for i in 0..n {
-            let ename = element_name(name, i);
-            if state.var_names.contains_key(&ename)
-                || state.param_names.contains_key(&ename)
-                || state.array_names.contains(&ename)
-            {
-                return Err(InvalidModelError::new_err(format!(
-                    "namespace collision for array element {ename:?}"
-                )));
-            }
-            element_ids.push(ename);
+        if let Some(ename) = state.prospective_array_conflicts(name, n) {
+            return Err(InvalidModelError::new_err(format!(
+                "namespace collision for array element {ename:?}"
+            )));
         }
         state.array_names.insert(name.to_string());
+        state.index_explicit_name(name);
+        state.var_array_lens.insert(name.to_string(), n);
         let mut vars = Vec::with_capacity(n);
         // Domains pre-validated above; core insertion cannot fail on them.
         // (A residual internal failure would leave partial state; core
         // setters have no documented failure mode here.)
-        for (i, ename) in element_ids.iter().enumerate() {
-            let (lo, hi) = domains[i];
+        // No element strings are formatted, hashed, or stored: implicit
+        // names materialize on demand at handle creation.
+        for (lo, hi) in domains.iter().copied() {
             let def = match var_type {
                 VarType::Continuous => roml::continuous().bounds(lo, hi),
                 VarType::Integer => roml::integer().bounds(lo, hi),
                 VarType::Binary => roml::binary().bounds(lo, hi),
             };
             let id = state.model.add_variable(def).map_err(map_model_error)?;
-            state.var_names.insert(ename.clone(), id);
             vars.push(id);
             if var_type != VarType::Continuous {
                 state.has_discrete = true;
@@ -675,6 +700,8 @@ impl Model {
             shape,
             vars,
             base_name: name.to_string(),
+            // Root arrays own the identity mapping: no side vector.
+            ordinals: None,
         })
     }
 
@@ -725,32 +752,29 @@ impl Model {
         debug_assert_eq!(parsed.values.len(), n);
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
-        if state.var_names.contains_key(name)
-            || state.param_names.contains_key(name)
-            || state.array_names.contains(name)
-        {
+        if state.explicit_name_conflicts(name) {
             return Err(InvalidModelError::new_err(format!(
                 "duplicate name {name:?}: names are unique across variables and parameters"
             )));
         }
-        for i in 0..n {
-            let ename = element_name(name, i);
-            if state.var_names.contains_key(&ename)
-                || state.param_names.contains_key(&ename)
-                || state.array_names.contains(&ename)
-            {
-                return Err(InvalidModelError::new_err(format!(
-                    "namespace collision for array element {ename:?}"
-                )));
-            }
+        if let Some(ename) = state.prospective_array_conflicts(name, n) {
+            return Err(InvalidModelError::new_err(format!(
+                "namespace collision for array element {ename:?}"
+            )));
         }
         let mut params = Vec::with_capacity(n);
         for (i, v) in parsed.values.iter().enumerate() {
             let id = state.model.add_parameter(*v).map_err(map_model_error)?;
-            state.param_names.insert(element_name(name, i), id);
+            let ename = element_name(name, i);
+            state.param_names.insert(ename.clone(), id);
+            // Parameter elements stay eager, but their generated-looking
+            // names join the reverse index so prospective variable arrays
+            // see them without string scans.
+            state.index_explicit_name(&ename);
             params.push(id);
         }
         state.array_names.insert(name.to_string());
+        state.index_explicit_name(name);
         state
             .param_array_shapes
             .insert(name.to_string(), parsed.shape.clone());
@@ -1088,6 +1112,7 @@ impl Model {
                     || state.var_names.contains_key(n)
                     || state.param_names.contains_key(n)
                     || state.array_names.contains(n)
+                    || state.implicit_var_element(n)
                 {
                     return Err(InvalidModelError::new_err(format!(
                         "duplicate constraint name {n:?}"
@@ -1176,6 +1201,7 @@ impl Model {
                     || state.var_names.contains_key(&ename)
                     || state.param_names.contains_key(&ename)
                     || state.array_names.contains(&ename)
+                    || state.implicit_var_element(&ename)
                 {
                     return Err(InvalidModelError::new_err(format!(
                         "namespace collision for constraint {ename:?}"
@@ -1187,6 +1213,7 @@ impl Model {
             let cons = Self::insert_packed_comparison(&mut state, &packed)?;
             if let Some(n) = name {
                 state.array_names.insert(n.to_string());
+                state.index_explicit_name(n);
                 for (i, con) in cons.iter().enumerate() {
                     state.con_names.insert(element_name(n, i), *con);
                 }
@@ -1222,6 +1249,7 @@ impl Model {
         }
         if let Some(n) = name {
             state.array_names.insert(n.to_string());
+            state.index_explicit_name(n);
             for (i, con) in cons.iter().enumerate() {
                 state.con_names.insert(element_name(n, i), *con);
             }
@@ -1454,6 +1482,7 @@ impl Model {
             .map_err(map_model_error)?;
         if let Some(n) = name {
             state.array_names.insert(n.to_string());
+            state.index_explicit_name(n);
             for (i, con) in cons.iter().enumerate() {
                 state.con_names.insert(element_name(n, i), *con);
             }
@@ -1743,6 +1772,8 @@ mod lock_tests {
                 var_names: HashMap::new(),
                 param_names: HashMap::new(),
                 con_names: HashMap::new(),
+                var_array_lens: HashMap::new(),
+                explicit_indices: HashMap::new(),
                 array_names: std::collections::HashSet::new(),
                 param_array_shapes: HashMap::new(),
                 param_array_ids: HashMap::new(),
