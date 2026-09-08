@@ -31,7 +31,7 @@ struct StoredOptions {
 }
 
 impl StoredOptions {
-    fn build(&self) -> SolveOptions {
+    fn build(&self) -> PyResult<SolveOptions> {
         let mut options = SolveOptions::new();
         if let Some(threads) = self.threads {
             options = options.threads(threads);
@@ -40,7 +40,7 @@ impl StoredOptions {
             options = options.output(output);
         }
         if let Some(limit) = self.time_limit_secs {
-            options = options.time_limit(Duration::from_secs_f64(limit.max(0.0)));
+            options = options.time_limit(check_duration(limit, "time_limit")?);
         }
         if let Some(gap) = self.relative_gap {
             options = options.relative_gap(gap);
@@ -51,12 +51,15 @@ impl StoredOptions {
         if let Some(seed) = self.random_seed {
             options = options.random_seed(seed);
         }
-        options
+        Ok(options)
     }
 }
 
 struct SessionState {
-    session: CoreSession,
+    /// Owned native session, taken (and thereby destroyed) by `close`.
+    /// `None` after close; solves check `closed` first, so a missing
+    /// session here always coincides with the closed flag.
+    session: Option<CoreSession>,
     bound: Option<ModelInstanceId>,
     options: StoredOptions,
     closed: bool,
@@ -83,8 +86,126 @@ enum NativeError {
     ModelBusy,
     Closed,
     Mismatch(String),
-    Solver(String),
+    Solver(SolverFailure),
     Poisoned(&'static str),
+}
+
+/// Structured operational failure preserved across the detach boundary.
+/// The Python `SolverError` carries these as attributes so callers never
+/// parse the message to classify failures.
+#[derive(Debug)]
+struct SolverFailure {
+    message: String,
+    /// Stable category string (`backend-invalid-input`,
+    /// `backend-internal`, `commit`, `invalid-options`,
+    /// `no-active-objective`, `status`, `compilation-mismatch`,
+    /// `license`, `internal`).
+    category: String,
+    /// Backend health effect (`none`, `recoverable`, `requires-rebuild`,
+    /// `terminal`, `unknown`).
+    health_effect: String,
+    /// Whether the session needs a snapshot rebuild (derived from health,
+    /// explicit so callers need no health-effect table).
+    requires_rebuild: bool,
+    /// Native solver code when the backend reported one.
+    native_code: Option<i32>,
+}
+
+impl SolverFailure {
+    fn internal(message: String) -> Self {
+        Self {
+            message,
+            category: "internal".to_string(),
+            health_effect: "unknown".to_string(),
+            requires_rebuild: false,
+            native_code: None,
+        }
+    }
+
+    fn from_backend(message: String, err: &roml::BackendError) -> Self {
+        use roml::{ErrorCategory, HealthEffect};
+        let category = match err.category {
+            ErrorCategory::InvalidInput => "backend-invalid-input",
+            _ => "backend-internal",
+        }
+        .to_string();
+        let health_effect = match err.health_effect {
+            HealthEffect::None => "none",
+            HealthEffect::Recoverable => "recoverable",
+            HealthEffect::RequiresRebuild => "requires-rebuild",
+            HealthEffect::Terminal => "terminal",
+        }
+        .to_string();
+        Self {
+            message,
+            category,
+            requires_rebuild: matches!(
+                err.health_effect,
+                HealthEffect::RequiresRebuild | HealthEffect::Terminal
+            ),
+            health_effect,
+            native_code: err.native_code,
+        }
+    }
+
+    fn from_solve_error(err: &roml::SolveError) -> Self {
+        use roml::SolveError;
+        match err {
+            SolveError::Commit(e) => Self {
+                message: e.to_string(),
+                category: "commit".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::InvalidOptions(reason) => Self {
+                message: reason.clone(),
+                category: "invalid-options".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::NoActiveObjective => Self {
+                message: "the model has no active objective".to_string(),
+                category: "no-active-objective".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::Synchronization(e) | SolveError::Solve(e) | SolveError::License(e) => {
+                Self::from_backend(err.to_string(), e)
+            }
+            SolveError::Status(status) => Self {
+                message: format!("backend terminated in an uninterpretable status: {status:?}"),
+                category: "status".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::CompilationMismatch { .. } => Self {
+                message: err.to_string(),
+                category: "compilation-mismatch".to_string(),
+                health_effect: "requires-rebuild".to_string(),
+                requires_rebuild: true,
+                native_code: None,
+            },
+            SolveError::Overlay(e) => Self {
+                message: format!("{e:?}"),
+                category: "overlay".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+            SolveError::Rollback(e) => Self::from_backend(err.to_string(), e),
+            SolveError::Plan(e) => Self {
+                message: format!("{e:?}"),
+                category: "plan".to_string(),
+                health_effect: "unknown".to_string(),
+                requires_rebuild: false,
+                native_code: None,
+            },
+        }
+    }
 }
 
 /// Owned native result data. Everything here is plain `Send` data: no
@@ -102,11 +223,20 @@ struct NativeSolve {
     py_revision: u64,
     duals: Option<std::collections::HashMap<roml::ConId, f64>>,
     reduced_costs: Option<std::collections::HashMap<roml::VarId, f64>>,
-    effective_time_limit: Option<f64>,
     wall_seconds: f64,
     warm_start: super::solution::WarmStart,
     discrete: bool,
     sync_mode: roml::SynchronizationMode,
+    compilation_id: Option<String>,
+    effective: StoredOptions,
+}
+
+/// Destroy the native session and mark closed. Idempotent: taking an
+/// already-absent session is a no-op. The Python wrapper may stay
+/// referenced; only the native resources are released here.
+fn close_state(state: &mut SessionState) {
+    state.closed = true;
+    state.session.take();
 }
 
 /// Nonblocking session-state acquisition with poison fusion.
@@ -137,6 +267,20 @@ fn optional_finite(value: Option<Bound<'_, PyAny>>, what: &str) -> PyResult<Opti
             Ok(Some(py_numeric(&v, what)?))
         }
     }
+}
+
+/// Convert a finite positive seconds value to a Duration, rejecting
+/// values outside the representable range instead of panicking in
+/// `Duration::from_secs_f64` (which aborts on NaN/negative/overflow).
+fn check_duration(value: f64, what: &str) -> PyResult<Duration> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(InvalidModelError::new_err(format!(
+            "{what} must be a positive finite number of seconds"
+        )));
+    }
+    Duration::try_from_secs_f64(value).map_err(|_| {
+        InvalidModelError::new_err(format!("{what} exceeds the representable duration range"))
+    })
 }
 
 /// Gap and seed validation shared by constructor defaults and per-call
@@ -204,11 +348,9 @@ impl Session {
         };
         let limit = optional_finite(time_limit, "time_limit")?;
         if let Some(t) = limit {
-            if t <= 0.0 {
-                return Err(InvalidModelError::new_err(
-                    "time_limit must be positive when supplied",
-                ));
-            }
+            // Eager range validation: unrepresentable limits must fail
+            // here, not panic inside Duration conversion at solve time.
+            check_duration(t, "time_limit")?;
         }
         let relative_gap = check_relative_gap(optional_finite(relative_gap, "relative_gap")?)?;
         let absolute_gap = check_absolute_gap(optional_finite(absolute_gap, "absolute_gap")?)?;
@@ -226,7 +368,7 @@ impl Session {
         Ok(Self {
             shared: SharedSession {
                 state: std::sync::Arc::new(Mutex::new(SessionState {
-                    session: SolverSession::new(backend),
+                    session: Some(SolverSession::new(backend)),
                     bound: None,
                     options: StoredOptions {
                         threads: Some(threads_value),
@@ -245,11 +387,13 @@ impl Session {
 
     fn close(&self) -> PyResult<()> {
         // Close while a solve holds the session fails deterministically
-        // instead of waiting; native destruction stays exactly-once by
-        // ownership when the last handle drops.
+        // instead of waiting. On success the native session is destroyed
+        // immediately (taken out of the state), even though the Python
+        // wrapper may stay referenced: deterministic cleanup, not GC.
+        // Idempotent: closing twice is a no-op.
         match lock_session(&self.shared) {
             Ok(mut state) => {
-                state.closed = true;
+                close_state(&mut state);
                 Ok(())
             }
             Err(NativeError::SessionBusy) => Err(super::errors::SessionBusyError::new_err(
@@ -312,8 +456,8 @@ impl Session {
                 merged.random_seed = Some(check_seed(&v)?);
             }
         }
-        let effective_time_limit = merged.time_limit_secs;
-        let options = merged.build();
+        let effective = merged.clone();
+        let options = merged.build()?;
         // Start requests validate cheaply here (type + primal presence);
         // same-model identity is enforced inside, before any mutation.
         let start_data: Option<StartData> = match start {
@@ -351,7 +495,7 @@ impl Session {
                     &model_shared,
                     &options,
                     start_data.as_ref(),
-                    effective_time_limit,
+                    effective,
                 )
             })
         });
@@ -373,10 +517,16 @@ impl Session {
                         py_revision: solved.py_revision,
                         duals: solved.duals,
                         reduced_costs: solved.reduced_costs,
-                        effective_time_limit: solved.effective_time_limit,
+                        effective_time_limit: solved.effective.time_limit_secs,
                         wall_seconds: solved.wall_seconds,
                         warm_start: solved.warm_start,
                         discrete: solved.discrete,
+                        compilation_id: solved.compilation_id,
+                        effective_threads: solved.effective.threads,
+                        effective_output: solved.effective.output,
+                        effective_relative_gap: solved.effective.relative_gap,
+                        effective_absolute_gap: solved.effective.absolute_gap,
+                        effective_random_seed: solved.effective.random_seed,
                         sync_mode: solved.sync_mode,
                     },
                 })
@@ -409,7 +559,15 @@ fn native_error(err: NativeError) -> PyErr {
         }
         NativeError::Closed => ClosedSessionError::new_err("this Highs session is closed"),
         NativeError::Mismatch(msg) => ModelMismatchError::new_err(msg),
-        NativeError::Solver(msg) => SolverError::new_err(msg),
+        NativeError::Solver(failure) => Python::attach(|py| {
+            let err = SolverError::new_err(failure.message.clone());
+            let value = err.value(py);
+            let _ = value.setattr("category", failure.category.clone());
+            let _ = value.setattr("health_effect", failure.health_effect.clone());
+            let _ = value.setattr("requires_rebuild", failure.requires_rebuild);
+            let _ = value.setattr("native_code", failure.native_code);
+            err
+        }),
         NativeError::Poisoned(what) => {
             SolverError::new_err(format!("{what} state is poisoned and cannot be reused"))
         }
@@ -426,7 +584,7 @@ impl Session {
         model_shared: &super::model::SharedModel,
         options: &SolveOptions,
         start: Option<&StartData>,
-        effective_time_limit: Option<f64>,
+        effective: StoredOptions,
     ) -> Result<NativeSolve, NativeError> {
         let mut session = lock_session(session_shared)?;
         if session.closed {
@@ -456,10 +614,12 @@ impl Session {
             }
         }
         let solved = match start {
-            None => session
-                .session
-                .solve_with(&mut guard.model, options.clone())
-                .map_err(|e| NativeError::Solver(e.to_string()))?,
+            None => {
+                let backend = session.session.as_mut().ok_or(NativeError::Closed)?;
+                backend
+                    .solve_with(&mut guard.model, options.clone())
+                    .map_err(|e| NativeError::Solver(SolverFailure::from_solve_error(&e)))?
+            }
             Some(requested) => {
                 let assignment = roml::PrimalAssignment {
                     lineage: guard.model.lineage(),
@@ -475,7 +635,7 @@ impl Session {
                         vec![],
                         vec![],
                     )
-                    .map_err(|e| NativeError::Solver(format!("{e:?}")))?,
+                    .map_err(|e| NativeError::Solver(SolverFailure::internal(format!("{e:?}"))))?,
                     mip_starts: vec![roml::MipStart::new(
                         assignment,
                         roml::RepairPolicy::BackendDefault,
@@ -487,8 +647,10 @@ impl Session {
                 };
                 session
                     .session
+                    .as_mut()
+                    .ok_or(NativeError::Closed)?
                     .solve_plan(&mut guard.model, plan)
-                    .map_err(|e| NativeError::Solver(e.to_string()))?
+                    .map_err(|e| NativeError::Solver(SolverFailure::from_solve_error(&e)))?
             }
         };
         guard.pending = false;
@@ -523,7 +685,8 @@ impl Session {
             reduced_costs: solved.reduced_costs().cloned(),
             discrete: guard.has_discrete,
             sync_mode,
-            effective_time_limit,
+            compilation_id: metadata.compilation_id.map(|c| format!("{c:?}")),
+            effective,
             wall_seconds: 0.0,
             warm_start,
         })
@@ -538,12 +701,39 @@ mod lock_tests {
     /// guard makes a second acquisition (as `close` performs) report
     /// `SessionBusy` instead of waiting.
     #[test]
+    fn close_destroys_native_session_and_is_idempotent() {
+        let mut state = SessionState {
+            session: Some(CoreSession::new(
+                HighsSession::try_new().expect("bundled HiGHS available"),
+            )),
+            bound: None,
+            options: StoredOptions::default(),
+            closed: false,
+        };
+        close_state(&mut state);
+        assert!(state.closed);
+        assert!(state.session.is_none());
+        // Second close is a no-op, not a failure.
+        close_state(&mut state);
+        assert!(state.closed);
+        assert!(state.session.is_none());
+    }
+
+    #[test]
+    fn solver_failure_mapping_preserves_structure() {
+        let failure = SolverFailure::from_solve_error(&roml::SolveError::NoActiveObjective);
+        assert_eq!(failure.category, "no-active-objective");
+        assert!(!failure.requires_rebuild);
+        assert_eq!(failure.native_code, None);
+    }
+
+    #[test]
     fn session_try_lock_contention_is_busy() {
         let shared = SharedSession {
             state: std::sync::Arc::new(Mutex::new(SessionState {
-                session: CoreSession::new(
+                session: Some(CoreSession::new(
                     HighsSession::try_new().expect("bundled HiGHS available"),
-                ),
+                )),
                 bound: None,
                 options: StoredOptions::default(),
                 closed: false,

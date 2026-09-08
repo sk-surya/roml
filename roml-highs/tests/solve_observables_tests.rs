@@ -783,10 +783,13 @@ fn time_limit_mip_snapshot() -> ModelSnapshot {
     }
 }
 
-/// Q5: a time-limited MIP solve maps to `TimeLimit` and still yields an
-/// extracted solution with variable values.
+/// Q5 (corrected): a time-limited MIP solve maps to `TimeLimit`, and
+/// extraction requires solver-reported incumbent evidence. The 12-binary
+/// fixture finds no incumbent within 1us, so no solution is extracted
+/// (previously buffer defaults leaked as a fake primal). A full solve of
+/// the same model proves the gate preserves genuine incumbents.
 #[test]
-fn q5_status_time_limit_with_extracted_solution() {
+fn q5_status_time_limit_without_incumbent_extracts_nothing() {
     let mut session = create_session();
     session
         .synchronize(Synchronization::CompiledRebuild(compile_snapshot(
@@ -803,13 +806,28 @@ fn q5_status_time_limit_with_extracted_solution() {
         "expected TimeLimit, got {:?}",
         result.termination
     );
-    let sol = result
-        .solution
-        .expect("time-limited solve should still extract a solution");
     assert!(
-        !sol.variable_values.is_empty(),
-        "expected extracted variable values at TimeLimit"
+        result.solution.is_none(),
+        "no incumbent in 1us: extraction must yield nothing, not buffer defaults"
     );
+
+    // Positive control: the same model solved to optimality holds a
+    // genuine incumbent, which extraction preserves.
+    let solved = session
+        .solve(&SolveRequest::new())
+        .expect("Full solve should succeed");
+    assert_eq!(
+        solved.termination,
+        TerminationStatus::Optimal,
+        "expected Optimal, got {:?}",
+        solved.termination
+    );
+    let incumbent = solved.solution.expect("optimal solve must extract");
+    assert!(
+        !incumbent.variable_values.is_empty(),
+        "genuine incumbents must survive the evidence gate"
+    );
+    assert!(incumbent.objective_value.is_some());
 }
 
 /// A 8-variable / 4-row LP that requires more than one simplex iteration, so

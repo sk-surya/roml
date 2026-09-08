@@ -81,6 +81,15 @@ pub(crate) struct Snapshot {
     pub effective_time_limit: Option<f64>,
     /// Total wall-clock seconds for the solve call measured in the binding.
     pub wall_seconds: f64,
+    /// Compilation identity behind this result, when the backend
+    /// reported one.
+    pub compilation_id: Option<String>,
+    /// Effective solve options echoed from the merged request.
+    pub effective_threads: Option<i32>,
+    pub effective_output: Option<bool>,
+    pub effective_relative_gap: Option<f64>,
+    pub effective_absolute_gap: Option<f64>,
+    pub effective_random_seed: Option<i32>,
     /// How the model was synchronized into the backend for this solve.
     pub sync_mode: roml::SynchronizationMode,
     /// Warm-start disposition: `none` (no start requested), `applied` (the
@@ -266,6 +275,21 @@ impl Solution {
     /// Solve metadata: backend, model identity/revision, effective options,
     /// synchronization mode, warm-start disposition, and measured timing.
     /// Missing native diagnostic evidence is `None`, never zero.
+    /// Best certified bound, when the backend reports one. The HiGHS
+    /// adapter does not currently surface a bound, so this is `None`
+    /// (never zero or infinity) rather than a fabricated value.
+    #[getter]
+    fn best_bound(&self) -> Option<f64> {
+        None
+    }
+
+    /// Relative MIP gap at termination, when the backend reports one.
+    /// `None` here means unreported, never zero.
+    #[getter]
+    fn relative_gap(&self) -> Option<f64> {
+        None
+    }
+
     #[getter]
     fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         use pyo3::types::PyDict;
@@ -278,6 +302,18 @@ impl Solution {
         out.set_item("effective_time_limit", self.snapshot.effective_time_limit)?;
         out.set_item("wall_seconds", self.snapshot.wall_seconds)?;
         out.set_item("warm_start", self.snapshot.warm_start.as_str())?;
+        out.set_item("compilation_id", self.snapshot.compilation_id.clone())?;
+        out.set_item("effective_threads", self.snapshot.effective_threads)?;
+        out.set_item("effective_output", self.snapshot.effective_output)?;
+        out.set_item(
+            "effective_relative_gap",
+            self.snapshot.effective_relative_gap,
+        )?;
+        out.set_item(
+            "effective_absolute_gap",
+            self.snapshot.effective_absolute_gap,
+        )?;
+        out.set_item("effective_random_seed", self.snapshot.effective_random_seed)?;
         out.set_item("sync_mode", format!("{:?}", self.snapshot.sync_mode))?;
         out.set_item("has_primal", self.snapshot.has_candidate)?;
         Ok(out)

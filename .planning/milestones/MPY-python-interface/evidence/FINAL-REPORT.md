@@ -73,6 +73,37 @@ property, see open gates). Memory soak: FAIL (see below).
 Neither gate was silently waived; both block MPY completion pending
 disposition.
 
+## Remediation round (owner independent review, 2026-09-08)
+
+The owner's independent review of #53 found three P1 correctness
+blockers and four P2s on the previously-reported head; MPY completion
+was reopened. All seven are remediated here with regression tests:
+
+- P1-1 (invalid incumbent after timeout): HiGHS extraction now
+  requires native `primal_solution_status == feasible`; buffer
+  defaults no longer fabricate primals. Native + binding contract
+  tests (either clean absence or genuine feasible incumbent).
+- P1-2 (failed bulk insertion mutated the model): constraint and
+  objective lowering preflights evaluate coefficient finiteness, so
+  overflow rejects before any row installs (lower-then-commit now
+  holds). Failed-batch preservation tests.
+- P1-3 (valid scalar updates rejected): coefficient-template
+  recording centralized (`record_templates` + `record_con_coeffs` /
+  `record_obj_coeffs`); every lowering site sets `has_complex_deps`
+  consistently. Scalar repricing + overflow tests.
+- P2-4 (oversized time limits panicked): checked duration conversion
+  at construction and per-call; `1e300` rejects as input error.
+- P2-5 (close retained native resources): `close` takes and drops
+  the session immediately; idempotent; busy preserved; Rust unit
+  test proves destruction with the wrapper referenced.
+- P2-6 (incomplete error/metadata contracts): solver failures carry
+  structured `category` / `health_effect` / `requires_rebuild` /
+  `native_code` attributes; `best_bound` / `relative_gap` exposed as
+  honest `None`; compilation identity and effective options in
+  metadata.
+- P2-7 (0-d arrays unupdatable): shape-preserving 0-d construction
+  and update (scalar or 0-d input); `(1,)` stays rejected.
+
 ## Known limitations (documented, not hidden)
 
 - Parameter-dependent objective constants rejected explicitly.

@@ -360,12 +360,30 @@ impl Model {
                 .map_err(|_| InvalidModelError::new_err("parameter names must be strings"))?;
             if let Some(shape) = state.param_array_shapes.get(&name).cloned() {
                 use super::arrays::{numel, parse_numeric, NumericMode};
-                let parsed = parse_numeric(
-                    slf.py(),
-                    &value,
-                    NumericMode::Finite,
-                    &format!("value for {name:?}"),
-                )?;
+                // Zero-dimensional arrays accept a scalar (or 0-d input):
+                // there is exactly one element, so scalar broadcast is
+                // unambiguous. Anything else keeps exact-shape discipline.
+                let parsed = if shape.is_empty() {
+                    match scalar_or_zerod(slf.py(), &value, &format!("value for {name:?}"))? {
+                        Some(v) => super::arrays::NumericInput {
+                            shape: Vec::new(),
+                            values: vec![v],
+                        },
+                        None => parse_numeric(
+                            slf.py(),
+                            &value,
+                            NumericMode::Finite,
+                            &format!("value for {name:?}"),
+                        )?,
+                    }
+                } else {
+                    parse_numeric(
+                        slf.py(),
+                        &value,
+                        NumericMode::Finite,
+                        &format!("value for {name:?}"),
+                    )?
+                };
                 if parsed.shape != shape {
                     return Err(ShapeError::new_err(format!(
                         "value for {name:?} has shape {:?}, expected array shape {:?}",
@@ -765,10 +783,11 @@ impl Model {
         }
         let mut lin = LinExpr::new();
         for term in &e.terms {
-            lin = lin.term(
-                TermCoeff::from(simplify_value(term.coeff.clone())),
-                term.var,
-            );
+            let coeff = simplify_value(term.coeff.clone());
+            // Preflight mirroring lower_affine: non-finite coefficients
+            // fail here, not inside core insertion.
+            eval_expr(&state, &coeff).map_err(map_model_error)?;
+            lin = lin.term(TermCoeff::from(coeff), term.var);
         }
         let const_now = eval_expr(&state, &const_simp).map_err(map_model_error)?;
         lin = lin.constant(const_now);
@@ -777,21 +796,7 @@ impl Model {
             Sense::Maximize => state.model.maximize(lin),
         }
         .map_err(map_model_error)?;
-        let param_coeffs: Vec<ValueExpr> = e
-            .terms
-            .iter()
-            .map(|t| simplify_value(t.coeff.clone()))
-            .filter(|c| !c.dependencies().is_empty())
-            .collect();
-        if !param_coeffs.is_empty() {
-            if param_coeffs
-                .iter()
-                .any(|c| !matches!(c, ValueExpr::Param(_)))
-            {
-                state.has_complex_deps = true;
-            }
-            state.obj_coeffs.insert(obj, param_coeffs);
-        }
+        record_obj_coeffs(&mut state, obj, &e.terms);
         state.pending = true;
         state.py_revision += 1;
         Ok(Objective {
@@ -952,21 +957,7 @@ impl Model {
                     upper: upper_sym,
                 });
             }
-            let param_coeffs: Vec<ValueExpr> = affine
-                .terms
-                .iter()
-                .map(|t| simplify_value(t.coeff.clone()))
-                .filter(|c| !c.dependencies().is_empty())
-                .collect();
-            if !param_coeffs.is_empty() {
-                if param_coeffs
-                    .iter()
-                    .any(|c| !matches!(c, ValueExpr::Param(_)))
-                {
-                    state.has_complex_deps = true;
-                }
-                state.con_coeffs.insert(con, param_coeffs);
-            }
+            record_con_coeffs(&mut state, con, affine);
             cons.push(con);
         }
         if let Some(n) = name {
@@ -1261,6 +1252,43 @@ fn parse_row_bounds(
 /// at current values, insert, and record bound dependencies. Shared by
 /// scalar insertion (arrays pre-lower every element first, so a later
 /// failure leaves all rows unadded).
+/// Record parameter-dependent coefficient templates for derived-overflow
+/// pre-validation on update, and flag complex dependents so the update
+/// path builds the proposed environment. Single registration point for
+/// every lowering site (scalar, array, objective): a site that forgets
+/// to call this silently disables overflow validation for its rows.
+fn record_templates(
+    state: &mut ModelState,
+    terms: &[super::expressions::ExprTerm],
+) -> Vec<ValueExpr> {
+    let param_coeffs: Vec<ValueExpr> = terms
+        .iter()
+        .map(|t| simplify_value(t.coeff.clone()))
+        .filter(|c| !c.dependencies().is_empty())
+        .collect();
+    if param_coeffs
+        .iter()
+        .any(|c| !matches!(c, ValueExpr::Param(_)))
+    {
+        state.has_complex_deps = true;
+    }
+    param_coeffs
+}
+
+fn record_con_coeffs(state: &mut ModelState, con: ConId, affine: &super::expressions::Affine) {
+    let param_coeffs = record_templates(state, &affine.terms);
+    if !param_coeffs.is_empty() {
+        state.con_coeffs.insert(con, param_coeffs);
+    }
+}
+
+fn record_obj_coeffs(state: &mut ModelState, obj: ObjId, terms: &[super::expressions::ExprTerm]) {
+    let param_coeffs = record_templates(state, terms);
+    if !param_coeffs.is_empty() {
+        state.obj_coeffs.insert(obj, param_coeffs);
+    }
+}
+
 pub(crate) fn insert_affine_comparison(
     state: &mut ModelState,
     affine: &super::expressions::Affine,
@@ -1276,15 +1304,7 @@ pub(crate) fn insert_affine_comparison(
             upper: upper_sym,
         });
     }
-    let param_coeffs: Vec<ValueExpr> = affine
-        .terms
-        .iter()
-        .map(|t| simplify_value(t.coeff.clone()))
-        .filter(|c| !c.dependencies().is_empty())
-        .collect();
-    if !param_coeffs.is_empty() {
-        state.con_coeffs.insert(con, param_coeffs);
-    }
+    record_con_coeffs(state, con, affine);
     Ok(con)
 }
 
@@ -1309,10 +1329,12 @@ fn lower_affine(
                 "expression references an unknown variable",
             ));
         }
-        lin = lin.term(
-            TermCoeff::from(simplify_value(term.coeff.clone())),
-            term.var,
-        );
+        let coeff = simplify_value(term.coeff.clone());
+        // Preflight: a coefficient that is non-finite at current values
+        // would fail core insertion mid-batch. Reject the whole batch
+        // before installing any row.
+        eval_expr(state, &coeff).map_err(map_model_error)?;
+        lin = lin.term(TermCoeff::from(coeff), term.var);
     }
     let const_expr = affine.constant.clone();
     let eval_bound =
@@ -1358,6 +1380,33 @@ fn lower_affine(
         upper: upper_val,
     };
     Ok((lin, bounds, lower_sym, upper_sym))
+}
+
+/// Scalar-or-nothing probe for 0-d parameter updates: plain numbers yield
+/// `Some(value)`; bools reject; anything else yields `None` so the caller
+/// falls through to dense array parsing (which enforces exact shape).
+fn scalar_or_zerod(_py: Python<'_>, value: &Bound<'_, PyAny>, what: &str) -> PyResult<Option<f64>> {
+    use pyo3::types::PyBool;
+    if value.is_instance_of::<PyBool>() {
+        return Err(InvalidModelError::new_err(format!(
+            "{what}: bools are not accepted as parameter values"
+        )));
+    }
+    // NumPy scalars/arrays and sequences fall through to array parsing.
+    if value.hasattr("dtype").unwrap_or(false) || value.cast::<pyo3::types::PySequence>().is_ok() {
+        return Ok(None);
+    }
+    match value.extract::<f64>() {
+        Ok(v) => {
+            if !v.is_finite() {
+                return Err(InvalidModelError::new_err(format!("{what} must be finite")));
+            }
+            Ok(Some(v))
+        }
+        Err(_) => Err(InvalidModelError::new_err(format!(
+            "{what} must be a real number or an array"
+        ))),
+    }
 }
 
 #[cfg(test)]

@@ -70,3 +70,29 @@ def test_close_is_idempotent_outcomes():
     solver.close()
     with pytest.raises(rm.ClosedSessionError):
         solver.solve(rm.Model())
+
+
+def test_timeout_without_incumbent_is_not_a_primal():
+    # P1-1: a time limit with no solver-reported incumbent must not
+    # expose buffer defaults as a usable primal. Either outcome is
+    # contract-correct; an infeasible "solution" with infinite
+    # objective is not.
+    import numpy as np
+
+    m = rm.Model()
+    x = m.vars("x", 2000, kind="binary")
+    m.add(rm.sum(x) >= 1000)
+    m.maximize(rm.dot(np.random.default_rng(123).uniform(size=2000), x))
+    with rm.Highs() as solver:
+        result = solver.solve(m, time_limit=0.000001)
+    assert result.status == rm.SolveStatus.TIME_LIMIT
+    if result.has_primal:
+        assert result.objective is not None
+        assert result.objective != float("inf")
+        values = np.asarray(result.values(x))
+        assert set(np.unique(values)) <= {0.0, 1.0}
+        assert float(values.sum()) >= 1000.0
+    else:
+        assert result.objective is None
+        with pytest.raises(rm.NoSolutionError):
+            result.values(x)

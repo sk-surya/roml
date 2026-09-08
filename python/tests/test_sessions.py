@@ -108,3 +108,18 @@ def test_close_during_solve_reports_busy():
         if seen_busy:
             break
     assert seen_busy, "expected to observe close-during-solve contention"
+
+
+def test_oversized_time_limit_rejected_without_panic():
+    # P2-4: finite-but-unrepresentable limits fail as input errors
+    # (constructor and per-call), never as a native panic.
+    with pytest.raises(rm.InvalidModelError):
+        rm.Highs(time_limit=1e300)
+    m = rm.Model()
+    x = m.var("x", ub=1.0)
+    m.maximize(x)
+    with rm.Highs() as solver:
+        with pytest.raises(rm.InvalidModelError):
+            solver.solve(m, time_limit=1e300)
+        # The session survives the rejected call.
+        assert solver.solve(m).is_optimal

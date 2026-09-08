@@ -174,3 +174,56 @@ def test_array_path_coefficient_overflow_rejects_batch():
         with pytest.raises(rm.InvalidModelError):
             m.update(a=1e308, b=1e308)
         assert solver.solve(m).objective == pytest.approx(20.0 / 6.0)
+
+
+def test_failed_array_insertion_preserves_model():
+    # P1-2: overflow discovered in a later row must not install earlier
+    # rows. The model still solves to the original optimum afterwards.
+    m = rm.Model()
+    x = m.vars("x", 2, ub=10.0)
+    p = m.params("p", [1.0, 1e308])
+    m.maximize(x[0])
+    with rm.Highs() as solver:
+        assert solver.solve(m).value(x[0]) == pytest.approx(10.0)
+        with pytest.raises(rm.InvalidModelError):
+            m.add((p * 2) * x <= [1.0, 1.0], name="rows")
+        assert solver.solve(m).value(x[0]) == pytest.approx(10.0)
+        assert solver.solve(m).is_current(m)
+
+
+def test_scalar_complex_coefficient_repricing():
+    # P1-3: a valid scalar update against a product coefficient must
+    # apply; an overflowing one must reject without partial mutation.
+    m = rm.Model()
+    x = m.var("x", ub=10.0)
+    p = m.param("p", 1.0)
+    m.add((2 * p) * x <= 10)
+    m.maximize(x)
+    with rm.Highs() as solver:
+        assert solver.solve(m).objective == pytest.approx(5.0)
+        m.update(p=2.0)
+        assert solver.solve(m).objective == pytest.approx(2.5)
+        with pytest.raises(rm.InvalidModelError):
+            m.update(p=1e308)
+        assert solver.solve(m).objective == pytest.approx(2.5)
+
+
+def test_zero_dimensional_update_round_trip():
+    # P2-7: 0-d parameter arrays accept scalar and 0-d updates; (1,)
+    # inputs stay rejected under exact-shape discipline.
+    import numpy as np
+
+    m = rm.Model()
+    p = m.params("p", 1.0)
+    assert p.shape == ()
+    x = m.var("x", ub=10.0)
+    m.add(x <= p)
+    m.maximize(x)
+    with rm.Highs() as solver:
+        m.update(p=2.0)
+        assert solver.solve(m).objective == pytest.approx(2.0)
+        m.update(p=np.array(3.0))
+        assert solver.solve(m).objective == pytest.approx(3.0)
+        with pytest.raises(rm.ShapeError):
+            m.update(p=np.array([4.0]))
+        assert solver.solve(m).objective == pytest.approx(3.0)

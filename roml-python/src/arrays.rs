@@ -136,6 +136,20 @@ fn parse_numpy(
         }
     }
     let numpy = py.import("numpy")?;
+    // Read the shape from the ORIGINAL object: `ascontiguousarray`
+    // promotes 0-d inputs to shape (1,), which would corrupt 0-d
+    // shape tracking below.
+    let shape_obj = obj.getattr("shape")?;
+    let shape_tuple = shape_obj
+        .cast::<PyTuple>()
+        .map_err(|_| InvalidModelError::new_err(format!("{what}: cannot read array shape")))?;
+    let mut shape = Vec::with_capacity(shape_tuple.len());
+    for item in shape_tuple.iter() {
+        let n: usize = item
+            .extract()
+            .map_err(|_| InvalidModelError::new_err(format!("{what}: invalid array shape")))?;
+        shape.push(n);
+    }
     // One deliberate contiguous float64 copy: also normalizes int inputs
     // and noncontiguous strides.
     let flat = numpy.call_method(
@@ -147,17 +161,6 @@ fn parse_numpy(
             kwargs
         }),
     )?;
-    let shape_obj = flat.getattr("shape")?;
-    let shape_tuple = shape_obj
-        .cast::<PyTuple>()
-        .map_err(|_| InvalidModelError::new_err(format!("{what}: cannot read array shape")))?;
-    let mut shape = Vec::with_capacity(shape_tuple.len());
-    for item in shape_tuple.iter() {
-        let n: usize = item
-            .extract()
-            .map_err(|_| InvalidModelError::new_err(format!("{what}: invalid array shape")))?;
-        shape.push(n);
-    }
     use numpy::{IxDyn, PyArray, PyArrayMethods};
     let ravel: Vec<f64> = flat
         .call_method0("ravel")?
