@@ -26,8 +26,20 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
-#### Bulk constant-objective insertion (P0, unreleased)
+#### Packed coefficient store (P1.5B, unreleased)
 
+- Internal coefficient storage is now a packed constant base plus a sparse
+  mutation overlay under stable generational `CoeffId` identities. Canonical
+  cells, algebraic combine, removal cleanup, parameter propagation, stale-ID
+  errors, and snapshot/delta equivalence are unchanged; per-cell hash
+  topology is gone (bulk construction appends contiguously, the global
+  variable index builds lazily on first use).
+- `Model::coefficient()` now returns an owned `CoefficientData` snapshot
+  instead of a reference (packed cells have no per-cell record to borrow);
+  field reads work exactly as before.
+- `Model::set_linear_objective_bulk` routes into packed construction.
+
+#### Bulk constant-objective insertion (P0, unreleased)
 - New `Model::set_linear_objective_bulk(sense, vars, coeffs, constant)`:
   one fused validation scan, one storage reservation, one packed
   `Change::BulkObjectiveCoefficients` journal entry compiling to a single

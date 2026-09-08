@@ -161,6 +161,10 @@ impl<T> IdArena<T> {
     }
 
     /// Iterate mutably over all occupied slots with their indices.
+    ///
+    /// Retained as shared-arena API (P1.5B no longer routes coefficient
+    /// iteration through it); covered by the arena's own unit test.
+    #[allow(dead_code)]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (u32, Generation, &mut T)> {
         self.slots.iter_mut().enumerate().filter_map(|(idx, slot)| {
             let generation = slot.generation;

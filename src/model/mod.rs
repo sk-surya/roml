@@ -1595,7 +1595,7 @@ impl Model {
         }
 
         // Remove all coefficients for this variable
-        let coeffs: Vec<_> = self.coefficients.for_var(var).collect();
+        let coeffs: Vec<_> = self.coefficients.for_var(var);
         for coeff_id in coeffs {
             self.remove_coefficient_internal(coeff_id);
         }
@@ -2393,18 +2393,19 @@ impl Model {
         let lookup = self.parameters.as_lookup();
 
         for coeff_id in affected {
-            if let Some(data) = self.coefficients.get_mut(coeff_id) {
-                let old_cached = data.cached_value;
-                let new_cached = data.value_expr.eval(&lookup);
-
-                if (old_cached - new_cached).abs() >= f64::EPSILON {
-                    data.cached_value = new_cached;
+            // Overlay-only by construction (packed cells are constant, so
+            // they never enter the parameter index); the old snapshot
+            // carries var/target/expression for the changelog entry.
+            if let Some(old) = self.coefficients.set_cached_value(coeff_id, 0.0) {
+                let new_cached = old.value_expr.eval(&lookup);
+                if (old.cached_value - new_cached).abs() >= f64::EPSILON {
+                    self.coefficients.set_cached_value(coeff_id, new_cached);
                     self.changelog.push(Change::CoefficientValueChanged {
                         coeff: coeff_id,
-                        var: data.var,
-                        target: data.target,
-                        value_expr: data.value_expr.clone(),
-                        old: old_cached,
+                        var: old.var,
+                        target: old.target,
+                        value_expr: old.value_expr.clone(),
+                        old: old.cached_value,
                         new: new_cached,
                     });
                 }
@@ -2668,7 +2669,7 @@ impl Model {
         }
         let obj = self.add_objective_internal(sense, None);
         let target = CoefficientTarget::Objective(obj);
-        self.coefficients.add_constant_unique_block(target, &packed);
+        self.coefficients.append_constant_block(target, &packed);
         let cells: Arc<[(VarId, f64)]> = packed.into();
         self.changelog
             .push(Change::BulkObjectiveCoefficients { obj, cells });
@@ -2746,8 +2747,8 @@ impl Model {
             // otherwise the dependency survives and a later parameter update
             // silently changes the supposedly replaced coefficient.
             let existing = self.coefficients.get(existing_id);
-            let old = existing.map(|d| d.cached_value).unwrap_or(value);
-            if let Some(ValueExpr::Constant(c)) = existing.map(|d| &d.value_expr) {
+            let old = existing.as_ref().map(|d| d.cached_value).unwrap_or(value);
+            if let Some(ValueExpr::Constant(c)) = existing.clone().map(|d| d.value_expr) {
                 if (c - value).abs() < f64::EPSILON {
                     return Ok(());
                 }
@@ -2855,7 +2856,13 @@ impl Model {
     }
 
     /// Get coefficient data.
-    pub fn coefficient(&self, coeff: CoeffId) -> Option<&CoefficientData> {
+    /// Get a snapshot of coefficient data by ID.
+    ///
+    /// Returned by value: packed-base cells have no per-cell record to
+    /// borrow (their constant expression materializes inline), so there is
+    /// no stable referent. Field reads (`.var`, `.cached_value`, …) work
+    /// exactly as before.
+    pub fn coefficient(&self, coeff: CoeffId) -> Option<CoefficientData> {
         self.coefficients.get(coeff)
     }
 
@@ -3054,64 +3061,14 @@ impl Model {
             }
         }
 
-        // 4. by_var index consistency
-        for (var_id, coeff_set) in self.coefficients.by_var_iter() {
-            if !self.variables.contains(*var_id) {
-                violations.push(format!("by_var index references dead variable {var_id:?}"));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!(
-                        "by_var index has dead coefficient {coeff_id:?} for var {var_id:?}"
-                    ));
-                }
-            }
-        }
-
-        // 5. by_constraint index consistency
-        for (con_id, coeff_set) in self.coefficients.by_constraint_iter() {
-            if !self.constraints.contains(*con_id) {
-                violations.push(format!(
-                    "by_constraint index references dead constraint {con_id:?}"
-                ));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!(
-                        "by_constraint index has dead coefficient {coeff_id:?}"
-                    ));
-                }
-            }
-        }
-
-        // 6. by_objective index consistency
-        for (obj_id, coeff_set) in self.coefficients.by_objective_iter() {
-            if !self.objectives.contains(*obj_id) {
-                violations.push(format!(
-                    "by_objective index references dead objective {obj_id:?}"
-                ));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!(
-                        "by_objective index has dead coefficient {coeff_id:?}"
-                    ));
-                }
-            }
-        }
-
-        // 7. by_param index consistency
-        for (param_id, coeff_set) in self.coefficients.by_param_iter() {
-            if !self.parameters.contains(*param_id) {
-                violations.push(format!(
-                    "by_param index references dead parameter {param_id:?}"
-                ));
-            }
-            for &coeff_id in coeff_set {
-                if !self.coefficients.contains(coeff_id) {
-                    violations.push(format!("by_param index has dead coefficient {coeff_id:?}"));
-                }
-            }
+        // 4-7. Coefficient-store structural consistency (P1.5B): the store
+        // audits base/overlay agreement itself — arena/location agreement,
+        // slice coverage and directory membership, shadow/dead/overlay
+        // coherence, delta-list linkage, live-counter exactness, and lazy
+        // index agreement when built. Entity liveness of the audited cells
+        // is covered by check 2 above.
+        for violation in self.coefficients.check_consistency() {
+            violations.push(format!("coefficient store: {violation}"));
         }
 
         // 8. Function-in-set consistency (P25 Task 3, SM-01.1): the
