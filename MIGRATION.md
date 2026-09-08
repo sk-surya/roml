@@ -29,7 +29,7 @@ Deprecation notes on the code point to the sections here (`MIGRATION.md ->
 Pure builders `constraint!` and `objective!` are NOT deprecated; they remain
 optional syntax sugar for building specs (D1/API-04.4).
 
-## Unreleased breaking changes (pending review, not yet merged)
+## Unreleased breaking changes
 
 These pre-1.0 changes alter public signatures. They are recorded here
 before any merge/release so downstream users can adapt early.
