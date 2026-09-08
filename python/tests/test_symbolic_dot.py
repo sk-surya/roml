@@ -2,6 +2,8 @@
 
 Pass on the phase-1 general lowering; must pass unchanged on the packed
 symbolic path + core primitive (zero semantic differences is the gate).
+The second block pins the packed-symbolic form itself: materialization
+through arithmetic/constraints, fallback parity, and update validation.
 """
 
 import numpy as np
@@ -135,3 +137,102 @@ def test_bess_param_form_solves_and_updates():
     m.update(price=prices * 0.5)
     second = solve(m)
     assert second == pytest.approx(first * 0.5)
+
+
+# --- Packed-symbolic form pins (P1C-2 phase 2) ---
+
+
+def build_pair(n=4):
+    """Two identical models' handles; caller builds each side's objective."""
+    q = np.array([3.0, 1.0, 4.0, 2.0])
+
+    def make():
+        m = rm.Model()
+        x = m.vars("x", n, ub=2.0)
+        p = m.params("p", q)
+        m.add(rm.sum(x) <= 5.0)
+        return m, x, p
+
+    return make, q
+
+
+def test_symbolic_arithmetic_materializes_identically():
+    make, q = build_pair()
+    m1, x1, p1 = make()
+    m1.maximize(rm.dot(p1, x1) + 1.0)
+    m2, x2, p2 = make()
+    total = None
+    for i in range(4):
+        term = p2[i] * x2[i]
+        total = term if total is None else total + term
+    m2.maximize(total + 1.0)
+    assert solve(m1) == pytest.approx(solve(m2))
+    # Scaling and negation of a packed-symbolic value also materialize.
+    m3, x3, p3 = make()
+    m3.maximize(2.0 * rm.dot(p3, x3) - rm.dot(p3, x3))
+    assert solve(m3) == pytest.approx(solve(m2) - 1.0)
+
+
+def test_symbolic_in_constraint():
+    m = rm.Model()
+    x = m.vars("x", 3, ub=5.0)
+    p = m.params("p", [1.0, 2.0, 3.0])
+    m.add(rm.dot(p, x) <= 10.0)
+    m.maximize(rm.sum(x))
+    # Cheapest objective-per-cost first: x0=5 (ub), then x1=2.5.
+    assert solve(m) == pytest.approx(7.5)
+
+
+def test_symbolic_nonzero_right_constant_rejects_like_scalar():
+    m = rm.Model()
+    x = m.vars("x", 2, ub=5.0)
+    p = m.params("p", [1.0, 2.0])
+    with pytest.raises(rm.UnsupportedExpressionError):
+        m.maximize(rm.dot(p, x + 1.0))
+
+
+def test_mixed_numeric_param_falls_back_with_same_answer():
+    n = 4
+    q = [3.0, 1.0, 4.0, 2.0]
+    m = rm.Model()
+    x = m.vars("x", n, ub=2.0)
+    p = m.params("p", q)
+    m.add(rm.sum(x) <= 5.0)
+    # Masked parameters: zeroed entries simplify to numerics, so the
+    # coefficient mix cannot pack and keeps the general lowering.
+    m.maximize(rm.dot(p * np.array([1.0, 0.0, 1.0, 0.0]), x))
+    got = solve(m)
+    m2 = rm.Model()
+    y = m2.vars("x", n, ub=2.0)
+    q2 = m2.params("p", q)
+    m2.add(rm.sum(y) <= 5.0)
+    m2.maximize(q2[0] * y[0] + q2[2] * y[2])
+    assert got == pytest.approx(solve(m2))
+
+
+def test_scaled_update_validation_matches_scalar():
+    # A scaled coefficient that overflows under update rejects the batch
+    # identically on both paths (template parity).
+    big = 1e308
+
+    def make_packed():
+        m = rm.Model()
+        x = m.vars("x", 2, ub=5.0)
+        p = m.params("p", [1.0, 1.0])
+        m.add(x[0] + x[1] <= 5.0)
+        m.maximize(rm.dot(2.0 * p, x))
+        return m
+
+    def make_scalar():
+        m = rm.Model()
+        x = m.vars("x", 2, ub=5.0)
+        p = m.params("p", [1.0, 1.0])
+        m.add(x[0] + x[1] <= 5.0)
+        m.maximize(2.0 * p[0] * x[0] + 2.0 * p[1] * x[1])
+        return m
+
+    assert solve(make_packed()) == pytest.approx(solve(make_scalar()))
+    for make in (make_packed, make_scalar):
+        m = make()
+        with pytest.raises((rm.InvalidModelError, ValueError)):
+            m.update(p=[big, big])

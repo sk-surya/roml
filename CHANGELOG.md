@@ -26,6 +26,30 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Packed parameterized objectives (P1C-2, unreleased)
+- New `Model::set_linear_objective_param_bulk(sense, vars, params, scales,
+  constant)`: one fused validation scan, one packed parametric append
+  (`scale * parameter` cells with evaluated caches plus a compact reverse
+  parameter index, no `ValueExpr` per cell), one packed
+  `Change::BulkObjectiveParamCoefficients` journal entry compiling to a
+  single `ModelOp::SetObjectiveParamCells` delta op. Canonical state is
+  identical to the scalar path (same-variable/same-parameter scales sum;
+  same variable with distinct parameters installs through the general
+  overlay with the combined expression). Packed parametric cells propagate
+  parameter updates through the reverse index and shadow into the general
+  overlay under the same identity on arbitrary symbolic mutation, exactly
+  like packed constants.
+- New `ValueExpr::scaled_param(scale, param)` canonical constructor (bare
+  `Param` at unit scale, otherwise `Constant * Param` — the exact scalar
+  fold shape, so snapshot/delta forms agree bit-for-bit).
+- Python `rm.dot` with structurally cheap parameter-only coefficients
+  (`ParamArray`, broadcast scalar `Param`, trivially representable
+  parameter scalar expressions) over packed numeric decision arrays now
+  lowers without per-element `Affine` expansion and inserts through the
+  parametric bulk primitive. Mixed, general-expression, and
+  parameter-dependent-constant cases keep the existing lowering with
+  identical semantics; the public Python API is unchanged.
+
 #### Packed array expressions (P1C-1, unreleased)
 
 - Array arithmetic over `VarArray`s (`+`, `-`, negation, numeric

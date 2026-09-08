@@ -36,6 +36,24 @@ pub struct LinearRowBlock {
     pub values: Vec<f64>,
 }
 
+/// One packed parameterized objective cell (P1C-2): the coefficient is
+/// `scale * param`, evaluated at insertion and re-evaluated on parameter
+/// updates through the packed reverse index (no per-cell expression).
+/// `value` is the evaluated cache at the batch's revision, so backend
+/// projection expands the block without parameter lookups — exactly like
+/// [`ModelOp::SetObjectiveCells`] carries evaluated constants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamCoeffCell {
+    /// The variable this coefficient multiplies.
+    pub var: VarId,
+    /// Finite multiplier applied to the parameter.
+    pub scale: f64,
+    /// The parameter providing the value.
+    pub param: ParamId,
+    /// Evaluated `scale * parameter` at insertion.
+    pub value: f64,
+}
+
 /// A typed model operation for solver synchronization.
 ///
 /// Unlike the raw `Change` enum (which captures fine-grained events),
@@ -212,6 +230,19 @@ pub enum ModelOp {
         obj: ObjId,
         /// Packed `(variable, constant value)` cells in insertion order.
         cells: Arc<[(VarId, f64)]>,
+    },
+
+    /// Insert a block of parameterized objective coefficient cells at once.
+    ///
+    /// P1C-2 bulk path: compiles from
+    /// `Change::BulkObjectiveParamCoefficients`. Each cell is
+    /// `scale * parameter`; adapters expand the block like
+    /// [`ModelOp::SetObjectiveCells`].
+    SetObjectiveParamCells {
+        /// The objective the block belongs to.
+        obj: ObjId,
+        /// Packed cells in insertion order.
+        cells: Arc<[ParamCoeffCell]>,
     },
 
     /// Set the optimization sense of an objective.

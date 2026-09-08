@@ -7,7 +7,7 @@
 //! nonzero numeric constants, and symbolic truthiness raises `TypeError`.
 
 use pyo3::prelude::*;
-use roml::{ValueExpr, VarId};
+use roml::{ParamId, ValueExpr, VarId};
 
 use super::errors::{InvalidModelError, UnsupportedExpressionError};
 use super::handles::{Param, Var};
@@ -272,12 +272,48 @@ impl PackedLinearArray {
     }
 }
 
-/// A scalar objective/expression form: either a general `Affine` or a
-/// packed constant-coefficient array.
+/// A scalar objective/expression form: a general `Affine`, a packed
+/// constant-coefficient array, or a packed scaled-parameter vector
+/// (P1C-2: one `(variable, scale, parameter)` cell per element, no
+/// per-term `Affine` expansion).
 #[derive(Debug)]
 pub(crate) enum Scalar {
     Affine(Affine),
     Packed(PackedVars),
+    PackedSymbolic(PackedSymbolic),
+}
+
+/// Packed scaled-parameter vector form (P1C-2).
+///
+/// Produced by `rm.dot` with structurally cheap parameter-only
+/// coefficients (`ParamArray`, broadcast scalar `Param`, trivially
+/// representable parameter scalar expressions) over a packed numeric
+/// decision array: it retains parallel `(variable, scale, parameter)`
+/// vectors WITHOUT expanding them into per-term `Affine` structures, so a
+/// 57.6k-term parameterized objective crosses into the core as three flat
+/// buffers via `set_linear_objective_param_bulk`. Any arithmetic on a
+/// packed-symbolic value materializes it to a general `Affine` first (with
+/// coefficient forms bit-identical to the scalar fold); only
+/// `minimize`/`maximize` consume the packed form directly.
+#[derive(Debug)]
+pub(crate) struct PackedSymbolic {
+    pub owner: Py<Model>,
+    pub vars: Vec<VarId>,
+    pub params: Vec<ParamId>,
+    pub scales: Vec<f64>,
+    pub constant: ValueExpr,
+}
+
+impl Clone for PackedSymbolic {
+    fn clone(&self) -> Self {
+        Python::attach(|py| Self {
+            owner: self.owner.clone_ref(py),
+            vars: self.vars.clone(),
+            params: self.params.clone(),
+            scales: self.scales.clone(),
+            constant: self.constant.clone(),
+        })
+    }
 }
 
 impl Clone for Scalar {
@@ -290,6 +326,7 @@ impl Clone for Scalar {
                     array: p.array.clone(),
                 })
             }),
+            Self::PackedSymbolic(s) => Self::PackedSymbolic(s.clone()),
         }
     }
 }
@@ -300,15 +337,32 @@ impl Scalar {
         match self {
             Self::Affine(a) => a.owner.clone_ref(py),
             Self::Packed(p) => p.owner.clone_ref(py),
+            Self::PackedSymbolic(s) => s.owner.clone_ref(py),
         }
     }
 
-    /// General `Affine` view, expanding packed arrays term-by-term.
+    /// General `Affine` view, expanding packed forms term-by-term.
     /// Only non-bulk consumers pay this; `minimize`/`maximize` match on
-    /// [`Scalar::Packed`] directly.
+    /// [`Scalar::Packed`] and [`Scalar::PackedSymbolic`] directly.
+    /// Packed-symbolic coefficients expand to the canonical scaled-parameter
+    /// form, bit-identical to what the scalar fold stores.
     pub(crate) fn materialize(&self, py: Python<'_>) -> Affine {
         match self {
             Self::Affine(a) => a.clone(),
+            Self::PackedSymbolic(s) => Affine {
+                owner: s.owner.clone_ref(py),
+                terms: s
+                    .vars
+                    .iter()
+                    .zip(s.params.iter())
+                    .zip(s.scales.iter())
+                    .map(|((var, param), scale)| ExprTerm {
+                        var: *var,
+                        coeff: ValueExpr::scaled_param(*scale, *param),
+                    })
+                    .collect(),
+                constant: s.constant.clone(),
+            },
             Self::Packed(p) => {
                 let array = &p.array;
                 let mut terms = Vec::with_capacity(array.terms.iter().map(|t| t.vars.len()).sum());
@@ -360,6 +414,7 @@ impl Expr {
         match &self.inner {
             Scalar::Affine(a) => a.terms.len(),
             Scalar::Packed(p) => p.array.numel(),
+            Scalar::PackedSymbolic(s) => s.vars.len(),
         }
     }
 }

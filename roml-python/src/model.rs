@@ -791,6 +791,9 @@ impl Model {
         if let Scalar::Packed(packed) = e {
             return Self::set_objective_packed(slf, packed, sense);
         }
+        if let Scalar::PackedSymbolic(sym) = e {
+            return Self::set_objective_param_bulk(slf, sym, sense);
+        }
         let Scalar::Affine(e) = e else {
             return Err(InvalidModelError::new_err("unsupported objective form"));
         };
@@ -888,6 +891,76 @@ impl Model {
             .model
             .set_linear_objective_bulk(core_sense, &vars, &coeffs, packed.array.constant)
             .map_err(map_model_error)?;
+        state.pending = true;
+        state.py_revision += 1;
+        Ok(Objective {
+            owner: slf.clone().unbind(),
+            id: obj,
+        })
+    }
+
+    /// Packed scaled-parameter objective insertion (P1C-2 bulk path).
+    ///
+    /// `rm.dot` with structurally cheap parameter-only coefficients arrives
+    /// here as three flat buffers, straight into the core parametric bulk
+    /// primitive — no per-term `Affine` expansion, no `HashMap` fold. The
+    /// constant must be numeric (parameter-dependent constants reject with
+    /// the exact scalar-path error); scales are finite by construction and
+    /// the core re-validates liveness/finiteness atomically. Update-time
+    /// derived-coefficient validation sees the same templates the scalar
+    /// path would record (canonical scaled-parameter forms), so `update()`
+    /// accepts or rejects identically.
+    fn set_objective_param_bulk(
+        slf: &Bound<'_, Self>,
+        sym: super::expressions::PackedSymbolic,
+        sense: Sense,
+    ) -> PyResult<Objective> {
+        // Mirror the scalar path exactly: simplify first so degenerate
+        // `0 * p` folds accept, then reject genuine parameter dependence
+        // with the identical error.
+        let const_simp = simplify_value(sym.constant.clone());
+        if !const_simp.dependencies().is_empty() {
+            return Err(super::errors::UnsupportedExpressionError::new_err(
+                "parameter-dependent objective constants are not supported; move the parameter into a coefficient or a constraint bound",
+            ));
+        }
+        let const_now = const_simp.eval(|_| 0.0);
+        if !const_now.is_finite() {
+            return Err(InvalidModelError::new_err(
+                "objective constant must be finite",
+            ));
+        }
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        let core_sense = match sense {
+            Sense::Minimize => roml::Sense::Minimize,
+            Sense::Maximize => roml::Sense::Maximize,
+        };
+        let obj = state
+            .model
+            .set_linear_objective_param_bulk(
+                core_sense,
+                &sym.vars,
+                &sym.params,
+                &sym.scales,
+                const_now,
+            )
+            .map_err(map_model_error)?;
+        // Same update-validation templates the scalar path records: one
+        // canonical scaled-parameter expression per cell (lone parameters
+        // keep the `Param` fast path; scaled ones set `has_complex_deps`
+        // exactly as simplified scalar coefficients would).
+        let terms: Vec<super::expressions::ExprTerm> = sym
+            .vars
+            .iter()
+            .zip(sym.params.iter())
+            .zip(sym.scales.iter())
+            .map(|((var, param), scale)| super::expressions::ExprTerm {
+                var: *var,
+                coeff: ValueExpr::scaled_param(*scale, *param),
+            })
+            .collect();
+        record_obj_coeffs(&mut state, obj, &terms);
         state.pending = true;
         state.py_revision += 1;
         Ok(Objective {

@@ -2330,6 +2330,40 @@ enum DotSym {
     Expr(ValueExpr),
 }
 
+/// Extract a trivially representable scaled parameter
+/// `(param, scale)` from a parameter-only expression (P1C-2): bare
+/// parameters, negations, and constant multiplications (nested). Anything
+/// else — sums of distinct parameters, divisions, zero scales (the scalar
+/// fold would drop the dependency entirely), non-finite scales (the scalar
+/// preflight would reject them) — returns `None` so the caller keeps the
+/// general `Affine` lowering with byte-identical behavior.
+fn as_scaled_param(e: &ValueExpr) -> Option<(ParamId, f64)> {
+    match e {
+        ValueExpr::Param(p) => Some((*p, 1.0)),
+        ValueExpr::Neg(inner) => as_scaled_param(inner).map(|(p, s)| (p, -s)),
+        ValueExpr::Mul(l, r) => match (&**l, &**r) {
+            (ValueExpr::Constant(a), inner) => as_scaled_param(inner).and_then(|(p, s)| {
+                let scale = a * s;
+                if scale == 0.0 || !scale.is_finite() {
+                    None
+                } else {
+                    Some((p, scale))
+                }
+            }),
+            (inner, ValueExpr::Constant(b)) => as_scaled_param(inner).and_then(|(p, s)| {
+                let scale = s * b;
+                if scale == 0.0 || !scale.is_finite() {
+                    None
+                } else {
+                    Some((p, scale))
+                }
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Structural dot-product lowering (P1C-2 phase 1).
 ///
 /// The right side normalizes to packed form with no per-element `Affine`
@@ -2522,8 +2556,84 @@ fn dot_structural(
             .unbind(),
         ));
     }
-    // Symbolic result: direct term pushes, no HashMap fold. Coefficient
-    // construction mirrors the general fold exactly
+    // Symbolic result. When every coefficient is trivially representable
+    // (bare parameter or scaled parameter), keep the packed-symbolic form:
+    // three flat buffers into `set_linear_objective_param_bulk`, no
+    // per-term `Affine` expansion. Right-side numeric factors fold into the
+    // scales. Anything else (numeric mixes, general parameter expressions)
+    // keeps the direct-`Affine` lowering below with identical semantics.
+    // The constant mirrors the general fold (`right.constant * left`,
+    // balanced); it is parameter-dependent exactly when the scalar path's
+    // would be, so `minimize`/`maximize` accept or reject identically.
+    let mut sym_vars: Vec<VarId> = Vec::new();
+    let mut sym_params: Vec<ParamId> = Vec::new();
+    let mut sym_scales: Vec<f64> = Vec::new();
+    let mut sym_ok = true;
+    for term in &right.terms {
+        for (i, var) in term.vars.iter().enumerate() {
+            let rc = match &term.coeffs {
+                PackedCoeffs::One => 1.0,
+                PackedCoeffs::Scalar(c) => *c,
+                PackedCoeffs::Dense(v) => v[i],
+            };
+            let (param, scale) = match &left[i] {
+                DotLeft::Sym(DotSym::Bare(p)) => (*p, rc),
+                DotLeft::Sym(DotSym::Expr(e)) => match as_scaled_param(e) {
+                    Some((p, s)) => (p, rc * s),
+                    None => {
+                        sym_ok = false;
+                        break;
+                    }
+                },
+                DotLeft::Num(_) => {
+                    sym_ok = false;
+                    break;
+                }
+            };
+            if !scale.is_finite() {
+                sym_ok = false;
+                break;
+            }
+            sym_vars.push(*var);
+            sym_params.push(param);
+            sym_scales.push(scale);
+        }
+        if !sym_ok {
+            break;
+        }
+    }
+    // A zero right factor kills the dependency (the scalar fold simplifies
+    // to a numeric); that cell cannot pack.
+    if sym_ok && sym_scales.contains(&0.0) {
+        sym_ok = false;
+    }
+    if sym_ok {
+        let constant = if right.constant == 0.0 {
+            ValueExpr::constant(0.0)
+        } else {
+            balanced_sum(
+                (0..n)
+                    .map(|i| ValueExpr::constant(right.constant) * left_as_expr(&left[i]))
+                    .collect(),
+            )
+        };
+        return Ok(Some(
+            PyExpr {
+                inner: Scalar::PackedSymbolic(crate::expressions::PackedSymbolic {
+                    owner,
+                    vars: sym_vars,
+                    params: sym_params,
+                    scales: sym_scales,
+                    constant,
+                }),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        ));
+    }
+    // General symbolic result: direct term pushes, no HashMap fold.
+    // Coefficient construction mirrors the general fold exactly
     // (`right * left`, simplified per term).
     let mut terms = Vec::with_capacity(n * right.terms.len().max(1));
     for term in &right.terms {

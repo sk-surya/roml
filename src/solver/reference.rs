@@ -252,6 +252,24 @@ impl ReferenceBackend {
                     );
                 }
             }
+            // P1C-2 packed parametric block: same end state as replaying
+            // one `SetCell` with an objective target per cell, keeping the
+            // canonical scaled-parameter expression form the scalar path
+            // stores (`ValueExpr::scaled_param`, which the snapshot and MPS
+            // writers consume bit-for-bit identically).
+            ModelOp::SetObjectiveParamCells { obj, cells } => {
+                let constant = self.objective_constants.get(obj).copied().unwrap_or(0.0);
+                for cell in cells.iter() {
+                    self.objective_cells.insert(
+                        (CoefficientTarget::Objective(*obj), cell.var),
+                        (
+                            ValueExpr::scaled_param(cell.scale, cell.param),
+                            cell.value,
+                            constant,
+                        ),
+                    );
+                }
+            }
             ModelOp::SetCell {
                 cell_key,
                 value_expr,

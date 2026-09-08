@@ -67,10 +67,44 @@ pub type CellKey = (CoefficientTarget, VarId);
 /// Where a live logical cell's data resides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CellLocation {
-    /// Position in the packed base arrays.
+    /// Position in the packed constant base arrays.
     Packed(u32),
+    /// Position in the packed parametric base arrays (P1C-2).
+    ParamBase(u32),
     /// Slot in the sparse overlay.
     Overlay(u32),
+}
+
+/// One canonical packed parametric cell for bulk insertion: the
+/// coefficient is `scale * parameter`, evaluated to `cached` at build.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParamCell {
+    /// The variable this coefficient multiplies.
+    pub var: VarId,
+    /// The parameter it scales.
+    pub param: ParamId,
+    /// Finite multiplier applied to the parameter.
+    pub scale: f64,
+    /// Evaluated value at insertion.
+    pub cached: f64,
+}
+
+/// A parameter propagation update resolved inside the store (P1C-2).
+/// The caller journals the matching `Change::CoefficientValueChanged`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParamUpdate {
+    /// The affected logical cell (identity preserved).
+    pub id: CoeffId,
+    /// The variable the coefficient multiplies.
+    pub var: VarId,
+    /// The target row the cell belongs to.
+    pub target: CoefficientTarget,
+    /// Finite multiplier applied to the parameter.
+    pub scale: f64,
+    /// Previous evaluated value.
+    pub old: f64,
+    /// New evaluated value.
+    pub new: f64,
 }
 
 /// One contiguous run of packed cells for a single target.
@@ -200,6 +234,19 @@ pub(crate) struct CoefficientIndex {
     directory: HashMap<CoefficientTarget, TargetSlices>,
     shadowed: Vec<u64>,
     dead: Vec<u64>,
+    /// Packed parametric base (P1C-2): append-only parallel arrays holding
+    /// `scale * parameter` cells with evaluated caches plus a compact
+    /// reverse parameter index. No `ValueExpr` is stored per cell.
+    p_vars: Vec<VarId>,
+    p_params: Vec<ParamId>,
+    p_scales: Vec<f64>,
+    p_cached: Vec<f64>,
+    p_ids: Vec<CoeffId>,
+    p_slices: Vec<TargetSlice>,
+    p_directory: HashMap<CoefficientTarget, TargetSlices>,
+    p_shadowed: Vec<u64>,
+    p_dead: Vec<u64>,
+    param_positions: HashMap<ParamId, Vec<u32>>,
     /// Sparse overlay: every post-build mutation lives here.
     overlay: Vec<OverlaySlot>,
     overlay_by_cell: HashMap<CellKey, u32>,
@@ -226,6 +273,16 @@ impl CoefficientIndex {
             directory: HashMap::new(),
             shadowed: Vec::new(),
             dead: Vec::new(),
+            p_vars: Vec::new(),
+            p_params: Vec::new(),
+            p_scales: Vec::new(),
+            p_cached: Vec::new(),
+            p_ids: Vec::new(),
+            p_slices: Vec::new(),
+            p_directory: HashMap::new(),
+            p_shadowed: Vec::new(),
+            p_dead: Vec::new(),
+            param_positions: HashMap::new(),
             overlay: Vec::new(),
             overlay_by_cell: HashMap::new(),
             overlay_by_var: HashMap::new(),
@@ -297,8 +354,11 @@ impl CoefficientIndex {
             }
             return None;
         }
-        self.base_position(target, var)
-            .map(|idx| self.base_ids[idx as usize])
+        if let Some(idx) = self.base_position(target, var) {
+            return Some(self.base_ids[idx as usize]);
+        }
+        self.param_position(target, var)
+            .map(|idx| self.p_ids[idx as usize])
     }
 
     /// Location a live `CoeffId` resolves to, checking generations.
@@ -313,6 +373,21 @@ impl CoefficientIndex {
         for list in self.overlay_by_param.values_mut() {
             if let Some(pos) = list.iter().position(|&x| x == oi) {
                 list.swap_remove(pos);
+            }
+        }
+    }
+
+    /// Drop one parametric-base position from the reverse parameter index
+    /// (shadowing or removal). The position stays allocated; liveness flows
+    /// through the shadow/dead bits and the arena generation.
+    fn unlink_param_position(&mut self, pos: u32) {
+        let param = self.p_params[pos as usize];
+        if let Some(list) = self.param_positions.get_mut(&param) {
+            if let Some(at) = list.iter().position(|&x| x == pos) {
+                list.swap_remove(at);
+            }
+            if list.is_empty() {
+                self.param_positions.remove(&param);
             }
         }
     }
@@ -520,6 +595,136 @@ impl CoefficientIndex {
         }
     }
 
+    /// Append one canonical packed parametric run for a fresh target
+    /// range (P1C-2): `cells` sorted strictly ascending by variable, at
+    /// most one entry per variable, all scales finite (debug-checked; the
+    /// model layer canonicalizes). One target slice covers the range, and
+    /// the compact reverse parameter index extends by the new positions.
+    pub(crate) fn append_param_run(&mut self, target: CoefficientTarget, cells: &[ParamCell]) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(cells.windows(2).all(|w| w[0].var < w[1].var));
+            debug_assert!(cells
+                .iter()
+                .all(|c| c.scale.is_finite() && c.cached.is_finite()));
+        }
+        let n = cells.len();
+        if n == 0 {
+            return;
+        }
+        self.ids.reserve(n);
+        self.p_vars.reserve(n);
+        self.p_params.reserve(n);
+        self.p_scales.reserve(n);
+        self.p_cached.reserve(n);
+        self.p_ids.reserve(n);
+        let start = self.p_vars.len() as u32;
+        for cell in cells.iter() {
+            let pos = self.p_vars.len() as u32;
+            let (index, generation) = self.ids.allocate(CellLocation::ParamBase(pos));
+            let id = CoeffId::new(index, generation);
+            self.p_vars.push(cell.var);
+            self.p_params.push(cell.param);
+            self.p_scales.push(cell.scale);
+            self.p_cached.push(cell.cached);
+            self.p_ids.push(id);
+            self.param_positions
+                .entry(cell.param)
+                .or_default()
+                .push(pos);
+            self.live += 1;
+        }
+        let slice_idx = self.p_slices.len();
+        self.p_slices.push(TargetSlice {
+            target,
+            start,
+            len: n as u32,
+        });
+        match self.p_directory.entry(target) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(slice_idx),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(TargetSlices::One(slice_idx));
+            }
+        }
+    }
+
+    /// Target owning a parametric-base position, via binary search over
+    /// parametric slice starts (O(log slices)).
+    fn param_target_at(&self, pos: u32) -> Option<CoefficientTarget> {
+        let idx = self
+            .p_slices
+            .partition_point(|s| s.start <= pos)
+            .checked_sub(1)?;
+        let slice = &self.p_slices[idx];
+        if pos < slice.start + slice.len {
+            Some(slice.target)
+        } else {
+            None
+        }
+    }
+
+    /// Parametric-base position for a live cell: present slice, sorted hit,
+    /// neither dead nor shadowed.
+    fn param_position(&self, target: CoefficientTarget, var: VarId) -> Option<u32> {
+        let slices = self
+            .p_directory
+            .get(&target)
+            .map(TargetSlices::as_slice)
+            .unwrap_or(&[]);
+        for &si in slices {
+            let slice = &self.p_slices[si];
+            let base = &self.p_vars[slice.start as usize..(slice.start + slice.len) as usize];
+            if let Ok(at) = base.binary_search(&var) {
+                let idx = slice.start + at as u32;
+                if !bit_get(&self.p_dead, idx) && !bit_get(&self.p_shadowed, idx) {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
+    /// Propagate a parameter value through the packed parametric base,
+    /// updating caches in place and reporting every changed cell. The
+    /// caller journals the matching `Change::CoefficientValueChanged`
+    /// entries (same shape as scalar propagation).
+    pub(crate) fn propagate_packed_param(
+        &mut self,
+        param: ParamId,
+        value: f64,
+    ) -> Vec<ParamUpdate> {
+        let mut out = Vec::new();
+        let positions: &[u32] = self
+            .param_positions
+            .get(&param)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        // Borrow split: positions first (immutable copy of indices).
+        let positions: Vec<u32> = positions.to_vec();
+        for pos in positions {
+            if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
+                continue;
+            }
+            let new = self.p_scales[pos as usize] * value;
+            let old = self.p_cached[pos as usize];
+            if (old - new).abs() >= f64::EPSILON {
+                self.p_cached[pos as usize] = new;
+                // Target resolution is O(log slices); updates are rare.
+                if let Some(target) = self.param_target_at(pos) {
+                    out.push(ParamUpdate {
+                        id: self.p_ids[pos as usize],
+                        var: self.p_vars[pos as usize],
+                        target,
+                        scale: self.p_scales[pos as usize],
+                        old,
+                        new,
+                    });
+                }
+            }
+        }
+        out
+    }
+
     // ========== Scalar general path (overlay) ==========
 
     /// Add a new coefficient or combine with an existing cell.
@@ -573,6 +778,34 @@ impl CoefficientIndex {
                     let combined = ValueExpr::constant(base_value) + value_expr;
                     let new_cached = base_value + initial_value;
                     // Reuse the logical id: point the arena slot at overlay.
+                    let oi = self.overlay.len() as u32;
+                    if let Some(slot) = self.ids.get_mut(id.index(), id.generation()) {
+                        *slot = CellLocation::Overlay(oi);
+                    }
+                    let data = CoefficientData::new(var, target, combined.clone(), new_cached);
+                    self.overlay.push(OverlaySlot {
+                        id,
+                        data,
+                        tombstone: false,
+                    });
+                    self.overlay_by_cell.insert(key, oi);
+                    self.overlay_by_var.entry(var).or_default().push(oi);
+                    self.overlay_by_target.entry(target).or_default().push(oi);
+                    for param in combined.dependencies() {
+                        self.overlay_by_param.entry(param).or_default().push(oi);
+                    }
+                    id
+                }
+                CellLocation::ParamBase(pos) => {
+                    // Shadow the packed parametric cell: same identity,
+                    // overlay data combining the stored scaled parameter.
+                    bit_set(&mut self.p_shadowed, pos);
+                    self.unlink_param_position(pos);
+                    let scale = self.p_scales[pos as usize];
+                    let param = self.p_params[pos as usize];
+                    let base_value = self.p_cached[pos as usize];
+                    let combined = ValueExpr::scaled_param(scale, param) + value_expr;
+                    let new_cached = base_value + initial_value;
                     let oi = self.overlay.len() as u32;
                     if let Some(slot) = self.ids.get_mut(id.index(), id.generation()) {
                         *slot = CellLocation::Overlay(oi);
@@ -659,6 +892,30 @@ impl CoefficientIndex {
                     self.overlay_by_param.entry(param).or_default().push(oi);
                 }
             }
+            CellLocation::ParamBase(pos) => {
+                bit_set(&mut self.p_shadowed, pos);
+                self.unlink_param_position(pos);
+                let target = self
+                    .param_target_at(pos)
+                    .expect("packed position always in a slice");
+                let var = self.p_vars[pos as usize];
+                let oi = self.overlay.len() as u32;
+                if let Some(slot) = self.ids.get_mut(id.index(), id.generation()) {
+                    *slot = CellLocation::Overlay(oi);
+                }
+                let data = CoefficientData::new(var, target, value_expr.clone(), evaluated);
+                self.overlay.push(OverlaySlot {
+                    id,
+                    data,
+                    tombstone: false,
+                });
+                self.overlay_by_cell.insert((target, var), oi);
+                self.overlay_by_var.entry(var).or_default().push(oi);
+                self.overlay_by_target.entry(target).or_default().push(oi);
+                for param in value_expr.dependencies() {
+                    self.overlay_by_param.entry(param).or_default().push(oi);
+                }
+            }
         }
     }
 
@@ -704,6 +961,30 @@ impl CoefficientIndex {
                     value,
                 ))
             }
+            CellLocation::ParamBase(pos) => {
+                bit_set(&mut self.p_dead, pos);
+                self.unlink_param_position(pos);
+                let var = self.p_vars[pos as usize];
+                let target = self
+                    .param_target_at(pos)
+                    .expect("packed position always in a slice");
+                let expr = ValueExpr::scaled_param(
+                    self.p_scales[pos as usize],
+                    self.p_params[pos as usize],
+                );
+                let value = self.p_cached[pos as usize];
+                let oi = self.overlay.len() as u32;
+                self.overlay.push(OverlaySlot {
+                    id,
+                    data: CoefficientData::new(var, target, expr.clone(), value),
+                    tombstone: true,
+                });
+                self.overlay_by_cell.insert((target, var), oi);
+                self.overlay_by_var.entry(var).or_default().push(oi);
+                self.overlay_by_target.entry(target).or_default().push(oi);
+                self.live -= 1;
+                Some(CoefficientData::new(var, target, expr, value))
+            }
         }
     }
 
@@ -735,6 +1016,23 @@ impl CoefficientIndex {
                     value,
                 ))
             }
+            CellLocation::ParamBase(pos) => {
+                if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
+                    return None;
+                }
+                let target = self
+                    .param_target_at(pos)
+                    .expect("packed position always in a slice");
+                Some(CoefficientData::new(
+                    self.p_vars[pos as usize],
+                    target,
+                    ValueExpr::scaled_param(
+                        self.p_scales[pos as usize],
+                        self.p_params[pos as usize],
+                    ),
+                    self.p_cached[pos as usize],
+                ))
+            }
         }
     }
 
@@ -753,6 +1051,12 @@ impl CoefficientIndex {
                     return None;
                 }
                 Some(self.base_values[pos as usize])
+            }
+            CellLocation::ParamBase(pos) => {
+                if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
+                    return None;
+                }
+                Some(self.p_cached[pos as usize])
             }
         }
     }
@@ -775,6 +1079,22 @@ impl CoefficientIndex {
                 debug_assert!(false, "packed constant cells admit no parameter updates");
                 None
             }
+            CellLocation::ParamBase(_) => {
+                debug_assert!(
+                    false,
+                    "packed parametric cells update through propagate_packed_param"
+                );
+                None
+            }
+        }
+    }
+
+    /// Whether an id resolves to a live overlay cell (as opposed to a
+    /// packed-base cell, which has its own propagation path).
+    pub(crate) fn is_overlay_cell(&self, id: CoeffId) -> bool {
+        match self.location_of(id) {
+            Some(CellLocation::Overlay(oi)) => !self.overlay[oi as usize].tombstone,
+            _ => false,
         }
     }
 
@@ -811,6 +1131,14 @@ impl CoefficientIndex {
                 out.push(self.base_ids[pos as usize]);
             }
         }
+        // Parametric base has no global index by design; a linear scan
+        // over it is rare-path only (variable deletion cascades).
+        for (pos, v) in self.p_vars.iter().enumerate() {
+            let pos = pos as u32;
+            if *v == var && !bit_get(&self.p_dead, pos) && !bit_get(&self.p_shadowed, pos) {
+                out.push(self.p_ids[pos as usize]);
+            }
+        }
         if let Some(list) = self.overlay_by_var.get(&var) {
             for &oi in list {
                 let slot = &self.overlay[oi as usize];
@@ -824,6 +1152,11 @@ impl CoefficientIndex {
 
     /// Check if a variable has any coefficients.
     pub fn var_has_coefficients(&mut self, var: VarId) -> bool {
+        if self.p_vars.iter().enumerate().any(|(i, v)| {
+            *v == var && !bit_get(&self.p_dead, i as u32) && !bit_get(&self.p_shadowed, i as u32)
+        }) {
+            return true;
+        }
         if let Some(list) = self.overlay_by_var.get(&var) {
             if list.iter().any(|&oi| !self.overlay[oi as usize].tombstone) {
                 return true;
@@ -853,6 +1186,18 @@ impl CoefficientIndex {
                     continue;
                 }
                 out.push(self.base_ids[idx as usize]);
+            }
+        }
+        if let Some(slices) = self.p_directory.get(&target) {
+            for &si in slices.as_slice() {
+                let slice = &self.p_slices[si];
+                for k in 0..slice.len {
+                    let idx = slice.start + k;
+                    if bit_get(&self.p_dead, idx) || bit_get(&self.p_shadowed, idx) {
+                        continue;
+                    }
+                    out.push(self.p_ids[idx as usize]);
+                }
             }
         }
         if let Some(list) = self.overlay_by_target.get(&target) {
@@ -899,6 +1244,18 @@ impl CoefficientIndex {
     pub fn objective_cells(&self, obj: ObjId) -> Vec<(VarId, f64)> {
         let target = CoefficientTarget::Objective(obj);
         let mut out = Vec::new();
+        if let Some(slices) = self.p_directory.get(&target) {
+            for &si in slices.as_slice() {
+                let slice = &self.p_slices[si];
+                for k in 0..slice.len {
+                    let idx = slice.start + k;
+                    if bit_get(&self.p_dead, idx) || bit_get(&self.p_shadowed, idx) {
+                        continue;
+                    }
+                    out.push((self.p_vars[idx as usize], self.p_cached[idx as usize]));
+                }
+            }
+        }
         for &si in self.slices_for(target) {
             let slice = &self.slices[si];
             for k in 0..slice.len {
@@ -926,7 +1283,8 @@ impl CoefficientIndex {
     ///
     /// Overlay-only: packed cells are constant by construction.
     pub fn for_param(&self, param: ParamId) -> impl Iterator<Item = CoeffId> + '_ {
-        self.overlay_by_param
+        let over = self
+            .overlay_by_param
             .get(&param)
             .into_iter()
             .flat_map(|list| list.iter())
@@ -937,7 +1295,20 @@ impl CoefficientIndex {
                 } else {
                     Some(slot.id)
                 }
-            })
+            });
+        let packed = self
+            .param_positions
+            .get(&param)
+            .into_iter()
+            .flat_map(|list| list.iter())
+            .filter_map(|&pos| {
+                if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
+                    None
+                } else {
+                    Some(self.p_ids[pos as usize])
+                }
+            });
+        over.chain(packed)
     }
 
     /// Check if a parameter has any dependent coefficients.
@@ -984,6 +1355,25 @@ impl CoefficientIndex {
                 ))
             })
         });
+        let param = self.p_slices.iter().flat_map(|slice| {
+            (slice.start..slice.start + slice.len).filter_map(|idx| {
+                if bit_get(&self.p_dead, idx) || bit_get(&self.p_shadowed, idx) {
+                    return None;
+                }
+                Some((
+                    self.p_ids[idx as usize],
+                    CoefficientData::new(
+                        self.p_vars[idx as usize],
+                        slice.target,
+                        ValueExpr::scaled_param(
+                            self.p_scales[idx as usize],
+                            self.p_params[idx as usize],
+                        ),
+                        self.p_cached[idx as usize],
+                    ),
+                ))
+            })
+        });
         let over = self.overlay.iter().filter_map(|slot| {
             if slot.tombstone {
                 None
@@ -991,7 +1381,7 @@ impl CoefficientIndex {
                 Some((slot.id, slot.data.clone()))
             }
         });
-        base.chain(over)
+        base.chain(param).chain(over)
     }
 
     // ========== Cell Queries ==========
@@ -1061,6 +1451,18 @@ impl CoefficientIndex {
                     Some(slot) if !slot.tombstone && slot.id == id => {}
                     _ => violations.push(format!("live id {id:?} missing overlay slot")),
                 },
+                CellLocation::ParamBase(pos) => {
+                    if *pos as usize >= self.p_vars.len() {
+                        violations.push(format!("param location {pos} out of range"));
+                        continue;
+                    }
+                    if bit_get(&self.p_dead, *pos) || bit_get(&self.p_shadowed, *pos) {
+                        violations.push(format!("live id {id:?} on dead/shadowed parambase"));
+                    }
+                    if self.p_ids[*pos as usize] != id {
+                        violations.push(format!("parambase id mismatch at {pos}"));
+                    }
+                }
             }
         }
         // Overlay slots agree with their delta lists.
@@ -1081,16 +1483,93 @@ impl CoefficientIndex {
                 }
             }
         }
-        // Live counter exactness.
+        // Live counter exactness (constant base, parametric base, overlay).
         let mut counted = 0usize;
         for idx in 0..self.base_vars.len() as u32 {
             if !bit_get(&self.dead, idx) && !bit_get(&self.shadowed, idx) {
                 counted += 1;
             }
         }
+        for idx in 0..self.p_vars.len() as u32 {
+            if !bit_get(&self.p_dead, idx) && !bit_get(&self.p_shadowed, idx) {
+                counted += 1;
+            }
+        }
         counted += self.overlay.iter().filter(|s| !s.tombstone).count();
         if counted != self.live {
             violations.push(format!("live counter {} != counted {counted}", self.live));
+        }
+        // Parametric slices cover disjoint in-range runs with directory
+        // membership, mirroring the constant-base audit above.
+        {
+            let mut covered = vec![false; self.p_vars.len()];
+            for (si, slice) in self.p_slices.iter().enumerate() {
+                let end = slice.start as usize + slice.len as usize;
+                if end > self.p_vars.len()
+                    || end > self.p_params.len()
+                    || end > self.p_scales.len()
+                    || end > self.p_cached.len()
+                    || end > self.p_ids.len()
+                {
+                    violations.push(format!("param slice {si} out of range"));
+                    continue;
+                }
+                for (idx, slot_covered) in covered
+                    .iter_mut()
+                    .enumerate()
+                    .take(end)
+                    .skip(slice.start as usize)
+                {
+                    if *slot_covered {
+                        violations.push(format!("param position {idx} covered twice"));
+                    }
+                    *slot_covered = true;
+                }
+                match self.p_directory.get(&slice.target) {
+                    Some(list) if list.as_slice().contains(&si) => {}
+                    _ => violations.push(format!("param slice {si} missing from directory")),
+                }
+            }
+        }
+        // Reverse parameter index agreement: every live parametric position
+        // is listed exactly under its own parameter; every listed position
+        // is live.
+        {
+            use std::collections::HashSet;
+            let mut indexed: HashSet<u32> = HashSet::new();
+            for (param, list) in self.param_positions.iter() {
+                for &pos in list {
+                    if !indexed.insert(pos) {
+                        violations.push(format!("param position {pos} indexed twice"));
+                    }
+                    if pos as usize >= self.p_vars.len() {
+                        violations.push(format!("param index out of range: {pos}"));
+                        continue;
+                    }
+                    if self.p_params[pos as usize] != *param {
+                        violations.push(format!("param index mismatch at {pos}"));
+                    }
+                    if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
+                        violations.push(format!("dead param position {pos} still indexed"));
+                    }
+                }
+            }
+            for pos in 0..self.p_vars.len() as u32 {
+                let live = !bit_get(&self.p_dead, pos) && !bit_get(&self.p_shadowed, pos);
+                if live && !indexed.contains(&pos) {
+                    violations.push(format!("live param position {pos} missing from index"));
+                }
+            }
+        }
+        // Live-key uniqueness across bases: one live cell per key.
+        {
+            use std::collections::HashSet;
+            let mut seen: HashSet<CellKey> = HashSet::new();
+            for (_, data) in self.iter() {
+                if !seen.insert((data.target, data.var)) {
+                    violations.push(format!("duplicate live cell {:?}", (data.target, data.var)));
+                }
+            }
         }
         // Lazy index agreement when built.
         if let Some(index) = &self.var_index {

@@ -1080,6 +1080,48 @@ impl CompilationSession {
                         existing.sort_by_key(|(cid, _)| *cid);
                     }
                 }
+                ModelOp::SetObjectiveParamCells { obj, cells } => {
+                    // P1C-2 packed parametric block: same backend expansion
+                    // as `SetObjectiveCells`, reading the evaluated cache
+                    // carried per cell (no parameter lookups on the
+                    // projection path; updates arrive as `SetCell` ops with
+                    // fresh evaluated values, exactly like scalar cells).
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "objective coefficient changes",
+                    )?;
+                    let oid = *w.objective_ids.get(obj).ok_or_else(|| {
+                        CompileError::RebuildRequired(format!(
+                            "SetObjectiveParamCells for unknown compiled objective ({obj:?})"
+                        ))
+                    })?;
+                    operations.reserve(cells.len());
+                    let mut tracked: Vec<(CompiledVariableId, f64)> =
+                        Vec::with_capacity(cells.len());
+                    for cell in cells.iter() {
+                        let vid = *w.variable_ids.get(&cell.var).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "SetObjectiveParamCells for unknown compiled variable ({:?})",
+                                cell.var
+                            ))
+                        })?;
+                        operations.push(BackendOp::SetObjectiveCoefficient {
+                            objective: oid,
+                            variable: vid,
+                            value: cell.value,
+                        });
+                        tracked.push((vid, cell.value));
+                    }
+                    if let Some(existing) = w.compiled_objective_coefficients.get_mut(&oid) {
+                        let incoming: std::collections::HashSet<CompiledVariableId> =
+                            tracked.iter().map(|(vid, _)| *vid).collect();
+                        existing.retain(|(cid, _)| !incoming.contains(cid));
+                        existing.extend(tracked);
+                        existing.sort_by_key(|(cid, _)| *cid);
+                    }
+                }
                 ModelOp::SetCell {
                     cell_key,
                     evaluated_value,
