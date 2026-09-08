@@ -364,73 +364,92 @@ impl DeltaBatch {
 /// its set from the `AddConstraint` bounds. The transitional legacy fields
 /// remain the source; the invariant assertion documents that the semantic set
 /// is derived from the legacy bounds, never a parallel authority.
+///
+/// # Complexity (P0.5)
+///
+/// One linear scan accumulates per-constraint state (declared bounds in
+/// `AddConstraint` order, last-wins folded bounds, removal membership,
+/// cells in encounter order); entries are then built per added constraint
+/// with a per-row var sort. Total `O(operations + Σ row_terms log row_terms
+/// + added log added)` — effectively linear for sparse rows — with
+/// bit-identical output to the former per-constraint full scans (stable
+/// sorts over the same encounter orders; see `reconstruction_lock_tests`).
 fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
-    let mut entries = Vec::new();
+    use std::collections::{HashMap, HashSet};
+
+    struct Accumulator {
+        /// Declared bounds, one record per `AddConstraint` op in op order
+        /// (constraint IDs are unique per model, so this is one record per
+        /// added constraint; a pathological repeated add yields one entry
+        /// per op, exactly as before).
+        added: Vec<(ConId, ConstraintBounds)>,
+        /// Constraints removed anywhere in this batch.
+        removed: HashSet<ConId>,
+        /// Last `SetConstraintBounds` per constraint wins (CR-01).
+        folded: HashMap<ConId, ConstraintBounds>,
+        /// `SetCell` terms per constraint target, in op encounter order.
+        cells: HashMap<ConId, Vec<(VarId, ValueExpr)>>,
+    }
+    let mut acc = Accumulator {
+        added: Vec::new(),
+        removed: HashSet::new(),
+        folded: HashMap::new(),
+        cells: HashMap::new(),
+    };
     for op in operations {
-        if let ModelOp::AddConstraint { con, bounds } = op {
-            // F2 (a): a constraint added AND removed within the same batch is
-            // not part of this batch's `functions` view.
-            if operations
-                .iter()
-                .any(|o| matches!(o, ModelOp::RemoveConstraint { con: c } if c == con))
-            {
-                continue;
+        match op {
+            ModelOp::AddConstraint { con, bounds } => {
+                acc.added.push((*con, *bounds));
             }
-            // F1: the linear function is rebuilt SYMBOLICALLY from the
-            // constraint's `SetCell` cells — each term carries
-            // `TermCoeff::Expr(ValueExpr)` sourced from the op's `value_expr`
-            // (the full parameterized expression, not just the evaluated
-            // number), so P26's compiler can rebuild the parameterized row
-            // without re-joining legacy cells. Dependencies are DERIVED from
-            // the function, never stored. Terms are sorted by var so the
-            // reconstructed term order is deterministic (WR-01) and agrees
-            // with the canonical `Model::constraint_function` and the snapshot
-            // reconstruction.
-            let mut symbolic: Vec<(VarId, ValueExpr)> = operations
-                .iter()
-                .filter_map(|cell_op| {
-                    if let ModelOp::SetCell {
-                        cell_key,
-                        value_expr,
-                        ..
-                    } = cell_op
-                    {
-                        if let CoefficientTarget::Constraint(c) = cell_key.0 {
-                            if c == *con {
-                                return Some((cell_key.1, value_expr.clone()));
-                            }
-                        }
-                    }
-                    None
-                })
-                .collect();
-            symbolic.sort_by_key(|(var, _)| *var);
-            let mut expr = LinExpr::new();
-            for (var, value_expr) in symbolic {
-                expr = expr.term(TermCoeff::Expr(value_expr), var);
+            ModelOp::RemoveConstraint { con } => {
+                acc.removed.insert(*con);
             }
-            // CR-01: the ordinary constant-folding path inserts the row at the
-            // declared bounds and then folds the expression constant into them
-            // via a same-batch `SetConstraintBounds` op
-            // (`add_constraint_spec_impl`). The last such op for this
-            // constraint is the effective set authority (mirroring the
-            // final-activity fold in `reconstruct_construct_entries`), so the
-            // reconstructed entry equals the model's canonical folded set.
-            let mut effective = *bounds;
-            for later in operations {
-                if let ModelOp::SetConstraintBounds { con: c, bounds } = later {
-                    if c == con {
-                        effective = *bounds;
-                    }
+            ModelOp::SetConstraintBounds { con, bounds } => {
+                acc.folded.insert(*con, *bounds);
+            }
+            ModelOp::SetCell {
+                cell_key,
+                value_expr,
+                ..
+            } => {
+                if let CoefficientTarget::Constraint(c) = cell_key.0 {
+                    // F1: terms stay symbolic (`TermCoeff::Expr`), so
+                    // parameterized coefficients keep their form; the
+                    // per-row sort below restores deterministic order.
+                    acc.cells
+                        .entry(c)
+                        .or_default()
+                        .push((cell_key.1, value_expr.clone()));
                 }
             }
-            let set = ScalarSet::from(effective);
-            entries.push(FunctionEntry {
-                constraint: *con,
-                function: ScalarFunction::Linear(expr),
-                set,
-            });
+            _ => {}
         }
+    }
+
+    let mut entries = Vec::with_capacity(acc.added.len());
+    for (con, bounds) in &acc.added {
+        // F2 (a): added AND removed within the same batch contributes nothing.
+        if acc.removed.contains(con) {
+            continue;
+        }
+        // CR-01: the last same-batch `SetConstraintBounds` is the effective
+        // set authority.
+        let effective = acc.folded.get(con).copied().unwrap_or(*bounds);
+        let set = ScalarSet::from(effective);
+        // Cloned per added-constraint record (not drained): a pathological
+        // repeated `AddConstraint` for one id rebuilds from the same cells
+        // for each occurrence, exactly as before.
+        let mut symbolic: Vec<(VarId, ValueExpr)> = acc.cells.get(con).cloned().unwrap_or_default();
+        symbolic.sort_by_key(|(var, _)| *var);
+        let mut expr = LinExpr::new();
+        for (var, value_expr) in symbolic {
+            expr = expr.term(TermCoeff::Expr(value_expr), var);
+        }
+        entries.push(FunctionEntry {
+            constraint: *con,
+            function: ScalarFunction::Linear(expr),
+            set,
+        });
     }
     entries.sort_by_key(|f| f.constraint);
     entries
@@ -520,5 +539,155 @@ mod tests {
 
         assert!(b2.follows(&b1));
         assert!(!b1.follows(&b2));
+    }
+}
+
+#[cfg(test)]
+mod reconstruction_lock_tests {
+    //! P0.5 output locks: exact `functions` reconstruction semantics that the
+    //! linearization must preserve bit-for-bit. These pass on the current
+    //! quadratic implementation and must pass unchanged after.
+    use super::*;
+    use crate::id::Generation;
+
+    fn var(i: u32) -> VarId {
+        VarId::new(i, Generation::new())
+    }
+    fn con(i: u32) -> ConId {
+        ConId::new(i, Generation::new())
+    }
+    fn param(i: u32) -> ParamId {
+        ParamId::new(i, Generation::new())
+    }
+    fn rev_pair() -> (ModelRevision, ModelRevision) {
+        let r0 = ModelRevision::ZERO;
+        (r0, r0.next().unwrap())
+    }
+
+    #[test]
+    fn parameterized_cells_keep_symbolic_form() {
+        let (r0, r1) = rev_pair();
+        let (v, p, c) = (var(7), param(3), con(41));
+        let coeff = ValueExpr::param(p) * 2.0;
+        let ops = vec![
+            ModelOp::AddConstraint {
+                con: c,
+                bounds: ConstraintBounds::le(10.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c), v),
+                value_expr: coeff.clone(),
+                evaluated_value: 6.0,
+            },
+        ];
+        let batch = DeltaBatch::new(r0, r1, ops).unwrap();
+        assert_eq!(batch.functions.len(), 1);
+        let f = &batch.functions[0];
+        assert_eq!(f.constraint, c);
+        assert_eq!(f.set, ScalarSet::from(ConstraintBounds::le(10.0)));
+        let expected = LinExpr::new().term(TermCoeff::Expr(coeff), v);
+        assert_eq!(f.function, ScalarFunction::Linear(expected));
+    }
+
+    #[test]
+    fn add_update_remove_folds_and_excludes_exactly() {
+        let (r0, r1) = rev_pair();
+        let (v1, v2, v5, v9) = (var(1), var(2), var(5), var(9));
+        let (c0, c1, c2) = (con(11), con(12), con(13));
+        let ops = vec![
+            ModelOp::AddConstraint {
+                con: c1,
+                bounds: ConstraintBounds::le(10.0),
+            },
+            // Cells arrive out of var order; output must be var-sorted.
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c1), v2),
+                value_expr: ValueExpr::constant(2.0),
+                evaluated_value: 2.0,
+            },
+            ModelOp::SetConstraintBounds {
+                con: c1,
+                bounds: ConstraintBounds::le(7.0),
+            },
+            ModelOp::AddConstraint {
+                con: c2,
+                bounds: ConstraintBounds::le(5.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c2), v9),
+                value_expr: ValueExpr::constant(9.0),
+                evaluated_value: 9.0,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c1), v1),
+                value_expr: ValueExpr::constant(1.0),
+                evaluated_value: 1.0,
+            },
+            // Update to a pre-existing constraint rides the ops only.
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c0), v5),
+                value_expr: ValueExpr::constant(3.0),
+                evaluated_value: 3.0,
+            },
+            // Added-then-removed constraint contributes no entry.
+            ModelOp::RemoveConstraint { con: c2 },
+        ];
+        let batch = DeltaBatch::new(r0, r1, ops).unwrap();
+        assert_eq!(batch.functions.len(), 1, "only c1 survives");
+        let f = &batch.functions[0];
+        assert_eq!(f.constraint, c1);
+        assert_eq!(f.set, ScalarSet::from(ConstraintBounds::le(7.0)));
+        let expected = LinExpr::new()
+            .term(TermCoeff::Expr(ValueExpr::constant(1.0)), v1)
+            .term(TermCoeff::Expr(ValueExpr::constant(2.0)), v2);
+        assert_eq!(f.function, ScalarFunction::Linear(expected));
+    }
+
+    #[test]
+    fn sparse_ids_reconstruct_exactly() {
+        let (r0, r1) = rev_pair();
+        let (v_a, v_b) = (var(1001), var(57));
+        let (c_a, c_b) = (con(900), con(7));
+        let ops = vec![
+            ModelOp::AddConstraint {
+                con: c_b,
+                bounds: ConstraintBounds::eq(0.0),
+            },
+            ModelOp::AddConstraint {
+                con: c_a,
+                bounds: ConstraintBounds::ge(-3.0),
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c_a), v_a),
+                value_expr: ValueExpr::constant(1.5),
+                evaluated_value: 1.5,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c_a), v_b),
+                value_expr: ValueExpr::constant(-1.5),
+                evaluated_value: -1.5,
+            },
+            ModelOp::SetCell {
+                cell_key: (CoefficientTarget::Constraint(c_b), v_b),
+                value_expr: ValueExpr::constant(4.0),
+                evaluated_value: 4.0,
+            },
+        ];
+        let batch = DeltaBatch::new(r0, r1, ops).unwrap();
+        assert_eq!(batch.functions.len(), 2);
+        // Entries sorted by constraint id regardless of op order.
+        assert_eq!(batch.functions[0].constraint, c_b);
+        assert_eq!(batch.functions[1].constraint, c_a);
+        let expected_a = LinExpr::new()
+            .term(TermCoeff::Expr(ValueExpr::constant(-1.5)), v_b)
+            .term(TermCoeff::Expr(ValueExpr::constant(1.5)), v_a);
+        assert_eq!(
+            batch.functions[1].function,
+            ScalarFunction::Linear(expected_a)
+        );
+        assert_eq!(
+            batch.functions[1].set,
+            ScalarSet::from(ConstraintBounds::ge(-3.0))
+        );
     }
 }
