@@ -1824,9 +1824,10 @@ impl ExprArray {
         let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
         if scalar {
             let expr = super::expressions::Expr {
-                inner: super::expressions::Scalar::Affine(
-                    borrowed.materialize(py)[flat[0]].clone(),
-                ),
+                inner: super::expressions::Scalar::Lazy(super::expressions::Lazy::flat(
+                    borrowed.owner.clone_ref(py),
+                    borrowed.materialize(py)[flat[0]].clone().into(),
+                )),
             };
             Ok(expr.into_pyobject(py)?.into_any().unbind())
         } else {
@@ -2255,7 +2256,10 @@ fn finish_scalar(py: Python<'_>, folded: Affine) -> PyResult<Py<PyAny>> {
         return Ok(v.into_pyobject(py)?.into_any().unbind());
     }
     Ok(super::expressions::Expr {
-        inner: super::expressions::Scalar::Affine(folded),
+        inner: super::expressions::Scalar::Lazy(super::expressions::Lazy::flat(
+            folded.owner.clone_ref(py),
+            folded.into(),
+        )),
     }
     .into_pyobject(py)?
     .into_any()
@@ -2660,11 +2664,10 @@ fn dot_structural(
     };
     Ok(Some(
         PyExpr {
-            inner: Scalar::Affine(Affine {
+            inner: Scalar::Lazy(crate::expressions::Lazy::flat(
                 owner,
-                terms,
-                constant,
-            }),
+                crate::expressions::FlatTerms { terms, constant },
+            )),
         }
         .into_pyobject(py)?
         .into_any()

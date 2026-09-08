@@ -794,9 +794,12 @@ impl Model {
         if let Scalar::PackedSymbolic(sym) = e {
             return Self::set_objective_param_bulk(slf, sym, sense);
         }
-        let Scalar::Affine(e) = e else {
+        let Scalar::Lazy(lazy) = e else {
             return Err(InvalidModelError::new_err("unsupported objective form"));
         };
+        // P1D: the tree flattens once here; everything below consumes the
+        // canonical Affine exactly as before.
+        let e = lazy.flatten_lower(slf.py());
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
         for term in &e.terms {

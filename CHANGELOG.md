@@ -26,6 +26,22 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Persistent lazy scalar expressions (P1D, unreleased)
+- Scalar `Var`/`Param`/`Expr` algebra now builds a persistent immutable
+  expression tree (`O(1)` per operator, structural sharing, no term
+  copying, no per-operation canonicalization) instead of cloning and
+  re-canonicalizing a flat term vector on every `+`. The old
+  `total = total + v` loop was `O(N²)` (100k terms: ~31 s); it is now
+  linear (100k: ~0.33 s, 1M: ~3.3 s, fitted exponent `p ≈ 0.94`).
+- Packed forms stay packed through surrounding algebra (`rm.sum(x) + 5`,
+  `2 * rm.sum(x)`) instead of materializing a million `ExprTerm`s at
+  each step. Exactly one iterative flattening (explicit stack, no
+  recursion) plus duplicate combination runs at each model sink, and
+  deep-tree teardown is iterative as well.
+- No public API or spelling change: construction-time nonlinear,
+  foreign-model, finiteness, and division errors raise exactly as
+  before; sinks lower to the identical canonical `Affine` handling.
+
 #### Packed parameterized objectives (P1C-2, unreleased)
 - New `Model::set_linear_objective_param_bulk(sense, vars, params, scales,
   constant)`: one fused validation scan, one packed parametric append

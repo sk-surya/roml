@@ -8,6 +8,7 @@
 
 use pyo3::prelude::*;
 use roml::{ParamId, ValueExpr, VarId};
+use std::sync::Arc;
 
 use super::errors::{InvalidModelError, UnsupportedExpressionError};
 use super::handles::{Param, Var};
@@ -38,47 +39,12 @@ impl Clone for Affine {
     }
 }
 
-impl Affine {
-    fn add_terms(&mut self, other: &Affine, sign: f64) -> PyResult<()> {
-        for term in &other.terms {
-            self.push_term(term.var, term.coeff.clone() * sign)?;
-        }
-        self.constant = simplify_value(self.constant.clone() + other.constant.clone() * sign);
-        Ok(())
-    }
-
-    fn push_term(&mut self, var: VarId, coeff: ValueExpr) -> PyResult<()> {
-        if !is_finite_expr(&coeff) {
-            return Err(InvalidModelError::new_err(
-                "expression coefficient must be finite",
-            ));
-        }
-        match self.terms.iter_mut().find(|t| t.var == var) {
-            Some(existing) => {
-                existing.coeff = simplify_value(existing.coeff.clone() + coeff);
-            }
-            None => self.terms.push(ExprTerm {
-                var,
-                coeff: simplify_value(coeff),
-            }),
-        }
-        Ok(())
-    }
-
-    fn scale(&mut self, factor: f64) -> PyResult<()> {
-        if !factor.is_finite() {
-            return Err(InvalidModelError::new_err(
-                "expression scale factor must be finite",
-            ));
-        }
-        for term in &mut self.terms {
-            term.coeff = simplify_value(term.coeff.clone() * factor);
-        }
-        self.constant = simplify_value(self.constant.clone() * factor);
-        Ok(())
-    }
-}
-
+/// Canonical flat affine form: the single lowering target.
+///
+/// Construction NEVER builds this incrementally (that was the O(n²)
+/// pathology: clone-per-`+` plus a linear duplicate scan per term).
+/// All syntax operations build [`Lazy`] trees in O(1); exactly one
+/// [`Scalar::materialize`] at a model sink flattens and canonicalizes.
 fn is_finite_expr(expr: &ValueExpr) -> bool {
     match expr.as_constant() {
         Some(v) => v.is_finite(),
@@ -91,6 +57,365 @@ fn is_finite_expr(expr: &ValueExpr) -> bool {
 /// Extract a numeric operand; bools reject, non-numerics reject.
 fn operand_numeric(value: &Bound<'_, PyAny>, op: &str) -> PyResult<f64> {
     py_numeric(value, &format!("{op} operand"))
+}
+
+/// Fold one emitted leaf through the enclosing scale-factor path.
+///
+/// `factors` accumulate outermost-first during the top-down walk; the old
+/// eager code applied the innermost operation first, so emission folds
+/// `Mul` left over `(leaf, reversed factors)`. A single factor reproduces
+/// the old `coeff * factor` shape exactly; the empty path is a no-op.
+fn apply_factors(leaf: ValueExpr, factors: &[ValueExpr]) -> ValueExpr {
+    if factors.is_empty() {
+        return leaf;
+    }
+    let mut acc = leaf;
+    for f in factors.iter().rev() {
+        acc = ValueExpr::mul(acc, f.clone());
+    }
+    acc
+}
+
+/// Flatten a tree into encounter-ordered raw emissions plus raw constant
+/// parts. Iterative over an explicit stack (a million-deep left spine
+/// must not recurse); left children pop before right ones so emission
+/// order matches the old incremental push order.
+fn flatten(root: &ExprNode) -> (Vec<(VarId, ValueExpr)>, Vec<ValueExpr>) {
+    let mut terms: Vec<(VarId, ValueExpr)> = Vec::new();
+    let mut consts: Vec<ValueExpr> = Vec::new();
+    // (node, enclosing factors outermost-first). Cloning the factor vec
+    // per Add is allocation-free while the path carries no scales (the
+    // common chain shape); scale-nested paths pay per-node vec growth.
+    let mut stack: Vec<(&ExprNode, Vec<ValueExpr>)> = vec![(root, Vec::new())];
+    while let Some((node, factors)) = stack.pop() {
+        match node {
+            ExprNode::Term { var, coeff } => {
+                terms.push((*var, apply_factors(coeff.clone(), &factors)));
+            }
+            ExprNode::Const(c) => {
+                consts.push(apply_factors(c.clone(), &factors));
+            }
+            ExprNode::Add(l, r) => {
+                stack.push((r, factors.clone()));
+                stack.push((l, factors));
+            }
+            ExprNode::Scale(f, c) => {
+                let mut inner = factors;
+                inner.push(f.clone());
+                stack.push((c, inner));
+            }
+            ExprNode::Flat(flat) => {
+                for t in &flat.terms {
+                    terms.push((t.var, apply_factors(t.coeff.clone(), &factors)));
+                }
+                consts.push(apply_factors(flat.constant.clone(), &factors));
+            }
+            ExprNode::PackedArray(array) => {
+                for t in &array.terms {
+                    match &t.coeffs {
+                        PackedCoeffs::One => {
+                            for v in &t.vars {
+                                terms.push((*v, apply_factors(ValueExpr::constant(1.0), &factors)));
+                            }
+                        }
+                        PackedCoeffs::Scalar(c) => {
+                            for v in &t.vars {
+                                terms.push((*v, apply_factors(ValueExpr::constant(*c), &factors)));
+                            }
+                        }
+                        PackedCoeffs::Dense(values) => {
+                            for (v, c) in t.vars.iter().zip(values.iter()) {
+                                terms.push((*v, apply_factors(ValueExpr::constant(*c), &factors)));
+                            }
+                        }
+                    }
+                }
+                if array.constant != 0.0 {
+                    consts.push(apply_factors(ValueExpr::constant(array.constant), &factors));
+                }
+            }
+            ExprNode::PackedSym(sym) => {
+                for ((var, param), scale) in sym
+                    .vars
+                    .iter()
+                    .zip(sym.params.iter())
+                    .zip(sym.scales.iter())
+                {
+                    terms.push((
+                        *var,
+                        apply_factors(ValueExpr::scaled_param(*scale, *param), &factors),
+                    ));
+                }
+                consts.push(apply_factors(sym.constant.clone(), &factors));
+            }
+        }
+    }
+    (terms, consts)
+}
+
+/// Combine raw emissions into canonical terms.
+///
+/// Every emission is simplified first (mirroring the old per-push
+/// simplification, so fresh-variable chains come out structurally
+/// identical). An already sorted-and-unique run — the common chain and
+/// bulk shapes — skips hashing entirely; otherwise a stable sort plus
+/// encounter-ordered run folding reproduces the old incremental combine
+/// order. Algebraic zeros are NOT dropped here (the old code kept them;
+/// the core canonicalizes downstream).
+fn combine_terms(mut terms: Vec<(VarId, ValueExpr)>) -> Vec<ExprTerm> {
+    for (_, coeff) in terms.iter_mut() {
+        let simp = simplify_value(std::mem::replace(coeff, ValueExpr::constant(0.0)));
+        *coeff = simp;
+    }
+    let sorted_unique = terms.windows(2).all(|w| w[0].0 < w[1].0);
+    if sorted_unique {
+        return terms
+            .into_iter()
+            .map(|(var, coeff)| ExprTerm { var, coeff })
+            .collect();
+    }
+    terms.sort_by_key(|(var, _)| *var);
+    let mut out: Vec<ExprTerm> = Vec::new();
+    for (var, coeff) in terms {
+        match out.last_mut() {
+            Some(tail) if tail.var == var => {
+                let acc = std::mem::replace(&mut tail.coeff, ValueExpr::constant(0.0));
+                tail.coeff = simplify_value(ValueExpr::add(acc, coeff));
+            }
+            _ => out.push(ExprTerm { var, coeff }),
+        }
+    }
+    out
+}
+
+/// Canonicalize raw constant parts: left fold with simplification,
+/// mirroring the old incremental constant handling.
+fn combine_consts(parts: Vec<ValueExpr>) -> ValueExpr {
+    let mut acc = ValueExpr::constant(0.0);
+    for part in parts {
+        acc = simplify_value(ValueExpr::add(acc, part));
+    }
+    acc
+}
+
+impl Lazy {
+    /// Lower once: flatten, combine, and return the canonical [`Affine`].
+    /// This is the ONLY path from trees to flat terms; every model sink
+    /// goes through [`Scalar::materialize`].
+    pub(crate) fn flatten_lower(&self, py: Python<'_>) -> Affine {
+        let (terms, consts) = flatten(self.root.get());
+        Affine {
+            owner: self.owner.clone_ref(py),
+            terms: combine_terms(terms),
+            constant: combine_consts(consts),
+        }
+    }
+
+    /// Flatten just the constant of a decision-free tree (rare
+    /// param-times-variable shapes). Debug-asserts the absence of terms:
+    /// callers must have checked `has_vars` first.
+    fn const_only(&self) -> ValueExpr {
+        let (terms, consts) = flatten(self.root.get());
+        debug_assert!(terms.is_empty(), "const_only on decision-bearing tree");
+        combine_consts(consts)
+    }
+}
+
+/// Canonical flat terms shared by reference: the leaf form for already-
+/// combined term vectors (dot fallbacks, array folding). Never mutated in
+/// place; flattening expands it into the sink's emission buffer.
+#[derive(Clone, Debug)]
+pub(crate) struct FlatTerms {
+    pub terms: Vec<ExprTerm>,
+    pub constant: ValueExpr,
+}
+
+impl From<Affine> for FlatTerms {
+    fn from(a: Affine) -> Self {
+        Self {
+            terms: a.terms,
+            constant: a.constant,
+        }
+    }
+}
+
+/// One node of a persistent scalar expression tree (P1D).
+///
+/// Trees are immutable and structurally shared (`Arc`): `b = a + z` bumps
+/// two refcounts and allocates one node — it never copies or
+/// canonicalizes `a`'s terms, and `a` itself is unmodified. Sinks flatten
+/// once (see [`flatten`]).
+#[derive(Debug)]
+pub(crate) enum ExprNode {
+    /// One decision-variable term. The coefficient is checked finite (when
+    /// constant) at construction, exactly like the old `push_term`.
+    Term { var: VarId, coeff: ValueExpr },
+    /// Parameter-only or numeric constant part.
+    Const(ValueExpr),
+    /// Unordered combination; flattening emits left before right.
+    Add(Arc<ExprNode>, Arc<ExprNode>),
+    /// Parameter-only or numeric factor over a child. The factor can never
+    /// carry decision variables (`ValueExpr` cannot name a `VarId`).
+    Scale(ValueExpr, Arc<ExprNode>),
+    /// Already-combined flat terms (dot/array fallbacks).
+    Flat(Arc<FlatTerms>),
+    /// Numeric packed array leaf: expands per element at flattening, never
+    /// into per-term objects during construction.
+    PackedArray(PackedLinearArray),
+    /// Scaled-parameter packed leaf: parallel `(variable, parameter,
+    /// scale)` vectors plus the (usually zero) constant.
+    PackedSym(PackedSymTerms),
+}
+
+/// Payload of an [`ExprNode::PackedSym`] leaf (owner lives on [`Lazy`]).
+#[derive(Clone, Debug)]
+pub(crate) struct PackedSymTerms {
+    pub vars: Vec<VarId>,
+    pub params: Vec<ParamId>,
+    pub scales: Vec<f64>,
+    pub constant: ValueExpr,
+}
+
+/// Owning handle for iterative teardown (see [`drop_tree`]).
+/// Crate-visible because [`Lazy`] exposes it; only [`Lazy`] constructs it.
+///
+/// A million-deep left-associated tree would overflow the stack if its
+/// nested `Arc`s dropped recursively. Only this wrapper ever owns a
+/// tree root on the Python side, so exactly one iterative dismantling
+/// per tree teardown keeps deallocation O(depth) time and O(1) stack.
+#[derive(Debug)]
+pub(crate) struct Root(Option<Arc<ExprNode>>);
+
+impl Root {
+    fn new(node: Arc<ExprNode>) -> Self {
+        Self(Some(node))
+    }
+
+    fn get(&self) -> &Arc<ExprNode> {
+        self.0.as_ref().expect("live expression root")
+    }
+}
+
+impl Clone for Root {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl Drop for Root {
+    fn drop(&mut self) {
+        if let Some(root) = self.0.take() {
+            drop_tree(root);
+        }
+    }
+}
+
+/// Iteratively dismantle a tree, freeing every uniquely-owned node.
+///
+/// Shared subtrees (strong count above one) are left alone: the last
+/// owner's teardown frees them. Expression trees are acyclic by
+/// construction, so every node is visited at most once per teardown.
+fn drop_tree(root: Arc<ExprNode>) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        match Arc::try_unwrap(node) {
+            Ok(ExprNode::Add(l, r)) => {
+                stack.push(l);
+                stack.push(r);
+            }
+            Ok(ExprNode::Scale(_, c)) => stack.push(c),
+            // Leaves (Term/Const/Flat/PackedArray/PackedSym) and shared
+            // subtrees drop here: leaf payloads are flat allocations, and
+            // a shared node is still owned elsewhere.
+            Ok(_) | Err(_) => {}
+        }
+    }
+}
+
+/// Persistent general scalar expression: owner plus an immutable tree.
+///
+/// `has_vars` (any decision variable below) drives construction-time
+/// nonlinear rejection exactly like the old `terms.is_empty()` checks;
+/// `size` (leaf-term estimate) serves `repr` in O(1). Both are computed
+/// from the immediate children — never by traversal.
+#[derive(Debug)]
+pub(crate) struct Lazy {
+    pub owner: Py<Model>,
+    pub root: Root,
+    pub has_vars: bool,
+    pub size: usize,
+}
+
+impl Clone for Lazy {
+    fn clone(&self) -> Self {
+        Python::attach(|py| Self {
+            owner: self.owner.clone_ref(py),
+            root: self.root.clone(),
+            has_vars: self.has_vars,
+            size: self.size,
+        })
+    }
+}
+
+impl Lazy {
+    fn wrap(owner: Py<Model>, root: Arc<ExprNode>, has_vars: bool, size: usize) -> Self {
+        Self {
+            owner,
+            root: Root::new(root),
+            has_vars,
+            size,
+        }
+    }
+
+    /// Single decision-variable term (mirrors the old `var_affine` leaf,
+    /// including its finiteness discipline).
+    pub(crate) fn term(owner: Py<Model>, var: VarId, coeff: ValueExpr) -> PyResult<Self> {
+        if !is_finite_expr(&coeff) {
+            return Err(InvalidModelError::new_err(
+                "expression coefficient must be finite",
+            ));
+        }
+        Ok(Self::wrap(
+            owner,
+            Arc::new(ExprNode::Term { var, coeff }),
+            true,
+            1,
+        ))
+    }
+
+    /// Parameter-only or numeric constant leaf.
+    pub(crate) fn constant(owner: Py<Model>, constant: ValueExpr) -> Self {
+        Self::wrap(owner, Arc::new(ExprNode::Const(constant)), false, 0)
+    }
+
+    /// Already-combined flat terms (dot/array fallbacks).
+    pub(crate) fn flat(owner: Py<Model>, flat: FlatTerms) -> Self {
+        let has_vars = !flat.terms.is_empty();
+        let size = flat.terms.len();
+        Self::wrap(
+            owner,
+            Arc::new(ExprNode::Flat(Arc::new(flat))),
+            has_vars,
+            size,
+        )
+    }
+
+    fn add_nodes(
+        owner: Py<Model>,
+        l: &Lazy,
+        r: Arc<ExprNode>,
+        r_vars: bool,
+        r_size: usize,
+    ) -> Self {
+        let (has_vars, size) = (l.has_vars || r_vars, l.size.saturating_add(r_size));
+        let root = Arc::new(ExprNode::Add(l.root.get().clone(), r));
+        Self::wrap(owner, root, has_vars, size)
+    }
+
+    fn scale_node(owner: Py<Model>, factor: ValueExpr, child: &Lazy) -> Self {
+        let root = Arc::new(ExprNode::Scale(factor, child.root.get().clone()));
+        Self::wrap(owner, root, child.has_vars, child.size)
+    }
 }
 
 /// Packed constant-coefficient vector form (P0 bulk path).
@@ -272,13 +597,16 @@ impl PackedLinearArray {
     }
 }
 
-/// A scalar objective/expression form: a general `Affine`, a packed
-/// constant-coefficient array, or a packed scaled-parameter vector
-/// (P1C-2: one `(variable, scale, parameter)` cell per element, no
-/// per-term `Affine` expansion).
+/// A scalar objective/expression form: a general lazy tree, a packed
+/// constant-coefficient array, or a packed scaled-parameter vector.
+///
+/// `Lazy` is the only general form: syntax operations extend the tree in
+/// O(1) without copying or canonicalizing terms (P1D). Bulk leaves stay
+/// matched by `minimize`/`maximize`; every other sink flattens once via
+/// [`Scalar::materialize`].
 #[derive(Debug)]
 pub(crate) enum Scalar {
-    Affine(Affine),
+    Lazy(Lazy),
     Packed(PackedVars),
     PackedSymbolic(PackedSymbolic),
 }
@@ -319,7 +647,8 @@ impl Clone for PackedSymbolic {
 impl Clone for Scalar {
     fn clone(&self) -> Self {
         match self {
-            Self::Affine(a) => Self::Affine(a.clone()),
+            // Arc bump plus one owner ref: O(1), never a term copy.
+            Self::Lazy(l) => Self::Lazy(l.clone()),
             Self::Packed(p) => Python::attach(|py| {
                 Self::Packed(PackedVars {
                     owner: p.owner.clone_ref(py),
@@ -335,20 +664,19 @@ impl Scalar {
     /// Owner reference without materializing.
     pub(crate) fn owner_ref(&self, py: Python<'_>) -> Py<Model> {
         match self {
-            Self::Affine(a) => a.owner.clone_ref(py),
+            Self::Lazy(l) => l.owner.clone_ref(py),
             Self::Packed(p) => p.owner.clone_ref(py),
             Self::PackedSymbolic(s) => s.owner.clone_ref(py),
         }
     }
 
-    /// General `Affine` view, expanding packed forms term-by-term.
-    /// Only non-bulk consumers pay this; `minimize`/`maximize` match on
-    /// [`Scalar::Packed`] and [`Scalar::PackedSymbolic`] directly.
-    /// Packed-symbolic coefficients expand to the canonical scaled-parameter
-    /// form, bit-identical to what the scalar fold stores.
+    /// General `Affine` view: lazy trees flatten and combine once here;
+    /// packed forms expand term-by-term as before. Only non-bulk consumers
+    /// pay this; `minimize`/`maximize` match on [`Scalar::Packed`] and
+    /// [`Scalar::PackedSymbolic`] directly.
     pub(crate) fn materialize(&self, py: Python<'_>) -> Affine {
         match self {
-            Self::Affine(a) => a.clone(),
+            Self::Lazy(l) => l.flatten_lower(py),
             Self::PackedSymbolic(s) => Affine {
                 owner: s.owner.clone_ref(py),
                 terms: s
@@ -404,6 +732,176 @@ impl Scalar {
     }
 }
 
+/// Lift one operand of `+`/`-` to a lazy leaf, checking ownership.
+/// Numerics become constants; anything else is the caller's error.
+fn lift_add_operand(py: Python<'_>, owner: &Py<Model>, other: &Bound<'_, PyAny>) -> PyResult<Lazy> {
+    if let Ok(var) = other.cast::<Var>() {
+        let var = var.borrow();
+        same_owner(&var.owner, owner)?;
+        return Lazy::term(owner.clone_ref(py), var.id, ValueExpr::constant(1.0));
+    }
+    if let Ok(param) = other.cast::<Param>() {
+        let param = param.borrow();
+        same_owner(&param.owner, owner)?;
+        return Ok(Lazy::constant(
+            owner.clone_ref(py),
+            ValueExpr::param(param.id),
+        ));
+    }
+    if let Ok(expr) = other.cast::<Expr>() {
+        let expr = expr.borrow();
+        let inner = expr.inner.clone();
+        same_owner(&inner.owner_ref(py), owner)?;
+        return Ok(scalar_to_lazy(py, &inner));
+    }
+    let v = operand_numeric(other, "addition")?;
+    Ok(Lazy::constant(owner.clone_ref(py), ValueExpr::constant(v)))
+}
+
+/// Clone any scalar into lazy-tree form (O(1) for trees: one `Arc` bump).
+fn scalar_to_lazy(py: Python<'_>, base: &Scalar) -> Lazy {
+    match base {
+        Scalar::Lazy(l) => l.clone(),
+        Scalar::Packed(p) => Lazy {
+            owner: p.owner.clone_ref(py),
+            root: Root::new(Arc::new(ExprNode::PackedArray(p.array.clone()))),
+            has_vars: p.array.numel() > 0,
+            size: p.array.numel(),
+        },
+        Scalar::PackedSymbolic(s) => {
+            let terms = PackedSymTerms {
+                vars: s.vars.clone(),
+                params: s.params.clone(),
+                scales: s.scales.clone(),
+                constant: s.constant.clone(),
+            };
+            Lazy {
+                owner: s.owner.clone_ref(py),
+                root: Root::new(Arc::new(ExprNode::PackedSym(terms))),
+                has_vars: !s.vars.is_empty(),
+                size: s.vars.len(),
+            }
+        }
+    }
+}
+
+/// Add (sign +1) or subtract (sign −1) an operand onto a scalar, returning
+/// a new lazy tree. Array operands never reach here (callers return
+/// `NotImplemented` first). Semantics mirror the old eager fold exactly;
+/// combination is deferred to the sink.
+fn scalar_add(
+    py: Python<'_>,
+    base: &Scalar,
+    other: &Bound<'_, PyAny>,
+    sign: f64,
+) -> PyResult<Lazy> {
+    let owner = base.owner_ref(py);
+    let lhs = scalar_to_lazy(py, base);
+    // Lift the operand, negating once for subtraction.
+    let mut rhs = lift_add_operand(py, &owner, other)?;
+    if sign == -1.0 {
+        rhs = Lazy::scale_node(owner.clone_ref(py), ValueExpr::constant(-1.0), &rhs);
+    } else {
+        debug_assert_eq!(sign, 1.0);
+    }
+    Ok(Lazy::add_nodes(
+        owner,
+        &lhs,
+        rhs.root.get().clone(),
+        rhs.has_vars,
+        rhs.size,
+    ))
+}
+
+/// Negate: one scale node, no traversal.
+fn scalar_neg(py: Python<'_>, base: &Scalar) -> Lazy {
+    let owner = base.owner_ref(py);
+    let inner = scalar_to_lazy(py, base);
+    Lazy::scale_node(owner, ValueExpr::constant(-1.0), &inner)
+}
+
+/// Reverse subtraction (`other - base`): lift the operand, then subtract.
+fn scalar_rsub(py: Python<'_>, base: &Scalar, other: &Bound<'_, PyAny>) -> PyResult<Lazy> {
+    let owner = base.owner_ref(py);
+    let lhs = lift_add_operand(py, &owner, other)?;
+    let rhs = scalar_to_lazy(py, base);
+    let neg = Lazy::scale_node(owner.clone_ref(py), ValueExpr::constant(-1.0), &rhs);
+    Ok(Lazy::add_nodes(
+        owner,
+        &lhs,
+        neg.root.get().clone(),
+        neg.has_vars,
+        neg.size,
+    ))
+}
+
+/// Multiply by a numeric or parameter-only operand. Nonlinear rejection
+/// uses the cached `has_vars` flags, so `x * y` and `(x+1) * (y+1)` still
+/// fail here at construction — never at the sink.
+fn scalar_mul(py: Python<'_>, base: &Scalar, other: &Bound<'_, PyAny>) -> PyResult<Lazy> {
+    let owner = base.owner_ref(py);
+    let inner = scalar_to_lazy(py, base);
+    if let Ok(param) = other.cast::<Param>() {
+        let param = param.borrow();
+        same_owner(&param.owner, &owner)?;
+        return Ok(Lazy::scale_node(owner, ValueExpr::param(param.id), &inner));
+    }
+    if let Ok(var) = other.cast::<Var>() {
+        let var = var.borrow();
+        same_owner(&var.owner, &owner)?;
+        if inner.has_vars {
+            return Err(nonlinear());
+        }
+        // Parameter-only self times a variable: the flattened constant
+        // becomes the new term's coefficient (the tree is small here —
+        // decision-free by the flag above).
+        let coeff = inner.const_only();
+        let term = Lazy::term(owner.clone_ref(py), var.id, coeff)?;
+        return Ok(term);
+    }
+    if let Ok(expr) = other.cast::<Expr>() {
+        let expr = expr.borrow();
+        let other_inner = expr.inner.clone();
+        drop(expr);
+        same_owner(&other_inner.owner_ref(py), &owner)?;
+        let other_lazy = scalar_to_lazy(py, &other_inner);
+        if inner.has_vars && other_lazy.has_vars {
+            return Err(nonlinear());
+        }
+        if !inner.has_vars {
+            let factor = inner.const_only();
+            return Ok(Lazy::scale_node(owner, factor, &other_lazy));
+        }
+        let factor = other_lazy.const_only();
+        return Ok(Lazy::scale_node(owner, factor, &inner));
+    }
+    let v = operand_numeric(other, "multiplication")?;
+    if !v.is_finite() {
+        return Err(InvalidModelError::new_err(
+            "expression scale factor must be finite",
+        ));
+    }
+    Ok(Lazy::scale_node(owner, ValueExpr::constant(v), &inner))
+}
+
+/// Divide by a nonzero numeric constant (a parameter divisor rejects,
+/// exactly as before).
+fn scalar_div(py: Python<'_>, base: &Scalar, other: &Bound<'_, PyAny>) -> PyResult<Lazy> {
+    let divisor = operand_numeric(other, "division")?;
+    if divisor == 0.0 {
+        return Err(InvalidModelError::new_err("division by zero"));
+    }
+    let scale = 1.0 / divisor;
+    if !scale.is_finite() {
+        return Err(InvalidModelError::new_err(
+            "expression scale factor must be finite",
+        ));
+    }
+    let owner = base.owner_ref(py);
+    let inner = scalar_to_lazy(py, base);
+    Ok(Lazy::scale_node(owner, ValueExpr::constant(scale), &inner))
+}
+
 #[pyclass(frozen, name = "Expr")]
 pub struct Expr {
     pub(crate) inner: Scalar,
@@ -412,7 +910,7 @@ pub struct Expr {
 impl Expr {
     fn inner_term_count(&self) -> usize {
         match &self.inner {
-            Scalar::Affine(a) => a.terms.len(),
+            Scalar::Lazy(l) => l.size,
             Scalar::Packed(p) => p.array.numel(),
             Scalar::PackedSymbolic(s) => s.vars.len(),
         }
@@ -447,12 +945,13 @@ impl Expr {
 
     fn __neg__(slf: Py<Self>) -> PyResult<Py<Self>> {
         Python::attach(|py| {
-            let mut inner = slf.bind(py).borrow().inner.materialize(py);
-            inner.scale(-1.0)?;
+            let base = slf.bind(py).borrow();
+            let inner = scalar_neg(py, &base.inner);
+            drop(base);
             Ok(Bound::new(
                 py,
                 Self {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .unbind())
@@ -465,13 +964,12 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.materialize(py);
+            let inner = scalar_add(py, &base.inner, &other, 1.0)?;
             drop(base);
-            add_operand(&mut inner, &other, 1.0)?;
             Ok(Bound::new(
                 py,
                 Self {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -489,13 +987,12 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.materialize(py);
+            let inner = scalar_add(py, &base.inner, &other, -1.0)?;
             drop(base);
-            add_operand(&mut inner, &other, -1.0)?;
             Ok(Bound::new(
                 py,
                 Self {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -509,24 +1006,12 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = Affine {
-                owner: base.inner.owner_ref(py),
-                terms: Vec::new(),
-                constant: ValueExpr::constant(0.0),
-            };
+            let inner = scalar_rsub(py, &base.inner, &other)?;
             drop(base);
-            add_operand(&mut inner, &other, 1.0)?;
-            let neg = slf.bind(py).borrow();
-            let mut result = inner;
-            drop(neg);
-            let orig = slf.bind(py).borrow();
-            let orig_affine = orig.inner.materialize(py);
-            drop(orig);
-            result.add_terms(&orig_affine, -1.0)?;
             Ok(Bound::new(
                 py,
                 Self {
-                    inner: Scalar::Affine(result),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -540,13 +1025,12 @@ impl Expr {
                 return Ok(py.NotImplemented());
             }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.materialize(py);
+            let inner = scalar_mul(py, &base.inner, &other)?;
             drop(base);
-            mul_operand(&mut inner, &other)?;
             Ok(Bound::new(
                 py,
                 Self {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -563,18 +1047,13 @@ impl Expr {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let divisor = operand_numeric(&other, "division")?;
-            if divisor == 0.0 {
-                return Err(InvalidModelError::new_err("division by zero"));
-            }
             let base = slf.bind(py).borrow();
-            let mut inner = base.inner.materialize(py);
+            let inner = scalar_div(py, &base.inner, &other)?;
             drop(base);
-            inner.scale(1.0 / divisor)?;
             Ok(Bound::new(
                 py,
                 Self {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -620,94 +1099,6 @@ enum Sense {
     Eq,
 }
 
-/// Add (sign +1) or subtract (sign -1) an operand into an affine expression.
-/// Array operands cannot fold into a scalar: callers route them through
-/// the array engine before reaching here.
-fn add_operand(inner: &mut Affine, other: &Bound<'_, PyAny>, sign: f64) -> PyResult<()> {
-    if let Ok(var) = other.cast::<Var>() {
-        let var = var.borrow();
-        same_owner(&var.owner, &inner.owner)?;
-        inner.push_term(var.id, ValueExpr::constant(sign))?;
-        return Ok(());
-    }
-    if let Ok(param) = other.cast::<Param>() {
-        let param = param.borrow();
-        same_owner(&param.owner, &inner.owner)?;
-        inner.constant =
-            inner.constant.clone() + ValueExpr::param(param.id) * ValueExpr::constant(sign);
-        return Ok(());
-    }
-    if let Ok(expr) = other.cast::<Expr>() {
-        let expr = expr.borrow();
-        let py = other.py();
-        same_owner(&expr.inner.owner_ref(py), &inner.owner)?;
-        let other_affine = expr.inner.materialize(py);
-        drop(expr);
-        inner.add_terms(&other_affine, sign)?;
-        return Ok(());
-    }
-    let v = operand_numeric(other, "addition")?;
-    inner.constant = inner.constant.clone() + ValueExpr::constant(sign * v);
-    Ok(())
-}
-
-/// Multiply an affine expression by a numeric or parameter-only operand.
-/// Variable-times-variable rejects as nonlinear: at least one side must be
-/// free of decision variables.
-fn mul_operand(inner: &mut Affine, other: &Bound<'_, PyAny>) -> PyResult<()> {
-    if let Ok(param) = other.cast::<Param>() {
-        let param = param.borrow();
-        same_owner(&param.owner, &inner.owner)?;
-        let factor = ValueExpr::param(param.id);
-        for term in &mut inner.terms {
-            term.coeff = term.coeff.clone() * factor.clone();
-        }
-        inner.constant = inner.constant.clone() * factor;
-        return Ok(());
-    }
-    if let Ok(var) = other.cast::<Var>() {
-        let var = var.borrow();
-        same_owner(&var.owner, &inner.owner)?;
-        if !inner.terms.is_empty() {
-            return Err(nonlinear());
-        }
-        // Parameter-only self times a variable: the constant becomes the
-        // coefficient of the new term.
-        let coeff = std::mem::replace(&mut inner.constant, ValueExpr::constant(0.0));
-        inner.terms.push(ExprTerm { var: var.id, coeff });
-        return Ok(());
-    }
-    if let Ok(expr) = other.cast::<Expr>() {
-        let expr = expr.borrow();
-        let py = other.py();
-        same_owner(&expr.inner.owner_ref(py), &inner.owner)?;
-        let other_affine = expr.inner.materialize(py);
-        drop(expr);
-        if !inner.terms.is_empty() && !other_affine.terms.is_empty() {
-            return Err(nonlinear());
-        }
-        if inner.terms.is_empty() {
-            // Parameter-only self times affine other.
-            let mine = std::mem::replace(&mut inner.constant, ValueExpr::constant(0.0));
-            for term in &other_affine.terms {
-                inner.push_term(term.var, term.coeff.clone() * mine.clone())?;
-            }
-            inner.constant = other_affine.constant.clone() * mine;
-            return Ok(());
-        }
-        // Affine self times parameter-only other.
-        let factor = other_affine.constant.clone();
-        for term in &mut inner.terms {
-            term.coeff = term.coeff.clone() * factor.clone();
-        }
-        inner.constant = inner.constant.clone() * factor;
-        return Ok(());
-    }
-    let v = operand_numeric(other, "multiplication")?;
-    inner.scale(v)?;
-    Ok(())
-}
-
 fn chained() -> PyErr {
     pyo3::exceptions::PyTypeError::new_err(
         "chained comparisons such as 0 <= x <= 1 are not supported; write m.add(...) for each bound",
@@ -724,19 +1115,21 @@ fn compare_operand(slf: &Py<Expr>, other: &Bound<'_, PyAny>, sense: Sense) -> Py
     Python::attach(|py| {
         // Move the operand to the left: lhs = self - other, bound 0.
         // Array operands never reach here: every comparison dunder
-        // returns NotImplemented for them first.
+        // returns NotImplemented for them first. The tree flattens once
+        // here; comparisons stay out of the hot construction path.
         let base = slf.bind(py).borrow();
-        let mut lhs = base.inner.materialize(py);
+        let lhs = scalar_add(py, &base.inner, other, -1.0)?;
+        let owner = base.inner.owner_ref(py);
         drop(base);
-        add_operand(&mut lhs, other, -1.0)?;
+        let flat = lhs.flatten_lower(py);
         let rhs = match sense {
             Sense::Le => BoundSide::Upper(ValueExpr::constant(0.0)),
             Sense::Ge => BoundSide::Lower(ValueExpr::constant(0.0)),
             Sense::Eq => BoundSide::Eq(ValueExpr::constant(0.0)),
         };
         Ok(Comparison {
-            owner: lhs.owner.clone_ref(py),
-            expr: lhs,
+            owner,
+            expr: flat,
             rhs,
         })
     })
@@ -817,12 +1210,12 @@ pub(crate) fn to_scalar(model: &Bound<'_, Model>, other: &Bound<'_, PyAny>) -> P
         if let Ok(var) = other.cast::<Var>() {
             let var = var.borrow();
             same_owner(&var.owner, &model.clone().unbind())?;
-            return Ok(Scalar::Affine(var_affine(py, &var)));
+            return Ok(Scalar::Lazy(var_lazy(py, &var)?));
         }
         if let Ok(param) = other.cast::<Param>() {
             let param = param.borrow();
             same_owner(&param.owner, &model.clone().unbind())?;
-            return Ok(Scalar::Affine(param_affine(py, &param)));
+            return Ok(Scalar::Lazy(param_lazy(py, &param)));
         }
         if let Ok(expr) = other.cast::<Expr>() {
             let expr = expr.borrow();
@@ -830,24 +1223,32 @@ pub(crate) fn to_scalar(model: &Bound<'_, Model>, other: &Bound<'_, PyAny>) -> P
             return Ok(expr.inner.clone());
         }
         let v = operand_numeric(other, "objective")?;
-        Ok(Scalar::Affine(Affine {
-            owner: model.clone().unbind(),
-            terms: Vec::new(),
-            constant: ValueExpr::constant(v),
-        }))
+        Ok(Scalar::Lazy(Lazy::constant(
+            model.clone().unbind(),
+            ValueExpr::constant(v),
+        )))
     })
 }
 
-/// Var arithmetic: each operator lifts the variable to an `Expr` first.
-fn var_affine(py: Python<'_>, var: &Var) -> Affine {
-    Affine {
-        owner: var.owner.clone_ref(py),
-        terms: vec![ExprTerm {
-            var: var.id,
-            coeff: ValueExpr::constant(1.0),
-        }],
-        constant: ValueExpr::constant(0.0),
-    }
+/// Operator lifts: a variable becomes one lazy term, a parameter one lazy
+/// constant. Both are O(1); combination happens at the sink.
+fn var_lazy(py: Python<'_>, var: &Var) -> PyResult<Lazy> {
+    Lazy::term(var.owner.clone_ref(py), var.id, ValueExpr::constant(1.0))
+}
+
+fn param_lazy(py: Python<'_>, param: &Param) -> Lazy {
+    Lazy::constant(param.owner.clone_ref(py), ValueExpr::param(param.id))
+}
+
+/// Wrap a lazy tree as an expression value.
+fn wrap_expr(py: Python<'_>, inner: Lazy) -> PyResult<Py<Expr>> {
+    Ok(Bound::new(
+        py,
+        Expr {
+            inner: Scalar::Lazy(inner),
+        },
+    )?
+    .unbind())
 }
 
 #[pymethods]
@@ -868,15 +1269,11 @@ impl Var {
 
     fn __neg__(slf: Py<Self>) -> PyResult<Py<Expr>> {
         Python::attach(|py| {
-            let mut inner = var_affine(py, &slf.bind(py).borrow());
-            inner.scale(-1.0)?;
-            Ok(Bound::new(
-                py,
-                Expr {
-                    inner: Scalar::Affine(inner),
-                },
-            )?
-            .unbind())
+            let var = slf.bind(py).borrow();
+            let base = var_lazy(py, &var)?;
+            drop(var);
+            let inner = scalar_neg(py, &Scalar::Lazy(base));
+            wrap_expr(py, inner)
         })
     }
 
@@ -885,12 +1282,14 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let mut inner = var_affine(py, &slf.bind(py).borrow());
-            add_operand(&mut inner, &other, 1.0)?;
+            let var = slf.bind(py).borrow();
+            let base = Scalar::Lazy(var_lazy(py, &var)?);
+            drop(var);
+            let inner = scalar_add(py, &base, &other, 1.0)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -907,12 +1306,14 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let mut inner = var_affine(py, &slf.bind(py).borrow());
-            add_operand(&mut inner, &other, -1.0)?;
+            let var = slf.bind(py).borrow();
+            let base = Scalar::Lazy(var_lazy(py, &var)?);
+            drop(var);
+            let inner = scalar_add(py, &base, &other, -1.0)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -925,22 +1326,14 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let base = slf.bind(py).borrow();
-            let mut inner = Affine {
-                owner: base.owner.clone_ref(py),
-                terms: Vec::new(),
-                constant: ValueExpr::constant(0.0),
-            };
-            drop(base);
-            add_operand(&mut inner, &other, 1.0)?;
-            let orig = slf.bind(py).borrow();
-            let single = var_affine(py, &orig);
-            drop(orig);
-            inner.add_terms(&single, -1.0)?;
+            let var = slf.bind(py).borrow();
+            let base = Scalar::Lazy(var_lazy(py, &var)?);
+            drop(var);
+            let inner = scalar_rsub(py, &base, &other)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -953,12 +1346,14 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let mut inner = var_affine(py, &slf.bind(py).borrow());
-            mul_operand(&mut inner, &other)?;
+            let var = slf.bind(py).borrow();
+            let base = Scalar::Lazy(var_lazy(py, &var)?);
+            drop(var);
+            let inner = scalar_mul(py, &base, &other)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -975,16 +1370,14 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let divisor = operand_numeric(&other, "division")?;
-            if divisor == 0.0 {
-                return Err(InvalidModelError::new_err("division by zero"));
-            }
-            let mut inner = var_affine(py, &slf.bind(py).borrow());
-            inner.scale(1.0 / divisor)?;
+            let var = slf.bind(py).borrow();
+            let base = Scalar::Lazy(var_lazy(py, &var)?);
+            drop(var);
+            let inner = scalar_div(py, &base, &other)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -997,11 +1390,13 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let inner = var_affine(py, &slf.bind(py).borrow());
+            let var = slf.bind(py).borrow();
+            let inner = var_lazy(py, &var)?;
+            drop(var);
             let expr = Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?;
             let c = compare_operand(&expr.unbind(), &other, Sense::Le)?;
@@ -1014,11 +1409,13 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let inner = var_affine(py, &slf.bind(py).borrow());
+            let var = slf.bind(py).borrow();
+            let inner = var_lazy(py, &var)?;
+            drop(var);
             let expr = Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?;
             let c = compare_operand(&expr.unbind(), &other, Sense::Ge)?;
@@ -1031,11 +1428,13 @@ impl Var {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let inner = var_affine(py, &slf.bind(py).borrow());
+            let var = slf.bind(py).borrow();
+            let inner = var_lazy(py, &var)?;
+            drop(var);
             let expr = Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?;
             let c = compare_operand(&expr.unbind(), &other, Sense::Eq)?;
@@ -1047,15 +1446,6 @@ impl Var {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "variables have no truth value; use m.add(...) to constrain them",
         ))
-    }
-}
-
-/// Param arithmetic produces parameter-only `Expr` values (no var terms).
-fn param_affine(py: Python<'_>, param: &Param) -> Affine {
-    Affine {
-        owner: param.owner.clone_ref(py),
-        terms: Vec::new(),
-        constant: ValueExpr::param(param.id),
     }
 }
 
@@ -1077,15 +1467,11 @@ impl Param {
 
     fn __neg__(slf: Py<Self>) -> PyResult<Py<Expr>> {
         Python::attach(|py| {
-            let mut inner = param_affine(py, &slf.bind(py).borrow());
-            inner.scale(-1.0)?;
-            Ok(Bound::new(
-                py,
-                Expr {
-                    inner: Scalar::Affine(inner),
-                },
-            )?
-            .unbind())
+            let param = slf.bind(py).borrow();
+            let base = param_lazy(py, &param);
+            drop(param);
+            let inner = scalar_neg(py, &Scalar::Lazy(base));
+            wrap_expr(py, inner)
         })
     }
 
@@ -1094,12 +1480,14 @@ impl Param {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let mut inner = param_affine(py, &slf.bind(py).borrow());
-            add_operand(&mut inner, &other, 1.0)?;
+            let param = slf.bind(py).borrow();
+            let base = Scalar::Lazy(param_lazy(py, &param));
+            drop(param);
+            let inner = scalar_add(py, &base, &other, 1.0)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -1116,12 +1504,14 @@ impl Param {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let mut inner = param_affine(py, &slf.bind(py).borrow());
-            add_operand(&mut inner, &other, -1.0)?;
+            let param = slf.bind(py).borrow();
+            let base = Scalar::Lazy(param_lazy(py, &param));
+            drop(param);
+            let inner = scalar_add(py, &base, &other, -1.0)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -1134,22 +1524,14 @@ impl Param {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let base = slf.bind(py).borrow();
-            let mut inner = Affine {
-                owner: base.owner.clone_ref(py),
-                terms: Vec::new(),
-                constant: ValueExpr::constant(0.0),
-            };
-            drop(base);
-            add_operand(&mut inner, &other, 1.0)?;
-            let orig = slf.bind(py).borrow();
-            let single = param_affine(py, &orig);
-            drop(orig);
-            inner.add_terms(&single, -1.0)?;
+            let param = slf.bind(py).borrow();
+            let base = Scalar::Lazy(param_lazy(py, &param));
+            drop(param);
+            let inner = scalar_rsub(py, &base, &other)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -1162,12 +1544,14 @@ impl Param {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let mut inner = param_affine(py, &slf.bind(py).borrow());
-            mul_operand(&mut inner, &other)?;
+            let param = slf.bind(py).borrow();
+            let base = Scalar::Lazy(param_lazy(py, &param));
+            drop(param);
+            let inner = scalar_mul(py, &base, &other)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
@@ -1184,16 +1568,14 @@ impl Param {
             if super::arrays::is_array_operand(&other) {
                 return Ok(py.NotImplemented());
             }
-            let divisor = operand_numeric(&other, "division")?;
-            if divisor == 0.0 {
-                return Err(InvalidModelError::new_err("division by zero"));
-            }
-            let mut inner = param_affine(py, &slf.bind(py).borrow());
-            inner.scale(1.0 / divisor)?;
+            let param = slf.bind(py).borrow();
+            let base = Scalar::Lazy(param_lazy(py, &param));
+            drop(param);
+            let inner = scalar_div(py, &base, &other)?;
             Ok(Bound::new(
                 py,
                 Expr {
-                    inner: Scalar::Affine(inner),
+                    inner: Scalar::Lazy(inner),
                 },
             )?
             .into_any()
