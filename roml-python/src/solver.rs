@@ -661,7 +661,6 @@ impl Session {
             }
         };
         guard.pending = false;
-        guard.pending_params.clear();
         let metadata = solved.metadata();
         let sync_mode = metadata.synchronization;
         let warm_start = match start {

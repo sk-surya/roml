@@ -310,3 +310,52 @@ def test_lowering_after_pending_update_uses_fresh_values():
     m.maximize(x)
     with rm.Highs() as solver:
         assert solver.solve(m).objective == pytest.approx(4.0)
+
+
+def test_bulk_add_after_pending_update_succeeds():
+    # P1 (owner repro): preflight and core installation must see the
+    # same accepted parameter state. p was [1, 1e308] committed, then
+    # updated to [1, 1]; the add must succeed (finite) and install all
+    # rows. Row 0 then caps x[0] at 0.5 -- the new correct optimum.
+    import numpy as np
+
+    m = rm.Model()
+    x = m.vars("x", 2, ub=10)
+    p = m.params("p", [1.0, 1e308])
+    q = m.params("q", [1.0, 1e10])
+    m.maximize(x[0])
+    m.update(p=[1.0, 1.0])
+    m.add((p * q) * x <= [0.5, 10.0])
+    with rm.Highs() as solver:
+        assert solver.solve(m).value(x[0]) == pytest.approx(0.5)
+
+    # Counterpart: without the pending update the same add is genuinely
+    # invalid (second row overflows at committed values) and must reject
+    # with no rows installed -- the original optimum 10 stands.
+    m2 = rm.Model()
+    y = m2.vars("x", 2, ub=10)
+    p2 = m2.params("p", [1.0, 1e308])
+    q2 = m2.params("q", [1.0, 1e10])
+    m2.maximize(y[0])
+    with rm.Highs() as solver:
+        assert solver.solve(m2).value(y[0]) == pytest.approx(10.0)
+        with pytest.raises(rm.InvalidModelError):
+            m2.add((p2 * q2) * y <= [0.5, 10.0])
+        result = solver.solve(m2)
+        assert result.value(y[0]) == pytest.approx(10.0)
+        assert result.is_current(m2)
+
+
+def test_scalar_and_objective_adds_after_pending_update():
+    # Scalar-constraint and objective counterparts of the bulk case.
+    m = rm.Model()
+    x = m.var("x", ub=10.0)
+    p = m.param("p", 1e308)
+    q = m.param("q", 1e10)
+    m.update(p=1.0)
+    m.add((p * q) * x <= 10.0)
+    m.maximize((p * q) * x)
+    with rm.Highs() as solver:
+        result = solver.solve(m)
+        assert result.is_optimal
+        assert result.value(x) == pytest.approx(10.0 / 1e10)
