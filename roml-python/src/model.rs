@@ -797,9 +797,46 @@ impl Model {
         let Scalar::Lazy(lazy) = e else {
             return Err(InvalidModelError::new_err("unsupported objective form"));
         };
-        // P1D: the tree flattens once here; everything below consumes the
-        // canonical Affine exactly as before.
-        let e = lazy.flatten_lower(slf.py());
+        // P1E: classify once into the cheapest primitive. Numeric trees
+        // reach the constant bulk primitive, scaled-parameter trees the
+        // parametric one; only genuinely general trees pay the general
+        // Affine lowering below.
+        match lazy.classify(slf.py()) {
+            super::expressions::LoweredScalar::Numeric {
+                vars,
+                coeffs,
+                constant,
+            } => Self::set_objective_numeric_bulk(slf, sense, &vars, &coeffs, constant),
+            super::expressions::LoweredScalar::Parametric {
+                vars,
+                params,
+                scales,
+                constant,
+            } => Self::set_objective_param_bulk(
+                slf,
+                super::expressions::PackedSymbolic {
+                    owner: slf.clone().unbind(),
+                    vars,
+                    params,
+                    scales,
+                    constant,
+                },
+                sense,
+            ),
+            super::expressions::LoweredScalar::General(e) => {
+                Self::set_objective_general(slf, e, sense)
+            }
+        }
+    }
+
+    /// General `Affine` objective insertion: the fallback for genuinely
+    /// symbolic coefficients that admit no bulk primitive. Unchanged
+    /// lowering (preflight, LinExpr build, template recording).
+    fn set_objective_general(
+        slf: &Bound<'_, Self>,
+        e: super::expressions::Affine,
+        sense: Sense,
+    ) -> PyResult<Objective> {
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
         for term in &e.terms {
@@ -884,6 +921,26 @@ impl Model {
                 }
             }
         }
+        Self::set_objective_numeric_bulk(slf, sense, &vars, &coeffs, packed.array.constant)
+    }
+
+    /// Numeric bulk objective insertion (P1E classifier path).
+    ///
+    /// Classified numeric trees arrive here as parallel buffers, straight
+    /// into the core constant bulk primitive — no per-term `Affine`
+    /// expansion, no `LinExpr` build. Coefficients are finite numerics by
+    /// classification; the core re-validates liveness/finiteness/uniqueness
+    /// atomically (stale variables surface as `InvalidHandleError` through
+    /// the shared error mapping, exactly like the general path's
+    /// preflight). No parameter templates exist to record: numeric
+    /// coefficients admit no parameter dependencies.
+    fn set_objective_numeric_bulk(
+        slf: &Bound<'_, Self>,
+        sense: Sense,
+        vars: &[VarId],
+        coeffs: &[f64],
+        constant: f64,
+    ) -> PyResult<Objective> {
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
         let core_sense = match sense {
@@ -892,7 +949,7 @@ impl Model {
         };
         let obj = state
             .model
-            .set_linear_objective_bulk(core_sense, &vars, &coeffs, packed.array.constant)
+            .set_linear_objective_bulk(core_sense, vars, coeffs, constant)
             .map_err(map_model_error)?;
         state.pending = true;
         state.py_revision += 1;
@@ -1014,7 +1071,7 @@ impl Model {
         if let Ok(scalar) = comparison.cast::<Comparison>() {
             let borrowed_cmp = scalar.borrow();
             borrowed_cmp.owner_check(slf)?;
-            let affine = borrowed_cmp.expr.clone();
+            let body = borrowed_cmp.expr.clone();
             let side = borrowed_cmp.rhs.clone();
             drop(borrowed_cmp);
             if let Some(n) = name {
@@ -1037,7 +1094,14 @@ impl Model {
                     )));
                 }
             }
-            let con = insert_affine_comparison(&mut state, &affine, &side)?;
+            let con = match body {
+                super::expressions::ComparisonExpr::General(affine) => {
+                    insert_affine_comparison(&mut state, &affine, &side)?
+                }
+                super::expressions::ComparisonExpr::BulkRow(row) => {
+                    Self::insert_bulk_row(&mut state, &row)?
+                }
+            };
             if let Some(n) = name {
                 state.con_names.insert(n.to_string(), con);
             }
@@ -1169,6 +1233,26 @@ impl Model {
             shape,
             cons,
         })
+    }
+
+    /// Insert one numeric scalar-comparison row through the core bulk row
+    /// primitive (P1E, batch size 1): no per-cell general insertion. The
+    /// bound already folds the tree constant (compare_operand mirrors the
+    /// general path's shifting); the core canonicalizes the row exactly
+    /// like scalar insertion (duplicate accumulation, zero drop) and
+    /// validates liveness/finiteness atomically. Numeric rows carry no
+    /// parameter templates, so no bound/coefficient bookkeeping applies.
+    fn insert_bulk_row(
+        state: &mut ModelState,
+        row: &super::expressions::BulkRow,
+    ) -> PyResult<ConId> {
+        let row_ptr = vec![0, row.vars.len() as u32];
+        let mut cons = state
+            .model
+            .add_linear_rows_bulk(&row_ptr, &row.vars, &row.coeffs, &[row.bound])
+            .map_err(map_model_error)?;
+        cons.pop()
+            .ok_or_else(|| InvalidModelError::new_err("bulk row insertion produced no constraint"))
     }
 
     /// Insert a packed numeric comparison array through the core bulk row

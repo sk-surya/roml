@@ -13,7 +13,8 @@ use roml::{ParamId, ValueExpr, VarId};
 use super::errors::{InvalidModelError, ModelMismatchError, ShapeError};
 pub(crate) use super::expressions::BoundSide;
 use super::expressions::{
-    simplify_value, Affine, PackedArrayTerm, PackedCoeffs, PackedLinearArray, PackedVars, Scalar,
+    as_scaled_param, simplify_value, Affine, PackedArrayTerm, PackedCoeffs, PackedLinearArray,
+    PackedVars, Scalar,
 };
 use super::expressions::{Comparison, ExprTerm};
 use super::handles::{Param, Var};
@@ -2140,7 +2141,7 @@ impl ComparisonArray {
             };
             let comp = Comparison {
                 owner: borrowed.owner.clone_ref(py),
-                expr: affine,
+                expr: super::expressions::ComparisonExpr::General(affine),
                 rhs: side,
             };
             Ok(comp.into_pyobject(py)?.into_any().unbind())
@@ -2332,40 +2333,6 @@ enum DotSym {
     Bare(ParamId),
     /// Original parameter-only expression.
     Expr(ValueExpr),
-}
-
-/// Extract a trivially representable scaled parameter
-/// `(param, scale)` from a parameter-only expression (P1C-2): bare
-/// parameters, negations, and constant multiplications (nested). Anything
-/// else — sums of distinct parameters, divisions, zero scales (the scalar
-/// fold would drop the dependency entirely), non-finite scales (the scalar
-/// preflight would reject them) — returns `None` so the caller keeps the
-/// general `Affine` lowering with byte-identical behavior.
-fn as_scaled_param(e: &ValueExpr) -> Option<(ParamId, f64)> {
-    match e {
-        ValueExpr::Param(p) => Some((*p, 1.0)),
-        ValueExpr::Neg(inner) => as_scaled_param(inner).map(|(p, s)| (p, -s)),
-        ValueExpr::Mul(l, r) => match (&**l, &**r) {
-            (ValueExpr::Constant(a), inner) => as_scaled_param(inner).and_then(|(p, s)| {
-                let scale = a * s;
-                if scale == 0.0 || !scale.is_finite() {
-                    None
-                } else {
-                    Some((p, scale))
-                }
-            }),
-            (inner, ValueExpr::Constant(b)) => as_scaled_param(inner).and_then(|(p, s)| {
-                let scale = s * b;
-                if scale == 0.0 || !scale.is_finite() {
-                    None
-                } else {
-                    Some((p, scale))
-                }
-            }),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// Structural dot-product lowering (P1C-2 phase 1).

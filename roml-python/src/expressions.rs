@@ -59,6 +59,40 @@ fn operand_numeric(value: &Bound<'_, PyAny>, op: &str) -> PyResult<f64> {
     py_numeric(value, &format!("{op} operand"))
 }
 
+/// Extract a trivially representable scaled parameter
+/// `(param, scale)` from a parameter-only expression (P1C-2): bare
+/// parameters, negations, and constant multiplications (nested). Anything
+/// else — sums of distinct parameters, divisions, zero scales (the scalar
+/// fold would drop the dependency entirely), non-finite scales (the scalar
+/// preflight would reject them) — returns `None` so the caller keeps the
+/// general `Affine` lowering with byte-identical behavior.
+pub(crate) fn as_scaled_param(e: &ValueExpr) -> Option<(ParamId, f64)> {
+    match e {
+        ValueExpr::Param(p) => Some((*p, 1.0)),
+        ValueExpr::Neg(inner) => as_scaled_param(inner).map(|(p, s)| (p, -s)),
+        ValueExpr::Mul(l, r) => match (&**l, &**r) {
+            (ValueExpr::Constant(a), inner) => as_scaled_param(inner).and_then(|(p, s)| {
+                let scale = a * s;
+                if scale == 0.0 || !scale.is_finite() {
+                    None
+                } else {
+                    Some((p, scale))
+                }
+            }),
+            (inner, ValueExpr::Constant(b)) => as_scaled_param(inner).and_then(|(p, s)| {
+                let scale = s * b;
+                if scale == 0.0 || !scale.is_finite() {
+                    None
+                } else {
+                    Some((p, scale))
+                }
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Fold one emitted leaf through the enclosing scale-factor path.
 ///
 /// `factors` accumulate outermost-first during the top-down walk; the old
@@ -198,16 +232,293 @@ fn combine_consts(parts: Vec<ValueExpr>) -> ValueExpr {
     acc
 }
 
+/// Sink outcome of classifying one lazy tree (P1E).
+///
+/// The classifier walks the tree once and sorts each emission into the
+/// cheapest bucket it admits — WITHOUT building a `ValueExpr` per term
+/// on the numeric/parametric paths (that was the residual sink waste:
+/// traverse, build a million expressions, inspect them, discard them).
+/// Node payloads already in the right shape (`f64` factors, bare params,
+/// packed buffers) flow straight into the outcome buffers.
+pub(crate) enum LoweredScalar {
+    /// Every decision coefficient is a finite number: routes to
+    /// `set_linear_objective_bulk` / single-row `add_linear_rows_bulk`.
+    /// Duplicates are combined here (the numeric bulk primitive takes
+    /// the general path on duplicates, so combining keeps it fast);
+    /// near-zeros pass through for the core to drop, exactly like the
+    /// scalar path.
+    Numeric {
+        vars: Vec<VarId>,
+        coeffs: Vec<f64>,
+        constant: f64,
+    },
+    /// Every decision coefficient is `scale × one ParamId`: routes to
+    /// `set_linear_objective_param_bulk`, whose documented duplicate
+    /// semantics (same-param scales sum; distinct params on one variable
+    /// split to the overlay) apply unchanged.
+    Parametric {
+        vars: Vec<VarId>,
+        params: Vec<ParamId>,
+        scales: Vec<f64>,
+        constant: ValueExpr,
+    },
+    /// Anything genuinely general keeps the existing general `Affine`
+    /// path: mixed numeric/parametric coefficients, multi-expression
+    /// parameter coefficients, or a parameter-dependent constant on an
+    /// otherwise numeric tree.
+    General(Affine),
+}
+
+/// One classified emission: the cheapest bucket a leaf admits under its
+/// enclosing factor path.
+enum Emission {
+    Num(VarId, f64),
+    Sym(VarId, ParamId, f64),
+    Gen(VarId, ValueExpr),
+}
+
+/// Enclosing scale-factor product threaded top-down. Stays allocation-free
+/// (`One`/`Num`/`Sym` are plain data); only genuinely general parameter
+/// products allocate a `ValueExpr` — and those trees take the slow path
+/// anyway.
+#[derive(Clone, Debug)]
+enum Factor {
+    One,
+    Num(f64),
+    Sym(ParamId, f64),
+    Gen(ValueExpr),
+}
+
+impl Factor {
+    /// Fold a numeric scale into the product.
+    fn num(self, n: f64) -> Self {
+        match self {
+            Factor::One => Factor::Num(n),
+            Factor::Num(m) => Factor::Num(m * n),
+            Factor::Sym(p, s) => Factor::Sym(p, s * n),
+            Factor::Gen(e) => Factor::Gen(ValueExpr::mul(e, ValueExpr::constant(n))),
+        }
+    }
+
+    /// Fold a scaled-parameter factor into the product. Any parameter
+    /// meeting an already-parameterized product generalizes it — including
+    /// the same parameter (`p * (p * x)` is `p^2 * x`, which no packed
+    /// primitive represents). Only numeric scaling preserves `Sym`.
+    fn scaled_param(self, param: ParamId, scale: f64) -> Self {
+        let here = ValueExpr::scaled_param(scale, param);
+        match self {
+            Factor::One => Factor::Sym(param, scale),
+            Factor::Num(n) => Factor::Sym(param, n * scale),
+            Factor::Sym(q, t) => Factor::Gen(ValueExpr::mul(ValueExpr::scaled_param(t, q), here)),
+            Factor::Gen(e) => Factor::Gen(ValueExpr::mul(e, here)),
+        }
+    }
+
+    /// Fold a general parameter expression into the product.
+    fn general(self, expr: ValueExpr) -> Self {
+        match self {
+            Factor::One => Factor::Gen(expr),
+            Factor::Num(n) => Factor::Gen(ValueExpr::mul(ValueExpr::constant(n), expr)),
+            Factor::Sym(q, t) => Factor::Gen(ValueExpr::mul(ValueExpr::scaled_param(t, q), expr)),
+            Factor::Gen(e) => Factor::Gen(ValueExpr::mul(e, expr)),
+        }
+    }
+
+    /// Analyze a `Scale` node's factor: finite numerics stay numeric,
+    /// trivially representable parameters stay scaled, anything else
+    /// (still parameter-only by construction) generalizes.
+    fn scale_by(self, factor: &ValueExpr) -> Self {
+        if factor.dependencies().is_empty() {
+            return self.num(factor.eval(|_| 0.0));
+        }
+        match as_scaled_param(factor) {
+            Some((p, s)) => self.scaled_param(p, s),
+            None => self.general(factor.clone()),
+        }
+    }
+
+    /// Apply the product to a numeric leaf coefficient.
+    fn emit_num(self, var: VarId, c: f64, out: &mut Vec<Emission>) {
+        match self {
+            Factor::One => out.push(Emission::Num(var, c)),
+            Factor::Num(n) => out.push(Emission::Num(var, c * n)),
+            Factor::Sym(p, s) => out.push(Emission::Sym(var, p, c * s)),
+            Factor::Gen(e) => out.push(Emission::Gen(
+                var,
+                ValueExpr::mul(ValueExpr::constant(c), e),
+            )),
+        }
+    }
+
+    /// Apply the product to a scaled-parameter leaf coefficient. A
+    /// parameterized enclosing product always generalizes (see
+    /// [`Factor::scaled_param`]); only numeric factors scale through.
+    fn emit_sym(self, var: VarId, param: ParamId, scale: f64, out: &mut Vec<Emission>) {
+        match self {
+            Factor::One => out.push(Emission::Sym(var, param, scale)),
+            Factor::Num(n) => out.push(Emission::Sym(var, param, scale * n)),
+            Factor::Sym(q, t) => out.push(Emission::Gen(
+                var,
+                ValueExpr::mul(
+                    ValueExpr::scaled_param(t, q),
+                    ValueExpr::scaled_param(scale, param),
+                ),
+            )),
+            Factor::Gen(e) => out.push(Emission::Gen(
+                var,
+                ValueExpr::mul(e, ValueExpr::scaled_param(scale, param)),
+            )),
+        }
+    }
+
+    /// Apply the product to a general leaf coefficient.
+    fn emit_gen(self, var: VarId, coeff: &ValueExpr, out: &mut Vec<Emission>) {
+        match self {
+            Factor::One => out.push(Emission::Gen(var, coeff.clone())),
+            Factor::Num(n) => out.push(Emission::Gen(
+                var,
+                ValueExpr::mul(coeff.clone(), ValueExpr::constant(n)),
+            )),
+            Factor::Sym(q, t) => out.push(Emission::Gen(
+                var,
+                ValueExpr::mul(coeff.clone(), ValueExpr::scaled_param(t, q)),
+            )),
+            Factor::Gen(e) => out.push(Emission::Gen(var, ValueExpr::mul(coeff.clone(), e))),
+        }
+    }
+
+    /// Apply the product to a constant leaf.
+    fn emit_const(self, c: &ValueExpr, nums: &mut Vec<f64>, syms: &mut Vec<ValueExpr>) {
+        if c.dependencies().is_empty() {
+            let v = c.eval(|_| 0.0);
+            match self {
+                Factor::One => nums.push(v),
+                Factor::Num(n) => nums.push(v * n),
+                Factor::Sym(p, s) => syms.push(ValueExpr::scaled_param(v * s, p)),
+                Factor::Gen(e) => syms.push(ValueExpr::mul(ValueExpr::constant(v), e)),
+            }
+            return;
+        }
+        match self {
+            Factor::One => syms.push(c.clone()),
+            Factor::Num(n) => syms.push(ValueExpr::mul(c.clone(), ValueExpr::constant(n))),
+            Factor::Sym(q, t) => {
+                syms.push(ValueExpr::mul(c.clone(), ValueExpr::scaled_param(t, q)))
+            }
+            Factor::Gen(e) => syms.push(ValueExpr::mul(c.clone(), e)),
+        }
+    }
+}
+
+/// Analyze one term coefficient `ValueExpr` into its cheapest bucket.
+fn emit_coeff(var: VarId, coeff: &ValueExpr, factor: Factor, out: &mut Vec<Emission>) {
+    if coeff.dependencies().is_empty() {
+        factor.emit_num(var, coeff.eval(|_| 0.0), out);
+        return;
+    }
+    match as_scaled_param(coeff) {
+        Some((p, s)) => factor.emit_sym(var, p, s, out),
+        None => factor.emit_gen(var, coeff, out),
+    }
+}
+
+/// Single iterative classification walk. Left subtrees pop before right
+/// ones (encounter order feeds duplicate combining deterministically);
+/// the stack is explicit so deep spines never recurse.
+fn classify_tree(
+    root: &ExprNode,
+    out: &mut Vec<Emission>,
+    nums: &mut Vec<f64>,
+    syms: &mut Vec<ValueExpr>,
+) {
+    let mut stack: Vec<(&ExprNode, Factor)> = vec![(root, Factor::One)];
+    while let Some((node, factor)) = stack.pop() {
+        match node {
+            ExprNode::Term { var, coeff } => emit_coeff(*var, coeff, factor, out),
+            ExprNode::Const(c) => factor.emit_const(c, nums, syms),
+            ExprNode::Add(l, r) => {
+                stack.push((r, factor.clone()));
+                stack.push((l, factor));
+            }
+            ExprNode::Scale(f, c) => {
+                stack.push((c, factor.scale_by(f)));
+            }
+            ExprNode::Flat(flat) => {
+                for t in &flat.terms {
+                    emit_coeff(t.var, &t.coeff, factor.clone(), out);
+                }
+                factor.emit_const(&flat.constant, nums, syms);
+            }
+            ExprNode::PackedArray(array) => {
+                for t in &array.terms {
+                    match &t.coeffs {
+                        PackedCoeffs::One => {
+                            for v in &t.vars {
+                                factor.clone().emit_num(*v, 1.0, out);
+                            }
+                        }
+                        PackedCoeffs::Scalar(c) => {
+                            for v in &t.vars {
+                                factor.clone().emit_num(*v, *c, out);
+                            }
+                        }
+                        PackedCoeffs::Dense(values) => {
+                            for (v, c) in t.vars.iter().zip(values.iter()) {
+                                factor.clone().emit_num(*v, *c, out);
+                            }
+                        }
+                    }
+                }
+                if array.constant != 0.0 {
+                    factor.emit_const(&ValueExpr::constant(array.constant), nums, syms);
+                }
+            }
+            ExprNode::PackedSym(sym) => {
+                for ((var, param), scale) in sym
+                    .vars
+                    .iter()
+                    .zip(sym.params.iter())
+                    .zip(sym.scales.iter())
+                {
+                    factor.clone().emit_sym(*var, *param, *scale, out);
+                }
+                factor.emit_const(&sym.constant, nums, syms);
+            }
+        }
+    }
+}
+
+/// Combine numeric emissions: sorted-and-unique fast path, else a stable
+/// sort plus encounter-ordered run folding. Near-zeros pass through for
+/// the core to drop, exactly like the scalar path (no finite-value
+/// filtering here either: the core validates atomically).
+fn combine_numeric(mut terms: Vec<(VarId, f64)>) -> (Vec<VarId>, Vec<f64>) {
+    if !terms.windows(2).all(|w| w[0].0 < w[1].0) {
+        terms.sort_by_key(|(var, _)| *var);
+        let mut out: Vec<(VarId, f64)> = Vec::new();
+        for (var, coeff) in terms {
+            match out.last_mut() {
+                Some(tail) if tail.0 == var => tail.1 += coeff,
+                _ => out.push((var, coeff)),
+            }
+        }
+        terms = out;
+    }
+    terms.into_iter().unzip()
+}
+
 impl Lazy {
     /// Lower once: flatten, combine, and return the canonical [`Affine`].
     /// This is the ONLY path from trees to flat terms; every model sink
     /// goes through [`Scalar::materialize`].
     pub(crate) fn flatten_lower(&self, py: Python<'_>) -> Affine {
         let (terms, consts) = flatten(self.root.get());
+        let combined = combine_terms(terms);
+        let constant = combine_consts(consts);
         Affine {
             owner: self.owner.clone_ref(py),
-            terms: combine_terms(terms),
-            constant: combine_consts(consts),
+            terms: combined,
+            constant,
         }
     }
 
@@ -218,6 +529,108 @@ impl Lazy {
         let (terms, consts) = flatten(self.root.get());
         debug_assert!(terms.is_empty(), "const_only on decision-bearing tree");
         combine_consts(consts)
+    }
+
+    /// Classify once into the cheapest sink outcome (P1E).
+    ///
+    /// One iterative walk; numeric and scaled-parameter emissions never
+    /// become `ValueExpr`s on their fast paths. The outcome decides the
+    /// core primitive: all-numeric to `set_linear_objective_bulk` (or a
+    /// single bulk row), all-`scale × Param` to
+    /// `set_linear_objective_param_bulk`, anything else to the existing
+    /// general `Affine` path via the shared combiner.
+    pub(crate) fn classify(&self, py: Python<'_>) -> LoweredScalar {
+        let mut emissions: Vec<Emission> = Vec::new();
+        let mut const_nums: Vec<f64> = Vec::new();
+        let mut const_syms: Vec<ValueExpr> = Vec::new();
+        classify_tree(
+            self.root.get(),
+            &mut emissions,
+            &mut const_nums,
+            &mut const_syms,
+        );
+        let mut has_gen = false;
+        let mut has_num = false;
+        let mut has_sym = false;
+        for e in &emissions {
+            match e {
+                Emission::Num(..) => has_num = true,
+                Emission::Sym(..) => has_sym = true,
+                Emission::Gen(..) => has_gen = true,
+            }
+        }
+        if !has_gen && has_num && !has_sym && const_syms.is_empty() {
+            let mut pairs: Vec<(VarId, f64)> = Vec::with_capacity(emissions.len());
+            for e in emissions {
+                match e {
+                    Emission::Num(var, c) => pairs.push((var, c)),
+                    Emission::Gen(..) | Emission::Sym(..) => {
+                        unreachable!("outcome decided all-numeric")
+                    }
+                }
+            }
+            let constant: f64 = const_nums.iter().sum();
+            let (vars, coeffs) = combine_numeric(pairs);
+            return LoweredScalar::Numeric {
+                vars,
+                coeffs,
+                constant,
+            };
+        }
+        if !has_gen && !has_num && has_sym {
+            let mut vars = Vec::with_capacity(emissions.len());
+            let mut params = Vec::with_capacity(emissions.len());
+            let mut scales = Vec::with_capacity(emissions.len());
+            for e in emissions {
+                match e {
+                    Emission::Sym(var, p, s) => {
+                        vars.push(var);
+                        params.push(p);
+                        scales.push(s);
+                    }
+                    Emission::Num(..) | Emission::Gen(..) => {
+                        unreachable!("outcome decided all-parametric")
+                    }
+                }
+            }
+            let mut parts: Vec<ValueExpr> = const_syms;
+            for v in const_nums {
+                parts.push(ValueExpr::constant(v));
+            }
+            return LoweredScalar::Parametric {
+                vars,
+                params,
+                scales,
+                constant: combine_consts(parts),
+            };
+        }
+        // General: project every emission back to expressions and run the
+        // shared combiner (the only path that builds per-term ValueExprs).
+        let mut terms: Vec<(VarId, ValueExpr)> = Vec::with_capacity(emissions.len());
+        for e in emissions {
+            match e {
+                Emission::Num(var, c) => terms.push((var, ValueExpr::constant(c))),
+                Emission::Sym(var, p, s) => terms.push((var, ValueExpr::scaled_param(s, p))),
+                Emission::Gen(var, c) => terms.push((var, c)),
+            }
+        }
+        let mut parts = const_syms;
+        for v in const_nums {
+            parts.push(ValueExpr::constant(v));
+        }
+        Affine {
+            owner: self.owner.clone_ref(py),
+            terms: combine_terms(terms),
+            constant: combine_consts(parts),
+        }
+        .into()
+    }
+}
+
+/// `LoweredScalar::General` carries a canonical [`Affine`].
+impl From<Affine> for LoweredScalar {
+    fn from(affine: Affine) -> Self {
+        LoweredScalar::General(affine)
     }
 }
 
@@ -1113,25 +1526,72 @@ fn nonlinear() -> PyErr {
 
 fn compare_operand(slf: &Py<Expr>, other: &Bound<'_, PyAny>, sense: Sense) -> PyResult<Comparison> {
     Python::attach(|py| {
+        use crate::model::map_model_error;
         // Move the operand to the left: lhs = self - other, bound 0.
         // Array operands never reach here: every comparison dunder
-        // returns NotImplemented for them first. The tree flattens once
-        // here; comparisons stay out of the hot construction path.
+        // returns NotImplemented for them first.
         let base = slf.bind(py).borrow();
         let lhs = scalar_add(py, &base.inner, other, -1.0)?;
         let owner = base.inner.owner_ref(py);
         drop(base);
-        let flat = lhs.flatten_lower(py);
         let rhs = match sense {
             Sense::Le => BoundSide::Upper(ValueExpr::constant(0.0)),
             Sense::Ge => BoundSide::Lower(ValueExpr::constant(0.0)),
             Sense::Eq => BoundSide::Eq(ValueExpr::constant(0.0)),
         };
-        Ok(Comparison {
-            owner,
-            expr: flat,
-            rhs,
-        })
+        // P1E: all-numeric trees become one bulk row (the tree constant
+        // folds into the bound, mirroring the general path's shifting);
+        // anything else flattens once here as before.
+        match lhs.classify(py) {
+            LoweredScalar::Numeric {
+                vars,
+                coeffs,
+                constant,
+            } => {
+                let shifted = 0.0 - constant;
+                if !shifted.is_finite() {
+                    return Err(map_model_error(roml::ModelError::NonFiniteValue(
+                        "constraint bound",
+                    )));
+                }
+                let bound = match sense {
+                    Sense::Le => roml::ConstraintBounds {
+                        lower: f64::NEG_INFINITY,
+                        upper: shifted,
+                    },
+                    Sense::Ge => roml::ConstraintBounds {
+                        lower: shifted,
+                        upper: f64::INFINITY,
+                    },
+                    Sense::Eq => roml::ConstraintBounds {
+                        lower: shifted,
+                        upper: shifted,
+                    },
+                };
+                Ok(Comparison {
+                    owner,
+                    expr: ComparisonExpr::BulkRow(BulkRow {
+                        vars,
+                        coeffs,
+                        bound,
+                    }),
+                    rhs,
+                })
+            }
+            LoweredScalar::Parametric { .. } => {
+                let flat = lhs.flatten_lower(py);
+                Ok(Comparison {
+                    owner,
+                    expr: ComparisonExpr::General(flat),
+                    rhs,
+                })
+            }
+            LoweredScalar::General(affine) => Ok(Comparison {
+                owner,
+                expr: ComparisonExpr::General(affine),
+                rhs,
+            }),
+        }
     })
 }
 
@@ -1159,8 +1619,29 @@ pub(crate) enum BoundSide {
 #[pyclass(frozen)]
 pub struct Comparison {
     pub(crate) owner: Py<Model>,
-    pub(crate) expr: Affine,
+    pub(crate) expr: ComparisonExpr,
     pub(crate) rhs: BoundSide,
+}
+
+/// Lowered scalar-comparison body (P1E).
+///
+/// All-numeric trees become one bulk row (batch size 1) instead of a
+/// per-cell general insertion; anything else keeps the general `Affine`.
+/// The bulk row carries the shifted bound (tree constant folded into it,
+/// exactly like the general path's bound shifting); the `rhs` descriptor
+/// keeps its unshifted sense form and is ignored on the bulk path.
+#[derive(Clone, Debug)]
+pub(crate) enum ComparisonExpr {
+    General(Affine),
+    BulkRow(BulkRow),
+}
+
+/// One numeric constraint row: parallel buffers plus the final bound.
+#[derive(Clone, Debug)]
+pub(crate) struct BulkRow {
+    pub vars: Vec<VarId>,
+    pub coeffs: Vec<f64>,
+    pub bound: roml::ConstraintBounds,
 }
 
 impl Comparison {

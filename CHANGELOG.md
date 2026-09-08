@@ -26,6 +26,20 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Lazy sinks converge onto bulk primitives (P1E, unreleased)
+- Model sinks now classify a persistent lazy tree once and lower
+  directly into the cheapest matching core primitive: all-numeric
+  objectives into `set_linear_objective_bulk`, `scale × Param`
+  objectives into `set_linear_objective_param_bulk`, and all-numeric
+  single-row comparisons into one-row `add_linear_rows_bulk`.
+  Classification is a single iterative walk that preserves structural
+  information (numeric buffers never become per-term `ValueExpr`s on
+  the fast paths); genuinely general expressions keep the unchanged
+  general `Affine` path, including the core's documented duplicate
+  handling. A 1M scalar chain inserts in ~81 ms instead of ~412 ms,
+  and the previously stalled 200k general-path solve now syncs like
+  the packed equivalent. No public API or spelling change.
+
 #### Persistent lazy scalar expressions (P1D, unreleased)
 - Scalar `Var`/`Param`/`Expr` algebra now builds a persistent immutable
   expression tree (`O(1)` per operator, structural sharing, no term
