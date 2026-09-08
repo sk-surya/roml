@@ -2521,7 +2521,11 @@ impl Model {
             // Overlay-only by construction (packed cells are constant, so
             // they never enter the parameter index); the old snapshot
             // carries var/target/expression for the changelog entry.
-            if let Some(old) = self.coefficients.set_cached_value(coeff_id, 0.0) {
+            // Read-only fetch first: the cached value is rewritten only
+            // when the re-evaluated value moves (baseline semantics — an
+            // unconditional pre-write would clobber the cache with zero
+            // on sub-epsilon updates).
+            if let Some(old) = self.coefficients.get(coeff_id) {
                 let new_cached = old.value_expr.eval(&lookup);
                 if (old.cached_value - new_cached).abs() >= f64::EPSILON {
                     self.coefficients.set_cached_value(coeff_id, new_cached);

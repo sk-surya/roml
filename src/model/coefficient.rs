@@ -431,6 +431,11 @@ impl CoefficientIndex {
         if cells.is_empty() {
             return;
         }
+        // The lazy packed variable index (if built) covers only the base
+        // prefix at build time; appending extends the base, so the index
+        // must be rebuilt on next use (certification review: stale index
+        // hid post-build cells from `for_var` removal cascades).
+        self.var_index = None;
         let n = cells.len();
         self.ids.reserve(n);
         self.base_vars.reserve(n);
@@ -562,6 +567,9 @@ impl CoefficientIndex {
             debug_assert!(vars[s..e].windows(2).all(|w| w[0] < w[1]));
             debug_assert!(values[s..e].iter().all(|v| v.is_finite()));
         }
+        // Same lazy-index invalidation as `append_canonical_run`: the base
+        // grows, so a previously built index no longer covers it.
+        self.var_index = None;
         let total: usize = row_ptr.windows(2).map(|w| (w[1] - w[0]) as usize).sum();
         self.ids.reserve(total);
         self.base_vars.reserve(total);
@@ -1571,16 +1579,25 @@ impl CoefficientIndex {
                 }
             }
         }
-        // Lazy index agreement when built.
+        // Lazy index agreement when built: every entry must point at its
+        // variable, and together the entries must cover the whole packed
+        // base (the index is append-invalidated, so a built index that
+        // misses a suffix indicates a real staleness bug).
         if let Some(index) = &self.var_index {
+            let mut covered = vec![false; self.base_vars.len()];
             for (k, var) in index.vars_sorted.iter().enumerate() {
                 let s = index.var_offsets[k] as usize;
                 let e = index.var_offsets[k + 1] as usize;
                 for &pos in &index.positions[s..e] {
                     if self.base_vars.get(pos as usize) != Some(var) {
                         violations.push(format!("var index mismatch for {var:?}"));
+                    } else {
+                        covered[pos as usize] = true;
                     }
                 }
+            }
+            if covered.iter().any(|c| !c) {
+                violations.push("var index misses packed base positions".to_string());
             }
         }
         violations
