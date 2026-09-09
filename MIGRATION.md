@@ -29,7 +29,7 @@ Deprecation notes on the code point to the sections here (`MIGRATION.md ->
 Pure builders `constraint!` and `objective!` are NOT deprecated; they remain
 optional syntax sugar for building specs (D1/API-04.4).
 
-## Unreleased breaking changes (pending review, not yet merged)
+## Unreleased breaking changes
 
 These pre-1.0 changes alter public signatures. They are recorded here
 before any merge/release so downstream users can adapt early.
@@ -45,7 +45,12 @@ before any merge/release so downstream users can adapt early.
   `Model::add_linear_rows_bulk`, `ModelError::MismatchedBulkLengths`,
   `ModelError::MismatchedRowBlock`, `ModelOp::SetObjectiveCells`,
   `ModelOp::AddLinearRows`, `Change::BulkObjectiveCoefficients`,
-  `Change::BulkLinearRows`, `LinearRowBlock`.
+  `Change::BulkLinearRows`, `LinearRowBlock`,
+  `Model::set_linear_objective_param_bulk` (parallel `scale × parameter`
+  slices with the same atomicity/duplicate semantics),
+  `ValueExpr::scaled_param` (canonical scaled-parameter constructor),
+  `ParamCoeffCell`, `ModelOp::SetObjectiveParamCells`,
+  `Change::BulkObjectiveParamCoefficients`.
 
 ## Variable and parameter creation
 

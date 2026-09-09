@@ -18,7 +18,12 @@ def make_model(n=20):
 
 
 def test_heartbeat_progresses_during_native_solve():
-    m, x = make_model(1500)
+    # Model sized so the solve takes ~1s on ordinary CI hardware: with a
+    # 1ms heartbeat that yields hundreds of in-window beats, so the
+    # thresholds below carry orders-of-magnitude margins instead of
+    # depending on two ticks landing inside a ~15ms window (which flaked
+    # on fast runners).
+    m, x = make_model(60000)
     beats = []
     stop = threading.Event()
 
@@ -41,7 +46,15 @@ def test_heartbeat_progresses_during_native_solve():
     # The GIL is released during native work: heartbeats recorded strictly
     # inside the solve window prove Python progress while native code runs.
     inside = [b for b in beats if t0 < b < t1]
-    assert len(inside) >= 2, f"only {len(inside)} beats inside a {t1 - t0:.3f}s solve"
+    assert len(inside) >= 50, (
+        f"only {len(inside)} beats inside a {t1 - t0:.3f}s solve"
+    )
+    # No GIL starvation either: every heartbeat gap overlapping the solve
+    # window (including both straddling gaps) must stay far below the
+    # solve duration. A held GIL would leave a gap spanning the window.
+    gaps = [b - a for a, b in zip(beats, beats[1:]) if a < t1 and b > t0]
+    assert gaps, "no heartbeat gaps overlapping the solve window"
+    assert max(gaps) < 0.25, f"heartbeat stalled {max(gaps):.3f}s during solve"
 
 
 def test_overlapping_solves_are_safe():
