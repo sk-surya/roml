@@ -343,4 +343,72 @@ pub trait BackendMetadata {
 #[cfg(test)]
 mod tests {
     // Contract tests for session traits will be added in Plan 02.
+
+    use super::*;
+
+    /// A backend that implements only the mandatory session methods, so the
+    /// optional-trait defaults are exercised.
+    struct StubSession {
+        caps: BackendCapabilitySet,
+    }
+
+    impl BackendSession for StubSession {
+        fn synchronize(&mut self, _sync: Synchronization) -> Result<SyncReceipt, BackendError> {
+            unimplemented!("stub session")
+        }
+        fn solve(&mut self, _request: &SolveRequest) -> Result<SolveResult, BackendError> {
+            unimplemented!("stub session")
+        }
+        fn close(self) -> Result<(), BackendError> {
+            Ok(())
+        }
+    }
+
+    impl OverlaySession for StubSession {}
+
+    impl BackendMetadata for StubSession {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities::default()
+        }
+        fn typed_capabilities(&self) -> &BackendCapabilitySet {
+            &self.caps
+        }
+    }
+
+    #[test]
+    fn optional_capability_defaults_reject_with_typed_unsupported() {
+        let mut stub = StubSession {
+            caps: BackendCapabilitySet::new(),
+        };
+        assert!(format!(
+            "{}",
+            stub.verify_overlay_clean().expect_err("default reject")
+        )
+        .contains("does not qualify"));
+        assert!(format!(
+            "{}",
+            stub.apply_mip_starts(&[]).expect_err("default reject")
+        )
+        .contains("does not qualify"));
+        assert!(format!(
+            "{}",
+            stub.apply_variable_hints(&VariableHints::default())
+                .expect_err("default reject")
+        )
+        .contains("does not qualify"));
+    }
+
+    #[test]
+    fn metadata_defaults_derive_from_name() {
+        let stub = StubSession {
+            caps: BackendCapabilitySet::new(),
+        };
+        assert_eq!(stub.name(), "stub");
+        assert_eq!(stub.backend_name(), "stub");
+        assert_eq!(stub.version(), "stub");
+        assert_eq!(stub.capabilities(), BackendCapabilities::default());
+    }
 }
