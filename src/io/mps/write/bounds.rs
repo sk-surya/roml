@@ -197,9 +197,18 @@ fn encode_integer(
 
     // An INTORG region supplies the P35 default [0, 1].  Every evaluated
     // integer domain that differs from either side of that interval gets an
-    // explicit transition, including the infinity transitions.
+    // explicit transition, including the infinity transitions.  When the
+    // lower bound is above the default upper (1), raise the upper to +inf
+    // first so no transient empty domain is ever emitted.
     if lower == f64::NEG_INFINITY {
         records.push(bound(format::MpsBoundKind::MinusInfinity, variable, None));
+    } else if lower > 1.0 {
+        records.push(bound(format::MpsBoundKind::PlusInfinity, variable, None));
+        records.push(bound(
+            format::MpsBoundKind::IntegerLower,
+            variable,
+            Some(finite(lower, report, "integer lower bound")?),
+        ));
     } else if lower != 0.0 {
         records.push(bound(
             format::MpsBoundKind::IntegerLower,
@@ -208,7 +217,9 @@ fn encode_integer(
         ));
     }
     if upper == f64::INFINITY {
-        records.push(bound(format::MpsBoundKind::PlusInfinity, variable, None));
+        if lower == f64::NEG_INFINITY || lower <= 1.0 {
+            records.push(bound(format::MpsBoundKind::PlusInfinity, variable, None));
+        }
     } else if upper != 1.0 {
         records.push(bound(
             format::MpsBoundKind::IntegerUpper,
