@@ -250,3 +250,58 @@ uncovered.
 
 Coverage is a local measurement; CI's `cargo llvm-cov --fail-under-lines 75`
 remains the gate.
+
+## Coverage iteration 2 (compiled-path and negative coverage)
+
+Added `tests/mir02_compiled_path.rs` (incremental `CompilationSession` ->
+`BackendOp` -> compiled `ReferenceBackend` replay equals a compiled rebuild for
+variable blocks, parametric rows, packed objective costs and bulk repricing;
+plus unknown-entity typed rejections), fully-shadowed and unrelated-span
+reprice cases, merged-scale overflow, `ModelError` Display, a multi-run target
+directory unit test, and `python/tests/test_mir_diagnostics.py`.
+
+Final line coverage (`cargo llvm-cov nextest -p roml -p roml-highs --features
+roml-highs/bundled`, 1588 Rust tests):
+
+```text
+OVERALL 27912/32559 = 85.73%   (baseline 84.96, iteration 1 85.33)
+src/bulk.rs                  100.00%   src/delta.rs                 97.82%
+src/diagnostics.rs           100.00%   src/model/changelog.rs       94.92%
+src/model/transaction.rs     100.00%   src/compiler/session.rs      79.33%
+src/model/variable.rs        100.00%   src/compiler/backend_ir.rs   85.75%
+src/id/arena.rs              100.00%   src/solver/reference.rs      84.97%
+src/model/parameter.rs        98.36%   roml-highs/src/compiler.rs   75.35%
+src/model/coefficient.rs      86.03%   roml-highs/src/session.rs    88.42%
+src/model/mod.rs              92.46%
+```
+
+Every MIR success path is covered. The remaining uncovered lines are:
+
+- defensive guards no valid witness can reach (map `continue` arms, negative
+  offsets, out-of-range positions) — negative tests cover the rejections that
+  are reachable;
+- error branches for unknown compiled entities in the compiler/reference/HiGHS
+  that the compiler and validators prevent from being constructed in-process;
+- pre-existing uncovered code in `src/compiler/session.rs` (construct bridge
+  compilation) and `roml-highs/src/compiler.rs` (objective-policy forms), and
+  `Model::parameter_block::remove` (`unimplemented!()`).
+
+### Capability → test map
+
+| Capability | Tests |
+|---|---|
+| diagnostics counters / reset / Python hook | `mir00_baseline_characterization`, `diagnostics_reset_clears_all_counters`, `test_mir_diagnostics.py` |
+| opaque spans / trusted block allocation | `bulk.rs` compile_fail doctest + unit tests, `mir01_block_allocation` |
+| variable packed Change/ModelOp (canonical + compiled) | `mir01_block_allocation`, `mir02_compiled_path` |
+| parameter block creation semantics | `mir01_block_allocation` |
+| per-member staleness | `variable.rs` unit tests, `mir01_block_allocation` |
+| layout storage without positions | `layout_stores_blocks_without_param_positions` |
+| ownership/overlap/forgery rejection | `mir02_remediation`, `mir02_edge_cases`, coefficient unit tests |
+| partial-layout mixed blocks+positions | `partial_layout_*`, `shadowed_block_cell_keeps_overlay_dependency`, `removed_overlay_cell_*` |
+| objective/rows canonicalization | `mir02_parametric_blocks`, `mir02_parametric_rows`, `mir02_edge_cases` |
+| bulk transaction queue/commit/rollback/scalar-override | `bulk_update_*`, `two_block_updates_*`, `scalar_pending_write_*` |
+| block propagation counters and self-contained delta | `bulk_reprice_emits_*`, `packed_delta_payloads_carry_expected_fields`, `packed_delta_replays_*` |
+| backend/HiGHS batching (range + set forms) | `mir02_backend_batching`, `mir02_bess_batching` |
+| IR-17 real solve sequence | `ir17_solve_then_append_then_shadow_matches_rebuild` |
+| symbolic reference state | `reference_patch_preserves_symbolic_expression_and_updates_cache`, `reference_replay_preserves_symbolic_patch_cells` |
+| StridedMap metadata / ordinal convention | `bulk.rs` unit tests |
