@@ -3746,13 +3746,15 @@ impl Model {
         )
     }
 
-    /// Maximize an array linear expression (MIR-04 L1). Derives the dependency
-    /// layout automatically via [`Self::set_linear_objective_from_linarray`].
+    /// Maximize an array linear expression (MIR-04 L1). Purely parametric
+    /// arrays derive their packed dependency layout automatically; any other
+    /// coefficient form is committed through the general objective path so the
+    /// formulation stays correct.
     pub fn maximize_array(
         &mut self,
         array: &crate::modeling::LinArray,
     ) -> Result<ObjId, ModelError> {
-        self.set_linear_objective_from_linarray(Sense::Maximize, array)
+        self.set_objective_from_array(Sense::Maximize, array)
     }
 
     /// Minimize an array linear expression (MIR-04 L1).
@@ -3760,7 +3762,137 @@ impl Model {
         &mut self,
         array: &crate::modeling::LinArray,
     ) -> Result<ObjId, ModelError> {
-        self.set_linear_objective_from_linarray(Sense::Minimize, array)
+        self.set_objective_from_array(Sense::Minimize, array)
+    }
+
+    fn set_objective_from_array(
+        &mut self,
+        sense: Sense,
+        array: &crate::modeling::LinArray,
+    ) -> Result<ObjId, ModelError> {
+        use crate::modeling::ConstantView;
+        let packed = array.terms().iter().all(|term| term.coeff.is_parametric())
+            && matches!(
+                array.constant(),
+                ConstantView::Zero | ConstantView::Scalar(_)
+            );
+        if packed {
+            self.set_linear_objective_from_linarray(sense, array)
+        } else {
+            self.set_linear_objective_from_linarray_general(sense, array)
+        }
+    }
+
+    /// General objective path for an array with numeric (or mixed) terms: each
+    /// cell becomes one objective coefficient via
+    /// [`Self::add_objective_coefficient`], and the constant is the scalar sum
+    /// of the array constant over cells. Validates every referenced entity
+    /// before any mutation.
+    fn set_linear_objective_from_linarray_general(
+        &mut self,
+        sense: Sense,
+        array: &crate::modeling::LinArray,
+    ) -> Result<ObjId, ModelError> {
+        use crate::modeling::{CoeffView, ConstantView};
+
+        if array.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "objective LinArray belongs to another model",
+            ));
+        }
+        let constant = match array.constant() {
+            ConstantView::Zero => 0.0,
+            ConstantView::Scalar(value) => *value,
+            ConstantView::Dense { scale, values } => {
+                let mut sum = 0.0;
+                for ordinal in 0..values.len() {
+                    sum += values
+                        .get(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout(
+                            "stale dense objective constant",
+                        ))?;
+                }
+                scale * sum
+            }
+            ConstantView::ScaledParam { .. } => {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "objective constant must be numeric",
+                ))
+            }
+        };
+        if !constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("objective constant"));
+        }
+
+        // ---- Validate everything before mutation (API-06.5 atomicity) ----
+        for term in array.terms() {
+            if let CoeffView::Dense { scale, .. } | CoeffView::ScaledParam { scale, .. } =
+                &term.coeff
+            {
+                if !scale.is_finite() {
+                    return Err(ModelError::NonFiniteValue("objective coefficient scale"));
+                }
+            }
+            for ordinal in 0..term.vars.view().len() {
+                let var = term
+                    .vars
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout(
+                        "stale objective variable",
+                    ))?;
+                if !self.variables.contains(var) {
+                    return Err(ModelError::VariableNotFound(var));
+                }
+                if let CoeffView::ScaledParam { params, .. } = &term.coeff {
+                    let param = params
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout(
+                            "stale objective parameter",
+                        ))?;
+                    if !self.parameters.contains(param) {
+                        return Err(ModelError::ParameterNotFound(param));
+                    }
+                }
+            }
+        }
+
+        let obj = self.add_objective_internal(sense, None);
+        for term in array.terms() {
+            for ordinal in 0..term.vars.view().len() {
+                let var = term
+                    .vars
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout(
+                        "stale objective variable",
+                    ))?;
+                let value_expr = match &term.coeff {
+                    CoeffView::One => ValueExpr::constant(1.0),
+                    CoeffView::Scalar(value) => ValueExpr::constant(*value),
+                    CoeffView::Dense { scale, values } => {
+                        let value =
+                            values
+                                .get(ordinal)
+                                .ok_or(ModelError::InvalidParamDepLayout(
+                                    "stale dense objective coefficient",
+                                ))?;
+                        ValueExpr::constant(scale * value)
+                    }
+                    CoeffView::ScaledParam { scale, params } => {
+                        let param =
+                            params
+                                .member(ordinal)
+                                .ok_or(ModelError::InvalidParamDepLayout(
+                                    "stale objective parameter",
+                                ))?;
+                        ValueExpr::scaled_param(*scale, param)
+                    }
+                };
+                self.add_objective_coefficient(obj, var, value_expr)?;
+            }
+        }
+        self.set_objective_constant_internal(obj, constant);
+        self.set_active_objective(obj)?;
+        Ok(obj)
     }
 
     /// A deterministic fingerprint over the normalized ordinal IR (MIR-04,
@@ -3791,16 +3923,156 @@ impl Model {
                 "row LinArray belongs to another model",
             ));
         }
-        let nrows = residual.len();
-        if nrows == 0 {
+        let bounds = spec.bounds().to_vec();
+        if bounds.is_empty() {
             return Ok(Vec::new());
         }
-        let (lower, upper) = spec.bounds().as_pair();
-        let bounds = vec![(lower, upper); nrows];
         match plan_row_block(self.instance(), &bounds, residual.clone()) {
             RowBatchPlan::Planned(plan) => self.add_rows_from_plan(&plan),
             RowBatchPlan::General => self.add_row_general(&bounds, residual),
         }
+    }
+
+    /// Commit a **leading-axis row block** (MIR-04 L1): entry `r` of the
+    /// residual's leading axis becomes one constraint with `bounds[r]`, and the
+    /// remaining axes are that row's coefficients. Used for reduction rows such
+    /// as `Σ_j x[i, j] == supply[i]`.
+    ///
+    /// Uses the packed mixed-row seam when the conservative proof covers the
+    /// numeric form; otherwise the general symbolic path keeps it correct.
+    pub fn add_rows(
+        &mut self,
+        spec: crate::modeling::RowBlockSpec,
+    ) -> Result<Vec<ConId>, ModelError> {
+        use crate::modeling::builder::{plan_leading_row_block, RowBatchPlan};
+
+        let residual = spec.residual();
+        if residual.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "row block belongs to another model",
+            ));
+        }
+        let bounds = spec.bounds().to_vec();
+        if bounds.is_empty() {
+            return Ok(Vec::new());
+        }
+        match plan_leading_row_block(self.instance(), &bounds, residual.clone()) {
+            RowBatchPlan::Planned(plan) => self.add_rows_from_plan(&plan),
+            RowBatchPlan::General => self.add_rows_general(&bounds, residual),
+        }
+    }
+
+    /// General symbolic fallback for a leading-axis row block: one row per
+    /// leading entry, summing that entry's coefficient cells. Validates every
+    /// referenced entity before any mutation.
+    fn add_rows_general(
+        &mut self,
+        bounds: &[(f64, f64)],
+        array: &crate::modeling::LinArray,
+    ) -> Result<Vec<ConId>, ModelError> {
+        use crate::modeling::{CoeffView, ConstantView};
+
+        let shape = array.shape();
+        if shape.is_empty() {
+            return Err(ModelError::InvalidArrayShape(
+                "row block must have a leading axis",
+            ));
+        }
+        let nrows = shape[0];
+        if nrows != bounds.len() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "row block bounds length mismatch",
+            ));
+        }
+        let row_len = shape[1..]
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+            .ok_or(ModelError::InvalidArrayShape("row block shape overflow"))?;
+        let shift = match array.constant() {
+            ConstantView::Zero => 0.0,
+            ConstantView::Scalar(value) => *value,
+            _ => {
+                return Err(ModelError::InvalidArrayShape(
+                    "row constant must be zero or scalar",
+                ))
+            }
+        };
+        if !shift.is_finite() {
+            return Err(ModelError::NonFiniteValue("row constant"));
+        }
+
+        // ---- Validate everything before mutation (API-06.5 atomicity) ----
+        for &(lower, upper) in bounds {
+            validate_constraint_bounds(ConstraintBounds {
+                lower: lower - shift,
+                upper: upper - shift,
+            })?;
+        }
+        for term in array.terms() {
+            if let CoeffView::Dense { scale, .. } | CoeffView::ScaledParam { scale, .. } =
+                &term.coeff
+            {
+                if !scale.is_finite() {
+                    return Err(ModelError::NonFiniteValue("row coefficient scale"));
+                }
+            }
+            for ordinal in 0..term.vars.view().len() {
+                let var = term
+                    .vars
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout("stale row variable"))?;
+                if !self.variables.contains(var) {
+                    return Err(ModelError::VariableNotFound(var));
+                }
+                if let CoeffView::ScaledParam { params, .. } = &term.coeff {
+                    let param = params
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout("stale row parameter"))?;
+                    if !self.parameters.contains(param) {
+                        return Err(ModelError::ParameterNotFound(param));
+                    }
+                }
+            }
+        }
+
+        // ---- Commit ----
+        let mut cons = Vec::with_capacity(nrows);
+        for (r, &(lower, upper)) in bounds.iter().enumerate() {
+            let con = self.add_empty_constraint(ConstraintBounds {
+                lower: lower - shift,
+                upper: upper - shift,
+            });
+            let start = r * row_len;
+            let end = start + row_len;
+            for term in array.terms() {
+                for ordinal in start..end {
+                    let var = term
+                        .vars
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout("stale row variable"))?;
+                    let value_expr =
+                        match &term.coeff {
+                            CoeffView::One => ValueExpr::constant(1.0),
+                            CoeffView::Scalar(value) => ValueExpr::constant(*value),
+                            CoeffView::Dense { scale, values } => {
+                                let value = values.get(ordinal).ok_or(
+                                    ModelError::InvalidParamDepLayout("stale dense coefficient"),
+                                )?;
+                                ValueExpr::constant(scale * value)
+                            }
+                            CoeffView::ScaledParam { scale, params } => {
+                                let param = params.member(ordinal).ok_or(
+                                    ModelError::InvalidParamDepLayout("stale row parameter"),
+                                )?;
+                                ValueExpr::scaled_param(*scale, param)
+                            }
+                        };
+                    self.add_constraint_coefficient(con, var, value_expr)?;
+                }
+            }
+            cons.push(con);
+        }
+        Ok(cons)
     }
 
     /// General symbolic fallback for a cell-wise row constraint: one row per
@@ -7335,6 +7607,82 @@ mod mir04_row_seam_tests {
         assert_eq!(
             fast.take_snapshot().expect("fast snapshot"),
             raw.take_snapshot().expect("raw snapshot"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod mir04_reduction_tests {
+    use super::*;
+
+    /// A leading-axis reduction block (`Σ_j x[i, j] == supply[i]`) commits
+    /// through the packed seam and equals the raw bulk construction.
+    #[test]
+    fn leading_axis_sum_rows_match_raw_bulk() {
+        let (m, n) = (2usize, 3usize);
+        let supply = [1.0, 2.0];
+
+        let mut fast = Model::new();
+        let x = fast.var("x", [m, n]).bounds(0.0, 1.0).build().expect("x");
+        let cons = fast
+            .add_rows(x.expr().expect("expr").rows_eq(&supply).expect("spec"))
+            .expect("rows");
+        assert_eq!(cons.len(), m);
+        assert_eq!(fast.num_constraints(), m);
+        assert_eq!(fast.lowering_stats().general_affine, 0, "packed reduction");
+        assert_eq!(fast.lowering_stats().numeric_bulk, 1);
+
+        let mut raw = Model::new();
+        let x = raw.var("x", [m, n]).bounds(0.0, 1.0).build().expect("x");
+        let mut row_ptr = vec![0u32];
+        let mut vars = Vec::new();
+        let mut values = Vec::new();
+        let mut bounds = Vec::new();
+        for (i, supply_i) in supply.iter().enumerate() {
+            for j in 0..n {
+                vars.push(x.get(i * n + j).expect("var"));
+                values.push(1.0);
+            }
+            row_ptr.push(vars.len() as u32);
+            bounds.push(ConstraintBounds {
+                lower: *supply_i,
+                upper: *supply_i,
+            });
+        }
+        raw.add_linear_rows_bulk(&row_ptr, &vars, &values, &bounds)
+            .expect("raw rows");
+        assert_eq!(
+            fast.take_snapshot().expect("fast"),
+            raw.take_snapshot().expect("raw")
+        );
+    }
+
+    /// A numeric array objective commits through the general path and equals
+    /// the raw objective-coefficient construction.
+    #[test]
+    fn numeric_array_objective_matches_raw_objective() {
+        let n = 4usize;
+        let mut fast = Model::new();
+        let x = fast.var("x", n).bounds(0.0, 1.0).build().expect("x");
+        fast.minimize_array(&x.expr().expect("expr").scaled(3.0))
+            .expect("objective");
+        assert!(
+            fast.lowering_stats().general_affine > 0,
+            "general objective"
+        );
+
+        let mut raw = Model::new();
+        let x = raw.var("x", n).bounds(0.0, 1.0).build().expect("x");
+        let obj = raw.add_objective(Sense::Minimize);
+        for ordinal in 0..n {
+            let var = x.get(ordinal).expect("var");
+            raw.add_objective_coefficient(obj, var, ValueExpr::constant(3.0))
+                .expect("coefficient");
+        }
+        raw.set_active_objective(obj).expect("activate");
+        assert_eq!(
+            fast.take_snapshot().expect("fast"),
+            raw.take_snapshot().expect("raw")
         );
     }
 }

@@ -402,6 +402,114 @@ pub fn plan_row_block(
     })
 }
 
+/// Build a plan where the **leading axis is the row set** (MIR-04 L1): entry
+/// `r` becomes one constraint with `bounds[r]`, and the remaining axes are that
+/// row's coefficients (row-major). Used for reduction rows such as
+/// `Σ_j x[i, j] == supply[i]`.
+///
+/// Conservative: a parametric leading row (beyond a single row) keeps the
+/// general symbolic path.
+pub fn plan_leading_row_block(
+    owner: ModelInstanceId,
+    bounds: &[(f64, f64)],
+    array: LinArray,
+) -> RowBatchPlan {
+    let shape = array.shape();
+    if shape.is_empty() {
+        return RowBatchPlan::General;
+    }
+    let nrows = shape[0];
+    if nrows == 0 || nrows != bounds.len() {
+        return RowBatchPlan::General;
+    }
+    if nrows == 1 {
+        let mut batch = RowBatch::new(owner);
+        if batch
+            .push(
+                LocalRow {
+                    row: 0,
+                    lower: bounds[0].0,
+                    upper: bounds[0].1,
+                },
+                array,
+            )
+            .is_err()
+        {
+            return RowBatchPlan::General;
+        }
+        return batch.plan();
+    }
+    if array.terms().iter().any(|term| term.coeff.is_parametric()) {
+        return RowBatchPlan::General;
+    }
+    let row_len = match shape[1..]
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+    {
+        Some(len) if len > 0 => len,
+        _ => return RowBatchPlan::General,
+    };
+    let mut numeric = Vec::new();
+    if emit_numeric_leading(row_len, array.terms(), &mut numeric).is_none() {
+        return RowBatchPlan::General;
+    }
+    if canonicalize_numeric_rows(&mut numeric).is_none() {
+        return RowBatchPlan::General;
+    }
+    // A per-cell constant varies within a row and has no scalar bounds form.
+    let shift = match array.constant() {
+        ConstantView::Zero => 0.0,
+        ConstantView::Scalar(value) => *value,
+        ConstantView::Dense { .. } | ConstantView::ScaledParam { .. } => {
+            return RowBatchPlan::General
+        }
+    };
+    if !shift.is_finite() {
+        return RowBatchPlan::General;
+    }
+    let mut rows = Vec::with_capacity(nrows);
+    for (r, &(lower, upper)) in bounds.iter().enumerate() {
+        rows.push(LocalRow {
+            row: r as u32,
+            lower: lower - shift,
+            upper: upper - shift,
+        });
+    }
+    RowBatchPlan::Planned(RowBlockPlan {
+        owner,
+        rows,
+        numeric,
+        families: Vec::new(),
+        parametric: ParamDepLayout { blocks: Vec::new() },
+    })
+}
+
+/// Emit the numeric packed stream for a leading-axis row array.
+fn emit_numeric_leading(row_len: usize, terms: &[Term], out: &mut Vec<NumericCell>) -> Option<()> {
+    if row_len == 0 {
+        return None;
+    }
+    for term in terms {
+        if term.coeff.is_parametric() {
+            continue;
+        }
+        let view = term.vars.view();
+        for ordinal in 0..view.len() {
+            let offset = usize::try_from(view.get(ordinal)?).ok()?;
+            let var = view.span().id_at(offset)?;
+            let value = match &term.coeff {
+                CoeffView::One => 1.0,
+                CoeffView::Scalar(value) => *value,
+                CoeffView::Dense { scale, values } => scale * values.get(ordinal)?,
+                CoeffView::ScaledParam { .. } => continue,
+            };
+            let row = u32::try_from(ordinal / row_len).ok()?;
+            out.push(NumericCell { row, var, value });
+        }
+    }
+    Some(())
+}
+
 /// Fold the array constant at one cell into a scalar shift, or `None` when the
 /// constant cannot be represented (which must fall back rather than silently
 /// disappear).

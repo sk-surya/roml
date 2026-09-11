@@ -19,6 +19,6 @@ mod labeled;
 mod view;
 
 pub use array::{ParamArray, Shape, VarArray};
-pub use coeff::{CoeffView, ConstantView, LinArray, NumView, RowBounds, RowSpec, Term};
+pub use coeff::{CoeffView, ConstantView, LinArray, NumView, RowBlockSpec, RowSpec, Term};
 pub use labeled::{Axis, LabelError, Labeled, Shaped};
 pub use view::{ParamView, VarView, View, ViewError};

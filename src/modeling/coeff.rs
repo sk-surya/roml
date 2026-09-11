@@ -421,55 +421,55 @@ impl LinArray {
 
     /// A cell-wise `≤ bound` row constraint: each cell becomes one row.
     pub fn le(self, bound: f64) -> RowSpec {
-        RowSpec {
-            residual: self,
-            bounds: RowBounds::Le(bound),
-        }
+        self.scalar_rows((f64::NEG_INFINITY, bound))
     }
 
     /// A cell-wise `≥ bound` row constraint: each cell becomes one row.
     pub fn ge(self, bound: f64) -> RowSpec {
-        RowSpec {
-            residual: self,
-            bounds: RowBounds::Ge(bound),
-        }
+        self.scalar_rows((bound, f64::INFINITY))
     }
 
     /// A cell-wise `== bound` row constraint: each cell becomes one row.
     pub fn eq(self, bound: f64) -> RowSpec {
+        self.scalar_rows((bound, bound))
+    }
+
+    /// A cell-wise `≤` row constraint with a per-cell bound.
+    pub fn le_each(self, values: &[f64]) -> Result<RowSpec, ViewError> {
+        self.per_cell_rows(values, |value| (f64::NEG_INFINITY, value))
+    }
+
+    /// A cell-wise `≥` row constraint with a per-cell bound.
+    pub fn ge_each(self, values: &[f64]) -> Result<RowSpec, ViewError> {
+        self.per_cell_rows(values, |value| (value, f64::INFINITY))
+    }
+
+    /// A cell-wise `==` row constraint with a per-cell bound.
+    pub fn eq_each(self, values: &[f64]) -> Result<RowSpec, ViewError> {
+        self.per_cell_rows(values, |value| (value, value))
+    }
+
+    fn scalar_rows(self, pair: (f64, f64)) -> RowSpec {
         RowSpec {
+            bounds: vec![pair; self.len()],
             residual: self,
-            bounds: RowBounds::Eq(bound),
-        }
-    }
-}
-
-/// A per-cell bound rule for a [`RowSpec`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum RowBounds {
-    /// Each cell is `≤ bound`.
-    Le(f64),
-    /// Each cell is `≥ bound`.
-    Ge(f64),
-    /// Each cell is `== bound`.
-    Eq(f64),
-}
-
-impl RowBounds {
-    /// Lower/upper pair for one row.
-    pub fn as_pair(self) -> (f64, f64) {
-        match self {
-            Self::Le(bound) => (f64::NEG_INFINITY, bound),
-            Self::Ge(bound) => (bound, f64::INFINITY),
-            Self::Eq(bound) => (bound, bound),
         }
     }
 
-    /// The scalar bound, if any.
-    pub fn scalar(self) -> f64 {
-        match self {
-            Self::Le(bound) | Self::Ge(bound) | Self::Eq(bound) => bound,
+    fn per_cell_rows(
+        self,
+        values: &[f64],
+        rule: impl Fn(f64) -> (f64, f64),
+    ) -> Result<RowSpec, ViewError> {
+        if values.len() != self.len() {
+            return Err(ViewError::Unsupported(
+                "per-cell bound count does not match the array",
+            ));
         }
+        Ok(RowSpec {
+            bounds: values.iter().map(|value| rule(*value)).collect(),
+            residual: self,
+        })
     }
 }
 
@@ -480,7 +480,7 @@ impl RowBounds {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowSpec {
     residual: LinArray,
-    bounds: RowBounds,
+    bounds: Vec<(f64, f64)>,
 }
 
 impl RowSpec {
@@ -489,9 +489,64 @@ impl RowSpec {
         &self.residual
     }
 
-    /// The per-cell bound rule.
-    pub fn bounds(&self) -> RowBounds {
-        self.bounds
+    /// Per-cell `(lower, upper)` bounds.
+    pub fn bounds(&self) -> &[(f64, f64)] {
+        &self.bounds
+    }
+}
+
+/// A **leading-axis row block** (MIR-04 L1): entry `r` of the residual's
+/// leading axis becomes one constraint with `bounds[r]`, and the remaining
+/// axes are that row's coefficients. Used for reduction rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowBlockSpec {
+    residual: LinArray,
+    bounds: Vec<(f64, f64)>,
+}
+
+impl RowBlockSpec {
+    /// The residual array.
+    pub fn residual(&self) -> &LinArray {
+        &self.residual
+    }
+
+    /// Per-leading-entry `(lower, upper)` bounds.
+    pub fn bounds(&self) -> &[(f64, f64)] {
+        &self.bounds
+    }
+}
+
+impl LinArray {
+    fn into_row_block(
+        self,
+        values: &[f64],
+        rule: impl Fn(f64) -> (f64, f64),
+    ) -> Result<RowBlockSpec, ViewError> {
+        let leading = self.shape().first().copied().unwrap_or(0);
+        if values.len() != leading {
+            return Err(ViewError::Unsupported(
+                "row bound count does not match the leading axis",
+            ));
+        }
+        Ok(RowBlockSpec {
+            bounds: values.iter().map(|value| rule(*value)).collect(),
+            residual: self,
+        })
+    }
+
+    /// One equality constraint per leading-axis entry.
+    pub fn rows_eq(self, values: &[f64]) -> Result<RowBlockSpec, ViewError> {
+        self.into_row_block(values, |value| (value, value))
+    }
+
+    /// One `≤` constraint per leading-axis entry.
+    pub fn rows_le(self, values: &[f64]) -> Result<RowBlockSpec, ViewError> {
+        self.into_row_block(values, |value| (f64::NEG_INFINITY, value))
+    }
+
+    /// One `≥` constraint per leading-axis entry.
+    pub fn rows_ge(self, values: &[f64]) -> Result<RowBlockSpec, ViewError> {
+        self.into_row_block(values, |value| (value, f64::INFINITY))
     }
 }
 
