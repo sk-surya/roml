@@ -334,3 +334,54 @@ compilation, `roml-highs/src/compiler.rs` objective-policy forms,
 `src/solver/{relaxation,infeasibility}.rs`) are pre-existing feature areas
 with existing suites that do not exercise every branch; they are unrelated to
 MIR and are not expanded here.
+
+## Coverage iteration 4 (pre-existing, non-MIR subsystems)
+
+Requested: test the pre-existing low-coverage areas and close the gap.
+
+### Findings
+
+- **MPS `write/mod.rs` dead code.** ~320 source lines (~210 executable) of
+  `#[allow(dead_code)]` "reference" encoders (`encode_columns`,
+  `encode_row_bounds`, `encode_bounds`, `encode_continuous_bounds`,
+  `encode_integer_bounds`, `encode_binary_bounds`, `bound`) were explicitly
+  superseded by the active `bounds::*` pipeline and had no callers. Tests
+  cannot reach private dead code; it was removed (the active `finite_value`
+  helper it shared is retained).
+- **Real MPS writer bug found.** The active `bounds::encode_integer` did not
+  raise the INTORG default upper before lowering-from-above: an integer with
+  lower > 1 (e.g. `[2, 8]`) emitted `LI` leaving a transient empty domain that
+  the reader rejected. Fixed to mirror the (removed) reference encoder, locked
+  by a direct record case and an end-to-end round-trip.
+- **Coverage artifact.** The `write/{bounds,format,objective,projection}.rs`
+  files are compiled twice (library + `#[path]` test copies), so the focused
+  `mps_write_*` tests exercise the test copies; the library copies need
+  end-to-end `MpsWriter` tests. Added those.
+
+### Tests added
+
+- `tests/mps_write_edge.rs`: ranged rows, mixed continuous/integer/binary/free
+  domains, extreme-magnitude scientific formatting, objective-less models, free
+  bounds (round-tripped), unrepresentable free rows, overflowing range widths.
+- `tests/mps_reader_errors.rs`: missing ENDATA, COLUMNS/RHS ordering, duplicate
+  sections, data after ENDATA, unbalanced/nested INTORG/INTEND,
+  OBJSENSE-without-payload — each asserting its typed `MpsErrorKind`.
+- `solver::session` trait-default tests with a stub backend; `roml-highs`
+  MIP-start mapping error tests.
+
+### Coverage
+
+Overall **87.10%** (baseline 84.96, prior iteration 86.08). `src/io/mps/write/mod.rs`
+removed from the low list; `src/io/mps/state.rs` and
+`src/io/mps/write/objective.rs` improved.
+
+Suite: **1615 Rust tests**, 151 Python tests.
+
+### Remaining low-coverage (pre-existing, unrelated to MIR)
+
+`src/solver/relaxation.rs` (72%), `src/solver/infeasibility.rs` (74%),
+`roml-highs/src/{iis,native_iis}.rs` (~71%), `src/io/mps/write/projection.rs`
+(73%), `src/compiler/session.rs` (79%), `roml-highs/src/compiler.rs` (75%),
+`src/compiler/bridge/{soft_constraint,indicator}.rs` (~75%). These are complex
+solver-internal subsystems whose main paths already have dedicated suites; the
+remaining lines are error/edge branches requiring per-subsystem fixtures.
