@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: MIR
 milestone_name: Shared Modeling IR and Block-Native Core
 status: in_progress
-stopped_at: MIR-01 complete (IR-02..IR-07 evidenced); MIR-02 next
+stopped_at: MIR-00/01/02 complete (IR-01..IR-17 evidenced); MIR-03 next
 last_updated: "2026-09-11T00:00:00Z"
-current_phase: MIR-02
-current_phase_name: parametric packed construction and block-native propagation
+current_phase: MIR-03
+current_phase_name: shared array IR, eligibility proof and CSR builder
 implementation_authorized: true
 ---
 
@@ -29,15 +29,15 @@ Tranche 1 — MIR-00, MIR-01, MIR-02 — is authorized. One implementation phase
 
 ## Next gate
 
-MIR-02: packed parametric rows/objectives, validated L2 `ParamDepLayout`
-witnesses, block-native transactional propagation, and self-contained packed
-coefficient-patch deltas (IR-08…IR-17).
+Tranche 1 (MIR-00/01/02) is implemented and evidenced. Next is MIR-03: the
+shared `roml::modeling` strided array IR, the sink-aware
+`try_param_block_layout` eligibility proof, and the mixed CSR builder
+(IR-18…IR-23). The high-level BESS formulation does not automatically produce
+eligible dependency blocks until MIR-03 provides that proof.
 
-MIR-00 is complete (`evidence/BASELINE.md`: 28,800 price parameters driving
-57,600 objective cells; `parametric_bulk=1`, `general_affine=0`, per-cell
-propagation and 86,400 delta ops per reprice). MIR-01 is complete
-(`evidence/MIR-01-REPORT.md`: opaque trusted spans, block allocation, and the
-packed variable-block Change/ModelOp; IR-02…IR-07 evidenced).
+MIR-00 (`evidence/BASELINE.md`), MIR-01 (`evidence/MIR-01-REPORT.md`) and
+MIR-02 (`evidence/MIR-02-REPORT.md`) report the measured baseline, trusted
+block allocation, and packed parametric construction/block-native repricing.
 
 ## Binding authorities
 
