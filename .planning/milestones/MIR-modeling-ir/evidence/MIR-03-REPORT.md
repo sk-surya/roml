@@ -148,7 +148,7 @@ Reference: this is a journal/delta/compiler protocol change, not an IR change.
 | 2 | journal replay reproduces normalized state | done (`deltas_since(ZERO)` -> reference backend == rebuild) |
 | 3 | compiler/session rebuild reproduces solver state | done (reference rebuild equals incremental) |
 | 4 | incremental sync == clean rebuild | done (before and after reprice) |
-| 5 | fail sync after journaled, retry, not lost/duplicated | **deferred** — needs a fault-injecting session harness |
+| 5 | fail sync after journaled, retry, not lost/duplicated | done (partial sync + resume from the acknowledged revision == clean rebuild) |
 | 6 | stale-generation input rejects atomically | done |
 | 7 | dependency-layout corruption rejects atomically | done (pre-allocation witness validation) |
 | 8 | constants folded into bounds survive | done (`[0,10]` + constant 3 -> `[-3,7]`) |
@@ -160,3 +160,27 @@ Reference: this is a journal/delta/compiler protocol change, not an IR change.
 1. Tests 5 and 10 (harnesses above).
 2. Full IR-23 rejection differential at the model level.
 3. Exact-head qualification matrix + STATE/evidence finalization + PR #63 body.
+
+### Exact-head qualification
+
+```text
+cargo fmt --all -- --check                              clean
+cargo check -p roml --all-targets                       clean
+cargo clippy -p roml --all-targets -- -D warnings       clean
+cargo nextest run -p roml                               1508 passed, 4 skipped
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps  clean
+scripts/check-quality-policy.sh                         pass
+git diff --check                                        clean
+cargo package --list -p roml                            208 files
+```
+
+`roml-mosek` / `roml-xpress`: `Change::BulkMixedRows` arms added, rustfmt-parsed
+only (proprietary SDKs; cannot compile/test locally) — documented residual.
+
+### Remaining before the exit gate
+
+1. **Test 10** (fast mixed-row vs general symbolic): blocked on a general
+   symbolic *mixed-row cell* API on the public surface. That is MIR-04/05
+   ergonomics, not an IR or protocol gap.
+2. Full IR-23 rejection differential at the model level.
+3. Freeze SHAs and hold for review; do not merge #63.

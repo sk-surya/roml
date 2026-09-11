@@ -23,7 +23,7 @@
 | MIR-00 | complete (IR-01) | `evidence/BASELINE.md`; `evidence/baseline-mir-bess-sample.json`; `tests/mir00_baseline_characterization.rs` |
 | MIR-01 | complete (IR-02…IR-07) | `evidence/MIR-01-REPORT.md`; `src/bulk.rs`; `tests/mir01_block_allocation.rs` |
 | MIR-02 | complete + merged (IR-08…IR-17) | `evidence/MIR-02-REPORT.md`; `evidence/MIR-02-MUTATION-REPORT.md`; `tests/mir02_parametric_blocks.rs`; `tests/mir02_parametric_rows.rs`; `tests/mir02_remediation.rs`; `tests/mir02_backend_batching.rs`; `roml-highs/tests/mir02_bess_batching.rs` |
-| MIR-03 | in progress (IR-18…IR-22 covered at the IR/L2 boundary; exit gate pending) | `MIR-03-PLAN.md`; `evidence/MIR-03-REPORT.md`; `src/modeling/{view,coeff,eligibility,builder}.rs` |
+| MIR-03 | in progress: IR-18…IR-22 at the IR/L2 boundary; automatic objective seam + `BulkMixedRows` protocol; 9/10 qualification tests green (test 10 + full IR-23 corpus deferred) | `MIR-03-PLAN.md`; `evidence/MIR-03-REPORT.md`; `src/modeling/{view,coeff,eligibility,builder}.rs` |
 | MIR-04 | not started | — |
 | MIR-05 | not started | — |
 | MIR-06 | not started | — |
