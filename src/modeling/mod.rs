@@ -7,23 +7,14 @@
 //! `Σ Term{VarView, CoeffView} + ConstantView` over the initial conservative
 //! coefficient families.
 //!
-//! This module is intentionally free of Python types and of the L2 persisted
-//! dependency descriptor: `roml::modeling` produces an L2 witness, and core
-//! revalidates it after canonicalization.
+//! `builder` and `eligibility` are crate-internal L1→L2 planning internals
+//! (not public construction surfaces until the MIR-04 model builders create
+//! symbolic views from the owning model).
 
-mod builder;
+pub(crate) mod builder;
 mod coeff;
-mod eligibility;
+pub(crate) mod eligibility;
 mod view;
 
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
 pub use view::{ParamView, VarView, View, ViewError};
-
-// Crate-internal L1→L2 planning surface consumed by the canonical model/compiler
-// integration. Not a public construction surface until MIR-04.
-pub(crate) use eligibility::{try_param_block_layout, SinkMap, TargetRun};
-
-// L1→L2 planning internals (`builder`, `eligibility`) are crate-private and
-// reached through `crate::modeling::<module>::…`; they are not public
-// construction surfaces until the MIR-04 model builders create symbolic views
-// from the owning model.

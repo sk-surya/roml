@@ -60,6 +60,38 @@ pub struct ParametricRowBlock {
     pub values: Vec<f64>,
 }
 
+/// A packed block of mixed constant + parametric constraint rows (MIR-03).
+///
+/// One constraint allocation and one semantic operation carry both the numeric
+/// and the parametric canonical cells of the same rows, plus the derived L2
+/// dependency layout over the parametric cells. Replay consumes this payload
+/// alone: it never reruns L1 planning, the eligibility proof, or `RowBlockPlan`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MixedRowBlock {
+    /// Row identities in block order (allocated once).
+    pub constraints: Vec<ConId>,
+    /// Final bounds per row (constants folded in).
+    pub bounds: Vec<ConstraintBounds>,
+    /// Numeric cells: CSR row pointers (`len == rows + 1`).
+    pub numeric_ptr: Vec<u32>,
+    /// Numeric canonical variables, concatenated.
+    pub numeric_vars: Vec<VarId>,
+    /// Numeric canonical values, parallel to `numeric_vars`.
+    pub numeric_values: Vec<f64>,
+    /// Parametric cells: CSR row pointers (`len == rows + 1`).
+    pub parametric_ptr: Vec<u32>,
+    /// Parametric canonical variables, concatenated.
+    pub parametric_vars: Vec<VarId>,
+    /// Parametric parameters, parallel to `parametric_vars`.
+    pub parametric_params: Vec<ParamId>,
+    /// Parametric scales, parallel to `parametric_vars`.
+    pub parametric_scales: Vec<f64>,
+    /// Evaluated `scale * param` cache, parallel to `parametric_vars`.
+    pub parametric_values: Vec<f64>,
+    /// L2 dependency layout over the parametric cells of these rows.
+    pub layout: crate::bulk::ParamDepLayout,
+}
+
 /// One parameter value change inside a packed block update (MIR-02).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParameterValueChange {
@@ -253,6 +285,18 @@ pub enum ModelOp {
     AddParametricRows {
         /// The packed parametric row block (shared).
         block: Arc<ParametricRowBlock>,
+    },
+
+    /// Insert a packed block of mixed constant + parametric linear rows at once
+    /// (MIR-03, IR-22).
+    ///
+    /// One semantic operation on one row set: the numeric and parametric cells
+    /// share the same allocated constraints and bounds. Adapters may expand it
+    /// internally (add each row once, then install numeric/parametric
+    /// coefficients) but must not create two independent logical row additions.
+    AddMixedRows {
+        /// The packed mixed row block (shared).
+        block: Arc<MixedRowBlock>,
     },
 
     /// Add a new objective.
@@ -545,6 +589,8 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
         row_blocks: Vec<Arc<LinearRowBlock>>,
         /// Packed parametric row blocks, in op encounter order (MIR-02).
         param_row_blocks: Vec<Arc<ParametricRowBlock>>,
+        /// Packed mixed row blocks, in op encounter order (MIR-03).
+        mixed_row_blocks: Vec<Arc<MixedRowBlock>>,
     }
     let mut acc = Accumulator {
         added: Vec::new(),
@@ -553,6 +599,7 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
         cells: HashMap::new(),
         row_blocks: Vec::new(),
         param_row_blocks: Vec::new(),
+        mixed_row_blocks: Vec::new(),
     };
     for op in operations {
         match op {
@@ -585,6 +632,9 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
             }
             ModelOp::AddParametricRows { block } => {
                 acc.param_row_blocks.push(block.clone());
+            }
+            ModelOp::AddMixedRows { block } => {
+                acc.mixed_row_blocks.push(block.clone());
             }
             _ => {}
         }
@@ -663,6 +713,48 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
                     )
                 })
                 .collect();
+            symbolic.sort_by_key(|(var, _)| *var);
+            let mut expr = LinExpr::new();
+            for (var, value_expr) in symbolic {
+                expr = expr.term(TermCoeff::Expr(value_expr), var);
+            }
+            entries.push(FunctionEntry {
+                constraint: con,
+                function: ScalarFunction::Linear(expr),
+                set,
+            });
+        }
+    }
+    // MIR-03 packed mixed rows: constant + `scale * param` symbolic terms.
+    for block in &acc.mixed_row_blocks {
+        for r in 0..block.constraints.len() {
+            let con = block.constraints[r];
+            if acc.removed.contains(&con) {
+                continue;
+            }
+            let effective = acc.folded.get(&con).copied().unwrap_or(block.bounds[r]);
+            let set = ScalarSet::from(effective);
+            let mut symbolic: Vec<(VarId, ValueExpr)> = Vec::new();
+            let (ns, ne) = (
+                block.numeric_ptr[r] as usize,
+                block.numeric_ptr[r + 1] as usize,
+            );
+            for k in ns..ne {
+                symbolic.push((
+                    block.numeric_vars[k],
+                    ValueExpr::constant(block.numeric_values[k]),
+                ));
+            }
+            let (ps, pe) = (
+                block.parametric_ptr[r] as usize,
+                block.parametric_ptr[r + 1] as usize,
+            );
+            for k in ps..pe {
+                symbolic.push((
+                    block.parametric_vars[k],
+                    ValueExpr::scaled_param(block.parametric_scales[k], block.parametric_params[k]),
+                ));
+            }
             symbolic.sort_by_key(|(var, _)| *var);
             let mut expr = LinExpr::new();
             for (var, value_expr) in symbolic {
