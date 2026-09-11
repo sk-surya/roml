@@ -5808,4 +5808,88 @@ mod mir03_tests {
         assert_eq!(propagation.value_expr_evals, 0);
         assert_eq!(propagation.coefficient_patch_batches, 1);
     }
+
+    /// IR-23: the automatic (packed) objective and the general symbolic path
+    /// produce the same canonical snapshot.
+    #[test]
+    fn automatic_objective_matches_general_snapshot() {
+        fn build(n: usize, fast: bool) -> (Model, crate::bulk::ParamSpan) {
+            let mut model = Model::new();
+            let owner = model.instance();
+            let bounds = Bounds::new(0.0, 1.0);
+            let charge_span = model
+                .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+                .expect("charge");
+            let discharge_span = model
+                .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+                .expect("discharge");
+            let price_span = model.add_parameter_block(&vec![50.0; n]).expect("price");
+            let charge =
+                VarView::new(owner, View::contiguous(charge_span, n)).expect("charge view");
+            let discharge =
+                VarView::new(owner, View::contiguous(discharge_span, n)).expect("discharge view");
+            let price = ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+            let mut vars = Vec::new();
+            let mut params = Vec::new();
+            let mut scales = Vec::new();
+            for ordinal in 0..n {
+                vars.push(charge.member(ordinal).expect("charge var"));
+                params.push(price.member(ordinal).expect("price param"));
+                scales.push(-1.0);
+            }
+            for ordinal in 0..n {
+                vars.push(discharge.member(ordinal).expect("discharge var"));
+                params.push(price.member(ordinal).expect("price param"));
+                scales.push(1.0);
+            }
+            if fast {
+                let terms = vec![
+                    Term {
+                        vars: charge,
+                        coeff: CoeffView::ScaledParam {
+                            scale: -1.0,
+                            params: price.clone(),
+                        },
+                    },
+                    Term {
+                        vars: discharge,
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: price,
+                        },
+                    },
+                ];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic");
+            } else {
+                model
+                    .set_linear_objective_param_bulk(Sense::Maximize, &vars, &params, &scales, 0.0)
+                    .expect("general");
+            }
+            (model, price_span)
+        }
+
+        let n = 4usize;
+        let (mut fast, fast_span) = build(n, true);
+        let (mut general, general_span) = build(n, false);
+        assert_eq!(
+            fast.take_snapshot().expect("fast snapshot"),
+            general.take_snapshot().expect("general snapshot")
+        );
+
+        // Reprice both and compare again.
+        fast.set_parameters_bulk(fast_span, &vec![60.0; n])
+            .expect("fast reprice");
+        fast.commit().expect("fast commit");
+        general
+            .set_parameters_bulk(general_span, &vec![60.0; n])
+            .expect("general reprice");
+        general.commit().expect("general commit");
+        assert_eq!(
+            fast.take_snapshot().expect("fast snapshot"),
+            general.take_snapshot().expect("general snapshot")
+        );
+    }
 }
