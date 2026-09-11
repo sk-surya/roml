@@ -323,3 +323,107 @@ impl std::fmt::Display for CompileError {
 }
 
 impl std::error::Error for CompileError {}
+
+#[cfg(test)]
+mod error_display_tests {
+    use super::*;
+    use crate::compiler::backend_ir::CompiledConstraintId;
+    use crate::id::{Generation, ParamId, VarId};
+    use crate::identity::ConstructId;
+
+    fn construct() -> ConstructId {
+        ConstructId::allocate().expect("construct id")
+    }
+
+    #[test]
+    fn compile_error_display_names_each_failure() {
+        let cases: Vec<(CompileError, &str)> = vec![
+            (
+                CompileError::RebuildRequired("activity change".into()),
+                "rebuild required",
+            ),
+            (CompileError::IdentityOverflow, "identity counter exhausted"),
+            (
+                CompileError::UnsupportedFeature("IncrementalRows".into()),
+                "unsupported backend feature",
+            ),
+            (
+                CompileError::InvalidObjectivePolicy(CompiledObjectiveId(0)),
+                "non-compiled objective",
+            ),
+            (
+                CompileError::NonDenseCompilation {
+                    entity: CompiledEntityRef::Constraint(CompiledConstraintId(0)),
+                },
+                "not dense",
+            ),
+            (
+                CompileError::InvalidDeltaEnvelope {
+                    reason: "reversed revisions".into(),
+                },
+                "invalid delta envelope",
+            ),
+            (
+                CompileError::UnboundedBigM {
+                    construct: construct(),
+                    expression: "x + y".into(),
+                },
+                "no finite Big-M",
+            ),
+            (
+                CompileError::InvalidBigM {
+                    construct: construct(),
+                    expression: "x".into(),
+                    reason: "NaN coefficient".into(),
+                },
+                "invalid Big-M",
+            ),
+            (
+                CompileError::MissingConstructReference {
+                    construct: construct(),
+                    variable: VarId::new(0, Generation::new()),
+                },
+                "references variable",
+            ),
+            (
+                CompileError::MissingConstructParameter {
+                    construct: construct(),
+                    parameter: ParamId::new(0, Generation::new()),
+                },
+                "references parameter",
+            ),
+            (
+                CompileError::NonIntegralReificationThreshold {
+                    construct: construct(),
+                    threshold: 0.5,
+                },
+                "non-integral",
+            ),
+            (
+                CompileError::ExtrapolationConflict {
+                    construct: construct(),
+                    expression: "arg".into(),
+                    interval: "[0, 1]".into(),
+                    range: "[0, 0]".into(),
+                    policy: "Constant".into(),
+                },
+                "breakpoint range",
+            ),
+            (
+                CompileError::StaleCompilation {
+                    expected: CompilationId::allocate().expect("id"),
+                    actual: CompilationId::allocate().expect("id"),
+                },
+                "stale compilation",
+            ),
+        ];
+
+        for (error, needle) in cases {
+            let text = format!("{error}");
+            assert!(
+                text.contains(needle),
+                "message {text:?} must contain {needle:?}"
+            );
+        }
+    }
+}

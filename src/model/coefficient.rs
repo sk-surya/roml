@@ -2622,3 +2622,86 @@ mod mir02_dependency_validation_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod store_behavior_tests {
+    use super::*;
+    use crate::id::Generation;
+
+    fn var(index: u32) -> VarId {
+        VarId::new(index, Generation::new())
+    }
+
+    fn param(index: u32) -> ParamId {
+        ParamId::new(index, Generation::new())
+    }
+
+    fn target() -> CoefficientTarget {
+        CoefficientTarget::Objective(ObjId::new(0, Generation::new()))
+    }
+
+    fn param_cell(var_index: u32, param_index: u32, scale: f64) -> ParamCell {
+        ParamCell {
+            var: var(var_index),
+            param: param(param_index),
+            scale,
+            cached: scale,
+        }
+    }
+
+    #[test]
+    fn append_constant_block_canonicalizes_unsorted_duplicates() {
+        let mut index = CoefficientIndex::new();
+        let target = target();
+        index.append_constant_block(
+            target,
+            &[
+                (var(1), 2.0),
+                (var(0), 1.0),
+                (var(1), 3.0),                // merges to 5.0
+                (var(2), f64::EPSILON / 2.0), // dropped as near-zero
+            ],
+        );
+
+        let id0 = index.for_cell(target, var(0)).expect("var 0 cell");
+        let id1 = index.for_cell(target, var(1)).expect("var 1 cell");
+        assert_eq!(index.cached_value(id0), Some(1.0));
+        assert_eq!(index.cached_value(id1), Some(5.0));
+        assert!(
+            index.for_cell(target, var(2)).is_none(),
+            "near-zero dropped"
+        );
+        assert_eq!(index.len(), 2);
+        assert!(!index.is_empty());
+        assert!(index.check_consistency().is_empty());
+    }
+
+    #[test]
+    fn add_combines_into_a_packed_parametric_cell() {
+        let mut index = CoefficientIndex::new();
+        let target = target();
+        index.append_param_run(target, &[param_cell(0, 0, 2.0)]);
+        let packed_id = index.for_cell(target, var(0)).expect("packed cell");
+        assert!(!index.is_overlay_cell(packed_id));
+
+        // Combining a constant shadows the packed parametric cell into the
+        // overlay under the same logical identity.
+        let id = index.add(var(0), target, ValueExpr::constant(3.0), 3.0);
+        assert_eq!(id, packed_id, "identity preserved across shadowing");
+        assert!(index.is_overlay_cell(id));
+        let data = index.get(id).expect("live cell");
+        assert!((data.cached_value - 5.0).abs() < 1e-12);
+        assert!(index.cell_exists(target, var(0)));
+        assert!(index.check_consistency().is_empty());
+    }
+
+    #[test]
+    fn for_var_finds_packed_parametric_cells() {
+        let mut index = CoefficientIndex::new();
+        let target = target();
+        index.append_param_run(target, &[param_cell(0, 0, 1.0), param_cell(1, 1, 2.0)]);
+        let ids = index.for_var(var(1));
+        assert_eq!(ids.len(), 1);
+        assert_eq!(index.cached_value(ids[0]), Some(2.0));
+    }
+}
