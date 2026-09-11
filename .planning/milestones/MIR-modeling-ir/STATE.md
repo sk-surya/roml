@@ -2,7 +2,7 @@
 
 **Objective:** shared model-owned ordinal array IR plus block-native construction and parameter propagation, so elegant Rust and Python formulations lower through one bulk path.
 
-**Status:** MIR-00 complete (IR-01 evidenced); MIR-01 in progress (IR-02, IR-04 evidenced; variable-block packed Change/ModelOp pending).
+**Status:** MIR-00 complete (IR-01 evidenced); MIR-01 complete (IR-02…IR-07 evidenced); MIR-02 next.
 
 **Planning base:** `main@c590692ace5446cc20c7eb91cb8fa0d594a054b0`.
 
@@ -14,15 +14,15 @@
 
 **Blockers:** none known for MIR-00. Runtime facts must be refreshed by the executor.
 
-**Next gate:** finish MIR-01 — the Model variable-block API with one packed
-`Change::VariableBlockAdded` and one self-contained `ModelOp::AddVariableBlock`,
-plus IR-03/IR-05/IR-06/IR-07 evidence — then MIR-02.
+**Next gate:** MIR-02 — packed parametric rows/objectives, validated L2
+dependency layouts, and block-native transactional propagation with
+self-contained packed deltas (IR-08…IR-17).
 
 | Phase | State | Evidence |
 |---|---|---|
 | MIR-00 | complete (IR-01) | `evidence/BASELINE.md`; `evidence/baseline-mir-bess-sample.json`; `tests/mir00_baseline_characterization.rs`; `python/benchmarks/bench_mir_bess.py` |
-| MIR-01 | in progress (IR-02, IR-04) | `src/bulk.rs` (compile_fail opacity); `src/id/arena.rs`; `tests/mir01_block_allocation.rs`; variable-block packed op pending |
-| MIR-02 | not started | — |
+| MIR-01 | complete (IR-02…IR-07) | `evidence/MIR-01-REPORT.md`; `src/bulk.rs`; `src/model/mod.rs`; `tests/mir01_block_allocation.rs` |
+| MIR-02 | in progress (IR-08…IR-17) | — |
 | MIR-03 | not started | — |
 | MIR-04 | not started | — |
 | MIR-05 | not started | — |
