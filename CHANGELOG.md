@@ -26,6 +26,16 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Rule builders (MIR-05, unreleased)
+- `Model::add_rules(closure)` runs a closure once per index to construct row
+  expressions into an in-memory `RuleBatch` and commits the whole batch through
+  the packed mixed-row seam in one operation. `LoweringStats` exposes
+  `rule_rows_accumulated` and `rule_bulk_commits == 1`; a failing closure, a
+  foreign array, or a non-packable batch rejects atomically with no per-row
+  model mutation.
+- `VarArray::row(i)` / `ParamArray::row(i)` give per-index coefficient arrays,
+  and `From<VarArray> for LinArray` keeps rule call sites free of raw ids.
+
 #### Rust Level-1 array surface (MIR-04, unreleased)
 - `Model::var(name, shape)` / `Model::param(name, shape, values)` return
   model-owned `VarArray` / `ParamArray` handles over the MIR-03 ordinal IR with

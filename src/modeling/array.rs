@@ -175,6 +175,24 @@ impl VarArray {
             view: self.view.reshape(shape.dims().to_vec())?,
         })
     }
+
+    /// A coefficient array for one leading-axis entry (contiguous dense only):
+    /// the leading-axis slice reshaped to the trailing dimensions. A rank-1
+    /// array yields a single-cell row.
+    pub fn row(&self, index: usize) -> Result<Self, ViewError> {
+        let leading = self.shape().first().copied().unwrap_or(0);
+        if index >= leading {
+            return Err(ViewError::SliceOutOfRange {
+                axis: 0,
+                start: index,
+                len: 1,
+                dim: leading,
+            });
+        }
+        let rest = self.shape()[1..].to_vec();
+        let target = if rest.is_empty() { vec![1] } else { rest };
+        self.slice(0, index, 1)?.reshape(target)
+    }
 }
 
 /// A model-owned multidimensional parameter array handle.
@@ -270,5 +288,35 @@ impl ParamArray {
             name: self.name.clone(),
             view: self.view.reshape(shape.dims().to_vec())?,
         })
+    }
+
+    /// A coefficient array for one leading-axis entry (contiguous dense only):
+    /// the leading-axis slice reshaped to the trailing dimensions. A rank-1
+    /// array yields a single-cell row.
+    pub fn row(&self, index: usize) -> Result<Self, ViewError> {
+        let leading = self.shape().first().copied().unwrap_or(0);
+        if index >= leading {
+            return Err(ViewError::SliceOutOfRange {
+                axis: 0,
+                start: index,
+                len: 1,
+                dim: leading,
+            });
+        }
+        let rest = self.shape()[1..].to_vec();
+        let target = if rest.is_empty() { vec![1] } else { rest };
+        self.slice(0, index, 1)?.reshape(target)
+    }
+}
+
+impl From<VarArray> for crate::modeling::LinArray {
+    fn from(array: VarArray) -> Self {
+        array.lin()
+    }
+}
+
+impl From<&VarArray> for crate::modeling::LinArray {
+    fn from(array: &VarArray) -> Self {
+        array.lin()
     }
 }
