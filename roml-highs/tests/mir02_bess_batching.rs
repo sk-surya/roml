@@ -113,8 +113,21 @@ fn build_eligible(n: usize) -> (Model, ParamSpan, ObjId, Vec<VarId>, Vec<VarId>)
     (model, span, obj, charge, discharge)
 }
 
+/// Serialize tests that read the process-global `cost_call_stats` /
+/// `sync_stats` atomics. `cargo test` runs tests in the same binary as
+/// parallel threads, so without this a concurrent test's native calls can
+/// land inside another test's measure window (observed as a spurious
+/// `range_calls == 2`/`rebuilds == 5` on CI).
+fn stats_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn eligible_reprice_uses_one_bulk_highs_cost_call() {
+    let _guard = stats_guard();
     let n = 300 * 96; // flagship cardinality: 28,800 params / 57,600 cells
     let (mut model, span, _obj, _c, _d) = build_eligible(n);
     let mut solver = Highs::new().expect("highs");
@@ -183,6 +196,7 @@ fn eligible_reprice_uses_one_bulk_highs_cost_call() {
 
 #[test]
 fn eligible_reprice_apply_is_separated_from_lp_solve() {
+    let _guard = stats_guard();
     use roml::advanced::CompilationSession;
     use roml::compiler::capability::CompilationPolicy;
     use roml::solver::request::SolveRequest;
@@ -266,6 +280,7 @@ fn eligible_reprice_apply_is_separated_from_lp_solve() {
 
 #[test]
 fn ir17_solve_then_append_then_shadow_matches_rebuild() {
+    let _guard = stats_guard();
     let n = 64;
     let (mut model, span, _obj, charge, _d) = build_eligible(n);
 
@@ -401,6 +416,7 @@ fn build_gapped_eligible(n: usize, gap: usize) -> (Model, ParamSpan) {
 
 #[test]
 fn eligible_reprice_with_gapped_columns_uses_set_form() {
+    let _guard = stats_guard();
     let n = 32;
     let (mut model, span) = build_gapped_eligible(n, 7);
     let mut solver = Highs::new().expect("highs");
