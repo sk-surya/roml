@@ -417,3 +417,67 @@ model builders already prevent), `src/io/mps/write/projection.rs`
 (stale/absent-entity guards), `roml-highs/src/{compiler,lifecycle}.rs`
 (backend error branches), and `src/solver/relaxation.rs` (native-provider and
 cleanup paths). These are not MIR surface and do not affect MIR acceptance.
+
+## Coverage iteration 6 (genuine closure of every sub-78% file)
+
+The iteration-5 residual list was closed genuinely rather than skipped: each
+uncovered branch was either exercised through a real test seam (public API,
+in-crate fault injection, or a small testability refactor) or, where the branch
+is provably unreachable through the model builders, left documented. No test
+was deleted and no error was weakened.
+
+- **`roml-highs/src/native_iis.rs`** → 94.9% (was 71.5): `native_conflict`
+  split into a session-taking helper so the version-qualification and
+  request-identity guards are testable; all `bound_sides` / `native_bound` /
+  `native_membership` constants and unknowns, the `checked_count` /
+  `checked_index` negative/out-of-range rejections, and native variable-bound
+  IIS lower/upper-conflict integration tests covering the column mapping.
+- **`roml-highs/src/iis.rs`** → 83.2% (was 70.6): in-crate oracle tests for the
+  stale-compilation-id and foreign-atom selection rejections, a rejected
+  negative feasibility-tolerance budget, and a budgeted feasible check.
+- **`roml-highs/src/compiler.rs`** → 80.4% (was 75.4): a public-session
+  incremental-removal test builds/solves, removes a variable/constraint/
+  objective, and asserts incremental/rebuild equivalence, exercising the
+  `RemoveVariable` / `RemoveLinearRow` / `RemoveObjective` backend branches.
+- **`src/compiler/bridge/soft_constraint.rs`** → 93.0% production (was 73.7):
+  in-crate `BridgeContext` tests for absent/inactive original constraint,
+  non-finite/negative violation cap, non-finite/negative weight, and a missing
+  weight parameter (all typed rejections).
+- **`src/compiler/bridge/indicator.rs`** → 99.1% production (was 76.1):
+  `one_sided_implications` for every `ScalarSet` kind and a missing parameter;
+  `indicator_bounds` for all direction/side combinations.
+- **`roml-highs/src/lifecycle.rs`** → 87.5% production (was 77.8):
+  `new_unchecked` construction and a Drop callback-state cleanup test that
+  registers a real `CallbackState` and drops.
+- **`src/io/mps/write/projection.rs`** → 86.8% production (was 74.8): unit
+  tests for `next_generated_name` occupancy, ordered dependency traversal
+  across every `ValueExpr` arm, `checked_finite` normalization/rejection, every
+  model-scoped error constructor, and an objective/constraint name-collision
+  integration test honoring `PreserveOrGenerate` vs `StrictPreserve`.
+- **`src/io/mps/mod.rs`** → 96.5% (was 75.1): a public reader-surface test file
+  for path I/O errors, source-span validation/display, section and error-kind
+  display for every variant, and source-map span resolution.
+- **`src/solver/relaxation.rs`** → 88.1% production (was 75.2):
+  `report_members` fault-injection tests (unknown/duplicate/non-integral
+  candidates, non-relaxed base violation, missing constraint/variable/fixing,
+  non-finite weight, soft cap exceeded), `unknown_reason` mapping,
+  `compile_portable_overlay` all-eligible collection plus stale-entity and
+  missing-fixing rejections, and an all-eligible empty-scope rejection. The
+  unused `_typed_ids` shim was removed as dead code.
+
+Coverage: **88.86%** overall (iteration 5: 87.44%; original baseline: 84.96%).
+No file with ≥40 executable lines is below 78%. Production-only coverage
+(excluding in-crate `#[cfg(test)]` modules) for the iteration-6 files is
+projection 86.8%, relaxation 88.1%, indicator 99.1%, soft_constraint 93.0%,
+lifecycle 87.5%. Five files remain ≥78% (relaxation previously 75.2%), and the
+remaining uncovered lines are the documented native-failure/defensive guards
+(invalid `Highs_create` handle, 64-bit `HighsInt` build, `Highs_*` status
+failures, and model-builder-prevented invalid states).
+
+Verification at the iteration-6 head: `cargo fmt --all -- --check`,
+`cargo check -p roml --all-targets`, `cargo clippy -p roml -p roml-highs
+-p roml-python --all-targets -- -D warnings`, `RUSTDOCFLAGS='-D warnings'
+cargo doc -p roml --no-deps`, `scripts/check-quality-policy.sh`,
+`git diff --check`, `cargo package --list -p roml` (203 files), `nextest` for
+`roml` + `roml-highs --features roml-highs/bundled` (**1684 passed, 4
+skipped**), and the Python suite (**151 passed, 1 skipped**).
