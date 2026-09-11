@@ -231,6 +231,24 @@ impl ReferenceBackend {
                     }
                 }
             }
+            // MIR-02 packed parametric rows: same end state as replaying one
+            // `AddConstraint` plus one scaled-parameter `SetCell` per cell.
+            ModelOp::AddParametricRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    self.constraints.insert(con, (block.bounds[r], true));
+                    let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                    for k in s..e {
+                        self.constraint_cells.insert(
+                            (CoefficientTarget::Constraint(con), block.vars[k]),
+                            (
+                                ValueExpr::scaled_param(block.scales[k], block.params[k]),
+                                block.values[k],
+                            ),
+                        );
+                    }
+                }
+            }
             ModelOp::RemoveConstraint { con } => {
                 self.constraints.remove(con);
                 // Remove cells for this constraint
@@ -349,6 +367,35 @@ impl ReferenceBackend {
             }
             ModelOp::SetParameter { param, value } => {
                 self.parameters.insert(*param, *value);
+            }
+            // MIR-02 packed parameter block: one op for a whole committed
+            // parameter block.
+            ModelOp::SetParametersBulk { changes } => {
+                for change in changes.iter() {
+                    self.parameters.insert(change.param, change.new);
+                }
+            }
+            // MIR-02 packed coefficient patch: each patch is self-contained
+            // (target, variable, new value).
+            ModelOp::SetCoefficientPatchBatch { patches } => {
+                for patch in patches.iter() {
+                    match patch.target {
+                        CoefficientTarget::Constraint(_) => {
+                            self.constraint_cells.insert(
+                                (patch.target, patch.var),
+                                (ValueExpr::constant(patch.new), patch.new),
+                            );
+                        }
+                        CoefficientTarget::Objective(obj) => {
+                            let constant =
+                                self.objective_constants.get(&obj).copied().unwrap_or(0.0);
+                            self.objective_cells.insert(
+                                (patch.target, patch.var),
+                                (ValueExpr::constant(patch.new), patch.new, constant),
+                            );
+                        }
+                    }
+                }
             }
             ModelOp::SetObjectiveSense { obj, sense } => {
                 if let Some(entry) = self.objectives.get_mut(obj) {

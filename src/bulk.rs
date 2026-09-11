@@ -17,6 +17,122 @@ use std::sync::Arc;
 use crate::id::{Generation, ParamId, VarId};
 use crate::model::variable::{Bounds, VarType};
 
+/// A language-independent strided ordinal map (D-019, DESIGN §2).
+///
+/// `mapped = offset + Σ ordinal[d] * strides[d]`. Shape and strides are
+/// shared so a layout witness and its resolved stored block clone by
+/// refcount. This is deliberately free of any L1/Python view type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StridedMap {
+    shape: Arc<[usize]>,
+    strides: Arc<[isize]>,
+    offset: isize,
+}
+
+impl StridedMap {
+    /// A one-dimensional contiguous map `0..len`.
+    pub fn contiguous(len: usize) -> Self {
+        Self {
+            shape: Arc::from([len]),
+            strides: Arc::from([1isize]),
+            offset: 0,
+        }
+    }
+
+    /// Build a map from raw shape/strides/offset.
+    pub fn new(
+        shape: impl Into<Arc<[usize]>>,
+        strides: impl Into<Arc<[isize]>>,
+        offset: isize,
+    ) -> Self {
+        Self {
+            shape: shape.into(),
+            strides: strides.into(),
+            offset,
+        }
+    }
+
+    /// Map shape.
+    #[inline]
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    /// Map strides (signed).
+    #[inline]
+    pub fn strides(&self) -> &[isize] {
+        &self.strides
+    }
+
+    /// Map offset.
+    #[inline]
+    pub fn offset(&self) -> isize {
+        self.offset
+    }
+
+    /// Number of mapped cells (the product of the shape).
+    pub fn len(&self) -> usize {
+        if self.shape.is_empty() {
+            return 0;
+        }
+        self.shape.iter().product()
+    }
+
+    /// Whether the map covers no cells.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Resolve a flat ordinal to its mapped index, or `None` when out of
+    /// bounds. The result may be negative (signed strides).
+    pub fn get(&self, ordinal: usize) -> Option<isize> {
+        if ordinal >= self.len() {
+            return None;
+        }
+        let mut rem = ordinal;
+        let mut mapped = self.offset;
+        for (dim, (&size, &stride)) in self.shape.iter().zip(self.strides.iter()).enumerate() {
+            let _ = dim;
+            if size == 0 {
+                return None;
+            }
+            let coord = (rem % size) as isize;
+            rem /= size;
+            mapped += coord * stride;
+        }
+        Some(mapped)
+    }
+}
+
+/// One dependency-family witness supplied by a trusted lowerer (L2).
+///
+/// Core never trusts this blindly: after canonicalization it validates the
+/// witness against the retained packed parameter cells and resolves it into a
+/// stored dependency block. A wrong witness is a typed atomic rejection.
+#[derive(Clone, Debug)]
+pub struct ParamDepBlockWitness {
+    /// Parameter span the family reads.
+    pub params: ParamSpan,
+    /// Maps a family ordinal to a member offset within `params`.
+    pub param_map: StridedMap,
+    /// Offset within the canonical packed run the family occupies.
+    pub cell_offset: u32,
+    /// Maps a family ordinal to an offset within the packed run.
+    pub cell_map: StridedMap,
+    /// Coefficient `scale * parameter` applied to every family cell.
+    pub scale: f64,
+    /// Row index within the batch for a row layout, or `None` for the
+    /// objective being built.
+    pub row: Option<u32>,
+}
+
+/// A caller-supplied L2 witness describing eligible dependency families.
+#[derive(Clone, Debug, Default)]
+pub struct ParamDepLayout {
+    /// One witness per dependency family.
+    pub blocks: Vec<ParamDepBlockWitness>,
+}
+
 /// Bounds input to the `Model::add_variable_block` block API (MIR-01).
 ///
 /// The caller may supply one bounds value for the whole block or exactly one
@@ -170,12 +286,17 @@ impl ParamSpan {
     }
 
     /// Reconstruct the `offset`-th member identity.
-    #[allow(dead_code)] // consumed by MIR-01 Task 3 (packed variable-block op)
     pub(crate) fn id_at(&self, offset: usize) -> Option<ParamId> {
         if offset >= self.len as usize {
             return None;
         }
         Some(ParamId::new(self.start + offset as u32, self.generation))
+    }
+
+    /// Iterate every member identity in ordinal order.
+    pub fn ids(&self) -> impl Iterator<Item = ParamId> + '_ {
+        (0..self.len as usize)
+            .map(move |offset| ParamId::new(self.start + offset as u32, self.generation))
     }
 
     /// First arena index covered by the span.

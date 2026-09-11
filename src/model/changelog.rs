@@ -226,6 +226,13 @@ pub enum Change {
         block: Arc<LinearRowBlock>,
     },
 
+    /// A packed block of parameterized linear rows was inserted at once
+    /// (MIR-02). Cells are `scale * param`.
+    BulkParametricRows {
+        /// The packed parametric row block (shared).
+        block: Arc<crate::delta::ParametricRowBlock>,
+    },
+
     // ========== Objective Changes ==========
     /// An objective was added.
     ObjectiveAdded {
@@ -284,6 +291,27 @@ pub enum Change {
         old: f64,
         /// New value.
         new: f64,
+    },
+
+    /// A packed block of parameter values changed (MIR-02).
+    ///
+    /// One packed change per committed parameter block instead of one
+    /// `ParameterValueChanged` per parameter.
+    BulkParameterValues {
+        /// The packed parameter changes (shared).
+        changes: Arc<[crate::delta::ParameterValueChange]>,
+    },
+
+    /// One packed coefficient-patch batch for eligible dependency cells
+    /// (MIR-02).
+    ///
+    /// Emitted once per committed parameter block; the batch may contain
+    /// patches from several eligible dependency families. Each patch is
+    /// self-contained (target, variable, new value) and never requires
+    /// mutable live-model p-base access.
+    BulkCoefficientPatch {
+        /// The packed coefficient patches (shared).
+        patches: Arc<[crate::delta::CoefficientPatch]>,
     },
 
     // ========== Construct Changes (P25 Task 4, design §7) ==========

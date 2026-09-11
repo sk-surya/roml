@@ -22,6 +22,7 @@ pub(crate) use coefficient::CoefficientData;
 pub(crate) use coefficient::CoefficientIndex;
 pub use coefficient::CoefficientTarget;
 pub(crate) use coefficient::ParamCell;
+use coefficient::StoredParamDepBlock;
 pub use constraint::ConstraintBounds;
 pub(crate) use constraint::ConstraintStore;
 pub(crate) use objective::ObjectiveStore;
@@ -44,7 +45,9 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
-use crate::bulk::{BlockBounds, BlockBoundsOwned, ParamSpan, VarSpan, VariableBlock};
+use crate::bulk::{
+    BlockBounds, BlockBoundsOwned, ParamDepLayout, ParamSpan, VarSpan, VariableBlock,
+};
 #[cfg(test)]
 use crate::construct::FixturePayload;
 use crate::construct::{
@@ -55,7 +58,10 @@ use crate::construct::{
     PenaltyTarget, PiecewiseLinearConstraint, ProductOperand, PwlPoint, PwlRelation,
     ReificationConstraint, SoftConstraint, SoftConstraintConstraint, ViolationPolicy,
 };
-use crate::delta::{DeltaBatch, LinearRowBlock, ModelOp, ParamCoeffCell};
+use crate::delta::{
+    CoefficientPatch, DeltaBatch, LinearRowBlock, ModelOp, ParamCoeffCell, ParameterValueChange,
+    ParametricRowBlock,
+};
 use crate::expr::{LinExpr, TermCoeff};
 use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
@@ -232,6 +238,13 @@ pub enum ModelError {
     },
     /// An opaque identity counter was exhausted (ids never wrap).
     IdentityOverflow,
+    /// A supplied L2 `ParamDepLayout` witness did not match the canonical
+    /// packed run it was meant to describe (MIR-02). Rejected atomically.
+    InvalidParamDepLayout(&'static str),
+    /// A parametric construction cannot be represented by packed cells
+    /// (MIR-02): distinct parameters reach one canonical `(target, variable)`
+    /// cell. Rejected atomically so the caller can use the general path.
+    NotPackable(&'static str),
 }
 
 impl std::fmt::Display for ModelError {
@@ -391,6 +404,12 @@ impl std::fmt::Display for ModelError {
             ),
             Self::IdentityOverflow => {
                 write!(f, "identity counter exhausted (ids never wrap)")
+            }
+            Self::InvalidParamDepLayout(reason) => {
+                write!(f, "invalid parameter dependency layout: {reason}")
+            }
+            Self::NotPackable(reason) => {
+                write!(f, "parametric construction is not packable: {reason}")
             }
         }
     }
@@ -2181,6 +2200,165 @@ impl Model {
         Ok(cons)
     }
 
+    /// Insert a block of parameterized linear rows in one packed operation
+    /// (MIR-02).
+    ///
+    /// Row `r` owns `vars[row_ptr[r]..row_ptr[r+1]]` with the parallel
+    /// `params`/`scales` slices and `bounds[r]`. Each canonical cell is exactly
+    /// one `scale × ParamId`.
+    ///
+    /// # Canonicalization
+    ///
+    /// - same `VarId` + same `ParamId`: scales sum; a near-zero result is
+    ///   dropped;
+    /// - same `VarId` + distinct `ParamId`s: a typed
+    ///   [`ModelError::NotPackable`] rejection (never silently collapsed);
+    /// - merged scales that overflow reject atomically.
+    ///
+    /// All validation runs before any mutation (API-06.5 atomicity). The block
+    /// journals one packed [`Change::BulkParametricRows`] /
+    /// [`ModelOp::AddParametricRows`].
+    pub fn add_linear_rows_param_bulk(
+        &mut self,
+        row_ptr: &[u32],
+        vars: &[VarId],
+        params: &[ParamId],
+        scales: &[f64],
+        bounds: &[ConstraintBounds],
+    ) -> Result<Vec<ConId>, ModelError> {
+        let nrows = bounds.len();
+        let shape_ok = row_ptr.len() == nrows + 1
+            && row_ptr.first().copied().unwrap_or(0) == 0
+            && row_ptr.windows(2).all(|w| w[0] <= w[1])
+            && row_ptr.last().copied().unwrap_or(0) as usize == vars.len()
+            && vars.len() == params.len()
+            && vars.len() == scales.len();
+        if !shape_ok {
+            return Err(ModelError::MismatchedRowBlock {
+                rows: nrows,
+                ptr: row_ptr.len(),
+                vars: vars.len(),
+                values: scales.len(),
+            });
+        }
+        for bound in bounds.iter() {
+            validate_constraint_bounds(*bound)?;
+        }
+        for scale in scales.iter() {
+            if !scale.is_finite() {
+                return Err(ModelError::NonFiniteValue("row coefficient scale"));
+            }
+        }
+        for var in vars.iter() {
+            if !self.variables.contains(*var) {
+                return Err(ModelError::VariableNotFound(*var));
+            }
+        }
+        for param in params.iter() {
+            if !self.parameters.contains(*param) {
+                return Err(ModelError::ParameterNotFound(*param));
+            }
+        }
+        // Canonicalize every row (pure; duplicate merge / not-packable reject
+        // atomically before any mutation).
+        let mut canon_ptr: Vec<u32> = Vec::with_capacity(nrows + 1);
+        let mut canon: Vec<ParamCell> = Vec::new();
+        canon_ptr.push(0);
+        for r in 0..nrows {
+            let (s, e) = (row_ptr[r] as usize, row_ptr[r + 1] as usize);
+            canon.extend(Self::canonicalize_param_row(
+                &self.parameters,
+                &vars[s..e],
+                &params[s..e],
+                &scales[s..e],
+            )?);
+            canon_ptr.push(canon.len() as u32);
+        }
+        // Allocate row identities sequentially.
+        self.constraints.reserve(nrows);
+        let mut cons = Vec::with_capacity(nrows);
+        for bound in bounds.iter() {
+            cons.push(self.constraints.add(*bound));
+        }
+        // Append each row's canonical packed run (per-cell reverse positions;
+        // row block eligibility is MIR-03).
+        let mut offset = 0usize;
+        for (r, con) in cons.iter().enumerate() {
+            let end = canon_ptr[r + 1] as usize;
+            let cells = &canon[offset..end];
+            self.coefficients
+                .append_param_run(CoefficientTarget::Constraint(*con), cells);
+            self.diagnostics.lowering.param_positions_cells += cells.len() as u64;
+            offset = end;
+        }
+        let block_vars: Vec<VarId> = canon.iter().map(|c| c.var).collect();
+        let block_params: Vec<ParamId> = canon.iter().map(|c| c.param).collect();
+        let block_scales: Vec<f64> = canon.iter().map(|c| c.scale).collect();
+        let block_values: Vec<f64> = canon.iter().map(|c| c.cached).collect();
+        let block = Arc::new(ParametricRowBlock {
+            constraints: cons.clone(),
+            bounds: bounds.to_vec(),
+            row_ptr: canon_ptr,
+            vars: block_vars,
+            params: block_params,
+            scales: block_scales,
+            values: block_values,
+        });
+        self.changelog.push(Change::BulkParametricRows { block });
+        self.diagnostics.lowering.parametric_bulk += 1;
+        Ok(cons)
+    }
+
+    /// Canonicalize one parametric row: group by variable, merge
+    /// same-parameter scales, drop near-zero merged cells, and reject a
+    /// distinct-parameter collision into one canonical cell.
+    fn canonicalize_param_row(
+        parameters: &crate::model::parameter::ParameterStore,
+        vars: &[VarId],
+        params: &[ParamId],
+        scales: &[f64],
+    ) -> Result<Vec<ParamCell>, ModelError> {
+        if vars.len() != params.len() || vars.len() != scales.len() {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: vars.len(),
+                coeffs: scales.len().min(params.len()),
+            });
+        }
+        let mut order: Vec<usize> = (0..vars.len()).collect();
+        order.sort_by_key(|&i| vars[i]);
+        let mut out: Vec<ParamCell> = Vec::with_capacity(vars.len());
+        let mut i = 0;
+        while i < order.len() {
+            let var = vars[order[i]];
+            let mut j = i + 1;
+            while j < order.len() && vars[order[j]] == var {
+                j += 1;
+            }
+            let group = &order[i..j];
+            let first_param = params[group[0]];
+            if !group.iter().all(|&k| params[k] == first_param) {
+                return Err(ModelError::NotPackable(
+                    "distinct parameters reach one canonical row cell",
+                ));
+            }
+            let scale: f64 = group.iter().map(|&k| scales[k]).sum();
+            if !scale.is_finite() {
+                return Err(ModelError::NonFiniteValue("merged row coefficient"));
+            }
+            if scale.abs() >= f64::EPSILON {
+                let value = parameters.get_value(first_param).unwrap_or(0.0);
+                out.push(ParamCell {
+                    var,
+                    param: first_param,
+                    scale,
+                    cached: scale * value,
+                });
+            }
+            i = j;
+        }
+        Ok(out)
+    }
+
     /// Private primitive: insert an empty constraint with the given bounds and
     /// optional name, pushing the changelog event.
     pub(crate) fn add_empty_constraint_internal(
@@ -2487,6 +2665,14 @@ impl Model {
             .ok_or(ModelError::ParameterNotFound(param))
     }
 
+    /// Number of coefficients depending on a parameter (MIR-02).
+    ///
+    /// Complete across overlay cells, non-eligible per-cell packed positions,
+    /// and eligible dependency blocks.
+    pub fn parameter_dependent_count(&self, param: ParamId) -> usize {
+        self.coefficients.param_dependent_count(param)
+    }
+
     /// Queue a parameter change in the current transaction.
     ///
     /// The change is not applied until `commit()` is called.
@@ -2504,6 +2690,44 @@ impl Model {
         Ok(())
     }
 
+    /// Queue a bulk parameter block update in the current transaction (MIR-02).
+    ///
+    /// The update is retained as a block (not expanded into one scalar map
+    /// insertion per member) and is not applied until [`Self::commit`]. Exactly
+    /// like [`Self::set_parameter`], stale members and non-finite values reject
+    /// the whole request before any state change, and [`Self::rollback`]
+    /// discards it.
+    ///
+    /// On commit, one committed block produces one packed parameter-value
+    /// change plus one packed coefficient-patch batch containing every
+    /// affected eligible dependency family.
+    pub fn set_parameters_bulk(
+        &mut self,
+        span: ParamSpan,
+        values: &[f64],
+    ) -> Result<(), ModelError> {
+        if span.len() != values.len() {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: span.len(),
+                coeffs: values.len(),
+            });
+        }
+        for value in values {
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("parameter value"));
+            }
+        }
+        for offset in 0..span.len() {
+            if let Some(param) = span.id_at(offset) {
+                if !self.parameters.contains(param) {
+                    return Err(ModelError::ParameterNotFound(param));
+                }
+            }
+        }
+        self.transaction.set_param_block(span, values.to_vec());
+        Ok(())
+    }
+
     /// Check if there are uncommitted parameter changes.
     pub fn has_uncommitted(&self) -> bool {
         self.transaction.has_pending()
@@ -2515,7 +2739,14 @@ impl Model {
     /// 1. Applies all queued parameter value changes
     /// 2. Propagates changes to dependent coefficients
     /// 3. Logs all changes to the changelog
+    ///
+    /// Bulk block updates are applied first, then scalar pending writes, so a
+    /// scalar `set_parameter` queued in the same transaction deterministically
+    /// wins if it targets a member of a block update.
     fn commit_parameters(&mut self) {
+        for (span, values) in self.transaction.take_pending_blocks() {
+            self.apply_parameter_block(span, values);
+        }
         for (param, new_value) in self.transaction.take_pending() {
             self.apply_parameter_change(param, new_value);
         }
@@ -2563,7 +2794,7 @@ impl Model {
         Ok(to)
     }
 
-    /// Apply a single parameter change and propagate to coefficients.
+    /// Apply a single scalar parameter change and propagate to coefficients.
     fn apply_parameter_change(&mut self, param: ParamId, new_value: f64) {
         let old_value = match self.parameters.set_value(param, new_value) {
             Some(v) => v,
@@ -2581,24 +2812,64 @@ impl Model {
             new: new_value,
         });
 
-        // Propagate to dependent coefficients: overlay cells evaluate
-        // their stored expressions; packed parametric cells recompute
-        // contiguously through the reverse parameter index.
+        // Overlay cells evaluate their stored expressions.
+        self.propagate_overlay_param(param);
+
+        // Non-eligible packed parametric cells recompute through the per-cell
+        // reverse index (MIR-01 baseline path).
+        for update in self.coefficients.propagate_packed_param(
+            param,
+            new_value,
+            &mut self.diagnostics.propagation,
+        ) {
+            self.changelog.push(Change::CoefficientValueChanged {
+                coeff: update.id,
+                var: update.var,
+                target: update.target,
+                value_expr: ValueExpr::scaled_param(update.scale, param),
+                old: update.old,
+                new: update.new,
+            });
+        }
+
+        // MIR-02 eligible dependency blocks: a one-parameter span reads the
+        // stored block descriptors with no per-cell reverse index. Scalars on
+        // block-created parameters take this path (IR-15).
+        let mut patches = Vec::new();
+        self.coefficients.propagate_packed_span(
+            ParamSpan::from_parts(param.index(), 1, param.generation()),
+            &self.parameters,
+            &mut patches,
+        );
+        for patch in patches {
+            self.changelog.push(Change::CoefficientValueChanged {
+                coeff: patch.coeff,
+                var: patch.var,
+                target: patch.target,
+                value_expr: ValueExpr::scaled_param(patch.scale, patch.param),
+                old: patch.old,
+                new: patch.new,
+            });
+        }
+    }
+
+    /// Re-evaluate overlay cells depending on `param` and journal changes.
+    ///
+    /// `for_param` consults the overlay map and (for non-eligible families)
+    /// the per-cell reverse index; eligible block families have neither, so
+    /// this is zero-work on the fully eligible path.
+    fn propagate_overlay_param(&mut self, param: ParamId) {
         let affected: Vec<_> = self.coefficients.for_param(param).collect();
         self.diagnostics.propagation.overlay_lookups += affected.len() as u64;
         let lookup = self.parameters.as_lookup();
-
         for coeff_id in affected {
             if !self.coefficients.is_overlay_cell(coeff_id) {
                 continue;
             }
-            // Overlay-only by construction (packed cells are constant, so
-            // they never enter the parameter index); the old snapshot
-            // carries var/target/expression for the changelog entry.
-            // Read-only fetch first: the cached value is rewritten only
-            // when the re-evaluated value moves (baseline semantics — an
-            // unconditional pre-write would clobber the cache with zero
-            // on sub-epsilon updates).
+            // Read-only fetch first: the cached value is rewritten only when
+            // the re-evaluated value moves (baseline semantics — an
+            // unconditional pre-write would clobber the cache with zero on
+            // sub-epsilon updates).
             if let Some(old) = self.coefficients.get(coeff_id) {
                 self.diagnostics.propagation.value_expr_evals += 1;
                 let new_cached = old.value_expr.eval(&lookup);
@@ -2615,19 +2886,98 @@ impl Model {
                 }
             }
         }
-        for update in self.coefficients.propagate_packed_param(
-            param,
-            new_value,
-            &mut self.diagnostics.propagation,
-        ) {
-            self.changelog.push(Change::CoefficientValueChanged {
-                coeff: update.id,
-                var: update.var,
-                target: update.target,
-                value_expr: ValueExpr::scaled_param(update.scale, param),
-                old: update.old,
-                new: update.new,
+    }
+
+    /// Overlay-only propagation for the eligible block path (MIR-02).
+    ///
+    /// Consults only `overlay_by_param`, so a fully eligible family performs
+    /// zero overlay lookups while a shadowed/deleted cell still updates
+    /// correctly.
+    fn propagate_overlay_only(&mut self, param: ParamId) {
+        let ids = self.coefficients.overlay_ids_for_param(param);
+        self.diagnostics.propagation.overlay_lookups += ids.len() as u64;
+        let lookup = self.parameters.as_lookup();
+        for coeff_id in ids {
+            if let Some(old) = self.coefficients.get(coeff_id) {
+                self.diagnostics.propagation.value_expr_evals += 1;
+                let new_cached = old.value_expr.eval(&lookup);
+                if (old.cached_value - new_cached).abs() >= f64::EPSILON {
+                    self.coefficients.set_cached_value(coeff_id, new_cached);
+                    self.changelog.push(Change::CoefficientValueChanged {
+                        coeff: coeff_id,
+                        var: old.var,
+                        target: old.target,
+                        value_expr: old.value_expr.clone(),
+                        old: old.cached_value,
+                        new: new_cached,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Apply one committed bulk parameter block (MIR-02).
+    ///
+    /// Updates parameter storage in bulk, propagates overlay cells for
+    /// correctness of shadowed/deleted cells, and propagates every eligible
+    /// dependency-block family in one pass. Journals exactly one packed
+    /// parameter-value change and (when cells changed) one packed
+    /// coefficient-patch batch. No `ValueExpr` is evaluated and no per-cell
+    /// `param_positions` entry is consulted on the eligible path.
+    fn apply_parameter_block(&mut self, span: ParamSpan, values: Vec<f64>) {
+        let mut changed: Vec<ParameterValueChange> = Vec::new();
+        for (offset, value) in values.iter().enumerate() {
+            let param = match span.id_at(offset) {
+                Some(p) => p,
+                None => continue,
+            };
+            let old = match self.parameters.set_value(param, *value) {
+                Some(v) => v,
+                None => continue,
+            };
+            if (old - *value).abs() < f64::EPSILON {
+                continue;
+            }
+            changed.push(ParameterValueChange {
+                param,
+                old,
+                new: *value,
             });
+        }
+        if changed.is_empty() {
+            return;
+        }
+
+        // Overlay semantics for shadowed/deleted cells: overlay-only (no
+        // packed reverse index, no dependency blocks) and zero-work when the
+        // family has no overlay cells.
+        for offset in 0..span.len() {
+            if let Some(param) = span.id_at(offset) {
+                self.propagate_overlay_only(param);
+            }
+        }
+
+        let mut block_patches = Vec::new();
+        self.coefficients
+            .propagate_packed_span(span, &self.parameters, &mut block_patches);
+
+        self.changelog.push(Change::BulkParameterValues {
+            changes: changed.into(),
+        });
+        if !block_patches.is_empty() {
+            let patches: Arc<[CoefficientPatch]> = block_patches
+                .iter()
+                .map(|patch| CoefficientPatch {
+                    target: patch.target,
+                    var: patch.var,
+                    old: patch.old,
+                    new: patch.new,
+                })
+                .collect::<Vec<_>>()
+                .into();
+            self.changelog
+                .push(Change::BulkCoefficientPatch { patches });
+            self.diagnostics.propagation.coefficient_patch_batches += 1;
         }
     }
 
@@ -2982,6 +3332,47 @@ impl Model {
         scales: &[f64],
         constant: f64,
     ) -> Result<ObjId, ModelError> {
+        self.set_linear_objective_param_bulk_impl(sense, vars, params, scales, constant, None)
+    }
+
+    /// Variant of [`Self::set_linear_objective_param_bulk`] carrying an L2
+    /// dependency-layout witness (MIR-02).
+    ///
+    /// When `layout` is supplied the call must be fully packable: a canonical
+    /// `(objective, variable)` cell reached by distinct parameters is a typed
+    /// [`ModelError::NotPackable`] rejection (never silently collapsed), and
+    /// the witness must match the post-canonical packed cells or
+    /// [`ModelError::InvalidParamDepLayout`] results. On success eligible
+    /// families store dependency blocks and do **not** populate per-cell
+    /// `param_positions`.
+    pub fn set_linear_objective_param_bulk_with_layout(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        params: &[ParamId],
+        scales: &[f64],
+        constant: f64,
+        layout: &ParamDepLayout,
+    ) -> Result<ObjId, ModelError> {
+        self.set_linear_objective_param_bulk_impl(
+            sense,
+            vars,
+            params,
+            scales,
+            constant,
+            Some(layout),
+        )
+    }
+
+    fn set_linear_objective_param_bulk_impl(
+        &mut self,
+        sense: Sense,
+        vars: &[VarId],
+        params: &[ParamId],
+        scales: &[f64],
+        constant: f64,
+        layout: Option<&ParamDepLayout>,
+    ) -> Result<ObjId, ModelError> {
         if vars.len() != params.len() || vars.len() != scales.len() {
             return Err(ModelError::MismatchedBulkLengths {
                 vars: vars.len(),
@@ -3044,9 +3435,36 @@ impl Model {
             }
             i = j;
         }
+        if let Some(layout) = layout {
+            if !combined.is_empty() {
+                return Err(ModelError::NotPackable(
+                    "distinct parameters reach one canonical objective cell",
+                ));
+            }
+            Self::validate_objective_dep_layout(layout, &packed)?;
+        }
         let obj = self.add_objective_internal(sense, None);
         let target = CoefficientTarget::Objective(obj);
-        self.coefficients.append_param_run(target, &packed);
+        match layout {
+            Some(layout) => {
+                let blocks: Vec<StoredParamDepBlock> = layout
+                    .blocks
+                    .iter()
+                    .map(|witness| StoredParamDepBlock {
+                        params: witness.params,
+                        param_map: witness.param_map.clone(),
+                        cell_start: witness.cell_offset,
+                        cell_map: witness.cell_map.clone(),
+                        scale: witness.scale,
+                        target,
+                    })
+                    .collect();
+                self.diagnostics.lowering.param_dep_blocks += blocks.len() as u64;
+                self.coefficients
+                    .append_param_run_with_deps(target, &packed, blocks)?;
+            }
+            None => self.coefficients.append_param_run(target, &packed),
+        }
         for (var, expr, cached) in combined {
             let id = self.coefficients.add(var, target, expr.clone(), cached);
             self.diagnostics.lowering.general_affine += 1;
@@ -3068,16 +3486,80 @@ impl Model {
             })
             .collect::<Vec<_>>()
             .into();
-        let param_positions_cells = cells.len() as u64;
+        let tracked_positions = if layout.is_none() {
+            cells.len() as u64
+        } else {
+            0
+        };
         self.changelog
             .push(Change::BulkObjectiveParamCoefficients { obj, cells });
         self.diagnostics.lowering.parametric_bulk += 1;
-        self.diagnostics.lowering.param_positions_cells += param_positions_cells;
+        self.diagnostics.lowering.param_positions_cells += tracked_positions;
         // Mirror the scalar path: report the constant iff it differs, then
         // activate.
         self.set_objective_constant_internal(obj, constant);
         self.set_active_objective(obj)?;
         Ok(obj)
+    }
+
+    /// Pure pre-validation of an objective dependency witness against the
+    /// canonical packed cells (MIR-02). Runs before any mutation so a forged
+    /// or mismatched layout is an atomic typed rejection.
+    fn validate_objective_dep_layout(
+        layout: &ParamDepLayout,
+        packed: &[ParamCell],
+    ) -> Result<(), ModelError> {
+        for witness in &layout.blocks {
+            if witness.row.is_some() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "objective layout may not reference a row",
+                ));
+            }
+            if !witness.scale.is_finite() {
+                return Err(ModelError::NonFiniteValue("dependency scale"));
+            }
+            if witness.param_map.len() != witness.cell_map.len() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "parameter and cell maps have different arity",
+                ));
+            }
+            for k in 0..witness.param_map.len() {
+                let param_offset = witness
+                    .param_map
+                    .get(k)
+                    .ok_or(ModelError::InvalidParamDepLayout("parameter map overflow"))?;
+                if param_offset < 0 || param_offset as usize >= witness.params.len() {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "parameter offset out of range",
+                    ));
+                }
+                let cell_offset = witness
+                    .cell_map
+                    .get(k)
+                    .ok_or(ModelError::InvalidParamDepLayout("cell map overflow"))?;
+                if cell_offset < 0 {
+                    return Err(ModelError::InvalidParamDepLayout("negative cell offset"));
+                }
+                let idx = witness.cell_offset as usize + cell_offset as usize;
+                let cell = packed.get(idx).ok_or(ModelError::InvalidParamDepLayout(
+                    "cell offset outside the packed run",
+                ))?;
+                let expected = witness.params.id_at(param_offset as usize).ok_or(
+                    ModelError::InvalidParamDepLayout("parameter id out of range"),
+                )?;
+                if cell.param != expected {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "witness parameter does not match the canonical cell",
+                    ));
+                }
+                if cell.scale != witness.scale {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "witness scale does not match the canonical cell",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Advanced: set the coefficient cell at `(target, variable)` by
@@ -3916,6 +4398,7 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
             Ok(ModelOp::SetObjectiveCells { obj, cells })
         }
         Change::BulkLinearRows { block } => Ok(ModelOp::AddLinearRows { block }),
+        Change::BulkParametricRows { block } => Ok(ModelOp::AddParametricRows { block }),
         Change::BulkObjectiveParamCoefficients { obj, cells } => {
             Ok(ModelOp::SetObjectiveParamCells { obj, cells })
         }
@@ -3941,6 +4424,10 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         Change::ActiveObjectiveChanged { new, .. } => Ok(ModelOp::SetActiveObjective { obj: new }),
         Change::ParameterValueChanged { param, new, .. } => {
             Ok(ModelOp::SetParameter { param, value: new })
+        }
+        Change::BulkParameterValues { changes } => Ok(ModelOp::SetParametersBulk { changes }),
+        Change::BulkCoefficientPatch { patches } => {
+            Ok(ModelOp::SetCoefficientPatchBatch { patches })
         }
         Change::ConstructAdded {
             construct,

@@ -19,7 +19,9 @@
 use std::collections::HashMap;
 
 use super::ModelError;
+use crate::bulk::{ParamSpan, StridedMap};
 use crate::id::{CoeffId, ConId, IdArena, ObjId, ParamId, VarId};
+use crate::model::parameter::ParameterStore;
 use crate::value_expr::ValueExpr;
 
 /// Target of a coefficient (constraint or objective).
@@ -113,6 +115,38 @@ struct TargetSlice {
     target: CoefficientTarget,
     start: u32,
     len: u32,
+}
+
+/// A stored, validated L2 dependency block (MIR-02).
+///
+/// Maps a family ordinal to a parameter member and to a packed p-base cell.
+/// The block carries its uniform target; the per-cell variable is read from
+/// the packed base. No per-cell reverse-index (`param_positions`) entries are
+/// created for a covered family, and no L1/Python view type appears here.
+#[derive(Clone, Debug)]
+pub(crate) struct StoredParamDepBlock {
+    pub(crate) params: ParamSpan,
+    pub(crate) param_map: StridedMap,
+    pub(crate) cell_start: u32,
+    pub(crate) cell_map: StridedMap,
+    pub(crate) scale: f64,
+    pub(crate) target: CoefficientTarget,
+}
+
+/// One resolved coefficient change from block propagation (MIR-02).
+///
+/// The model layer maps this to a per-cell changelog entry (scalar update) or
+/// strips it to a self-contained [`crate::delta::CoefficientPatch`] (packed
+/// block update).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BlockPatch {
+    pub coeff: CoeffId,
+    pub target: CoefficientTarget,
+    pub var: VarId,
+    pub old: f64,
+    pub new: f64,
+    pub scale: f64,
+    pub param: ParamId,
 }
 
 /// A sparse-overlay slot: full general representation plus tombstone state.
@@ -247,6 +281,9 @@ pub(crate) struct CoefficientIndex {
     p_shadowed: Vec<u64>,
     p_dead: Vec<u64>,
     param_positions: HashMap<ParamId, Vec<u32>>,
+    /// Eligible dependency blocks (MIR-02): compact family descriptors that
+    /// replace per-cell `param_positions` entries on the fast path.
+    param_dep_blocks: Vec<StoredParamDepBlock>,
     /// Sparse overlay: every post-build mutation lives here.
     overlay: Vec<OverlaySlot>,
     overlay_by_cell: HashMap<CellKey, u32>,
@@ -283,6 +320,7 @@ impl CoefficientIndex {
             p_shadowed: Vec::new(),
             p_dead: Vec::new(),
             param_positions: HashMap::new(),
+            param_dep_blocks: Vec::new(),
             overlay: Vec::new(),
             overlay_by_cell: HashMap::new(),
             overlay_by_var: HashMap::new(),
@@ -609,6 +647,17 @@ impl CoefficientIndex {
     /// model layer canonicalizes). One target slice covers the range, and
     /// the compact reverse parameter index extends by the new positions.
     pub(crate) fn append_param_run(&mut self, target: CoefficientTarget, cells: &[ParamCell]) {
+        self.append_param_run_inner(target, cells, true);
+    }
+
+    /// Append one canonical packed parametric run, optionally tracking
+    /// per-cell reverse positions.
+    fn append_param_run_inner(
+        &mut self,
+        target: CoefficientTarget,
+        cells: &[ParamCell],
+        track_positions: bool,
+    ) {
         #[cfg(debug_assertions)]
         {
             debug_assert!(cells.windows(2).all(|w| w[0].var < w[1].var));
@@ -636,10 +685,12 @@ impl CoefficientIndex {
             self.p_scales.push(cell.scale);
             self.p_cached.push(cell.cached);
             self.p_ids.push(id);
-            self.param_positions
-                .entry(cell.param)
-                .or_default()
-                .push(pos);
+            if track_positions {
+                self.param_positions
+                    .entry(cell.param)
+                    .or_default()
+                    .push(pos);
+            }
             self.live += 1;
         }
         let slice_idx = self.p_slices.len();
@@ -654,6 +705,79 @@ impl CoefficientIndex {
                 e.insert(TargetSlices::One(slice_idx));
             }
         }
+    }
+
+    /// Append one canonical packed parametric run covered by validated L2
+    /// dependency blocks (MIR-02).
+    ///
+    /// The witness is validated against the candidate canonical run *before*
+    /// any mutation, so an invalid layout is a typed atomic rejection. On
+    /// success the run is appended **without** per-cell `param_positions`
+    /// entries and the resolved blocks are stored; their `cell_start` becomes
+    /// the absolute packed ordinal.
+    pub(crate) fn append_param_run_with_deps(
+        &mut self,
+        target: CoefficientTarget,
+        cells: &[ParamCell],
+        mut blocks: Vec<StoredParamDepBlock>,
+    ) -> Result<(), ModelError> {
+        let run_start = self.p_vars.len() as u32;
+        for block in &blocks {
+            if !block.scale.is_finite() {
+                return Err(ModelError::NonFiniteValue("dependency scale"));
+            }
+            if block.param_map.len() != block.cell_map.len() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "parameter and cell maps have different arity",
+                ));
+            }
+            for k in 0..block.param_map.len() {
+                let param_offset = block
+                    .param_map
+                    .get(k)
+                    .ok_or(ModelError::InvalidParamDepLayout("parameter map overflow"))?;
+                if param_offset < 0 || param_offset as usize >= block.params.len() {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "parameter offset out of range",
+                    ));
+                }
+                let cell_offset = block
+                    .cell_map
+                    .get(k)
+                    .ok_or(ModelError::InvalidParamDepLayout("cell map overflow"))?;
+                if cell_offset < 0 {
+                    return Err(ModelError::InvalidParamDepLayout("negative cell offset"));
+                }
+                let idx = block.cell_start as usize + cell_offset as usize;
+                let cell = cells.get(idx).ok_or(ModelError::InvalidParamDepLayout(
+                    "cell offset outside the packed run",
+                ))?;
+                let expected = block.params.id_at(param_offset as usize).ok_or(
+                    ModelError::InvalidParamDepLayout("parameter id out of range"),
+                )?;
+                if cell.param != expected {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "witness parameter does not match the canonical cell",
+                    ));
+                }
+                if cell.scale != block.scale {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "witness scale does not match the canonical cell",
+                    ));
+                }
+            }
+        }
+        for block in &mut blocks {
+            block.cell_start += run_start;
+        }
+        self.append_param_run_inner(target, cells, false);
+        self.param_dep_blocks.extend(blocks);
+        Ok(())
+    }
+
+    /// Number of stored dependency blocks (MIR diagnostics / tests).
+    pub(crate) fn dep_block_count(&self) -> usize {
+        self.param_dep_blocks.len()
     }
 
     /// Target owning a parametric-base position, via binary search over
@@ -737,6 +861,92 @@ impl CoefficientIndex {
             }
         }
         out
+    }
+
+    /// Propagate a parameter span through stored dependency blocks (MIR-02).
+    ///
+    /// This is the eligible-family fast path: it reads the parameter store
+    /// directly, walks only the compact dependency blocks, and performs **no**
+    /// `param_positions` lookups, overlay lookups, or `ValueExpr`
+    /// evaluations. Dead/shadowed packed cells are skipped (their correctness
+    /// is handled by overlay semantics). The caller journals the result.
+    pub(crate) fn propagate_packed_span(
+        &mut self,
+        span: ParamSpan,
+        params: &ParameterStore,
+        out: &mut Vec<BlockPatch>,
+    ) {
+        if self.param_dep_blocks.is_empty() {
+            return;
+        }
+        let q0 = span.start() as usize;
+        let q1 = q0 + span.len();
+        for bi in 0..self.param_dep_blocks.len() {
+            // Copy the compact descriptor out so the packed cache can be
+            // mutated without holding a borrow of `param_dep_blocks`.
+            let (params_span, param_map, cell_start, cell_map, scale, target) = {
+                let b = &self.param_dep_blocks[bi];
+                (
+                    b.params,
+                    b.param_map.clone(),
+                    b.cell_start as usize,
+                    b.cell_map.clone(),
+                    b.scale,
+                    b.target,
+                )
+            };
+            // Fast rejection: no ordinal overlap with the update span.
+            let p0 = params_span.start() as usize;
+            let p1 = p0 + params_span.len();
+            if p1 <= q0 || q1 <= p0 {
+                continue;
+            }
+            for k in 0..param_map.len() {
+                let param_offset = match param_map.get(k) {
+                    Some(v) if v >= 0 => v as usize,
+                    _ => continue,
+                };
+                if param_offset >= params_span.len() {
+                    continue;
+                }
+                let param = match params_span.id_at(param_offset) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let pi = param.index() as usize;
+                if pi < q0 || pi >= q1 {
+                    continue;
+                }
+                let cell_offset = match cell_map.get(k) {
+                    Some(v) if v >= 0 => v as usize,
+                    _ => continue,
+                };
+                let pos = cell_start + cell_offset;
+                if pos >= self.p_vars.len() {
+                    continue;
+                }
+                let pos_u = pos as u32;
+                if bit_get(&self.p_dead, pos_u) || bit_get(&self.p_shadowed, pos_u) {
+                    continue;
+                }
+                let value = params.get_value(param).unwrap_or(0.0);
+                let new = scale * value;
+                let old = self.p_cached[pos];
+                if (old - new).abs() < f64::EPSILON {
+                    continue;
+                }
+                self.p_cached[pos] = new;
+                out.push(BlockPatch {
+                    coeff: self.p_ids[pos],
+                    target,
+                    var: self.p_vars[pos],
+                    old,
+                    new,
+                    scale,
+                    param,
+                });
+            }
+        }
     }
 
     // ========== Scalar general path (overlay) ==========
@@ -1295,7 +1505,10 @@ impl CoefficientIndex {
 
     /// Get all coefficients that depend on a parameter.
     ///
-    /// Overlay-only: packed cells are constant by construction.
+    /// Complete across all three dependency representations: overlay cells,
+    /// non-eligible per-cell packed positions, and eligible dependency blocks
+    /// (MIR-02). A parameter covered by a block reports its block cells even
+    /// though no `param_positions` entry exists.
     pub fn for_param(&self, param: ParamId) -> impl Iterator<Item = CoeffId> + '_ {
         let over = self
             .overlay_by_param
@@ -1322,7 +1535,66 @@ impl CoefficientIndex {
                     Some(self.p_ids[pos as usize])
                 }
             });
-        over.chain(packed)
+        let block_ids = self.block_dep_ids_for_param(param);
+        over.chain(packed).chain(block_ids)
+    }
+
+    /// Collect the live cell ids of dependency blocks covering `param`.
+    fn block_dep_ids_for_param(&self, param: ParamId) -> Vec<CoeffId> {
+        let mut out = Vec::new();
+        let pi = param.index() as usize;
+        for block in &self.param_dep_blocks {
+            let p0 = block.params.start() as usize;
+            let p1 = p0 + block.params.len();
+            if pi < p0 || pi >= p1 {
+                continue;
+            }
+            for k in 0..block.param_map.len() {
+                let param_offset = match block.param_map.get(k) {
+                    Some(v) if v >= 0 => v as usize,
+                    _ => continue,
+                };
+                if param_offset >= block.params.len() {
+                    continue;
+                }
+                if block.params.id_at(param_offset) != Some(param) {
+                    continue;
+                }
+                let cell_offset = match block.cell_map.get(k) {
+                    Some(v) if v >= 0 => v as usize,
+                    _ => continue,
+                };
+                let pos = block.cell_start as usize + cell_offset;
+                if pos >= self.p_vars.len() {
+                    continue;
+                }
+                if bit_get(&self.p_dead, pos as u32) || bit_get(&self.p_shadowed, pos as u32) {
+                    continue;
+                }
+                out.push(self.p_ids[pos]);
+            }
+        }
+        out
+    }
+
+    /// Collect live overlay cell ids depending on `param` (overlay map only).
+    ///
+    /// Unlike [`Self::for_param`] this never consults the packed reverse index
+    /// or dependency blocks, so it is zero-work on a fully eligible family.
+    pub(crate) fn overlay_ids_for_param(&self, param: ParamId) -> Vec<CoeffId> {
+        self.overlay_by_param
+            .get(&param)
+            .into_iter()
+            .flat_map(|list| list.iter())
+            .filter_map(|&oi| {
+                let slot = &self.overlay[oi as usize];
+                if slot.tombstone {
+                    None
+                } else {
+                    Some(slot.id)
+                }
+            })
+            .collect()
     }
 
     /// Check if a parameter has any dependent coefficients.
@@ -1546,10 +1818,50 @@ impl CoefficientIndex {
             }
         }
         // Reverse parameter index agreement: every live parametric position
-        // is listed exactly under its own parameter; every listed position
-        // is live.
+        // is listed exactly under its own parameter **unless** it is covered
+        // by an eligible dependency block (MIR-02, which deliberately keeps no
+        // per-cell index); every listed position is live.
         {
             use std::collections::HashSet;
+            // Positions covered by eligible dependency blocks.
+            let mut block_covered: HashSet<u32> = HashSet::new();
+            for (bi, block) in self.param_dep_blocks.iter().enumerate() {
+                if block.cell_start as usize > self.p_vars.len() {
+                    violations.push(format!("dependency block {bi} cell_start out of range"));
+                }
+                for k in 0..block.param_map.len() {
+                    let (param_offset, cell_offset) =
+                        (block.param_map.get(k), block.cell_map.get(k));
+                    let (Some(param_offset), Some(cell_offset)) = (param_offset, cell_offset)
+                    else {
+                        violations.push(format!("dependency block {bi} map overflow at {k}"));
+                        continue;
+                    };
+                    if param_offset < 0 || param_offset as usize >= block.params.len() {
+                        violations.push(format!(
+                            "dependency block {bi} parameter offset {param_offset}"
+                        ));
+                        continue;
+                    }
+                    if cell_offset < 0 {
+                        violations.push(format!("dependency block {bi} negative cell offset"));
+                        continue;
+                    }
+                    let pos = block.cell_start as usize + cell_offset as usize;
+                    if pos >= self.p_vars.len() {
+                        violations.push(format!("dependency block {bi} cell {pos} out of range"));
+                        continue;
+                    }
+                    block_covered.insert(pos as u32);
+                    if block.params.id_at(param_offset as usize) != Some(self.p_params[pos]) {
+                        violations
+                            .push(format!("dependency block {bi} parameter mismatch at {pos}"));
+                    }
+                    if self.p_scales[pos] != block.scale {
+                        violations.push(format!("dependency block {bi} scale mismatch at {pos}"));
+                    }
+                }
+            }
             let mut indexed: HashSet<u32> = HashSet::new();
             for (param, list) in self.param_positions.iter() {
                 for &pos in list {
@@ -1566,11 +1878,16 @@ impl CoefficientIndex {
                     if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
                         violations.push(format!("dead param position {pos} still indexed"));
                     }
+                    if block_covered.contains(&pos) {
+                        violations.push(format!(
+                            "eligible block position {pos} also has a per-cell index entry"
+                        ));
+                    }
                 }
             }
             for pos in 0..self.p_vars.len() as u32 {
                 let live = !bit_get(&self.p_dead, pos) && !bit_get(&self.p_shadowed, pos);
-                if live && !indexed.contains(&pos) {
+                if live && !indexed.contains(&pos) && !block_covered.contains(&pos) {
                     violations.push(format!("live param position {pos} missing from index"));
                 }
             }
