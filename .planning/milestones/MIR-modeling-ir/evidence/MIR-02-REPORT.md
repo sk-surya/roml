@@ -385,3 +385,35 @@ Suite: **1615 Rust tests**, 151 Python tests.
 `src/compiler/bridge/{soft_constraint,indicator}.rs` (~75%). These are complex
 solver-internal subsystems whose main paths already have dedicated suites; the
 remaining lines are error/edge branches requiring per-subsystem fixtures.
+
+## Coverage iteration 5 (solver-internal subsystems)
+
+Continued into the solver-internal pre-existing areas with reachable tests:
+
+- **Feasibility relaxation** (`src/solver/relaxation.rs`): eight explicit-scope
+  preflight rejections (empty scope; unknown/inactive/non-finite constraint
+  side; unknown/non-finite variable bound; unfixed/unknown persistent fixing).
+- **Infeasibility** (`src/solver/infeasibility.rs`): `completion_for_analysis`
+  for every `UnknownReason` and no-outcome/budget cases; `InfeasibilityError`
+  Display for every variant.
+- **HiGHS IIS boundary** (`roml-highs/tests/iis.rs`): `OriginalLp` with a
+  discrete variable rejects; a non-finite plan feasibility tolerance rejects.
+- **Backend session traits** (`src/solver/session.rs`): overlay apply/rollback/
+  verify, native-conflict and infeasibility-oracle defaults all reject with
+  typed `Unsupported` (constructed snapshot/overlay/universe in-crate).
+- **MPS projection**: an active semantic construct is rejected as
+  `Unrepresentable` with the construct named.
+
+Coverage: **87.44%** overall (baseline 84.96). `src/solver/session.rs` raised
+from 16% to >78%, `infeasibility.rs` off the low list, `relaxation.rs` 72→75%.
+
+### Remaining uncovered (defensive/native branches)
+
+The residual low-coverage files require native-failure injection or trigger
+defensive branches unreachable through the public API:
+`roml-highs/src/{iis,native_iis}.rs` (native status/mapping error branches),
+`src/compiler/bridge/{soft_constraint,indicator}.rs` (compile-time branches the
+model builders already prevent), `src/io/mps/write/projection.rs`
+(stale/absent-entity guards), `roml-highs/src/{compiler,lifecycle}.rs`
+(backend error branches), and `src/solver/relaxation.rs` (native-provider and
+cleanup paths). These are not MIR surface and do not affect MIR acceptance.
