@@ -305,3 +305,32 @@ Every MIR success path is covered. The remaining uncovered lines are:
 | IR-17 real solve sequence | `ir17_solve_then_append_then_shadow_matches_rebuild` |
 | symbolic reference state | `reference_patch_preserves_symbolic_expression_and_updates_cache`, `reference_replay_preserves_symbolic_patch_cells` |
 | StridedMap metadata / ordinal convention | `bulk.rs` unit tests |
+
+## Coverage iteration 3 (existing/under-tested code)
+
+Added tests for pre-existing, safety-relevant code rather than only MIR code:
+
+- `src/model/validation.rs`: `FiniteScalar`/`BoundValue`/`Tolerance` accessors,
+  `From` conversions, `Display`, arithmetic operators, and
+  `fixing_within_declared` (71.4% -> 94.9%).
+- `src/compiler/mod.rs`: every `CompileError` `Display` arm, including the
+  construct/Big-M/PWL/identity variants (35.3% -> 95.7%).
+- `src/model/coefficient.rs`: `append_constant_block` canonicalization
+  (unsorted duplicates + near-zero drop), `add` combining a constant into a
+  packed parametric cell with identity-preserving shadowing, and `for_var`
+  packed scans.
+
+Final line coverage (`cargo llvm-cov nextest -p roml -p roml-highs
+--features roml-highs/bundled`, 1596 Rust tests): **86.08%** overall
+(baseline 84.96). Key files: `bulk.rs` 100%, `diagnostics.rs` 100%,
+`transaction.rs` 100%, `variable.rs` 100%, `arena.rs` 100%, `validation.rs`
+94.9%, `compiler/mod.rs` 95.7%, `delta.rs` 97.8%, `coefficient.rs` 88.2%,
+`model/mod.rs` 92.5%, `session.rs` 79.3%, `backend_ir.rs` 85.8%,
+`reference.rs` 85.0%.
+
+The remaining sub-80% files (`src/compiler/session.rs` construct-bridge
+compilation, `roml-highs/src/compiler.rs` objective-policy forms,
+`roml-highs/src/{iis,native_iis}.rs`, `src/io/mps/write/*`,
+`src/solver/{relaxation,infeasibility}.rs`) are pre-existing feature areas
+with existing suites that do not exercise every branch; they are unrelated to
+MIR and are not expanded here.
