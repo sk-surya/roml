@@ -46,6 +46,16 @@ pub enum ViewError {
         /// Axis dimension.
         dim: usize,
     },
+    /// Two array operands have different shapes.
+    ShapeMismatch {
+        /// Left shape.
+        left: Arc<[usize]>,
+        /// Right shape.
+        right: Arc<[usize]>,
+    },
+    /// The composition is outside the initial conservative IR and must use the
+    /// general symbolic path.
+    Unsupported(&'static str),
     /// Two symbolic arrays belong to different model instances.
     CrossModel {
         /// Left operand owner.
@@ -75,6 +85,12 @@ impl std::fmt::Display for ViewError {
                 "view slice {start}..{} exceeds axis {axis} dimension {dim}",
                 start.saturating_add(*len)
             ),
+            Self::ShapeMismatch { left, right } => {
+                write!(f, "array shape mismatch: {left:?} vs {right:?}")
+            }
+            Self::Unsupported(what) => {
+                write!(f, "unsupported IR composition (general fallback): {what}")
+            }
             Self::CrossModel { left, right } => {
                 write!(f, "cross-model view composition: {left:?} vs {right:?}")
             }
