@@ -159,4 +159,4 @@ Reference: this is a journal/delta/compiler protocol change, not an IR change.
 
 1. Tests 5 and 10 (harnesses above).
 2. Full IR-23 rejection differential at the model level.
-3. Exact-head qualification matrix + STATe/evidence finalization + PR #63 body.
+3. Exact-head qualification matrix + STATE/evidence finalization + PR #63 body.
