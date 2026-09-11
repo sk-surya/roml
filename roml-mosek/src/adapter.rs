@@ -625,6 +625,59 @@ impl MosekAdapter {
                 }
             }
 
+            Change::BulkMixedRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    let row_idx = self.num_cons();
+                    check(
+                        unsafe { ffi::MSK_appendcons(self.task, 1) },
+                        "MSK_appendcons",
+                    )?;
+                    let (bk, lb, ub) = mosek_bounds(block.bounds[r].lower, block.bounds[r].upper);
+                    check(
+                        unsafe { ffi::MSK_putconbound(self.task, row_idx, bk, lb, ub) },
+                        "MSK_putconbound",
+                    )?;
+                    self.row_map.insert(con, row_idx);
+                    self.con_bounds
+                        .insert(con, (block.bounds[r].lower, block.bounds[r].upper));
+                    let (ns, ne) = (
+                        block.numeric_ptr[r] as usize,
+                        block.numeric_ptr[r + 1] as usize,
+                    );
+                    for k in ns..ne {
+                        if let (Some(row), Some(col)) = (
+                            self.row_map.get(&con),
+                            self.col_map.get(&block.numeric_vars[k]),
+                        ) {
+                            check(
+                                unsafe {
+                                    ffi::MSK_putaij(self.task, row, col, block.numeric_values[k])
+                                },
+                                "MSK_putaij (mixed numeric row)",
+                            )?;
+                        }
+                    }
+                    let (ps, pe) = (
+                        block.parametric_ptr[r] as usize,
+                        block.parametric_ptr[r + 1] as usize,
+                    );
+                    for k in ps..pe {
+                        if let (Some(row), Some(col)) = (
+                            self.row_map.get(&con),
+                            self.col_map.get(&block.parametric_vars[k]),
+                        ) {
+                            check(
+                                unsafe {
+                                    ffi::MSK_putaij(self.task, row, col, block.parametric_values[k])
+                                },
+                                "MSK_putaij (mixed param row)",
+                            )?;
+                        }
+                    }
+                }
+            }
+
             // ── Objective Added ────────────────────────────────────────────
             Change::ObjectiveAdded { obj, sense } => {
                 self.obj_senses.insert(*obj, *sense);

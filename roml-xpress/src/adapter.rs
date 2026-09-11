@@ -295,6 +295,7 @@ impl XpressAdapter {
                     // them).
                     | Change::BulkCoefficientPatch { .. }
                     | Change::BulkParametricRows { .. }
+                    | Change::BulkMixedRows { .. }
             )
         })
     }
@@ -985,6 +986,77 @@ impl XpressAdapter {
                             check(
                                 unsafe { ffi::XPRSchgcoef(self.prob, row, col, block.values[k]) },
                                 "XPRSchgcoef (param row)",
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            Change::BulkMixedRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    let (rt, rhs, rng) = xprs_row(block.bounds[r].lower, block.bounds[r].upper);
+                    let row_idx = unsafe {
+                        let mut n = 0i32;
+                        ffi::XPRSgetintattrib(self.prob, ffi::XPRS_ROWS, &mut n);
+                        n
+                    };
+                    let start = [0i32];
+                    check(
+                        unsafe {
+                            ffi::XPRSaddrows(
+                                self.prob,
+                                1,
+                                0,
+                                &(rt as i8),
+                                &rhs,
+                                &rng,
+                                start.as_ptr(),
+                                std::ptr::null(),
+                                std::ptr::null(),
+                            )
+                        },
+                        "XPRSaddrows (mixed row)",
+                    )?;
+                    self.row_map.insert(con, row_idx);
+                    self.con_bounds
+                        .insert(con, (block.bounds[r].lower, block.bounds[r].upper));
+                    let (ns, ne) = (
+                        block.numeric_ptr[r] as usize,
+                        block.numeric_ptr[r + 1] as usize,
+                    );
+                    for k in ns..ne {
+                        if let (Some(row), Some(col)) = (
+                            self.row_map.get(&con),
+                            self.col_map.get(&block.numeric_vars[k]),
+                        ) {
+                            check(
+                                unsafe {
+                                    ffi::XPRSchgcoef(self.prob, row, col, block.numeric_values[k])
+                                },
+                                "XPRSchgcoef (mixed numeric row)",
+                            )?;
+                        }
+                    }
+                    let (ps, pe) = (
+                        block.parametric_ptr[r] as usize,
+                        block.parametric_ptr[r + 1] as usize,
+                    );
+                    for k in ps..pe {
+                        if let (Some(row), Some(col)) = (
+                            self.row_map.get(&con),
+                            self.col_map.get(&block.parametric_vars[k]),
+                        ) {
+                            check(
+                                unsafe {
+                                    ffi::XPRSchgcoef(
+                                        self.prob,
+                                        row,
+                                        col,
+                                        block.parametric_values[k],
+                                    )
+                                },
+                                "XPRSchgcoef (mixed param row)",
                             )?;
                         }
                     }
