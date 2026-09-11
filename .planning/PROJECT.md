@@ -1,22 +1,21 @@
 # ROML Public-Release Hardening Project
 
-## Scope amendment — Python successor milestone, 2026-09-07
+## Scope amendment — MIR shared modeling IR, 2026-09-10
 
-The owner has authorized [MPY — Python Interface](milestones/MPY-python-interface/README.md)
-after prerequisite PR merges and M3/P34 qualification. MPY uses direct PyO3 +
-maturin bindings and precedes the deferred quadratic/nonlinear milestone.
-The wrapper non-goal below describes the original release train, not a continuing
-prohibition. A public ROML C ABI is no longer a prerequisite for Python; other
-language bindings remain deferred. Existing core, native-safety and publication
-constraints remain in force. This amendment authorizes a successor, not a claim
-that its prerequisite gates are already complete.
+The owner has authorized [MIR — Shared Modeling IR and Block-Native Core](milestones/MIR-modeling-ir/README.md) as the active successor after the merged MPY interface and post-MPY performance/certification work. MIR establishes one shared ordinal modeling system for native Rust and Python, strengthens block-native construction and parameter propagation, and precedes additional Python OO ergonomics and the deferred M4 preview.
 
-**Authoritative baseline:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`  
-**Historical audit baseline:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`  
-**Planning date:** 2026-07-13  
+This amendment does not authorize Pyomo source compatibility, a separate `AbstractModel` subsystem, a macro-first DSL, publication, or M4 production. Existing canonical coefficient, stale-ID, ownership, transaction, revision/snapshot, solver-independence, native-safety and review gates remain binding. MIR tranche 1 (MIR-00/01/02) is authorized one phase at a time under its packet.
+
+## Prior scope amendment — Python successor milestone, 2026-09-07 (fulfilled)
+
+The MPY Python interface was authorized under the prior amendment and has since merged via PR #53. Its PyO3 + maturin boundary remains accepted; its packet is retained as regression/history rather than current routing. The wrapper non-goal below describes the original release train, not a continuing prohibition.
+
+**Historical authoritative baseline:** `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`
+**Historical audit baseline:** `main@f9ba1921e650b5057bbc4de090a78391f7932a53`
+**Original planning date:** 2026-07-13
 **Target:** a trustworthy pre-1.0 Rust workspace and crates.io release process, not an immediate publication.
 
-The historical principal-engineering audit is supplemented by `docs/release/CURRENT_MAIN_DELTA_AUDIT.md`, which reconciles variable-type mutation, Xpress bulk synchronization, semi-continuous domains, and per-solve option plumbing added after `f9ba192`.
+The historical principal-engineering audit is supplemented by `docs/release/CURRENT_MAIN_DELTA_AUDIT.md`. Active milestone packets must refresh exact `main` and reconcile historical audit claims before implementation.
 
 ## Product thesis
 
@@ -27,6 +26,10 @@ The core abstraction is:
 `parameter state -> symbolic coefficient graph -> canonical model state -> revisioned delta stream -> backend projection -> solution state`
 
 The public release must make each arrow explicit, testable, recoverable, and independent of machine-specific native-library assumptions.
+
+MIR adds a user-facing corollary without changing the canonical thesis:
+
+`Rust/Python modeling syntax -> shared ordinal array IR -> block/CSR lowering -> canonical model state`
 
 ## Release objective
 
@@ -40,7 +43,7 @@ Produce a workspace in which:
 - Variable domains, including semi-continuous and semi-integer semantics, are modeled coherently rather than spread across bounds, types, and side maps.
 - Linux, macOS, and Windows are first-class targets.
 - crates.io packages contain only intended source, metadata, licenses, documentation, and examples.
-- future Python/Java/.NET bindings can target a stable C ABI or versioned wire/model representation rather than Rust's unstable ABI.
+- Python uses the accepted direct PyO3/maturin boundary; other-language bindings require their own reviewed boundary design.
 
 ## Release train
 
@@ -80,11 +83,12 @@ Own generated or vendor-maintained declarations, native discovery/build/linking,
 
 - A universal nonlinear or conic modeling language.
 - Stable serialization of internal Rust IDs without a separate format contract.
-- Python, Java, or .NET wrappers.
 - Automatic installation or redistribution of commercial solvers.
 - A uniform callback feature that pretends all solvers support identical mutation semantics.
 - ABI compatibility across arbitrary solver major versions.
 - Performance claims without reproducible benchmarks and matched baselines.
+
+The historical “no Python wrappers” non-goal is superseded by D-016/MPY. MIR's shared Rust/Python modeling layer is governed by D-019.
 
 ## Quality bar
 
@@ -112,6 +116,7 @@ Release readiness means:
 - Public API and semver checks detect unreviewed breakage.
 - Unsafe code is localized, documented, and covered by focused tests or executable assertions.
 - Release documentation allows a new contributor to build, test, package, and diagnose native discovery without tribal knowledge.
+- MIR high-level Rust/Python vectorized paths are measured against raw Level-2 bulk construction and preserve canonical/snapshot/revision equivalence.
 
 ## Operating principles
 
