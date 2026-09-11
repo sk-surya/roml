@@ -130,9 +130,8 @@ impl StridedMap {
         for dim in (0..self.shape.len()).rev() {
             let size = self.shape[dim];
             let stride = self.strides[dim];
-            if size == 0 {
-                return None;
-            }
+            // `ordinal_count` already guaranteed every dimension is non-zero
+            // and the product is in range, so this is a total decomposition.
             let coord = (rem % size) as isize;
             rem /= size;
             mapped = mapped.checked_add(coord.checked_mul(stride)?)?;

@@ -2531,6 +2531,24 @@ mod mir02_dependency_validation_tests {
     }
 
     #[test]
+    fn append_param_run_supports_multiple_runs_per_target() {
+        let mut index = CoefficientIndex::new();
+        let target = objective_target();
+        index.append_param_run(target, &[cell(0, 0, 1.0)]);
+        index.append_param_run(target, &[cell(1, 1, 2.0)]);
+
+        // Two slices under one target directory entry; both cells resolve.
+        assert!(index
+            .for_cell(target, VarId::new(0, Generation::new()))
+            .is_some());
+        assert!(index
+            .for_cell(target, VarId::new(1, Generation::new()))
+            .is_some());
+        assert_eq!(index.dep_block_count(), 0);
+        assert!(index.check_consistency().is_empty());
+    }
+
+    #[test]
     fn negative_offsets_out_of_range_and_nonfinite_scale_are_rejected() {
         let cells = vec![cell(0, 0, 1.0), cell(1, 1, 1.0)];
         let target = objective_target();
