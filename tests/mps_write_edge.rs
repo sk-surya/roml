@@ -100,3 +100,106 @@ fn free_variable_bounds_are_emitted() {
     let text = String::from_utf8(bytes).expect("UTF-8 MPS");
     assert!(text.contains("FR"), "free bound record emitted");
 }
+
+#[test]
+fn free_constraint_row_is_unrepresentable() {
+    let mut model = Model::with_name("freerow");
+    let x = model
+        .add_variable(continuous().bounds(0.0, 1.0).named("x"))
+        .expect("x");
+    let row = model.add_empty_constraint(ConstraintBounds {
+        lower: f64::NEG_INFINITY,
+        upper: f64::INFINITY,
+    });
+    model.add_coeff(row, x, 1.0).expect("coeff");
+
+    let error = MpsWriter::new()
+        .write(&model, &mut Vec::new())
+        .expect_err("a free row has no MPS representation");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::Unrepresentable
+    );
+}
+
+#[test]
+fn non_finite_row_interval_width_is_rejected() {
+    let mut model = Model::with_name("width");
+    let x = model
+        .add_variable(continuous().bounds(-1e308, 1e308).named("x"))
+        .expect("x");
+    // Both bounds are finite but their width overflows to infinity.
+    let row = model.add_empty_constraint(ConstraintBounds::range(-1e308, 1e308));
+    model.add_coeff(row, x, 1.0).expect("coeff");
+
+    let error = MpsWriter::new()
+        .write(&model, &mut Vec::new())
+        .expect_err("an overflowing range width is not representable");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::NonFiniteValue
+    );
+}
+
+#[test]
+fn active_constructs_are_unrepresentable_in_mps() {
+    use roml::construct::AbsoluteValueVariant;
+
+    let mut model = Model::with_name("construct");
+    let x = model
+        .add_variable(continuous().bounds(-5.0, 5.0).named("x"))
+        .expect("x");
+    model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .expect("absolute-value construct");
+
+    let error = MpsWriter::new()
+        .write(&model, &mut Vec::new())
+        .expect_err("active semantic constructs have no MPS representation");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::Unrepresentable
+    );
+    assert!(format!("{error}").contains("absolute-value construct"));
+}
+
+#[test]
+fn objective_name_collision_respects_name_policy() {
+    use roml::io::mps::{MpsNamePolicy, MpsWriteOptions};
+    use roml::{ConstraintSpec, LinExpr};
+
+    let mut model = Model::with_name("collide");
+    model.add_variable(continuous().named("x")).expect("x");
+    // A constraint and an objective both named OBJ collide.
+    model
+        .add_constraint(ConstraintSpec::new(LinExpr::new(), ConstraintBounds::le(1.0)).named("OBJ"))
+        .expect("row");
+    let objective = model.add_objective_named(Sense::Minimize, "OBJ");
+    model
+        .set_active_objective(objective)
+        .expect("active objective");
+
+    // PreserveOrGenerate replaces the colliding objective name.
+    let mut bytes = Vec::new();
+    MpsWriter::with_options(MpsWriteOptions {
+        name_policy: MpsNamePolicy::PreserveOrGenerate,
+        ..Default::default()
+    })
+    .write(&model, &mut bytes)
+    .expect("generated objective name");
+    let text = String::from_utf8(bytes).expect("utf8 MPS");
+    assert!(text.contains("NAME collide"));
+    let _ = text;
+
+    // StrictPreserve rejects the collision.
+    let error = MpsWriter::with_options(MpsWriteOptions {
+        name_policy: MpsNamePolicy::StrictPreserve,
+        ..Default::default()
+    })
+    .write(&model, &mut Vec::new())
+    .expect_err("strict preserve rejects a colliding name");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::NameAllocation
+    );
+}

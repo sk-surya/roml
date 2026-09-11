@@ -36,7 +36,17 @@ pub(crate) fn native_conflict(
     request: &NativeConflictRequest,
 ) -> Result<NativeConflict, BackendError> {
     let mut session = HighsSession::try_new()?;
-    if !is_qualified(&session) {
+    native_conflict_with_session(&mut session, request)
+}
+
+/// The session-taking half of [`native_conflict`], split out so the
+/// qualification and identity guards are testable without a second native
+/// instance.
+fn native_conflict_with_session(
+    session: &mut HighsSession,
+    request: &NativeConflictRequest,
+) -> Result<NativeConflict, BackendError> {
+    if !is_qualified(session) {
         return Err(unsupported("bundled HiGHS runtime is not exactly 1.15.0"));
     }
     if request.compilation_id != request.snapshot.compilation_id {
@@ -234,4 +244,126 @@ fn unsupported(message: impl Into<String>) -> BackendError {
         ErrorCategory::Unsupported,
         HealthEffect::Recoverable,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roml::advanced::{
+        BackendCapabilitySet, BackendFeature, CompilationSession, FeatureSupport, SupportLevel,
+    };
+    use roml::compiler::capability::CompilationPolicy;
+    use roml::Model;
+
+    fn empty_snapshot() -> BackendSnapshot {
+        let model = Model::new();
+        let model_snapshot = model.take_snapshot().expect("snapshot");
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+        CompilationSession::new()
+            .compile_snapshot(
+                model.instance(),
+                &model_snapshot,
+                &CompilationPolicy::Auto,
+                &caps,
+            )
+            .expect("empty base")
+    }
+
+    #[test]
+    fn pure_native_mappings_cover_all_constants_and_unknowns() {
+        assert_eq!(
+            bound_sides(bindings::kHighsIisBoundLower),
+            vec![BoundSide::Lower]
+        );
+        assert_eq!(
+            bound_sides(bindings::kHighsIisBoundUpper),
+            vec![BoundSide::Upper]
+        );
+        assert_eq!(
+            bound_sides(bindings::kHighsIisBoundBoxed),
+            vec![BoundSide::Lower, BoundSide::Upper]
+        );
+        assert!(bound_sides(-999).is_empty());
+
+        assert_eq!(
+            native_bound(bindings::kHighsIisBoundFree),
+            NativeBoundStatus::Free
+        );
+        assert_eq!(
+            native_bound(bindings::kHighsIisBoundLower),
+            NativeBoundStatus::Lower
+        );
+        assert_eq!(
+            native_bound(bindings::kHighsIisBoundUpper),
+            NativeBoundStatus::Upper
+        );
+        assert_eq!(
+            native_bound(bindings::kHighsIisBoundBoxed),
+            NativeBoundStatus::Boxed
+        );
+        assert_eq!(native_bound(424242), NativeBoundStatus::Unknown(424242));
+
+        assert_eq!(
+            native_membership(bindings::kHighsIisStatusNotInConflict),
+            NativeMembership::Excluded
+        );
+        assert_eq!(
+            native_membership(bindings::kHighsIisStatusMaybeInConflict),
+            NativeMembership::Possible
+        );
+        assert_eq!(
+            native_membership(bindings::kHighsIisStatusInConflict),
+            NativeMembership::Member
+        );
+        assert_eq!(native_membership(424242), NativeMembership::Unknown(424242));
+    }
+
+    #[test]
+    fn checked_count_and_index_reject_negative_and_out_of_range() {
+        assert_eq!(checked_count(3, "n").expect("positive"), 3);
+        assert!(checked_count(-1, "n").is_err());
+        assert_eq!(checked_index(1, 3, "i").expect("in range"), 1);
+        assert!(checked_index(3, 3, "i").is_err());
+        assert!(checked_index(-1, 3, "i").is_err());
+    }
+
+    #[test]
+    fn session_qualification_and_request_identity_guards() {
+        let snapshot = empty_snapshot();
+        let request = NativeConflictRequest {
+            compilation_id: snapshot.compilation_id,
+            snapshot: snapshot.clone(),
+        };
+
+        // Unqualified version rejects before touching the request snapshot.
+        let mut unqualified = HighsSession::try_new().expect("bundled highs");
+        unqualified.version_major = QUALIFIED_MAJOR + 1;
+        assert!(!is_qualified(&unqualified));
+        let error = native_conflict_with_session(&mut unqualified, &request)
+            .expect_err("unqualified runtime rejects");
+        assert!(format!("{error}").contains("not exactly"));
+
+        // Qualified version + mismatched compilation identity rejects.
+        let mut qualified = HighsSession::try_new().expect("bundled highs");
+        assert!(is_qualified(&qualified));
+        let mut mismatched = request.clone();
+        // A second compile allocates a distinct exact compilation id.
+        mismatched.compilation_id = empty_snapshot().compilation_id;
+        let error = native_conflict_with_session(&mut qualified, &mismatched)
+            .expect_err("mismatched identity rejects");
+        assert!(format!("{error}").contains("identity"));
+    }
+
+    #[test]
+    fn unsupported_helper_is_typed_unsupported() {
+        let error = unsupported("nope");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
 }

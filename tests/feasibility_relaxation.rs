@@ -664,3 +664,204 @@ fn prefer_native_records_explicit_portable_fallback() {
         .as_deref()
         .is_some_and(|reason| reason.contains("portable ROML")));
 }
+
+// ── Explicit-scope preflight validation (relaxation.rs) ───────────────────
+
+fn preflight_error(
+    model: &mut Model,
+    scope: roml::solver::RelaxationScope,
+) -> roml::solver::relaxation::FeasibilityRelaxationError {
+    SolverSession::new(ReferenceSolveSession::new())
+        .solve_feasibility_relaxation(
+            model,
+            FeasibilityRelaxationPlan {
+                scope,
+                ..Default::default()
+            },
+        )
+        .expect_err("invalid explicit scope must reject before synchronization")
+}
+
+#[test]
+fn empty_explicit_scope_is_rejected() {
+    let mut model = Model::new();
+    model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("x");
+    let error = preflight_error(&mut model, roml::solver::RelaxationScope::Explicit(vec![]));
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_unknown_constraint_is_rejected() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("x");
+    model.add_constraint((x).ge(0.0)).expect("row");
+    let unknown = roml::id::ConId::new(9_999, roml::id::Generation::new());
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: unknown,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_inactive_constraint_side_is_rejected() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("x");
+    let row = model.add_constraint((x).ge(0.0)).expect("row");
+    model.set_constraint_active(row, false).expect("deactivate");
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: row,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_non_finite_constraint_side_is_rejected() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("x");
+    // `<=` has an infinite lower side; requesting Lower is not finite.
+    let row = model.add_constraint((x).le(1.0)).expect("row");
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::ConstraintSide {
+                constraint: row,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_unknown_variable_bound_is_rejected() {
+    let mut model = Model::new();
+    model
+        .add_variable(continuous().bounds(0.0, 1.0))
+        .expect("x");
+    let unknown = roml::id::VarId::new(9_999, roml::id::Generation::new());
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::VariableBound {
+                variable: unknown,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_non_finite_variable_bound_is_rejected() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(f64::NEG_INFINITY, 5.0))
+        .expect("x");
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::VariableBound {
+                variable: x,
+                side: roml::solver::infeasibility::BoundSide::Lower,
+            },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_unfixed_persistent_fixing_is_rejected() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 5.0))
+        .expect("x");
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::PersistentFixing { variable: x },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn explicit_scope_unknown_persistent_fixing_variable_is_rejected() {
+    let mut model = Model::new();
+    model
+        .add_variable(continuous().bounds(0.0, 5.0))
+        .expect("x");
+    let unknown = roml::id::VarId::new(9_999, roml::id::Generation::new());
+    let error = preflight_error(
+        &mut model,
+        roml::solver::RelaxationScope::Explicit(vec![
+            roml::solver::RelaxationRestriction::PersistentFixing { variable: unknown },
+        ]),
+    );
+    assert!(matches!(
+        error,
+        roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
+    ));
+}
+
+#[test]
+fn all_eligible_scope_with_no_finite_restrictions_is_rejected() {
+    let mut model = Model::new();
+    model
+        .add_variable(continuous().bounds(f64::NEG_INFINITY, f64::INFINITY))
+        .unwrap();
+    model.commit().unwrap();
+
+    let mut session = SolverSession::new(ReferenceSolveSession::new());
+    let error = session
+        .solve_feasibility_relaxation(&mut model, FeasibilityRelaxationPlan::default())
+        .expect_err("no finite eligible restrictions");
+    assert!(
+        matches!(
+            &error,
+            roml::solver::relaxation::FeasibilityRelaxationError::Preflight(message)
+                if message.contains("no finite eligible")
+        ),
+        "unexpected error: {error:?}"
+    );
+}

@@ -307,3 +307,83 @@ fn solve_overlay_lock_is_an_analyzable_semantic_layer() {
         )
     }));
 }
+
+#[test]
+fn original_lp_rejects_a_discrete_model() {
+    let mut model = Model::new();
+    let x = model
+        .add_variable(integer().bounds(0.0, 1.0))
+        .expect("integer variable");
+    model.add_constraint(x.ge(2.0)).expect("row");
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let error = session
+        .analyze_infeasibility(&model, &InfeasibilityPlan::portable_lp())
+        .expect_err("OriginalLp requires a continuous LP");
+    assert!(matches!(
+        error,
+        roml::InfeasibilityError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn non_finite_feasibility_tolerance_is_rejected() {
+    let model = contradictory_lp();
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.numerical_policy.feasibility_tolerance = f64::NAN;
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let error = session
+        .analyze_infeasibility(&model, &plan)
+        .expect_err("a non-finite feasibility tolerance is unqualified");
+    assert!(matches!(
+        error,
+        roml::InfeasibilityError::Unsupported { .. }
+    ));
+}
+
+#[cfg(feature = "bundled")]
+#[test]
+fn native_iis_maps_a_variable_lower_bound_conflict() {
+    // IIS = variable lower bound (2) + row upper bound (1).
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(2.0, 10.0))
+        .expect("variable");
+    model.add_constraint(x.le(1.0)).expect("row");
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.mode = InfeasibilityMode::NativeOnly;
+    let report = session
+        .analyze_infeasibility(&model, &plan)
+        .expect("native lower-bound IIS");
+    assert_eq!(report.outcome, InfeasibilityOutcome::Conflict);
+    assert!(report.members.iter().any(|member| matches!(
+        member.declaration.origin,
+        roml::advanced::ConflictOrigin::VariableBound { .. }
+    )));
+}
+
+#[cfg(feature = "bundled")]
+#[test]
+fn native_iis_maps_a_variable_upper_bound_conflict() {
+    // IIS = variable upper bound (0.5) + row lower bound (1).
+    let mut model = Model::new();
+    let x = model
+        .add_variable(continuous().bounds(0.0, 0.5))
+        .expect("variable");
+    model.add_constraint(x.ge(1.0)).expect("row");
+
+    let mut session = SolverSession::new(HighsSession::try_new().expect("bundled HiGHS"));
+    let mut plan = InfeasibilityPlan::portable_lp();
+    plan.mode = InfeasibilityMode::NativeOnly;
+    let report = session
+        .analyze_infeasibility(&model, &plan)
+        .expect("native upper-bound IIS");
+    assert_eq!(report.outcome, InfeasibilityOutcome::Conflict);
+    assert!(report.members.iter().any(|member| matches!(
+        member.declaration.origin,
+        roml::advanced::ConflictOrigin::VariableBound { .. }
+    )));
+}

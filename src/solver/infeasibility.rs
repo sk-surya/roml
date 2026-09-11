@@ -1402,4 +1402,85 @@ mod tests {
             AnalysisCompletion::OracleCallLimit
         );
     }
+
+    #[test]
+    fn completion_maps_every_unknown_reason() {
+        let cases = [
+            (
+                UnknownReason::IterationLimit,
+                AnalysisCompletion::IterationLimit,
+            ),
+            (UnknownReason::NodeLimit, AnalysisCompletion::NodeLimit),
+            (UnknownReason::Interrupted, AnalysisCompletion::Interrupted),
+            (UnknownReason::Numerical, AnalysisCompletion::Numerical),
+            (
+                UnknownReason::BackendError,
+                AnalysisCompletion::BackendFailure,
+            ),
+        ];
+        for (reason, expected) in cases {
+            let outcome = FeasibilityOutcome::Unknown(reason);
+            assert_eq!(
+                completion_for_analysis(Some(&outcome), 0, None),
+                expected,
+                "reason {reason:?}"
+            );
+        }
+        // No outcome and no budget exhaustion -> Complete.
+        assert_eq!(
+            completion_for_analysis(None, 0, None),
+            AnalysisCompletion::Complete
+        );
+        // Budget exhaustion without an outcome -> OracleCallLimit.
+        assert_eq!(
+            completion_for_analysis(None, 5, Some(5)),
+            AnalysisCompletion::OracleCallLimit
+        );
+    }
+
+    #[test]
+    fn infeasibility_error_display_names_each_variant() {
+        use crate::compiler::backend_ir::CompilationId;
+        use crate::solver::backend::{ErrorCategory, HealthEffect};
+
+        let cases: Vec<(InfeasibilityError, &str)> = vec![
+            (
+                InfeasibilityError::Unsupported {
+                    operation: "native IIS".into(),
+                },
+                "unsupported infeasibility operation",
+            ),
+            (
+                InfeasibilityError::CompilationMismatch {
+                    expected: CompilationId::allocate().expect("id"),
+                    actual: CompilationId::allocate().expect("id"),
+                },
+                "compilation mismatch",
+            ),
+            (
+                InfeasibilityError::Backend(BackendError::new(
+                    "backend boom",
+                    ErrorCategory::Internal,
+                    HealthEffect::Recoverable,
+                )),
+                "backend boom",
+            ),
+            (
+                InfeasibilityError::InvalidUniverse {
+                    reason: "bad universe".into(),
+                },
+                "invalid semantic conflict universe",
+            ),
+            (
+                InfeasibilityError::VerificationFailure {
+                    reason: "contradicted".into(),
+                },
+                "verification failed",
+            ),
+        ];
+        for (error, needle) in cases {
+            let text = format!("{error}");
+            assert!(text.contains(needle), "{text:?} must contain {needle:?}");
+        }
+    }
 }

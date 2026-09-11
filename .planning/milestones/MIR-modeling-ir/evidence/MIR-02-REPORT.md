@@ -305,3 +305,179 @@ Every MIR success path is covered. The remaining uncovered lines are:
 | IR-17 real solve sequence | `ir17_solve_then_append_then_shadow_matches_rebuild` |
 | symbolic reference state | `reference_patch_preserves_symbolic_expression_and_updates_cache`, `reference_replay_preserves_symbolic_patch_cells` |
 | StridedMap metadata / ordinal convention | `bulk.rs` unit tests |
+
+## Coverage iteration 3 (existing/under-tested code)
+
+Added tests for pre-existing, safety-relevant code rather than only MIR code:
+
+- `src/model/validation.rs`: `FiniteScalar`/`BoundValue`/`Tolerance` accessors,
+  `From` conversions, `Display`, arithmetic operators, and
+  `fixing_within_declared` (71.4% -> 94.9%).
+- `src/compiler/mod.rs`: every `CompileError` `Display` arm, including the
+  construct/Big-M/PWL/identity variants (35.3% -> 95.7%).
+- `src/model/coefficient.rs`: `append_constant_block` canonicalization
+  (unsorted duplicates + near-zero drop), `add` combining a constant into a
+  packed parametric cell with identity-preserving shadowing, and `for_var`
+  packed scans.
+
+Final line coverage (`cargo llvm-cov nextest -p roml -p roml-highs
+--features roml-highs/bundled`, 1596 Rust tests): **86.08%** overall
+(baseline 84.96). Key files: `bulk.rs` 100%, `diagnostics.rs` 100%,
+`transaction.rs` 100%, `variable.rs` 100%, `arena.rs` 100%, `validation.rs`
+94.9%, `compiler/mod.rs` 95.7%, `delta.rs` 97.8%, `coefficient.rs` 88.2%,
+`model/mod.rs` 92.5%, `session.rs` 79.3%, `backend_ir.rs` 85.8%,
+`reference.rs` 85.0%.
+
+The remaining sub-80% files (`src/compiler/session.rs` construct-bridge
+compilation, `roml-highs/src/compiler.rs` objective-policy forms,
+`roml-highs/src/{iis,native_iis}.rs`, `src/io/mps/write/*`,
+`src/solver/{relaxation,infeasibility}.rs`) are pre-existing feature areas
+with existing suites that do not exercise every branch; they are unrelated to
+MIR and are not expanded here.
+
+## Coverage iteration 4 (pre-existing, non-MIR subsystems)
+
+Requested: test the pre-existing low-coverage areas and close the gap.
+
+### Findings
+
+- **MPS `write/mod.rs` dead code.** ~320 source lines (~210 executable) of
+  `#[allow(dead_code)]` "reference" encoders (`encode_columns`,
+  `encode_row_bounds`, `encode_bounds`, `encode_continuous_bounds`,
+  `encode_integer_bounds`, `encode_binary_bounds`, `bound`) were explicitly
+  superseded by the active `bounds::*` pipeline and had no callers. Tests
+  cannot reach private dead code; it was removed (the active `finite_value`
+  helper it shared is retained).
+- **Real MPS writer bug found.** The active `bounds::encode_integer` did not
+  raise the INTORG default upper before lowering-from-above: an integer with
+  lower > 1 (e.g. `[2, 8]`) emitted `LI` leaving a transient empty domain that
+  the reader rejected. Fixed to mirror the (removed) reference encoder, locked
+  by a direct record case and an end-to-end round-trip.
+- **Coverage artifact.** The `write/{bounds,format,objective,projection}.rs`
+  files are compiled twice (library + `#[path]` test copies), so the focused
+  `mps_write_*` tests exercise the test copies; the library copies need
+  end-to-end `MpsWriter` tests. Added those.
+
+### Tests added
+
+- `tests/mps_write_edge.rs`: ranged rows, mixed continuous/integer/binary/free
+  domains, extreme-magnitude scientific formatting, objective-less models, free
+  bounds (round-tripped), unrepresentable free rows, overflowing range widths.
+- `tests/mps_reader_errors.rs`: missing ENDATA, COLUMNS/RHS ordering, duplicate
+  sections, data after ENDATA, unbalanced/nested INTORG/INTEND,
+  OBJSENSE-without-payload — each asserting its typed `MpsErrorKind`.
+- `solver::session` trait-default tests with a stub backend; `roml-highs`
+  MIP-start mapping error tests.
+
+### Coverage
+
+Overall **87.10%** (baseline 84.96, prior iteration 86.08). `src/io/mps/write/mod.rs`
+removed from the low list; `src/io/mps/state.rs` and
+`src/io/mps/write/objective.rs` improved.
+
+Suite: **1615 Rust tests**, 151 Python tests.
+
+### Remaining low-coverage (pre-existing, unrelated to MIR)
+
+`src/solver/relaxation.rs` (72%), `src/solver/infeasibility.rs` (74%),
+`roml-highs/src/{iis,native_iis}.rs` (~71%), `src/io/mps/write/projection.rs`
+(73%), `src/compiler/session.rs` (79%), `roml-highs/src/compiler.rs` (75%),
+`src/compiler/bridge/{soft_constraint,indicator}.rs` (~75%). These are complex
+solver-internal subsystems whose main paths already have dedicated suites; the
+remaining lines are error/edge branches requiring per-subsystem fixtures.
+
+## Coverage iteration 5 (solver-internal subsystems)
+
+Continued into the solver-internal pre-existing areas with reachable tests:
+
+- **Feasibility relaxation** (`src/solver/relaxation.rs`): eight explicit-scope
+  preflight rejections (empty scope; unknown/inactive/non-finite constraint
+  side; unknown/non-finite variable bound; unfixed/unknown persistent fixing).
+- **Infeasibility** (`src/solver/infeasibility.rs`): `completion_for_analysis`
+  for every `UnknownReason` and no-outcome/budget cases; `InfeasibilityError`
+  Display for every variant.
+- **HiGHS IIS boundary** (`roml-highs/tests/iis.rs`): `OriginalLp` with a
+  discrete variable rejects; a non-finite plan feasibility tolerance rejects.
+- **Backend session traits** (`src/solver/session.rs`): overlay apply/rollback/
+  verify, native-conflict and infeasibility-oracle defaults all reject with
+  typed `Unsupported` (constructed snapshot/overlay/universe in-crate).
+- **MPS projection**: an active semantic construct is rejected as
+  `Unrepresentable` with the construct named.
+
+Coverage: **87.44%** overall (baseline 84.96). `src/solver/session.rs` raised
+from 16% to >78%, `infeasibility.rs` off the low list, `relaxation.rs` 72→75%.
+
+### Remaining uncovered (defensive/native branches)
+
+The residual low-coverage files require native-failure injection or trigger
+defensive branches unreachable through the public API:
+`roml-highs/src/{iis,native_iis}.rs` (native status/mapping error branches),
+`src/compiler/bridge/{soft_constraint,indicator}.rs` (compile-time branches the
+model builders already prevent), `src/io/mps/write/projection.rs`
+(stale/absent-entity guards), `roml-highs/src/{compiler,lifecycle}.rs`
+(backend error branches), and `src/solver/relaxation.rs` (native-provider and
+cleanup paths). These are not MIR surface and do not affect MIR acceptance.
+
+## Coverage iteration 6 (genuine closure of every sub-78% file)
+
+The iteration-5 residual list was closed genuinely rather than skipped: each
+uncovered branch was either exercised through a real test seam (public API,
+in-crate fault injection, or a small testability refactor) or, where the branch
+is provably unreachable through the model builders, left documented. No test
+was deleted and no error was weakened.
+
+- **`roml-highs/src/native_iis.rs`** → 94.9% (was 71.5): `native_conflict`
+  split into a session-taking helper so the version-qualification and
+  request-identity guards are testable; all `bound_sides` / `native_bound` /
+  `native_membership` constants and unknowns, the `checked_count` /
+  `checked_index` negative/out-of-range rejections, and native variable-bound
+  IIS lower/upper-conflict integration tests covering the column mapping.
+- **`roml-highs/src/iis.rs`** → 83.2% (was 70.6): in-crate oracle tests for the
+  stale-compilation-id and foreign-atom selection rejections, a rejected
+  negative feasibility-tolerance budget, and a budgeted feasible check.
+- **`roml-highs/src/compiler.rs`** → 80.4% (was 75.4): a public-session
+  incremental-removal test builds/solves, removes a variable/constraint/
+  objective, and asserts incremental/rebuild equivalence, exercising the
+  `RemoveVariable` / `RemoveLinearRow` / `RemoveObjective` backend branches.
+- **`src/compiler/bridge/soft_constraint.rs`** → 93.0% production (was 73.7):
+  in-crate `BridgeContext` tests for absent/inactive original constraint,
+  non-finite/negative violation cap, non-finite/negative weight, and a missing
+  weight parameter (all typed rejections).
+- **`src/compiler/bridge/indicator.rs`** → 99.1% production (was 76.1):
+  `one_sided_implications` for every `ScalarSet` kind and a missing parameter;
+  `indicator_bounds` for all direction/side combinations.
+- **`roml-highs/src/lifecycle.rs`** → 87.5% production (was 77.8):
+  `new_unchecked` construction and a Drop callback-state cleanup test that
+  registers a real `CallbackState` and drops.
+- **`src/io/mps/write/projection.rs`** → 86.8% production (was 74.8): unit
+  tests for `next_generated_name` occupancy, ordered dependency traversal
+  across every `ValueExpr` arm, `checked_finite` normalization/rejection, every
+  model-scoped error constructor, and an objective/constraint name-collision
+  integration test honoring `PreserveOrGenerate` vs `StrictPreserve`.
+- **`src/io/mps/mod.rs`** → 96.5% (was 75.1): a public reader-surface test file
+  for path I/O errors, source-span validation/display, section and error-kind
+  display for every variant, and source-map span resolution.
+- **`src/solver/relaxation.rs`** → 88.1% production (was 75.2):
+  `report_members` fault-injection tests (unknown/duplicate/non-integral
+  candidates, non-relaxed base violation, missing constraint/variable/fixing,
+  non-finite weight, soft cap exceeded), `unknown_reason` mapping,
+  `compile_portable_overlay` all-eligible collection plus stale-entity and
+  missing-fixing rejections, and an all-eligible empty-scope rejection. The
+  unused `_typed_ids` shim was removed as dead code.
+
+Coverage: **88.86%** overall (iteration 5: 87.44%; original baseline: 84.96%).
+No file with ≥40 executable lines is below 78%. Production-only coverage
+(excluding in-crate `#[cfg(test)]` modules) for the iteration-6 files is
+projection 86.8%, relaxation 88.1%, indicator 99.1%, soft_constraint 93.0%,
+lifecycle 87.5%. Five files remain ≥78% (relaxation previously 75.2%), and the
+remaining uncovered lines are the documented native-failure/defensive guards
+(invalid `Highs_create` handle, 64-bit `HighsInt` build, `Highs_*` status
+failures, and model-builder-prevented invalid states).
+
+Verification at the iteration-6 head: `cargo fmt --all -- --check`,
+`cargo check -p roml --all-targets`, `cargo clippy -p roml -p roml-highs
+-p roml-python --all-targets -- -D warnings`, `RUSTDOCFLAGS='-D warnings'
+cargo doc -p roml --no-deps`, `scripts/check-quality-policy.sh`,
+`git diff --check`, `cargo package --list -p roml` (203 files), `nextest` for
+`roml` + `roml-highs --features roml-highs/bundled` (**1684 passed, 4
+skipped**), and the Python suite (**151 passed, 1 skipped**).

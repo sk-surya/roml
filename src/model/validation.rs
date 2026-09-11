@@ -322,4 +322,52 @@ mod tests {
     fn require_valid_bounds_rejects_nan_upper() {
         assert!(require_valid_bounds(0.0, f64::NAN).is_err());
     }
+
+    #[test]
+    fn finite_scalar_accessors_from_and_arithmetic() {
+        assert_eq!(FiniteScalar::new(1.5).map(FiniteScalar::get), Some(1.5));
+        assert_eq!(FiniteScalar::ZERO.get(), 0.0);
+        assert_eq!(FiniteScalar::ONE.get(), 1.0);
+        assert_eq!(f64::from(FiniteScalar(2.0)), 2.0);
+        assert_eq!(format!("{}", FiniteScalar(2.5)), "2.5");
+        assert_eq!(FiniteScalar(2.0) + FiniteScalar(3.0), 5.0);
+        assert_eq!(FiniteScalar(2.0) * FiniteScalar(3.0), 6.0);
+        assert_eq!(-FiniteScalar(2.0), -2.0);
+    }
+
+    #[test]
+    fn bound_value_accessors_and_finiteness() {
+        assert_eq!(
+            BoundValue::new(f64::NEG_INFINITY).map(BoundValue::get),
+            Some(f64::NEG_INFINITY)
+        );
+        assert!(BoundValue::new(1.0).expect("finite").is_finite());
+        assert!(!BoundValue::INF.is_finite());
+        assert_eq!(BoundValue::NEG_INF.get(), f64::NEG_INFINITY);
+        assert_eq!(BoundValue::ZERO.get(), 0.0);
+        assert_eq!(f64::from(BoundValue(4.0)), 4.0);
+    }
+
+    #[test]
+    fn tolerance_accessor_and_default() {
+        assert_eq!(Tolerance::new(1e-9).map(Tolerance::get), Some(1e-9));
+        assert_eq!(Tolerance::DEFAULT.get(), 1e-9);
+    }
+
+    #[test]
+    fn fixing_within_declared_checks_domain() {
+        use crate::model::variable::FixingProvenance;
+        let declared = Bounds::new(0.0, 10.0);
+        assert!(fixing_within_declared(None, declared));
+        let inside = VariableFixing {
+            value: 5.0,
+            provenance: FixingProvenance::User,
+        };
+        let outside = VariableFixing {
+            value: 11.0,
+            provenance: FixingProvenance::User,
+        };
+        assert!(fixing_within_declared(Some(&inside), declared));
+        assert!(!fixing_within_declared(Some(&outside), declared));
+    }
 }
