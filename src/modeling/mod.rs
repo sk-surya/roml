@@ -11,10 +11,16 @@
 //! (not public construction surfaces until the MIR-04 model builders create
 //! symbolic views from the owning model).
 
+pub(crate) mod array;
 pub(crate) mod builder;
 mod coeff;
 pub(crate) mod eligibility;
+mod labeled;
+#[allow(clippy::op_ref)]
+mod ops;
 mod view;
 
-pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
+pub use array::{ParamArray, Shape, VarArray};
+pub use coeff::{CoeffView, ConstantView, LinArray, NumView, RowBlockSpec, RowSpec, Term};
+pub use labeled::{Axis, LabelError, Labeled, Shaped};
 pub use view::{ParamView, VarView, View, ViewError};

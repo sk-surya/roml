@@ -26,6 +26,30 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Rust Level-1 array surface (MIR-04, unreleased)
+- `Model::var(name, shape)` / `Model::param(name, shape, values)` return
+  model-owned `VarArray` / `ParamArray` handles over the MIR-03 ordinal IR with
+  metadata-only `slice` / `reverse` / `transpose` / contiguous `reshape` (no
+  per-cell allocation).
+- Natural operator algebra: `Add`/`Sub`/`Neg` and scalar `Mul`/`Div` over
+  `VarArray`/`LinArray`/`f64`; fallible `try_add`/`try_sub`/`try_shift`/`try_mul`
+  remain the typed-error surface.
+- Cell-wise rows via `LinArray::{le, ge, eq, le_each, ge_each, eq_each}` and
+  `Model::add_row`; leading-axis reduction rows via
+  `LinArray::{rows_eq, rows_le, rows_ge}` and `Model::add_rows`; array
+  objectives via `Model::maximize_array` / `Model::minimize_array` (packed
+  parametric path with a general symbolic fallback). A scalar array constant is
+  per cell (row: `n·c`, objective: `N·c`); dense constants sum their cells.
+- `Solution::{array_values, try_array_values, array_value}` read a variable
+  array by handle; strict reads enforce model-instance ownership and reject a
+  foreign array with a typed `SolutionReadError::CrossModel`.
+- `Labeled<A>` attaches checked boundary labels (alignment mismatches are
+  typed; labels never enter the IR); `Model::normalized_ordinal_fingerprint()`
+  exposes a deterministic fingerprint over the normalized ordinal IR.
+- `examples/l1_bess.rs`, `examples/l1_transportation.rs`, and
+  `examples/l1_min_cost_flow.rs`, guarded by a source gate that rejects raw
+  ids or manual linear-expression construction in ordinary model code.
+
 #### Structural variable-array naming (P2A, unreleased)
 - `m.vars()` no longer formats, hashes, or stores one string per
   element. Arrays own a structural reservation (base name + length);

@@ -176,6 +176,216 @@ impl ModelSnapshot {
             + self.functions.len()
             + self.constructs.len()
     }
+
+    /// A deterministic fingerprint over the **normalized ordinal IR** (IR-25).
+    ///
+    /// Normalization replaces absolute ids (`VarId`/`ConId`/`ObjId`/`ParamId`,
+    /// including generations) and model owners with first-occurrence ordinals,
+    /// and excludes names, labels, parameter values, and the revision counter.
+    /// Two models with identical ordinal structure therefore produce the same
+    /// fingerprint even when their names, owners, or id generations differ;
+    /// any structural difference (bounds, types, topology, coefficient forms,
+    /// parameter wiring) changes it.
+    pub fn normalized_ordinal_fingerprint(&self) -> u64 {
+        let mut hasher = Fnv::new();
+
+        let param_ord: HashMap<ParamId, usize> = self
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id, i))
+            .collect();
+        let var_ord: HashMap<VarId, usize> = self
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.id, i))
+            .collect();
+        let con_ord: HashMap<ConId, usize> = self
+            .constraints
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.id, i))
+            .collect();
+        let obj_ord: HashMap<ObjId, usize> = self
+            .objectives
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (o.id, i))
+            .collect();
+
+        hasher.tag(0x01);
+        hasher.usize(self.variables.len());
+        for v in &self.variables {
+            hasher.f64(v.bounds.lower);
+            hasher.f64(v.bounds.upper);
+            hasher.tag(var_type_tag(v.var_type));
+            hasher.tag(u8::from(v.active));
+            match v.semicontinuous_lower {
+                None => hasher.tag(0),
+                Some(x) => {
+                    hasher.tag(1);
+                    hasher.f64(x);
+                }
+            }
+            match &v.fixing {
+                None => hasher.tag(0),
+                Some(f) => {
+                    hasher.tag(1);
+                    hasher.f64(f.value);
+                }
+            }
+        }
+
+        // Parameter existence and order are structural; their numeric values
+        // are data and are deliberately excluded.
+        hasher.tag(0x02);
+        hasher.usize(self.parameters.len());
+
+        hasher.tag(0x03);
+        hasher.usize(self.constraints.len());
+        for c in &self.constraints {
+            hasher.f64(c.bounds.lower);
+            hasher.f64(c.bounds.upper);
+            hasher.tag(u8::from(c.active));
+        }
+
+        hasher.tag(0x04);
+        hasher.usize(self.objectives.len());
+        for o in &self.objectives {
+            hasher.tag(sense_tag(o.sense));
+            hasher.tag(u8::from(o.active));
+            hasher.f64(o.constant);
+        }
+
+        // Cells are canonicalized by (target kind, target ordinal, var
+        // ordinal) so map iteration order can never leak into the result.
+        let mut cells: Vec<(u8, usize, usize, &CellEntry)> = self
+            .cells
+            .iter()
+            .map(|cell| {
+                let (kind, ord) = match cell.cell_key.0 {
+                    CoefficientTarget::Constraint(c) => {
+                        (0u8, con_ord.get(&c).copied().unwrap_or(usize::MAX))
+                    }
+                    CoefficientTarget::Objective(o) => {
+                        (1u8, obj_ord.get(&o).copied().unwrap_or(usize::MAX))
+                    }
+                };
+                let var = var_ord.get(&cell.cell_key.1).copied().unwrap_or(usize::MAX);
+                (kind, ord, var, cell)
+            })
+            .collect();
+        cells.sort_by_key(|(kind, ord, var, _)| (*kind, *ord, *var));
+        hasher.tag(0x05);
+        hasher.usize(cells.len());
+        for (kind, ord, var, cell) in cells {
+            hasher.tag(kind);
+            hasher.usize(ord);
+            hasher.usize(var);
+            hasher.value_expr(&cell.value_expr, &param_ord);
+            // The evaluated value is derived from the expression and the
+            // current parameter values, so it is deliberately excluded.
+        }
+
+        hasher.finish()
+    }
+}
+
+/// A dependency-free, deterministic FNV-1a 64-bit hasher (stable across runs
+/// and Rust versions, unlike `DefaultHasher`).
+struct Fnv(u64);
+
+impl Fnv {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    fn byte(&mut self, byte: u8) {
+        self.0 ^= u64::from(byte);
+        self.0 = self.0.wrapping_mul(Self::PRIME);
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.byte(byte);
+        }
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn usize(&mut self, value: usize) {
+        self.u64(value as u64);
+    }
+
+    fn f64(&mut self, value: f64) {
+        self.u64(value.to_bits());
+    }
+
+    fn tag(&mut self, tag: u8) {
+        self.byte(tag);
+    }
+
+    fn value_expr(&mut self, expr: &ValueExpr, params: &HashMap<ParamId, usize>) {
+        match expr {
+            ValueExpr::Constant(value) => {
+                self.tag(1);
+                self.f64(*value);
+            }
+            ValueExpr::Param(param) => {
+                self.tag(2);
+                self.usize(params.get(param).copied().unwrap_or(usize::MAX));
+            }
+            ValueExpr::Add(left, right) => {
+                self.tag(3);
+                self.value_expr(left, params);
+                self.value_expr(right, params);
+            }
+            ValueExpr::Sub(left, right) => {
+                self.tag(4);
+                self.value_expr(left, params);
+                self.value_expr(right, params);
+            }
+            ValueExpr::Mul(left, right) => {
+                self.tag(5);
+                self.value_expr(left, params);
+                self.value_expr(right, params);
+            }
+            ValueExpr::Div(left, right) => {
+                self.tag(6);
+                self.value_expr(left, params);
+                self.value_expr(right, params);
+            }
+            ValueExpr::Neg(inner) => {
+                self.tag(7);
+                self.value_expr(inner, params);
+            }
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+fn var_type_tag(var_type: VarType) -> u8 {
+    match var_type {
+        VarType::Continuous => 0,
+        VarType::Integer => 1,
+        VarType::Binary => 2,
+    }
+}
+
+fn sense_tag(sense: Sense) -> u8 {
+    match sense {
+        Sense::Minimize => 0,
+        Sense::Maximize => 1,
+    }
 }
 
 /// Reconstruct one semantic function-in-set entry from grouped cells.

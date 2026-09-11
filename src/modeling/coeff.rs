@@ -130,6 +130,14 @@ impl NumView {
             view: self.view.transpose(a, b)?,
         })
     }
+
+    /// Metadata-only reshape (contiguous dense views only).
+    pub fn reshape(&self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError> {
+        Ok(Self {
+            values: self.values.clone(),
+            view: self.view.reshape(shape)?,
+        })
+    }
 }
 
 /// A variable linear-expression coefficient family.
@@ -417,6 +425,204 @@ impl LinArray {
     /// Subtract two arrays of the same owner and shape.
     pub fn try_sub(self, other: Self) -> Result<Self, ViewError> {
         self.try_add(other.scaled(-1.0))
+    }
+
+    /// Add a scalar to the constant of every cell (MIR-04, IR-24).
+    ///
+    /// `Zero`/`Scalar` shift directly; `Dense` materializes a shifted buffer; a
+    /// parameterized constant has no scalar form here and is a typed
+    /// [`ViewError::Unsupported`] rejection (the operator form panics on it, so
+    /// fallible callers should prefer this method).
+    pub fn try_shift(self, delta: f64) -> Result<Self, ViewError> {
+        let constant = match self.constant {
+            ConstantView::Zero => ConstantView::Scalar(delta),
+            ConstantView::Scalar(value) => ConstantView::Scalar(value + delta),
+            ConstantView::Dense { scale, values } => {
+                let mut shifted = Vec::with_capacity(values.len());
+                for ordinal in 0..values.len() {
+                    let value = values
+                        .get(ordinal)
+                        .ok_or(ViewError::Unsupported("dense constant offset"))?;
+                    shifted.push(scale * value + delta);
+                }
+                ConstantView::Dense {
+                    scale: 1.0,
+                    values: NumView::from_vec(shifted),
+                }
+            }
+            ConstantView::ScaledParam { .. } => {
+                return Err(ViewError::Unsupported(
+                    "cannot add a scalar to a parameterized constant",
+                ))
+            }
+        };
+        Ok(Self { constant, ..self })
+    }
+
+    /// Metadata-only reshape when every variable/coefficient view is contiguous
+    /// dense; otherwise a typed [`ViewError::Unsupported`] rejection.
+    pub fn reshape(self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError> {
+        let shape: Arc<[usize]> = shape.into();
+        let mut terms = Vec::with_capacity(self.terms.len());
+        for term in self.terms {
+            let vars = term.vars.reshape(shape.clone())?;
+            let coeff = match term.coeff {
+                CoeffView::One => CoeffView::One,
+                CoeffView::Scalar(value) => CoeffView::Scalar(value),
+                CoeffView::Dense { scale, values } => CoeffView::Dense {
+                    scale,
+                    values: values.reshape(shape.clone())?,
+                },
+                CoeffView::ScaledParam { scale, params } => CoeffView::ScaledParam {
+                    scale,
+                    params: params.reshape(shape.clone())?,
+                },
+            };
+            terms.push(Term { vars, coeff });
+        }
+        let constant = match self.constant {
+            ConstantView::Zero => ConstantView::Zero,
+            ConstantView::Scalar(value) => ConstantView::Scalar(value),
+            ConstantView::Dense { scale, values } => ConstantView::Dense {
+                scale,
+                values: values.reshape(shape.clone())?,
+            },
+            ConstantView::ScaledParam { scale, params } => ConstantView::ScaledParam {
+                scale,
+                params: params.reshape(shape.clone())?,
+            },
+        };
+        Self::new(self.owner, shape, terms, constant)
+    }
+
+    /// A cell-wise `≤ bound` row constraint: each cell becomes one row.
+    pub fn le(self, bound: f64) -> RowSpec {
+        self.scalar_rows((f64::NEG_INFINITY, bound))
+    }
+
+    /// A cell-wise `≥ bound` row constraint: each cell becomes one row.
+    pub fn ge(self, bound: f64) -> RowSpec {
+        self.scalar_rows((bound, f64::INFINITY))
+    }
+
+    /// A cell-wise `== bound` row constraint: each cell becomes one row.
+    pub fn eq(self, bound: f64) -> RowSpec {
+        self.scalar_rows((bound, bound))
+    }
+
+    /// A cell-wise `≤` row constraint with a per-cell bound.
+    pub fn le_each(self, values: &[f64]) -> Result<RowSpec, ViewError> {
+        self.per_cell_rows(values, |value| (f64::NEG_INFINITY, value))
+    }
+
+    /// A cell-wise `≥` row constraint with a per-cell bound.
+    pub fn ge_each(self, values: &[f64]) -> Result<RowSpec, ViewError> {
+        self.per_cell_rows(values, |value| (value, f64::INFINITY))
+    }
+
+    /// A cell-wise `==` row constraint with a per-cell bound.
+    pub fn eq_each(self, values: &[f64]) -> Result<RowSpec, ViewError> {
+        self.per_cell_rows(values, |value| (value, value))
+    }
+
+    fn scalar_rows(self, pair: (f64, f64)) -> RowSpec {
+        RowSpec {
+            bounds: vec![pair; self.len()],
+            residual: self,
+        }
+    }
+
+    fn per_cell_rows(
+        self,
+        values: &[f64],
+        rule: impl Fn(f64) -> (f64, f64),
+    ) -> Result<RowSpec, ViewError> {
+        if values.len() != self.len() {
+            return Err(ViewError::Unsupported(
+                "per-cell bound count does not match the array",
+            ));
+        }
+        Ok(RowSpec {
+            bounds: values.iter().map(|value| rule(*value)).collect(),
+            residual: self,
+        })
+    }
+}
+
+/// A cell-wise row constraint over a [`LinArray`] (MIR-04 L1).
+///
+/// Each cell of the residual array becomes one constraint row; the leading
+/// axis is the row set and the remaining axes are that row's coefficients.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowSpec {
+    residual: LinArray,
+    bounds: Vec<(f64, f64)>,
+}
+
+impl RowSpec {
+    /// The residual array (LHS moved to the left, RHS as bounds).
+    pub fn residual(&self) -> &LinArray {
+        &self.residual
+    }
+
+    /// Per-cell `(lower, upper)` bounds.
+    pub fn bounds(&self) -> &[(f64, f64)] {
+        &self.bounds
+    }
+}
+
+/// A **leading-axis row block** (MIR-04 L1): entry `r` of the residual's
+/// leading axis becomes one constraint with `bounds[r]`, and the remaining
+/// axes are that row's coefficients. Used for reduction rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowBlockSpec {
+    residual: LinArray,
+    bounds: Vec<(f64, f64)>,
+}
+
+impl RowBlockSpec {
+    /// The residual array.
+    pub fn residual(&self) -> &LinArray {
+        &self.residual
+    }
+
+    /// Per-leading-entry `(lower, upper)` bounds.
+    pub fn bounds(&self) -> &[(f64, f64)] {
+        &self.bounds
+    }
+}
+
+impl LinArray {
+    fn into_row_block(
+        self,
+        values: &[f64],
+        rule: impl Fn(f64) -> (f64, f64),
+    ) -> Result<RowBlockSpec, ViewError> {
+        let leading = self.shape().first().copied().unwrap_or(0);
+        if values.len() != leading {
+            return Err(ViewError::Unsupported(
+                "row bound count does not match the leading axis",
+            ));
+        }
+        Ok(RowBlockSpec {
+            bounds: values.iter().map(|value| rule(*value)).collect(),
+            residual: self,
+        })
+    }
+
+    /// One equality constraint per leading-axis entry.
+    pub fn rows_eq(self, values: &[f64]) -> Result<RowBlockSpec, ViewError> {
+        self.into_row_block(values, |value| (value, value))
+    }
+
+    /// One `≤` constraint per leading-axis entry.
+    pub fn rows_le(self, values: &[f64]) -> Result<RowBlockSpec, ViewError> {
+        self.into_row_block(values, |value| (f64::NEG_INFINITY, value))
+    }
+
+    /// One `≥` constraint per leading-axis entry.
+    pub fn rows_ge(self, values: &[f64]) -> Result<RowBlockSpec, ViewError> {
+        self.into_row_block(values, |value| (value, f64::INFINITY))
     }
 }
 

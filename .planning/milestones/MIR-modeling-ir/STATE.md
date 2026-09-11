@@ -2,7 +2,7 @@
 
 **Objective:** shared model-owned ordinal array IR plus block-native construction and parameter propagation, so elegant Rust and Python formulations lower through one bulk path.
 
-**Status:** MIR-00 (IR-01), MIR-01 (IR-02…IR-07) and MIR-02 (IR-08…IR-17) are complete and **merged to `main`** via PR #58 (`da7b383`), after the owner-review remediation and an independent green CI run (24 checks). MIR-02 is additionally guarded by the invariant mutation gauntlet (PR #61, `e215387`; **7/7 mutations killed**). **MIR-03 (IR-18…IR-23) is complete** at the Rust/shared-IR level (PR #63, head `77eab3a`; all gates and exact-head CI green). Deferred by design: MIR-04/05 user-facing mixed-row differential and MIR-06 Python BESS lowering.
+**Status:** MIR-00 (IR-01), MIR-01 (IR-02…IR-07) and MIR-02 (IR-08…IR-17) are complete and **merged to `main`** via PR #58 (`da7b383`), after the owner-review remediation and an independent green CI run (24 checks). MIR-02 is additionally guarded by the invariant mutation gauntlet (PR #61, `e215387`; **7/7 mutations killed**). **MIR-03 (IR-18…IR-23) is complete** at the Rust/shared-IR level (PR #63, head `77eab3a`; all gates and exact-head CI green). **MIR-04 (IR-24, IR-25) is complete** at the Rust/shared-IR level (PR #64; review round 1 corrections applied: per-cell constants, ownership-checked solution read-back, finished operator/reshape L1 core). Deferred by design: MIR-05 rule builders and MIR-06 Python BESS lowering.
 
 **Planning base:** `main@c590692ace5446cc20c7eb91cb8fa0d594a054b0`.
 
@@ -16,7 +16,7 @@
 
 **Blockers:** none.
 
-**Next gate:** MIR-04 (Rust L1 ergonomics: BESS/transportation/min-cost-flow examples with no raw IDs; labels as boundary metadata; IR-24/IR-25). MIR-03's deferred items are tracked as MIR-04/05 and MIR-06 debt in `evidence/MIR-03-REPORT.md`.
+**Next gate:** MIR-05 (rule builders). MIR-04 satisfies IR-24/IR-25 at the Rust/shared-IR level; its deferred items and the `bess_mpc.rs` raw benchmark are tracked in `evidence/MIR-04-REPORT.md`.
 
 | Phase | State | Evidence |
 |---|---|---|
@@ -24,7 +24,7 @@
 | MIR-01 | complete (IR-02…IR-07) | `evidence/MIR-01-REPORT.md`; `src/bulk.rs`; `tests/mir01_block_allocation.rs` |
 | MIR-02 | complete + merged (IR-08…IR-17) | `evidence/MIR-02-REPORT.md`; `evidence/MIR-02-MUTATION-REPORT.md`; `tests/mir02_parametric_blocks.rs`; `tests/mir02_parametric_rows.rs`; `tests/mir02_remediation.rs`; `tests/mir02_backend_batching.rs`; `roml-highs/tests/mir02_bess_batching.rs` |
 | MIR-03 | complete (IR-18…IR-23) | `evidence/MIR-03-REPORT.md`; `MIR-03-PLAN.md`; `src/modeling/{view,coeff,eligibility,builder}.rs`; `Model::set_linear_objective_from_linarray`; `Model::add_rows_from_plan`; `MixedRowBlock` / `Change::BulkMixedRows` / `ModelOp::AddMixedRows`; `model::mir03_*` tests |
-| MIR-04 | not started | — |
+| MIR-04 | complete (IR-24, IR-25): M4-1 handles, M4-2 expression algebra (cell-wise/reduction rows + array objectives), M4-3 label boundary, M4-4 fingerprint, M4-5 L1 examples + gate, M4-6 solution read-back | `MIR-04-PLAN.md`, `evidence/MIR-04-REPORT.md`; `src/modeling/{array,coeff,builder,labeled}.rs`; `src/snapshot.rs`; `src/solution/mod.rs`; `examples/l1_{bess,transportation,min_cost_flow}.rs`; `tests/mir04_*.rs` |
 | MIR-05 | not started | — |
 | MIR-06 | not started | — |
 | MIR-07 | not started | — |

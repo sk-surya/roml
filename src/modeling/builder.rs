@@ -228,7 +228,8 @@ impl RowBatch {
             }
             // Fold the constant into the bounds; any unsupported/non-finite
             // constant is an atomic fallback.
-            let Some((lower, upper)) = shift_bounds(row.lower, row.upper, array.constant()) else {
+            let Some((lower, upper)) = shift_bounds(row.lower, row.upper, array.constant(), len)
+            else {
                 return RowBatchPlan::General;
             };
             rows.push(LocalRow {
@@ -272,6 +273,9 @@ impl RowBatch {
                 return RowBatchPlan::General;
             }
         }
+        if canonicalize_numeric_rows(&mut numeric).is_none() {
+            return RowBatchPlan::General;
+        }
         RowBatchPlan::Planned(RowBlockPlan {
             owner: self.owner,
             rows,
@@ -280,6 +284,257 @@ impl RowBatch {
             parametric: ParamDepLayout { blocks },
         })
     }
+}
+
+/// Sort numeric cells by `(row, variable)`, merge duplicates, reject a
+/// non-finite merged coefficient, and drop near-zero totals — mirroring the
+/// canonical constant-row rule the packed append requires.
+fn canonicalize_numeric_rows(cells: &mut Vec<NumericCell>) -> Option<()> {
+    cells.sort_by(|a, b| a.row.cmp(&b.row).then_with(|| a.var.cmp(&b.var)));
+    let mut merged: Vec<NumericCell> = Vec::with_capacity(cells.len());
+    for cell in cells.iter() {
+        if let Some(last) = merged.last_mut() {
+            if last.row == cell.row && last.var == cell.var {
+                last.value += cell.value;
+                if !last.value.is_finite() {
+                    return None;
+                }
+                continue;
+            }
+        }
+        merged.push(*cell);
+    }
+    merged.retain(|cell| cell.value.abs() >= f64::EPSILON);
+    *cells = merged;
+    Some(())
+}
+
+/// Build a cell-wise row plan from a **leading-axis row array** (MIR-04 L1).
+///
+/// The leading axis of `array` is the row set: leading entry `r` becomes one
+/// constraint with `bounds[r]`, and the remaining axes are that row's
+/// coefficients (row-major). A one-row array reuses the full single-row
+/// planner, including parametric families.
+///
+/// Conservative for the initial subset: a multi-row array with any parametric
+/// term returns [`RowBatchPlan::General`] so the caller uses the general
+/// symbolic path rather than a half-specified per-row family plan.
+pub fn plan_row_block(
+    owner: ModelInstanceId,
+    bounds: &[(f64, f64)],
+    array: LinArray,
+) -> RowBatchPlan {
+    let total = array.len();
+    if total == 0 || total != bounds.len() {
+        return RowBatchPlan::General;
+    }
+    // A single-cell array reuses the full single-row planner (parametric
+    // families included).
+    if total == 1 {
+        let mut batch = RowBatch::new(owner);
+        if batch
+            .push(
+                LocalRow {
+                    row: 0,
+                    lower: bounds[0].0,
+                    upper: bounds[0].1,
+                },
+                array,
+            )
+            .is_err()
+        {
+            return RowBatchPlan::General;
+        }
+        return batch.plan();
+    }
+    // Multi-cell conservative subset: numeric coefficients only. Per-cell
+    // parametric rows keep the general symbolic path (per-cell family slicing
+    // lands with the general L1 fallback).
+    if array.terms().iter().any(|term| term.coeff.is_parametric()) {
+        return RowBatchPlan::General;
+    }
+    // One constraint per cell: each ordinal is its own sink run.
+    let runs: Vec<TargetRun> = (0..total)
+        .map(|ordinal| TargetRun {
+            target: ordinal as u32,
+            objective: false,
+            start: ordinal,
+            len: 1,
+        })
+        .collect();
+    let sink = match SinkMap::new(array.shape().to_vec(), runs) {
+        Ok(sink) => sink,
+        Err(_) => return RowBatchPlan::General,
+    };
+    // The proof is not applicable to an all-numeric block; if it nonetheless
+    // claims a layout the conservative path declines.
+    if try_param_block_layout(&sink, array.terms()).is_some() {
+        return RowBatchPlan::General;
+    }
+    let mut rows = Vec::with_capacity(total);
+    for (ordinal, &(lower, upper)) in bounds.iter().enumerate() {
+        let Some(shift) = constant_at(array.constant(), ordinal) else {
+            return RowBatchPlan::General;
+        };
+        let shifted_lower = lower - shift;
+        let shifted_upper = upper - shift;
+        if shifted_lower.is_nan() || shifted_upper.is_nan() {
+            return RowBatchPlan::General;
+        }
+        rows.push(LocalRow {
+            row: ordinal as u32,
+            lower: shifted_lower,
+            upper: shifted_upper,
+        });
+    }
+    let mut numeric = Vec::new();
+    if emit_numeric_cells(array.terms(), &mut numeric).is_none() {
+        return RowBatchPlan::General;
+    }
+    if canonicalize_numeric_rows(&mut numeric).is_none() {
+        return RowBatchPlan::General;
+    }
+    RowBatchPlan::Planned(RowBlockPlan {
+        owner,
+        rows,
+        numeric,
+        families: Vec::new(),
+        parametric: ParamDepLayout { blocks: Vec::new() },
+    })
+}
+
+/// Build a plan where the **leading axis is the row set** (MIR-04 L1): entry
+/// `r` becomes one constraint with `bounds[r]`, and the remaining axes are that
+/// row's coefficients (row-major). Used for reduction rows such as
+/// `Σ_j x[i, j] == supply[i]`.
+///
+/// Conservative: a parametric leading row (beyond a single row) keeps the
+/// general symbolic path.
+pub fn plan_leading_row_block(
+    owner: ModelInstanceId,
+    bounds: &[(f64, f64)],
+    array: LinArray,
+) -> RowBatchPlan {
+    let shape = array.shape();
+    if shape.is_empty() {
+        return RowBatchPlan::General;
+    }
+    let nrows = shape[0];
+    if nrows == 0 || nrows != bounds.len() {
+        return RowBatchPlan::General;
+    }
+    if nrows == 1 {
+        let mut batch = RowBatch::new(owner);
+        if batch
+            .push(
+                LocalRow {
+                    row: 0,
+                    lower: bounds[0].0,
+                    upper: bounds[0].1,
+                },
+                array,
+            )
+            .is_err()
+        {
+            return RowBatchPlan::General;
+        }
+        return batch.plan();
+    }
+    if array.terms().iter().any(|term| term.coeff.is_parametric()) {
+        return RowBatchPlan::General;
+    }
+    let row_len = match shape[1..]
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+    {
+        Some(len) if len > 0 => len,
+        _ => return RowBatchPlan::General,
+    };
+    let mut numeric = Vec::new();
+    if emit_numeric_leading(row_len, array.terms(), &mut numeric).is_none() {
+        return RowBatchPlan::General;
+    }
+    if canonicalize_numeric_rows(&mut numeric).is_none() {
+        return RowBatchPlan::General;
+    }
+    // Per-row constant: a scalar contributes once per cell in the row, a dense
+    // constant contributes the sum of the row's values, a parameterized
+    // constant has no scalar row-bounds form (general fallback).
+    let mut rows = Vec::with_capacity(nrows);
+    for (r, &(lower, upper)) in bounds.iter().enumerate() {
+        let Some(shift) = row_constant(array.constant(), r, row_len) else {
+            return RowBatchPlan::General;
+        };
+        rows.push(LocalRow {
+            row: r as u32,
+            lower: lower - shift,
+            upper: upper - shift,
+        });
+    }
+    RowBatchPlan::Planned(RowBlockPlan {
+        owner,
+        rows,
+        numeric,
+        families: Vec::new(),
+        parametric: ParamDepLayout { blocks: Vec::new() },
+    })
+}
+
+/// The constant a leading-axis row sums over its `row_len` cells.
+fn row_constant(constant: &ConstantView, row: usize, row_len: usize) -> Option<f64> {
+    let shift = match constant {
+        ConstantView::Zero => 0.0,
+        ConstantView::Scalar(value) => *value * row_len as f64,
+        ConstantView::Dense { scale, values } => {
+            let start = row.checked_mul(row_len)?;
+            let mut sum = 0.0;
+            for offset in 0..row_len {
+                sum += values.get(start.checked_add(offset)?)?;
+            }
+            scale * sum
+        }
+        ConstantView::ScaledParam { .. } => return None,
+    };
+    shift.is_finite().then_some(shift)
+}
+
+/// Emit the numeric packed stream for a leading-axis row array.
+fn emit_numeric_leading(row_len: usize, terms: &[Term], out: &mut Vec<NumericCell>) -> Option<()> {
+    if row_len == 0 {
+        return None;
+    }
+    for term in terms {
+        if term.coeff.is_parametric() {
+            continue;
+        }
+        let view = term.vars.view();
+        for ordinal in 0..view.len() {
+            let offset = usize::try_from(view.get(ordinal)?).ok()?;
+            let var = view.span().id_at(offset)?;
+            let value = match &term.coeff {
+                CoeffView::One => 1.0,
+                CoeffView::Scalar(value) => *value,
+                CoeffView::Dense { scale, values } => scale * values.get(ordinal)?,
+                CoeffView::ScaledParam { .. } => continue,
+            };
+            let row = u32::try_from(ordinal / row_len).ok()?;
+            out.push(NumericCell { row, var, value });
+        }
+    }
+    Some(())
+}
+
+/// Fold the array constant at one cell into a scalar shift, or `None` when the
+/// constant cannot be represented (which must fall back rather than silently
+/// disappear).
+fn constant_at(constant: &ConstantView, ordinal: usize) -> Option<f64> {
+    let shift = match constant {
+        ConstantView::Zero => 0.0,
+        ConstantView::Scalar(value) => *value,
+        ConstantView::Dense { scale, values } => scale * values.get(ordinal)?,
+        ConstantView::ScaledParam { .. } => return None,
+    };
+    shift.is_finite().then_some(shift)
 }
 
 fn var_slice(view: &View<VarSpan>) -> VarSlice {
@@ -306,18 +561,28 @@ fn param_slice(view: &View<ParamSpan>) -> ParamSlice {
 
 /// Fold a constant into scalar row bounds, or `None` when the constant cannot
 /// be represented (which must fall back rather than silently disappear).
-fn shift_bounds(lower: f64, upper: f64, constant: &ConstantView) -> Option<(f64, f64)> {
+///
+/// The row sums `cells` expression cells, so a per-cell scalar constant
+/// contributes `cells × c` and a dense constant contributes the sum of its
+/// row's values.
+fn shift_bounds(
+    lower: f64,
+    upper: f64,
+    constant: &ConstantView,
+    cells: usize,
+) -> Option<(f64, f64)> {
     let shift = match constant {
         ConstantView::Zero => 0.0,
-        ConstantView::Scalar(value) => *value,
-        // A single-cell dense constant is scalar-equivalent; a per-cell dense
-        // constant over a multi-cell row needs a per-cell bounds representation
-        // that this initial subset does not have, so it falls back.
+        ConstantView::Scalar(value) => *value * cells as f64,
         ConstantView::Dense { scale, values } => {
-            if values.len() != 1 {
+            if values.len() != cells {
                 return None;
             }
-            scale * values.get(0)?
+            let mut sum = 0.0;
+            for ordinal in 0..cells {
+                sum += values.get(ordinal)?;
+            }
+            scale * sum
         }
         ConstantView::ScaledParam { .. } => return None,
     };
@@ -348,6 +613,30 @@ fn emit_numeric(row: u32, terms: &[Term], out: &mut Vec<NumericCell>) -> Option<
                 CoeffView::Dense { scale, values } => scale * values.get(ordinal)?,
                 CoeffView::ScaledParam { .. } => continue,
             };
+            out.push(NumericCell { row, var, value });
+        }
+    }
+    Some(())
+}
+
+/// Emit the numeric packed stream for a cell-wise row array: each cell is its
+/// own row, so the row ordinal equals the cell ordinal.
+fn emit_numeric_cells(terms: &[Term], out: &mut Vec<NumericCell>) -> Option<()> {
+    for term in terms {
+        if term.coeff.is_parametric() {
+            continue;
+        }
+        let view = term.vars.view();
+        for ordinal in 0..view.len() {
+            let offset = usize::try_from(view.get(ordinal)?).ok()?;
+            let var = view.span().id_at(offset)?;
+            let value = match &term.coeff {
+                CoeffView::One => 1.0,
+                CoeffView::Scalar(value) => *value,
+                CoeffView::Dense { scale, values } => scale * values.get(ordinal)?,
+                CoeffView::ScaledParam { .. } => continue,
+            };
+            let row = u32::try_from(ordinal).ok()?;
             out.push(NumericCell { row, var, value });
         }
     }
@@ -480,11 +769,11 @@ mod tests {
         }
     }
 
-    // A2b: a multi-cell dense constant is not representable with scalar bounds.
+    // A2b: a multi-cell dense constant sums over the row's cells.
     #[test]
-    fn dense_multi_cell_constant_falls_back() {
+    fn dense_multi_cell_constant_sums_per_row() {
         let owner = new_owner();
-        let plan = plan_of(
+        match plan_of(
             owner,
             row(0, 0.0, 10.0),
             array(
@@ -496,8 +785,13 @@ mod tests {
                     values: crate::modeling::NumView::from_vec(vec![1.0, 2.0]),
                 },
             ),
-        );
-        assert_eq!(plan, RowBatchPlan::General);
+        ) {
+            RowBatchPlan::Planned(plan) => {
+                assert_eq!(plan.rows()[0].lower, -3.0);
+                assert_eq!(plan.rows()[0].upper, 7.0);
+            }
+            other => panic!("expected planned row, got {other:?}"),
+        }
     }
 
     // A3: a parameterized constant is never silently dropped.
