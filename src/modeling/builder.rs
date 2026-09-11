@@ -152,6 +152,17 @@ impl RowBlockPlan {
     }
 }
 
+#[cfg(test)]
+impl RowBlockPlan {
+    /// Test-only: corrupt the derived dependency witness so core revalidation
+    /// must reject it (proves atomic rejection before mutation).
+    pub(crate) fn corrupt_layout_for_test(&mut self) {
+        for block in &mut self.parametric.blocks {
+            block.cell_offset = block.cell_offset.wrapping_add(1000);
+        }
+    }
+}
+
 /// The decision for one accumulated row batch.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowBatchPlan {

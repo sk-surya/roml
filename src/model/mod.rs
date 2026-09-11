@@ -2415,6 +2415,46 @@ impl Model {
             parametric_ptr.push(parametric_vars.len() as u32);
         }
 
+        // ---- Pre-validate the dependency witness before any mutation ----
+        // Placeholder targets are irrelevant to witness validation; this makes
+        // a corrupt layout reject atomically (no rows allocated, nothing
+        // journaled). The real targets are attached after allocation.
+        let placeholder =
+            CoefficientTarget::Constraint(ConId::new(0, crate::id::Generation::new()));
+        for r in 0..nrows {
+            let (s, e) = (parametric_ptr[r] as usize, parametric_ptr[r + 1] as usize);
+            if s == e {
+                continue;
+            }
+            let cells: Vec<ParamCell> = (s..e)
+                .map(|k| ParamCell {
+                    var: parametric_vars[k],
+                    param: parametric_params[k],
+                    scale: parametric_scales[k],
+                    cached: parametric_values[k],
+                })
+                .collect();
+            let blocks: Vec<StoredParamDepBlock> = plan
+                .parametric()
+                .blocks
+                .iter()
+                .filter(|witness| witness.row == Some(plan.rows()[r].row))
+                .map(|witness| StoredParamDepBlock {
+                    params: witness.params,
+                    param_map: witness.param_map.clone(),
+                    cell_start: witness.cell_offset,
+                    cell_map: witness.cell_map.clone(),
+                    scale: witness.scale,
+                    target: placeholder,
+                })
+                .collect();
+            if !blocks.is_empty() {
+                crate::model::coefficient::CoefficientIndex::validate_param_dep_blocks(
+                    &cells, &blocks,
+                )?;
+            }
+        }
+
         // ---- Allocate the constraint identities exactly once ----
         self.constraints.reserve(nrows);
         let mut cons = Vec::with_capacity(nrows);
@@ -6269,6 +6309,73 @@ mod mir03_row_seam_tests {
             .add_rows_from_plan(&fixture.plan)
             .expect_err("stale variable must reject");
         assert!(matches!(error, ModelError::VariableNotFound(_)));
+        assert_eq!(
+            fixture.model.num_constraints(),
+            0,
+            "atomic rejection leaves no rows"
+        );
+        let lowering = fixture.model.lowering_stats();
+        assert_eq!(lowering.param_dep_blocks, 0);
+        assert_eq!(lowering.numeric_bulk, 0);
+        assert_eq!(lowering.parametric_bulk, 0);
+    }
+
+    /// Journal replay from the retained deltas reproduces the same backend
+    /// state as a clean rebuild from the final snapshot — before and after a
+    /// bulk parameter reprice.
+    #[test]
+    fn mixed_row_plan_replay_matches_rebuild() {
+        use crate::solver::reference::ReferenceBackend;
+        use crate::sync::AdapterCursor;
+        let n = 2usize;
+        let mut fixture = build_fixture(n);
+        fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect("mixed rows");
+        fixture.model.commit().expect("commit rows");
+        fixture
+            .model
+            .set_parameters_bulk(fixture.price_span, &vec![6.0; n])
+            .expect("reprice");
+        fixture.model.commit().expect("commit reprice");
+
+        // Incremental: replay every retained delta from the beginning.
+        let mut incremental = ReferenceBackend::new();
+        let mut cursor = AdapterCursor::new();
+        for batch in fixture
+            .model
+            .deltas_since(ModelRevision::ZERO)
+            .expect("deltas")
+        {
+            incremental.apply_batch(batch, &mut cursor).expect("apply");
+        }
+        // Clean rebuild from the final canonical snapshot.
+        let mut rebuilt = ReferenceBackend::new();
+        let mut rebuild_cursor = AdapterCursor::new();
+        rebuilt.rebuild(
+            &fixture.model.take_snapshot().expect("snapshot"),
+            &mut rebuild_cursor,
+        );
+
+        assert_eq!(
+            incremental.normalized_view(),
+            rebuilt.normalized_view(),
+            "incremental mixed-row replay must match a clean rebuild"
+        );
+    }
+
+    /// A corrupted dependency witness rejects before allocating rows or
+    /// journaling anything.
+    #[test]
+    fn mixed_row_plan_rejects_corrupt_layout_atomically() {
+        let mut fixture = build_fixture(2);
+        fixture.plan.corrupt_layout_for_test();
+        let error = fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect_err("corrupt witness must reject");
+        assert!(matches!(error, ModelError::InvalidParamDepLayout(_)));
         assert_eq!(
             fixture.model.num_constraints(),
             0,
