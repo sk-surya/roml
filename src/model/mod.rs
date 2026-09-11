@@ -6443,4 +6443,90 @@ mod mir03_row_seam_tests {
         assert_eq!(lowering.numeric_bulk, 0);
         assert_eq!(lowering.parametric_bulk, 0);
     }
+    /// IR-23: a non-eligible objective form (two parametric terms over one
+    /// variable span) falls back to the general symbolic path and produces the
+    /// same canonical snapshot as the general bulk construction.
+    #[test]
+    fn non_eligible_objective_falls_back_and_matches_general() {
+        let n = 2usize;
+        let build = |fast: bool| -> Model {
+            let mut model = Model::new();
+            let owner = model.instance();
+            let uniform = BlockBounds::Uniform(Bounds::new(0.0, 1.0));
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform)
+                .expect("var block");
+            let p1 = model.add_parameter_block(&vec![1.0; n]).expect("p1");
+            let p2 = model.add_parameter_block(&vec![2.0; n]).expect("p2");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let pv1 = ParamView::new(owner, View::contiguous(p1, n)).expect("pv1");
+            let pv2 = ParamView::new(owner, View::contiguous(p2, n)).expect("pv2");
+            let mut vars = Vec::new();
+            let mut params = Vec::new();
+            let mut scales = Vec::new();
+            for i in 0..n {
+                vars.push(v.member(i).expect("v"));
+                params.push(pv1.member(i).expect("p1"));
+                scales.push(1.0);
+            }
+            for i in 0..n {
+                vars.push(v.member(i).expect("v"));
+                params.push(pv2.member(i).expect("p2"));
+                scales.push(1.0);
+            }
+            if fast {
+                let terms = vec![
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv1,
+                        },
+                    },
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv2,
+                        },
+                    },
+                ];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic");
+            } else {
+                model
+                    .set_linear_objective_param_bulk(Sense::Maximize, &vars, &params, &scales, 0.0)
+                    .expect("general");
+            }
+            model
+        };
+        let fast = build(true);
+        let general = build(false);
+        // Normalized comparison: same cells, same symbolic expression and value;
+        // dependency membership compared as a set (the snapshot's dependency
+        // vector is not order-canonical on the existing general path).
+        let fast_snapshot = fast.take_snapshot().expect("fast");
+        let general_snapshot = general.take_snapshot().expect("general");
+        assert_eq!(fast_snapshot.cells.len(), general_snapshot.cells.len());
+        for (a, b) in fast_snapshot
+            .cells
+            .iter()
+            .zip(general_snapshot.cells.iter())
+        {
+            assert_eq!(a.cell_key, b.cell_key);
+            assert_eq!(a.value_expr, b.value_expr);
+            assert_eq!(a.evaluated_value, b.evaluated_value);
+            let mut da = a.dependencies.clone();
+            let mut db = b.dependencies.clone();
+            da.sort();
+            db.sort();
+            assert_eq!(da, db);
+        }
+        assert!(
+            fast.lowering_stats().general_affine > 0,
+            "overlapping spans must fall back to the general path"
+        );
+    }
 }
