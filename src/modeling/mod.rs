@@ -16,7 +16,7 @@ mod coeff;
 mod eligibility;
 mod view;
 
-pub use builder::{RowBatch, RowBatchPlan, RowSink};
+pub use builder::{RowBatch, RowBatchPlan};
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
-pub use eligibility::{try_param_block_layout, CanonicalCell, SinkCells};
+pub use eligibility::{try_param_block_layout, SinkMap, TargetRun};
 pub use view::{ParamView, VarView, View, ViewError};

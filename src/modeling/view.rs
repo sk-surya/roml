@@ -56,6 +56,8 @@ pub enum ViewError {
     /// The composition is outside the initial conservative IR and must use the
     /// general symbolic path.
     Unsupported(&'static str),
+    /// A checked metadata transformation overflowed `isize`/`usize`.
+    IndexOverflow,
     /// Two symbolic arrays belong to different model instances.
     CrossModel {
         /// Left operand owner.
@@ -91,6 +93,7 @@ impl std::fmt::Display for ViewError {
             Self::Unsupported(what) => {
                 write!(f, "unsupported IR composition (general fallback): {what}")
             }
+            Self::IndexOverflow => write!(f, "view metadata transformation overflowed"),
             Self::CrossModel { left, right } => {
                 write!(f, "cross-model view composition: {left:?} vs {right:?}")
             }
@@ -198,7 +201,15 @@ impl<S> View<S> {
         let mut shape = self.map.shape().to_vec();
         shape[axis] = len;
         let strides = self.map.strides().to_vec();
-        let offset = self.map.offset() + (start as isize) * strides[axis];
+        let start_isize = isize::try_from(start).map_err(|_| ViewError::IndexOverflow)?;
+        let delta = start_isize
+            .checked_mul(strides[axis])
+            .ok_or(ViewError::IndexOverflow)?;
+        let offset = self
+            .map
+            .offset()
+            .checked_add(delta)
+            .ok_or(ViewError::IndexOverflow)?;
         Ok(Self {
             span: self.span.clone(),
             map: StridedMap::new(shape, strides, offset),
@@ -206,6 +217,10 @@ impl<S> View<S> {
     }
 
     /// Metadata-only reversal (negative step) along `axis`.
+    ///
+    /// Reversing a zero-length axis is a no-op: the offset is not shifted and
+    /// the stride is not negated. All arithmetic is checked; overflow is a typed
+    /// [`ViewError::IndexOverflow`], never a wrap or debug panic.
     pub fn reverse(&self, axis: usize) -> Result<Self, ViewError>
     where
         S: Clone,
@@ -214,10 +229,23 @@ impl<S> View<S> {
         if axis >= rank {
             return Err(ViewError::AxisOutOfRange { axis, rank });
         }
-        let mut strides = self.map.strides().to_vec();
         let dim = self.map.shape()[axis];
-        let offset = self.map.offset() + (dim as isize - 1) * strides[axis];
-        strides[axis] = -strides[axis];
+        if dim == 0 {
+            return Ok(self.clone());
+        }
+        let mut strides = self.map.strides().to_vec();
+        let last = isize::try_from(dim - 1).map_err(|_| ViewError::IndexOverflow)?;
+        let delta = last
+            .checked_mul(strides[axis])
+            .ok_or(ViewError::IndexOverflow)?;
+        let offset = self
+            .map
+            .offset()
+            .checked_add(delta)
+            .ok_or(ViewError::IndexOverflow)?;
+        strides[axis] = strides[axis]
+            .checked_neg()
+            .ok_or(ViewError::IndexOverflow)?;
         Ok(Self {
             span: self.span.clone(),
             map: StridedMap::new(self.map.shape().to_vec(), strides, offset),
@@ -490,5 +518,43 @@ mod tests {
         let sliced = vars.slice(0, 1, 2).expect("slice");
         assert_eq!(sliced.owner(), owner);
         assert_eq!(sliced.member(0).expect("member").index(), 11);
+    }
+
+    #[test]
+    fn slice_and_reverse_overflows_are_typed() {
+        // A slice start beyond isize range is a typed overflow, not a wrap.
+        let huge = View::new((), [usize::MAX], [1isize], 0).expect("view");
+        assert_eq!(
+            huge.slice(0, usize::MAX - 1, 1),
+            Err(ViewError::IndexOverflow)
+        );
+
+        // Stride negation overflow (isize::MIN).
+        let min_stride = View::new((), [2usize], [isize::MIN], 0).expect("view");
+        assert_eq!(min_stride.reverse(0), Err(ViewError::IndexOverflow));
+
+        // Offset multiplication overflow.
+        let big_stride = View::new((), [3usize], [isize::MAX], 0).expect("view");
+        assert_eq!(big_stride.reverse(0), Err(ViewError::IndexOverflow));
+
+        // Offset addition overflow.
+        let big_offset = View::new((), [3usize], [1isize], isize::MAX).expect("view");
+        assert_eq!(big_offset.reverse(0), Err(ViewError::IndexOverflow));
+
+        // Out-of-range slice stays a bounds error.
+        let view = View::new((), [2usize, 3], [3isize, 1], 0).expect("view");
+        assert!(matches!(
+            view.slice(1, 2, 2),
+            Err(ViewError::SliceOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn reversing_a_zero_length_axis_does_not_shift_the_offset() {
+        let view = View::new((), [0usize], [1isize], 5).expect("view");
+        let reversed = view.reverse(0).expect("reverse");
+        assert_eq!(reversed.offset(), 5);
+        assert_eq!(reversed.shape(), &[0]);
+        assert!(reversed.is_empty());
     }
 }

@@ -12,8 +12,7 @@
 
 use std::sync::Arc;
 
-use crate::bulk::StridedMap;
-use crate::modeling::{ParamView, VarView, ViewError};
+use crate::modeling::{ParamView, VarView, View, ViewError};
 use crate::ModelInstanceId;
 
 fn product(shape: &[usize]) -> Option<usize> {
@@ -22,20 +21,61 @@ fn product(shape: &[usize]) -> Option<usize> {
         .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
 }
 
-/// A numeric buffer with a strided view over it.
+/// A numeric buffer with a validated strided view over it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NumView {
     values: Arc<[f64]>,
-    map: StridedMap,
+    view: View<()>,
+}
+
+/// The inclusive range of buffer offsets a strided view can map, or `None` on
+/// overflow. Computed in O(rank) from metadata only.
+fn mapped_range(shape: &[usize], strides: &[isize], offset: isize) -> Option<(isize, isize)> {
+    let mut low = offset;
+    let mut high = offset;
+    for (dim, stride) in shape.iter().zip(strides.iter()) {
+        if *dim == 0 {
+            continue;
+        }
+        let span = (*dim as isize - 1).checked_mul(*stride)?;
+        if span >= 0 {
+            high = high.checked_add(span)?;
+        } else {
+            low = low.checked_add(span)?;
+        }
+    }
+    Some((low, high))
 }
 
 impl NumView {
+    /// A validated strided numeric view over a shared buffer.
+    ///
+    /// Every mapped offset must index the buffer; out-of-range metadata is a
+    /// typed [`ViewError::Unsupported`] rather than a later panic.
+    pub fn new(
+        values: Arc<[f64]>,
+        shape: impl Into<Arc<[usize]>>,
+        strides: impl Into<Arc<[isize]>>,
+        offset: isize,
+    ) -> Result<Self, ViewError> {
+        let view = View::new((), shape, strides, offset)?;
+        let (low, high) = mapped_range(view.shape(), view.strides(), view.offset())
+            .ok_or(ViewError::IndexOverflow)?;
+        if !view.is_empty() && (low < 0 || high >= values.len() as isize) {
+            return Err(ViewError::Unsupported(
+                "numeric view offset out of buffer range",
+            ));
+        }
+        Ok(Self { values, view })
+    }
+
     /// A contiguous numeric view over a freshly owned buffer.
     pub fn from_vec(values: Vec<f64>) -> Self {
+        let values: Arc<[f64]> = Arc::from(values);
         let len = values.len();
         Self {
-            values: Arc::from(values),
-            map: StridedMap::contiguous(len),
+            values,
+            view: View::contiguous((), len),
         }
     }
 
@@ -44,44 +84,68 @@ impl NumView {
         let len = values.len();
         Self {
             values,
-            map: StridedMap::contiguous(len),
+            view: View::contiguous((), len),
         }
     }
 
     /// Shape of the numeric view.
     pub fn shape(&self) -> &[usize] {
-        self.map.shape()
+        self.view.shape()
     }
 
     /// Signed strides.
     pub fn strides(&self) -> &[isize] {
-        self.map.strides()
+        self.view.strides()
     }
 
     /// Signed offset into the buffer.
     pub fn offset(&self) -> isize {
-        self.map.offset()
+        self.view.offset()
     }
 
     /// Number of mapped values.
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.view.len()
     }
 
     /// Whether the view covers no values.
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.view.is_empty()
     }
 
     /// Resolve a row-major ordinal to its numeric value.
     pub fn get(&self, ordinal: usize) -> Option<f64> {
-        let offset = usize::try_from(self.map.get(ordinal)?).ok()?;
+        let offset = usize::try_from(self.view.get(ordinal)?).ok()?;
         self.values.get(offset).copied()
     }
 
     /// Whether two views share the same backing buffer (pointer identity).
     pub fn shares_buffer(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.values, &other.values)
+    }
+
+    /// Metadata-only slice.
+    pub fn slice(&self, axis: usize, start: usize, len: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            values: self.values.clone(),
+            view: self.view.slice(axis, start, len)?,
+        })
+    }
+
+    /// Metadata-only reversal.
+    pub fn reverse(&self, axis: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            values: self.values.clone(),
+            view: self.view.reverse(axis)?,
+        })
+    }
+
+    /// Metadata-only transpose.
+    pub fn transpose(&self, a: usize, b: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            values: self.values.clone(),
+            view: self.view.transpose(a, b)?,
+        })
     }
 }
 
@@ -197,6 +261,56 @@ impl ConstantView {
     }
 }
 
+fn validate_shape(actual: &[usize], expected: &[usize]) -> Result<(), ViewError> {
+    if actual != expected {
+        return Err(ViewError::ShapeMismatch {
+            left: Arc::from(expected),
+            right: Arc::from(actual),
+        });
+    }
+    Ok(())
+}
+
+fn validate_coeff(
+    coeff: &CoeffView,
+    owner: ModelInstanceId,
+    shape: &[usize],
+) -> Result<(), ViewError> {
+    match coeff {
+        CoeffView::One | CoeffView::Scalar(_) => Ok(()),
+        CoeffView::Dense { values, .. } => validate_shape(values.shape(), shape),
+        CoeffView::ScaledParam { params, .. } => {
+            if params.owner() != owner {
+                return Err(ViewError::CrossModel {
+                    left: owner,
+                    right: params.owner(),
+                });
+            }
+            validate_shape(params.view().shape(), shape)
+        }
+    }
+}
+
+fn validate_constant(
+    constant: &ConstantView,
+    owner: ModelInstanceId,
+    shape: &[usize],
+) -> Result<(), ViewError> {
+    match constant {
+        ConstantView::Zero | ConstantView::Scalar(_) => Ok(()),
+        ConstantView::Dense { values, .. } => validate_shape(values.shape(), shape),
+        ConstantView::ScaledParam { params, .. } => {
+            if params.owner() != owner {
+                return Err(ViewError::CrossModel {
+                    left: owner,
+                    right: params.owner(),
+                });
+            }
+            validate_shape(params.view().shape(), shape)
+        }
+    }
+}
+
 /// One `VarView` with its coefficient family.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Term {
@@ -216,8 +330,9 @@ pub struct LinArray {
 }
 
 impl LinArray {
-    /// Build a linear array, checking that every term belongs to `owner` and
-    /// has the array shape.
+    /// Build a linear array, checking that every term belongs to `owner`, has
+    /// the array shape, and carries coefficient metadata whose owner and shape
+    /// agree with the array.
     pub fn new(
         owner: ModelInstanceId,
         shape: impl Into<Arc<[usize]>>,
@@ -241,7 +356,9 @@ impl LinArray {
                     right: Arc::from(term.vars.view().shape()),
                 });
             }
+            validate_coeff(&term.coeff, owner, &shape)?;
         }
+        validate_constant(&constant, owner, &shape)?;
         Ok(Self {
             owner,
             shape,
@@ -573,5 +690,115 @@ mod tests {
             other => panic!("expected Dense, got {other:?}"),
         }
         assert_eq!(*scaled.constant(), ConstantView::Scalar(4.0));
+    }
+
+    #[test]
+    fn linarray_rejects_foreign_and_misshaped_coefficient_metadata() {
+        let owner = ModelInstanceId::allocate().expect("owner");
+        let foreign = ModelInstanceId::allocate().expect("owner");
+        let vars = var_view(owner, 3);
+
+        // Foreign parameter owner in a coefficient.
+        let foreign_coeff = LinArray::new(
+            owner,
+            [3usize],
+            vec![Term {
+                vars: vars.clone(),
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: param_view(foreign, 3),
+                },
+            }],
+            ConstantView::Zero,
+        );
+        assert!(matches!(foreign_coeff, Err(ViewError::CrossModel { .. })));
+
+        // Foreign parameter owner in a constant.
+        let foreign_constant = LinArray::new(
+            owner,
+            [3usize],
+            vec![Term {
+                vars: vars.clone(),
+                coeff: CoeffView::One,
+            }],
+            ConstantView::ScaledParam {
+                scale: 1.0,
+                params: param_view(foreign, 3),
+            },
+        );
+        assert!(matches!(
+            foreign_constant,
+            Err(ViewError::CrossModel { .. })
+        ));
+
+        // Dense coefficient shape not matching the array.
+        let dense_shape = LinArray::new(
+            owner,
+            [3usize],
+            vec![Term {
+                vars: vars.clone(),
+                coeff: CoeffView::Dense {
+                    scale: 1.0,
+                    values: NumView::from_vec(vec![1.0, 2.0]),
+                },
+            }],
+            ConstantView::Zero,
+        );
+        assert!(matches!(dense_shape, Err(ViewError::ShapeMismatch { .. })));
+
+        // Parameter coefficient shape not matching the array.
+        let param_shape = LinArray::new(
+            owner,
+            [3usize],
+            vec![Term {
+                vars: vars.clone(),
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: param_view(owner, 2),
+                },
+            }],
+            ConstantView::Zero,
+        );
+        assert!(matches!(param_shape, Err(ViewError::ShapeMismatch { .. })));
+
+        // Dense constant shape not matching the array.
+        let constant_shape = LinArray::new(
+            owner,
+            [3usize],
+            vec![],
+            ConstantView::Dense {
+                scale: 1.0,
+                values: NumView::from_vec(vec![1.0, 2.0]),
+            },
+        );
+        assert!(matches!(
+            constant_shape,
+            Err(ViewError::ShapeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn numview_is_validated_and_transforms_are_metadata_only() {
+        let values: Arc<[f64]> = Arc::from(vec![10.0, 20.0, 30.0, 40.0]);
+        let view = NumView::new(values, [2usize, 2], [2isize, 1], 0).expect("view");
+        assert_eq!(view.get(0), Some(10.0));
+        assert_eq!(view.get(3), Some(40.0));
+
+        let transposed = view.transpose(0, 1).expect("transpose");
+        let mapped: Vec<f64> = (0..4).filter_map(|i| transposed.get(i)).collect();
+        assert_eq!(mapped, vec![10.0, 30.0, 20.0, 40.0]);
+
+        let reversed = view.reverse(0).expect("reverse");
+        let mapped: Vec<f64> = (0..4).filter_map(|i| reversed.get(i)).collect();
+        assert_eq!(mapped, vec![30.0, 40.0, 10.0, 20.0]);
+        // Metadata transforms never copy the buffer.
+        assert!(view.shares_buffer(&transposed));
+        assert!(view.shares_buffer(&reversed));
+
+        // Metadata whose offsets leave the buffer is rejected.
+        assert!(matches!(
+            NumView::new(Arc::from(vec![1.0, 2.0]), [3usize], [1isize], 0),
+            Err(ViewError::Unsupported(_))
+        ));
     }
 }
