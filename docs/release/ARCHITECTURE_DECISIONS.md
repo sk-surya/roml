@@ -200,3 +200,43 @@ Sequence:
 6. API/docs/package/release.
 
 This minimizes rework and forces adapter design to implement the intended production contract rather than preserve prototype accidents.
+
+## D-019 — Shared ordinal modeling IR and block-native core
+
+**Decision:** ROML has one modeling system with two ergonomic frontends (native Rust and Python). Both lower to a shared model-owned **ordinal** array IR, then to L2 CSR/block descriptors and canonical block-native core operations. The core gains trusted variable/parameter spans, packed parametric rows/objectives, and block-native parameter propagation. There is no Pyomo `AbstractModel`; changing data is parameter binding on persistent structure, while changing structure rebuilds.
+
+**Levels:** `roml::modeling` is Level 1; L2 owns language-independent CSR/block/strided dependency descriptors; `roml::advanced` remains the raw/advanced escape hatch. Python wraps L1/L2 rather than maintaining a second modeling IR.
+
+**Initial IR:** symbolic views retain `ModelInstanceId` ownership and wrap `View<S> = span + shape + signed strides + offset`. `LinArray = Σ Term{VarView, CoeffView} + ConstantView`. Initial `CoeffView` kinds are `One`, `Scalar(α)`, `Dense{scale, values}`, and `ScaledParam{scale, ParamView}`.
+
+**Invariants:**
+
+1. `VarSpan`/`ParamSpan` originate only from trusted block allocation; arbitrary `(start,len)` cannot construct them.
+2. Block members use the arena's fresh generation; IDs are never reused; per-entity staleness is preserved and there is no span-wide epoch.
+3. Symbolic array handles retain model ownership; cross-model composition is rejected before ID reconstruction.
+4. Block views are span + shape + signed strides + offset; slicing/transpose edit metadata rather than gathering IDs.
+5. Labels and component names are frontend/boundary metadata and do not enter expression nodes.
+6. Block allocation never materializes per-element component names; existing scalar borrowed name APIs are not broken merely to synthesize array names.
+7. Variable block creation uses one packed journal/delta operation. Parameter block creation preserves existing parameter-creation revision semantics and does not invent a solver-facing add operation solely for parameter existence.
+8. Covered coefficient families never materialize `Vec<Affine>` or per-cell `ValueExpr`; scalar scaling of a dense numeric view changes a scalar factor, not the buffer.
+9. Parameterized rows/objectives have packed bulk construction paths. A packed p-cell represents one `scale × ParamId` at one canonical `(target,var)`.
+10. Distinct parameters contributing to the same canonical cell are not silently collapsed into the p-base representation; they are typed not-packable and use the correct general symbolic path.
+11. Persisted dependency blocks use L2/core strided ordinal descriptors, not L1/Python view types.
+12. `ParamDepBlock` eligibility requires a metadata proof that `r -> (target(r),var(r))` is collision-free across all terms and that post-canonical coefficient positions admit a strided witness. It is sink-aware and conservative; stride sign/range-disjointness alone are invalid predicates.
+13. Core revalidates any supplied `ParamDepLayout` against the post-canonical block before storing it. Uncertain/invalid layouts never become fast-path state.
+14. Eligible block dependencies do not populate per-cell `param_positions`; semantic dependency queries and scalar updates remain complete by consulting block and sparse dependency representations.
+15. Bulk parameter updates preserve transaction/commit semantics. One committed parameter block yields one packed parameter-value change and one packed coefficient-patch batch containing all affected eligible dependency blocks.
+16. Retained delta operations are self-contained. They may share immutable construction topology but never require access to mutable live-model packed storage.
+17. Packed base/p-base are append-only for fresh canonical cells; mutation of an existing logical cell uses/shadows into the overlay; block propagation respects dead/shadowed cells.
+18. Rule/callback APIs may construct expressions per index but accumulate CSR and mutate the model in bulk.
+19. Rust and Python vectorized frontends are compared by normalized ordinal-IR and semantic-journal fingerprints, not raw bytes containing owner IDs or absolute entity IDs.
+20. The general symbolic path remains a correct fallback and is not distorted to absorb exotic cases.
+21. Diagnostics guard fast paths, but are qualification/debug surfaces rather than mathematical model semantics.
+
+**Initial conservative optimization boundary:** `ParamView * LinArray` stays in L1 fast IR only when variable-term coefficients are `One`/`Scalar` and the constant is `Zero`/`Scalar`. Dense×parameter and parameter×parameter coefficient forms fall back initially and are promoted only if measurements justify another coefficient kind.
+
+**Rejected:** span-wide epoch invalidation; core dependence on Python/L1 view types; Pyomo source/API compatibility; macro DSL as foundation; `IndexSet<T>` inside expression IR; eligibility based only on stride sign/range overlap; solver-facing parameter-add operations that change current creation semantics without evidence.
+
+**Qualification:** flagship BESS uses 28,800 mutable price parameters and 57,600 affected objective cells, 100 bulk reprices on one persistent session, no general-affine lowering for the covered formulation, no per-cell reverse-index/overlay/`ValueExpr` work on the eligible update path, self-contained packed delta replay, snapshot equivalence and independent review.
+
+**Sequencing:** MIR-00 baseline → MIR-01 trusted blocks → MIR-02 parametric packed construction/propagation → MIR-03 shared IR/proof/CSR → MIR-04 Rust L1 → MIR-05 rule builders → MIR-06 Python migration → MIR-07 ergonomics/template binding → MIR-08 qualification.

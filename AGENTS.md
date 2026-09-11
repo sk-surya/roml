@@ -1,21 +1,14 @@
 # ROML Agent Instructions
 
-## Current owner instruction — Python successor, 2026-09-07
+## Current owner instruction — MIR shared modeling IR, 2026-09-10
 
-For the requested Python work, read
-`.planning/milestones/MPY-python-interface/README.md` and its complete packet.
-The owner authorizes review/remediation and normal merge of relevant pending
-prerequisite PRs, followed by PyO3 + maturin implementation after P34 closure.
-The packet explicitly replaces a C-ABI-first assumption for Python and places
-MPY ahead of the deferred M4 preview. Preserve branch protections, independent
-review, existing correctness/native-safety invariants and publication gates.
-Do not request permission again for an already-authorized qualifying prerequisite
-merge. Leave MPY implementation PRs reviewable unless separately authorized to merge.
+For current modeling/core work, read `.planning/milestones/MIR-modeling-ir/README.md` and the complete MIR packet before implementation. Load `.planning/milestones/MIR-modeling-ir/skills/roml-ir-invariants/SKILL.md` before touching coefficient storage, parameter propagation, delta compilation, shared modeling IR, or Python array/expression lowering.
 
-Several architecture/defect descriptions below are historical hardening-baseline
-text, not evidence that those defects remain on current main. Reconcile them
-against current code during MPY-00 and retain resolved defects as regression
-history. Follow the current root/milestone state for actual phase completion.
+MIR precedes further Python OO ergonomics and the deferred M4 preview. Tranche 1 (MIR-00, MIR-01, MIR-02) is owner-authorized, one phase at a time. D-019 governs the shared ordinal IR, trusted block spans, packed parametric construction, block-native repricing, self-contained deltas and fallback rules. Preserve branch protections, independent review, canonical one-cell semantics, per-entity staleness, model ownership, transactions, snapshots and revision replay. Do not request permission again for already-authorized MIR-00/01/02 work. Leave runtime implementation PRs reviewable unless separately authorized to merge; publication/tag/release remain separate owner gates.
+
+## Prior owner instruction — Python successor, 2026-09-07 (fulfilled)
+
+The MPY Python interface implementation merged via PR #53 and the post-MPY performance/certification stack merged via PR #55 with closeout #56. The MPY packet remains historical/regression authority, but it is no longer the active routing target. Several architecture/defect descriptions below are historical hardening-baseline text, not evidence that those defects remain on current main; reconcile them against current code and retain resolved defects as regression history.
 
 ## Repository mission
 
@@ -41,30 +34,15 @@ Read these before implementation:
 7. `docs/release/ARCHITECTURE_DECISIONS.md`
 8. `docs/superpowers/specs/2026-07-13-public-release-hardening-design.md`
 9. the applicable file under `docs/superpowers/plans/`
+10. the active milestone packet and any required milestone-local skill
 
-The historical audit is anchored at `f9ba192`; the authoritative implementation baseline for this plan is `main@82e2ed95545635b628187ba0081fe8c8b03eaafb`. The delta audit reconciles the four later commits.
+The historical audit is anchored at `f9ba192`; the authoritative implementation baseline for each new phase is the exact refreshed `main` recorded by that phase. Do not reuse a historical baseline when the active packet requires a fresh one.
 
 If task prose conflicts with requirements or architecture decisions, requirements and accepted decisions govern. Amend an ADR explicitly rather than silently changing direction.
 
 ## Current architecture and known transition
 
-Current flow:
-
-```text
-Model mutation -> ChangeLog -> destructive drain -> SolverAdapter::apply_changes -> solve
-```
-
-Target flow:
-
-```text
-Canonical model revision
-    -> immutable typed DeltaBatch
-    -> per-adapter cursor and acknowledgement
-    -> safe backend session
-    -> deterministic snapshot rebuild on unsupported/dirty failure
-```
-
-Do not deepen dependencies on the current destructive drain protocol. Adapter optimizations must migrate to the revisioned P2 contract.
+The revisioned canonical model/delta protocol is authoritative. Do not reintroduce destructive one-shot synchronization assumptions that bypass revision replay, snapshot recovery, or per-adapter acknowledgement. MIR fast paths must compile into the same self-contained revision protocol as scalar/general paths.
 
 ## Non-negotiable invariants
 
@@ -85,7 +63,7 @@ Do not deepen dependencies on the current destructive drain protocol. Adapter op
 
 - **HiGHS:** prefer pinned `rust-or/highs-sys`, generated from the official C header. Upstream or narrowly fork for genuine API gaps before considering a ROML-specific sys crate.
 - **MOSEK:** use the official `mosek` Rust API. Remove handwritten declarations/constants. Never mutate a task from inside a callback unless official documentation explicitly permits the exact operation.
-- **Xpress:** first complete the legal/technical binding decision. Use a generated sys boundary or runtime loader only after verifying header-derived redistribution, SDK versions, lifecycle, and supported targets.
+- **Xpress:** use the accepted binding boundary/version policy; any change to commercial binding ownership requires renewed legal/technical evidence.
 
 A sys crate is an ownership boundary for ABI/build/link policy, not a layer to add uniformly for naming symmetry.
 
@@ -116,28 +94,14 @@ Before completion:
 
 1. Run focused tests and the entire phase matrix.
 2. Run formatting, clippy with warnings denied, tests, rustdoc, policy checks, and package checks.
-3. Inspect `cargo package --list` for every publishable crate.
+3. Inspect `cargo package --list` for every publishable crate touched by the phase.
 4. Record commands, versions, outputs, skipped checks, and residual risks in evidence.
 5. Update `.planning/STATE.md` only with verified facts.
 6. Request independent review and resolve all P0/P1 findings.
 
 ## Branch strategy
 
-Planning branch:
-
-`docs/public-release-production-roadmap`
-
-Suggested implementation branches:
-
-- `phase-roml-P0-release-baseline`
-- `phase-roml-P1-core-correctness`
-- `phase-roml-P2-revisioned-sync`
-- `phase-roml-P3-solver-boundaries`
-- `phase-roml-P4-cross-platform-ci`
-- `phase-roml-P5-public-api-packaging`
-- `phase-roml-P6-release-qualification`
-
-Keep planning/governance changes separate from production implementation. Do not combine unrelated phases in one PR.
+Use the active milestone's roadmap for branch names. Keep planning/governance changes separate from production implementation. Do not combine unrelated phases in one PR.
 
 ## Baseline commands
 
@@ -152,26 +116,17 @@ RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps
 cargo package --list -p roml
 ```
 
-Backend checks are separate because native installation and licensing differ. Core commands must not require HiGHS, MOSEK, or Xpress.
+Backend checks are separate because native installation and licensing differ. Core commands must not require MOSEK or Xpress; HiGHS checks follow the active phase requirements.
 
-## Current high-severity defects to preserve as regression targets
+## Historical regression targets
 
-- Duplicate parameterized expression terms can target one solver cell with replacement/last-write behavior.
-- `sync_model` drains changes before backend acknowledgement.
-- Semi-continuous HiGHS synchronization can apply an ordinary bound change and then fail as unsupported, leaving partial backend mutation with no replayable batch.
-- `ModelConstants::default()` recursively calls itself.
-- `Model` currently owns one-shot `SolveOptions`, leaking solver policy into canonical state.
-- Unsupported solve options are documented as silently ignored.
-- Handwritten HiGHS/MOSEK/Xpress ABI declarations and constants are version-fragile.
-- The MOSEK callback mutates the task inside the callback despite official restrictions.
-- Native constructors/callbacks contain panic, unchecked-pointer, ignored-return-code, and lifecycle risks.
-- Generated solver logs and placeholder non-Rust scaffolding contaminate repository/package boundaries.
+The principal-engineering audit and historical milestone packets contain defects that may already be fixed. Preserve their regression tests and invariants; do not copy stale defect claims into current state without reproducing them on the exact head.
 
-Do not “fix” these by deleting tests, weakening errors, or hiding unsupported behavior. Establish the correct invariant and verify it.
+Do not “fix” regressions by deleting tests, weakening errors, or hiding unsupported behavior. Establish the correct invariant and verify it.
 
 ## Release safety
 
-- Do not publish any crate, create a tag, or create a release without explicit owner authorization for the exact SHA and crate list after Phase 6.
-- Keep `roml-mosek` and `roml-xpress` unpublished/experimental until independently qualified.
+- Do not publish any crate, create a tag, or create a release without explicit owner authorization for the exact SHA and crate list.
+- Keep commercial backends independently qualified under their accepted support labels.
 - Do not use admin merge bypass.
-- A phase is complete only when its gate, evidence, and independent review pass. “Works on my Mac” is not evidence of cross-platform support.
+- A phase is complete only when its gate, evidence, and independent review pass. “Works on my Mac” is not cross-platform evidence.
