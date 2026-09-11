@@ -3763,6 +3763,17 @@ impl Model {
         self.set_linear_objective_from_linarray(Sense::Minimize, array)
     }
 
+    /// A deterministic fingerprint over the normalized ordinal IR (MIR-04,
+    /// IR-25): compiled/canonical ordinals, coefficients, and topology, with
+    /// absolute ids, owners, names, labels, and parameter values excluded.
+    ///
+    /// Two models with identical ordinal structure produce the same value even
+    /// when their names, labels, owners, or id generations differ; any
+    /// structural difference changes it.
+    pub fn normalized_ordinal_fingerprint(&self) -> Result<u64, ModelError> {
+        Ok(self.take_snapshot()?.normalized_ordinal_fingerprint())
+    }
+
     /// Commit a cell-wise row constraint (MIR-04 L1): each cell of the
     /// residual array becomes one constraint row, with the leading axis the
     /// row set and the remaining axes that row's coefficients.
