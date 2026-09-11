@@ -12,7 +12,9 @@
 //! revalidates it after canonicalization.
 
 mod coeff;
+mod eligibility;
 mod view;
 
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
+pub use eligibility::{try_param_block_layout, CanonicalCell, SinkCells};
 pub use view::{ParamView, VarView, View, ViewError};
