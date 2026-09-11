@@ -262,6 +262,45 @@ impl ReferenceBackend {
                     }
                 }
             }
+            // MIR-03 packed mixed rows: same end state as one `AddConstraint`
+            // plus one constant / scaled-parameter `SetCell` per cell.
+            ModelOp::AddMixedRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    self.constraints.insert(con, (block.bounds[r], true));
+                    let (ns, ne) = (
+                        block.numeric_ptr[r] as usize,
+                        block.numeric_ptr[r + 1] as usize,
+                    );
+                    for k in ns..ne {
+                        let var = block.numeric_vars[k];
+                        self.constraint_cells.insert(
+                            (CoefficientTarget::Constraint(con), var),
+                            (
+                                ValueExpr::constant(block.numeric_values[k]),
+                                block.numeric_values[k],
+                            ),
+                        );
+                    }
+                    let (ps, pe) = (
+                        block.parametric_ptr[r] as usize,
+                        block.parametric_ptr[r + 1] as usize,
+                    );
+                    for k in ps..pe {
+                        let var = block.parametric_vars[k];
+                        self.constraint_cells.insert(
+                            (CoefficientTarget::Constraint(con), var),
+                            (
+                                ValueExpr::scaled_param(
+                                    block.parametric_scales[k],
+                                    block.parametric_params[k],
+                                ),
+                                block.parametric_values[k],
+                            ),
+                        );
+                    }
+                }
+            }
             ModelOp::RemoveConstraint { con } => {
                 self.constraints.remove(con);
                 // Remove cells for this constraint

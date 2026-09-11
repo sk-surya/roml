@@ -2309,6 +2309,233 @@ impl Model {
         Ok(cons)
     }
 
+    /// Insert a packed block of mixed constant + parametric rows from a
+    /// completed `RowBlockPlan` (MIR-03, IR-22).
+    ///
+    /// One constraint allocation and one logical `Change::BulkMixedRows`: the
+    /// numeric and parametric cells share the same rows and bounds, and the
+    /// plan's derived `ParamDepLayout` refers to those exact parametric cells.
+    /// Every validation runs before any mutation, so a stale variable or
+    /// parameter, non-finite value, bad bound, or bad witness rejects
+    /// atomically. The stored payload is sufficient to replay the mutation
+    /// without rerunning L1 planning or the eligibility proof.
+    #[allow(dead_code)] // MIR-03 row seam: exercised by tests; the production lowering caller lands with the compiler/session wiring
+    pub(crate) fn add_rows_from_plan(
+        &mut self,
+        plan: &crate::modeling::builder::RowBlockPlan,
+    ) -> Result<Vec<ConId>, ModelError> {
+        if plan.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "mixed row plan belongs to another model",
+            ));
+        }
+        if plan.rows().is_empty() {
+            return Err(ModelError::InvalidParamDepLayout("empty mixed row plan"));
+        }
+        let nrows = plan.rows().len();
+        let bounds_of = |row: &crate::modeling::builder::LocalRow| ConstraintBounds {
+            lower: row.lower,
+            upper: row.upper,
+        };
+
+        // ---- Validate everything before mutation (API-06.5 atomicity) ----
+        for row in plan.rows() {
+            validate_constraint_bounds(bounds_of(row))?;
+        }
+        for cell in plan.numeric() {
+            if !cell.value.is_finite() {
+                return Err(ModelError::NonFiniteValue("row coefficient"));
+            }
+            if !self.variables.contains(cell.var) {
+                return Err(ModelError::VariableNotFound(cell.var));
+            }
+        }
+        for family in plan.families() {
+            if !family.scale.is_finite() {
+                return Err(ModelError::NonFiniteValue("row coefficient scale"));
+            }
+            for ordinal in 0..family.vars.len() {
+                let var = family
+                    .vars
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout("stale row variable"))?;
+                if !self.variables.contains(var) {
+                    return Err(ModelError::VariableNotFound(var));
+                }
+                let param = family
+                    .params
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout("stale row parameter"))?;
+                if !self.parameters.contains(param) {
+                    return Err(ModelError::ParameterNotFound(param));
+                }
+            }
+        }
+
+        // ---- Canonical payloads (numeric + parametric CSR by row) ----
+        let mut numeric_ptr = vec![0u32];
+        let mut numeric_vars = Vec::new();
+        let mut numeric_values = Vec::new();
+        let mut parametric_ptr = vec![0u32];
+        let mut parametric_vars = Vec::new();
+        let mut parametric_params = Vec::new();
+        let mut parametric_scales = Vec::new();
+        let mut parametric_values = Vec::new();
+        for row in plan.rows() {
+            for cell in plan.numeric().iter().filter(|c| c.row == row.row) {
+                numeric_vars.push(cell.var);
+                numeric_values.push(cell.value);
+            }
+            numeric_ptr.push(numeric_vars.len() as u32);
+            // Canonical family order (by first canonical variable ordinal) so
+            // the cells align with the derived witness offsets.
+            let mut families: Vec<&crate::modeling::builder::ParametricFamily> = plan
+                .families()
+                .iter()
+                .filter(|family| family.row == Some(row.row))
+                .collect();
+            families.sort_by_key(|family| family.vars.span.start());
+            for family in families {
+                for ordinal in 0..family.vars.len() {
+                    let var = family
+                        .vars
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout("stale row variable"))?;
+                    let param = family
+                        .params
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout("stale row parameter"))?;
+                    let value = self.parameters.get_value(param).unwrap_or(0.0);
+                    parametric_vars.push(var);
+                    parametric_params.push(param);
+                    parametric_scales.push(family.scale);
+                    parametric_values.push(family.scale * value);
+                }
+            }
+            parametric_ptr.push(parametric_vars.len() as u32);
+        }
+
+        // ---- Pre-validate the dependency witness before any mutation ----
+        // Placeholder targets are irrelevant to witness validation; this makes
+        // a corrupt layout reject atomically (no rows allocated, nothing
+        // journaled). The real targets are attached after allocation.
+        let placeholder =
+            CoefficientTarget::Constraint(ConId::new(0, crate::id::Generation::new()));
+        for r in 0..nrows {
+            let (s, e) = (parametric_ptr[r] as usize, parametric_ptr[r + 1] as usize);
+            if s == e {
+                continue;
+            }
+            let cells: Vec<ParamCell> = (s..e)
+                .map(|k| ParamCell {
+                    var: parametric_vars[k],
+                    param: parametric_params[k],
+                    scale: parametric_scales[k],
+                    cached: parametric_values[k],
+                })
+                .collect();
+            let blocks: Vec<StoredParamDepBlock> = plan
+                .parametric()
+                .blocks
+                .iter()
+                .filter(|witness| witness.row == Some(plan.rows()[r].row))
+                .map(|witness| StoredParamDepBlock {
+                    params: witness.params,
+                    param_map: witness.param_map.clone(),
+                    cell_start: witness.cell_offset,
+                    cell_map: witness.cell_map.clone(),
+                    scale: witness.scale,
+                    target: placeholder,
+                })
+                .collect();
+            if !blocks.is_empty() {
+                crate::model::coefficient::CoefficientIndex::validate_param_dep_blocks(
+                    &cells, &blocks,
+                )?;
+            }
+        }
+
+        // ---- Allocate the constraint identities exactly once ----
+        self.constraints.reserve(nrows);
+        let mut cons = Vec::with_capacity(nrows);
+        for row in plan.rows() {
+            cons.push(self.constraints.add(bounds_of(row)));
+        }
+
+        // ---- Append the numeric canonical block ----
+        let numeric_targets: Vec<CoefficientTarget> = cons
+            .iter()
+            .map(|&con| CoefficientTarget::Constraint(con))
+            .collect();
+        self.coefficients.append_canonical_block(
+            &numeric_targets,
+            &numeric_ptr,
+            &numeric_vars,
+            &numeric_values,
+        );
+
+        // ---- Append the parametric runs, storing eligible dependency blocks ----
+        for (r, con) in cons.iter().enumerate() {
+            let (s, e) = (parametric_ptr[r] as usize, parametric_ptr[r + 1] as usize);
+            if s == e {
+                continue;
+            }
+            let cells: Vec<ParamCell> = (s..e)
+                .map(|k| ParamCell {
+                    var: parametric_vars[k],
+                    param: parametric_params[k],
+                    scale: parametric_scales[k],
+                    cached: parametric_values[k],
+                })
+                .collect();
+            let target = CoefficientTarget::Constraint(*con);
+            let blocks: Vec<StoredParamDepBlock> = plan
+                .parametric()
+                .blocks
+                .iter()
+                .filter(|witness| witness.row == Some(plan.rows()[r].row))
+                .map(|witness| StoredParamDepBlock {
+                    params: witness.params,
+                    param_map: witness.param_map.clone(),
+                    cell_start: witness.cell_offset,
+                    cell_map: witness.cell_map.clone(),
+                    scale: witness.scale,
+                    target,
+                })
+                .collect();
+            if blocks.is_empty() {
+                self.coefficients.append_param_run(target, &cells);
+                self.diagnostics.lowering.param_positions_cells += cells.len() as u64;
+            } else {
+                self.diagnostics.lowering.param_dep_blocks += blocks.len() as u64;
+                let tracked = self
+                    .coefficients
+                    .append_param_run_with_deps(target, &cells, blocks)?;
+                self.diagnostics.lowering.param_positions_cells += tracked as u64;
+            }
+        }
+
+        // ---- Journal one logical change with the complete replay payload ----
+        let bounds: Vec<ConstraintBounds> = plan.rows().iter().map(bounds_of).collect();
+        let block = Arc::new(crate::delta::MixedRowBlock {
+            constraints: cons.clone(),
+            bounds,
+            numeric_ptr,
+            numeric_vars,
+            numeric_values,
+            parametric_ptr,
+            parametric_vars,
+            parametric_params,
+            parametric_scales,
+            parametric_values,
+            layout: plan.parametric().clone(),
+        });
+        self.changelog.push(Change::BulkMixedRows { block });
+        self.diagnostics.lowering.numeric_bulk += 1;
+        self.diagnostics.lowering.parametric_bulk += 1;
+        Ok(cons)
+    }
+
     /// Canonicalize one parametric row: group by variable, merge
     /// same-parameter scales, drop near-zero merged cells, and reject a
     /// distinct-parameter collision into one canonical cell.
@@ -3377,6 +3604,100 @@ impl Model {
         )
     }
 
+    /// Set a linear objective from a span-backed
+    /// [`LinArray`](crate::modeling::LinArray), deriving the L2 dependency
+    /// layout automatically (MIR-03, IR-21).
+    ///
+    /// The array must belong to this model and contain only `scale × ParamView`
+    /// terms (the initial conservative subset); otherwise a typed error is
+    /// returned so the caller can use the general symbolic path. On success the
+    /// derived witness is validated by the existing MIR-02 post-canonical check
+    /// ([`ModelError::InvalidParamDepLayout`] on mismatch); eligible families
+    /// store dependency blocks and populate no per-cell `param_positions`.
+    pub fn set_linear_objective_from_linarray(
+        &mut self,
+        sense: Sense,
+        array: &crate::modeling::LinArray,
+    ) -> Result<ObjId, ModelError> {
+        use crate::modeling::eligibility::{try_param_block_layout, SinkMap, TargetRun};
+        use crate::modeling::{CoeffView, ConstantView};
+
+        if array.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "objective LinArray belongs to another model",
+            ));
+        }
+        let constant = match array.constant() {
+            ConstantView::Zero => 0.0,
+            ConstantView::Scalar(value) => *value,
+            _ => {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "objective LinArray constant must be zero or scalar",
+                ))
+            }
+        };
+        if array.terms().iter().any(|term| !term.coeff.is_parametric()) {
+            return Err(ModelError::InvalidParamDepLayout(
+                "objective LinArray must contain only parametric terms",
+            ));
+        }
+
+        let sink = SinkMap::new(
+            array.shape().to_vec(),
+            vec![TargetRun {
+                target: 0,
+                objective: true,
+                start: 0,
+                len: array.len(),
+            }],
+        )
+        .map_err(|_| ModelError::InvalidParamDepLayout("invalid objective sink map"))?;
+        let layout = try_param_block_layout(&sink, array.terms());
+
+        // Materialize the packed cells in canonical family order so they align
+        // with the derived witness's cumulative p-base offsets.
+        let mut sorted: Vec<&crate::modeling::Term> = array.terms().iter().collect();
+        sorted.sort_by_key(|term| term.vars.view().span().start());
+        let mut vars = Vec::new();
+        let mut params = Vec::new();
+        let mut scales = Vec::new();
+        for term in sorted {
+            let (scale, pview) = match &term.coeff {
+                CoeffView::ScaledParam { scale, params } => (*scale, params),
+                _ => {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "objective LinArray must contain only parametric terms",
+                    ))
+                }
+            };
+            let vview = term.vars.view();
+            for ordinal in 0..vview.len() {
+                let variable =
+                    term.vars
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout(
+                            "stale objective variable",
+                        ))?;
+                let parameter = pview
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout(
+                        "stale objective parameter",
+                    ))?;
+                vars.push(variable);
+                params.push(parameter);
+                scales.push(scale);
+            }
+        }
+        self.set_linear_objective_param_bulk_impl(
+            sense,
+            &vars,
+            &params,
+            &scales,
+            constant,
+            layout.as_ref(),
+        )
+    }
+
     fn set_linear_objective_param_bulk_impl(
         &mut self,
         sense: Sense,
@@ -4422,6 +4743,7 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
         }
         Change::BulkLinearRows { block } => Ok(ModelOp::AddLinearRows { block }),
         Change::BulkParametricRows { block } => Ok(ModelOp::AddParametricRows { block }),
+        Change::BulkMixedRows { block } => Ok(ModelOp::AddMixedRows { block }),
         Change::BulkObjectiveParamCoefficients { obj, cells } => {
             Ok(ModelOp::SetObjectiveParamCells { obj, cells })
         }
@@ -5633,5 +5955,961 @@ mod bulk_objective_tests {
             Err(ModelError::MismatchedBulkLengths { .. })
         ));
         assert_eq!(model.num_objectives(), 1, "rejections leave no residue");
+    }
+}
+
+#[cfg(test)]
+mod mir03_tests {
+    use super::*;
+    use crate::modeling::{CoeffView, ConstantView, LinArray, ParamView, Term, VarView, View};
+
+    /// IR-21/IR-31 core: a BESS-like two-family parametric objective derives
+    /// its dependency layout automatically (no hand-supplied witness), keeps
+    /// `general_affine == 0`, stores dependency blocks, populates no per-cell
+    /// positions, and retains the MIR-02 bulk-reprice propagation gates.
+    #[test]
+    fn automatic_bess_objective_creates_dependency_blocks() {
+        let n = 4usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let bounds = Bounds::new(0.0, 1.0);
+        let charge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("charge block");
+        let discharge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("discharge block");
+        let price_span = model
+            .add_parameter_block(&vec![50.0; n])
+            .expect("price block");
+
+        let charge = VarView::new(owner, View::contiguous(charge_span, n)).expect("charge view");
+        let discharge =
+            VarView::new(owner, View::contiguous(discharge_span, n)).expect("discharge view");
+        let price = ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+
+        let terms = vec![
+            Term {
+                vars: charge,
+                coeff: CoeffView::ScaledParam {
+                    scale: -1.0,
+                    params: price.clone(),
+                },
+            },
+            Term {
+                vars: discharge,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: price,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+
+        model
+            .set_linear_objective_from_linarray(Sense::Maximize, &array)
+            .expect("automatic objective");
+
+        let lowering = model.lowering_stats();
+        assert!(
+            lowering.param_dep_blocks > 0,
+            "automatic proof must store dependency blocks: {lowering:?}"
+        );
+        assert_eq!(
+            lowering.param_positions_cells, 0,
+            "covered families must not populate per-cell param_positions: {lowering:?}"
+        );
+        assert_eq!(
+            lowering.general_affine, 0,
+            "automatic proof must stay on the packed path: {lowering:?}"
+        );
+
+        // Bulk reprice retains the MIR-02 propagation gates.
+        model
+            .set_parameters_bulk(price_span, &vec![60.0; n])
+            .expect("reprice");
+        model.commit().expect("commit");
+        let propagation = model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
+    }
+
+    /// IR-23: the automatic (packed) objective and the general symbolic path
+    /// produce the same canonical snapshot.
+    #[test]
+    fn automatic_objective_matches_general_snapshot() {
+        fn build(n: usize, fast: bool) -> (Model, crate::bulk::ParamSpan) {
+            let mut model = Model::new();
+            let owner = model.instance();
+            let bounds = Bounds::new(0.0, 1.0);
+            let charge_span = model
+                .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+                .expect("charge");
+            let discharge_span = model
+                .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+                .expect("discharge");
+            let price_span = model.add_parameter_block(&vec![50.0; n]).expect("price");
+            let charge =
+                VarView::new(owner, View::contiguous(charge_span, n)).expect("charge view");
+            let discharge =
+                VarView::new(owner, View::contiguous(discharge_span, n)).expect("discharge view");
+            let price = ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+            let mut vars = Vec::new();
+            let mut params = Vec::new();
+            let mut scales = Vec::new();
+            for ordinal in 0..n {
+                vars.push(charge.member(ordinal).expect("charge var"));
+                params.push(price.member(ordinal).expect("price param"));
+                scales.push(-1.0);
+            }
+            for ordinal in 0..n {
+                vars.push(discharge.member(ordinal).expect("discharge var"));
+                params.push(price.member(ordinal).expect("price param"));
+                scales.push(1.0);
+            }
+            if fast {
+                let terms = vec![
+                    Term {
+                        vars: charge,
+                        coeff: CoeffView::ScaledParam {
+                            scale: -1.0,
+                            params: price.clone(),
+                        },
+                    },
+                    Term {
+                        vars: discharge,
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: price,
+                        },
+                    },
+                ];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic");
+            } else {
+                model
+                    .set_linear_objective_param_bulk(Sense::Maximize, &vars, &params, &scales, 0.0)
+                    .expect("general");
+            }
+            (model, price_span)
+        }
+
+        let n = 4usize;
+        let (mut fast, fast_span) = build(n, true);
+        let (mut general, general_span) = build(n, false);
+        assert_eq!(
+            fast.take_snapshot().expect("fast snapshot"),
+            general.take_snapshot().expect("general snapshot")
+        );
+
+        // Reprice both and compare again.
+        fast.set_parameters_bulk(fast_span, &vec![60.0; n])
+            .expect("fast reprice");
+        fast.commit().expect("fast commit");
+        general
+            .set_parameters_bulk(general_span, &vec![60.0; n])
+            .expect("general reprice");
+        general.commit().expect("general commit");
+        assert_eq!(
+            fast.take_snapshot().expect("fast snapshot"),
+            general.take_snapshot().expect("general snapshot")
+        );
+    }
+
+    /// IR-31 flagship cardinality at the core level: 28,800 price parameters
+    /// driving 57,600 objective cells, automatically proven eligible.
+    #[test]
+    fn flagship_bess_objective_cardinality() {
+        let n = 28_800usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let bounds = Bounds::new(0.0, 1.0);
+        let charge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("charge");
+        let discharge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("discharge");
+        let price_span = model.add_parameter_block(&vec![50.0; n]).expect("price");
+        let charge = VarView::new(owner, View::contiguous(charge_span, n)).expect("charge view");
+        let discharge =
+            VarView::new(owner, View::contiguous(discharge_span, n)).expect("discharge view");
+        let price = ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+        let terms = vec![
+            Term {
+                vars: charge,
+                coeff: CoeffView::ScaledParam {
+                    scale: -1.0,
+                    params: price.clone(),
+                },
+            },
+            Term {
+                vars: discharge,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: price,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+        model
+            .set_linear_objective_from_linarray(Sense::Maximize, &array)
+            .expect("flagship objective");
+
+        let lowering = model.lowering_stats();
+        assert_eq!(model.num_coefficients(), 2 * n, "57,600 objective cells");
+        assert!(lowering.param_dep_blocks >= 2, "automatic families");
+        assert_eq!(lowering.param_positions_cells, 0);
+        assert_eq!(lowering.general_affine, 0);
+
+        model
+            .set_parameters_bulk(price_span, &vec![60.0; n])
+            .expect("reprice");
+        model.commit().expect("commit");
+        let propagation = model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
+    }
+}
+
+#[cfg(test)]
+mod mir03_row_seam_tests {
+    use super::*;
+    use crate::modeling::builder::{LocalRow, RowBatch, RowBatchPlan};
+    use crate::modeling::{CoeffView, ConstantView, LinArray, ParamView, Term, VarView, View};
+
+    struct Fixture {
+        model: Model,
+        param_var_span: crate::bulk::VarSpan,
+        price_span: crate::bulk::ParamSpan,
+        plan: crate::modeling::builder::RowBlockPlan,
+    }
+
+    fn build_fixture(n: usize) -> Fixture {
+        let mut model = Model::new();
+        let owner = model.instance();
+        let uniform = BlockBounds::Uniform(Bounds::new(0.0, 1.0));
+        let numeric_span = model
+            .add_variable_block(n, VarType::Continuous, uniform)
+            .expect("numeric block");
+        let param_var_span = model
+            .add_variable_block(n, VarType::Continuous, uniform)
+            .expect("param variable block");
+        let price_span = model
+            .add_parameter_block(&vec![5.0; n])
+            .expect("price block");
+
+        let numeric_view =
+            VarView::new(owner, View::contiguous(numeric_span, n)).expect("numeric view");
+        let param_var_view =
+            VarView::new(owner, View::contiguous(param_var_span, n)).expect("param var view");
+        let price_view =
+            ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+        let terms = vec![
+            Term {
+                vars: numeric_view,
+                coeff: CoeffView::Scalar(2.0),
+            },
+            Term {
+                vars: param_var_view,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: price_view,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Scalar(3.0)).expect("array");
+        let mut batch = RowBatch::new(owner);
+        batch
+            .push(
+                LocalRow {
+                    row: 0,
+                    lower: 0.0,
+                    upper: 10.0,
+                },
+                array,
+            )
+            .expect("push");
+        let plan = match batch.plan() {
+            RowBatchPlan::Planned(plan) => plan,
+            other => panic!("expected mixed plan, got {other:?}"),
+        };
+        Fixture {
+            model,
+            param_var_span,
+            price_span,
+            plan,
+        }
+    }
+
+    /// One constraint allocation, one logical change, constants folded into
+    /// bounds, eligible dependency block, and reprice via the block.
+    #[test]
+    fn mixed_row_plan_commits_once_and_reprices_with_blocks() {
+        let n = 2usize;
+        let mut fixture = build_fixture(n);
+        let cons = fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect("mixed rows");
+        let revision = fixture.model.commit().expect("commit");
+        assert_eq!(fixture.model.current_revision(), revision);
+        assert_eq!(cons.len(), 1);
+        assert_eq!(fixture.model.num_constraints(), 1, "one row allocation");
+        fixture.model.validate_invariants().expect("invariants");
+
+        let lowering = fixture.model.lowering_stats();
+        assert_eq!(lowering.numeric_bulk, 1);
+        assert_eq!(lowering.parametric_bulk, 1);
+        assert_eq!(lowering.param_dep_blocks, 1, "eligible family stored");
+        assert_eq!(lowering.param_positions_cells, 0, "no per-cell positions");
+        assert_eq!(lowering.general_affine, 0);
+
+        // Constant 3.0 folded into [0, 10] -> [-3, 7].
+        let snapshot = fixture.model.take_snapshot().expect("snapshot");
+        let entry = snapshot
+            .constraints
+            .iter()
+            .find(|c| c.id == cons[0])
+            .expect("row");
+        assert_eq!(entry.bounds.lower, -3.0);
+        assert_eq!(entry.bounds.upper, 7.0);
+
+        // A bulk parameter update still uses the dependency block.
+        fixture
+            .model
+            .set_parameters_bulk(fixture.price_span, &vec![6.0; n])
+            .expect("reprice");
+        fixture.model.commit().expect("commit reprice");
+        let propagation = fixture.model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
+        fixture.model.validate_invariants().expect("invariants");
+    }
+
+    /// A stale variable rejects before allocating rows or journaling anything.
+    #[test]
+    fn mixed_row_plan_rejects_stale_variable_atomically() {
+        let mut fixture = build_fixture(1);
+        let stale = fixture.param_var_span.ids().next().expect("param variable");
+        fixture
+            .model
+            .remove_variable(stale)
+            .expect("remove variable");
+        let error = fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect_err("stale variable must reject");
+        assert!(matches!(error, ModelError::VariableNotFound(_)));
+        assert_eq!(
+            fixture.model.num_constraints(),
+            0,
+            "atomic rejection leaves no rows"
+        );
+        let lowering = fixture.model.lowering_stats();
+        assert_eq!(lowering.param_dep_blocks, 0);
+        assert_eq!(lowering.numeric_bulk, 0);
+        assert_eq!(lowering.parametric_bulk, 0);
+    }
+
+    /// Journal replay from the retained deltas reproduces the same backend
+    /// state as a clean rebuild from the final snapshot — before and after a
+    /// bulk parameter reprice.
+    #[test]
+    fn mixed_row_plan_replay_matches_rebuild() {
+        use crate::solver::reference::ReferenceBackend;
+        use crate::sync::AdapterCursor;
+        let n = 2usize;
+        let mut fixture = build_fixture(n);
+        fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect("mixed rows");
+        fixture.model.commit().expect("commit rows");
+        fixture
+            .model
+            .set_parameters_bulk(fixture.price_span, &vec![6.0; n])
+            .expect("reprice");
+        fixture.model.commit().expect("commit reprice");
+
+        // Incremental: replay every retained delta from the beginning.
+        let mut incremental = ReferenceBackend::new();
+        let mut cursor = AdapterCursor::new();
+        for batch in fixture
+            .model
+            .deltas_since(ModelRevision::ZERO)
+            .expect("deltas")
+        {
+            incremental.apply_batch(batch, &mut cursor).expect("apply");
+        }
+        // Clean rebuild from the final canonical snapshot.
+        let mut rebuilt = ReferenceBackend::new();
+        let mut rebuild_cursor = AdapterCursor::new();
+        rebuilt.rebuild(
+            &fixture.model.take_snapshot().expect("snapshot"),
+            &mut rebuild_cursor,
+        );
+
+        assert_eq!(
+            incremental.normalized_view(),
+            rebuilt.normalized_view(),
+            "incremental mixed-row replay must match a clean rebuild"
+        );
+    }
+
+    /// A partial sync followed by a retry resumes from the acknowledged
+    /// revision: the journaled mixed-row change is not lost or duplicated.
+    #[test]
+    fn mixed_row_plan_sync_failure_resumes_without_loss_or_duplication() {
+        use crate::solver::reference::ReferenceBackend;
+        use crate::sync::{AdapterCursor, ApplyOutcome};
+        let n = 2usize;
+        let mut fixture = build_fixture(n);
+        fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect("mixed rows");
+        fixture.model.commit().expect("commit rows");
+        fixture
+            .model
+            .set_parameters_bulk(fixture.price_span, &vec![6.0; n])
+            .expect("reprice");
+        fixture.model.commit().expect("commit reprice");
+
+        let batches = fixture
+            .model
+            .deltas_since(ModelRevision::ZERO)
+            .expect("deltas");
+        assert!(
+            batches.len() >= 2,
+            "expected a row batch and a reprice batch"
+        );
+
+        // First sync acknowledges the row batch, then the session "fails".
+        let mut backend = ReferenceBackend::new();
+        let mut cursor = AdapterCursor::new();
+        let outcome = backend.apply_batch(batches[0], &mut cursor).expect("apply");
+        assert!(matches!(outcome, ApplyOutcome::Applied { .. }));
+        let acknowledged = cursor.applied_revision;
+
+        // Retry/resume from the acknowledged revision.
+        for batch in fixture
+            .model
+            .deltas_since(acknowledged)
+            .expect("remaining deltas")
+        {
+            backend.apply_batch(batch, &mut cursor).expect("resume");
+        }
+
+        let mut rebuilt = ReferenceBackend::new();
+        let mut rebuild_cursor = AdapterCursor::new();
+        rebuilt.rebuild(
+            &fixture.model.take_snapshot().expect("snapshot"),
+            &mut rebuild_cursor,
+        );
+        assert_eq!(
+            backend.normalized_view(),
+            rebuilt.normalized_view(),
+            "resumed sync must equal a clean rebuild"
+        );
+    }
+
+    /// A corrupted dependency witness rejects before allocating rows or
+    /// journaling anything.
+    #[test]
+    fn mixed_row_plan_rejects_corrupt_layout_atomically() {
+        let mut fixture = build_fixture(2);
+        fixture.plan.corrupt_layout_for_test();
+        let error = fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect_err("corrupt witness must reject");
+        assert!(matches!(error, ModelError::InvalidParamDepLayout(_)));
+        assert_eq!(
+            fixture.model.num_constraints(),
+            0,
+            "atomic rejection leaves no rows"
+        );
+        let lowering = fixture.model.lowering_stats();
+        assert_eq!(lowering.param_dep_blocks, 0);
+        assert_eq!(lowering.numeric_bulk, 0);
+        assert_eq!(lowering.parametric_bulk, 0);
+    }
+    /// IR-23: a non-eligible objective form (two parametric terms over one
+    /// variable span) falls back to the general symbolic path and produces the
+    /// same canonical snapshot as the general bulk construction.
+    #[test]
+    fn non_eligible_objective_falls_back_and_matches_general() {
+        let n = 2usize;
+        let build = |fast: bool| -> Model {
+            let mut model = Model::new();
+            let owner = model.instance();
+            let uniform = BlockBounds::Uniform(Bounds::new(0.0, 1.0));
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform)
+                .expect("var block");
+            let p1 = model.add_parameter_block(&vec![1.0; n]).expect("p1");
+            let p2 = model.add_parameter_block(&vec![2.0; n]).expect("p2");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let pv1 = ParamView::new(owner, View::contiguous(p1, n)).expect("pv1");
+            let pv2 = ParamView::new(owner, View::contiguous(p2, n)).expect("pv2");
+            let mut vars = Vec::new();
+            let mut params = Vec::new();
+            let mut scales = Vec::new();
+            for i in 0..n {
+                vars.push(v.member(i).expect("v"));
+                params.push(pv1.member(i).expect("p1"));
+                scales.push(1.0);
+            }
+            for i in 0..n {
+                vars.push(v.member(i).expect("v"));
+                params.push(pv2.member(i).expect("p2"));
+                scales.push(1.0);
+            }
+            if fast {
+                let terms = vec![
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv1,
+                        },
+                    },
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv2,
+                        },
+                    },
+                ];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic");
+            } else {
+                model
+                    .set_linear_objective_param_bulk(Sense::Maximize, &vars, &params, &scales, 0.0)
+                    .expect("general");
+            }
+            model
+        };
+        let fast = build(true);
+        let general = build(false);
+        // Normalized comparison: same cells, same symbolic expression and value;
+        // dependency membership compared as a set (the snapshot's dependency
+        // vector is not order-canonical on the existing general path).
+        let fast_snapshot = fast.take_snapshot().expect("fast");
+        let general_snapshot = general.take_snapshot().expect("general");
+        assert_eq!(fast_snapshot.cells.len(), general_snapshot.cells.len());
+        for (a, b) in fast_snapshot
+            .cells
+            .iter()
+            .zip(general_snapshot.cells.iter())
+        {
+            assert_eq!(a.cell_key, b.cell_key);
+            assert_eq!(a.value_expr, b.value_expr);
+            assert_eq!(a.evaluated_value, b.evaluated_value);
+            let mut da = a.dependencies.clone();
+            let mut db = b.dependencies.clone();
+            da.sort();
+            db.sort();
+            assert_eq!(da, db);
+        }
+        assert!(
+            fast.lowering_stats().general_affine > 0,
+            "overlapping spans must fall back to the general path"
+        );
+    }
+}
+
+/// IR-23 rejection corpus: every conservative eligibility rejection must fall
+/// back to the general path and produce the same normalized mathematical model,
+/// before and after a bulk parameter update. Correctness rejections are
+/// impossible packed representations; conservative rejections are packable
+/// forms the proof deliberately declines (future optimization backlog).
+#[cfg(test)]
+mod mir03_ir23_tests {
+    use super::*;
+    use crate::modeling::builder::{LocalRow, RowBatch, RowBatchPlan};
+    use crate::modeling::{CoeffView, ConstantView, LinArray, ParamView, Term, VarView, View};
+
+    fn normalized(model: &Model) -> Vec<(VarId, ValueExpr, u64, Vec<ParamId>)> {
+        let snapshot = model.take_snapshot().expect("snapshot");
+        let mut out: Vec<_> = snapshot
+            .cells
+            .iter()
+            .map(|cell| {
+                let mut deps = cell.dependencies.clone();
+                deps.sort();
+                (
+                    cell.cell_key.1,
+                    cell.value_expr.clone(),
+                    cell.evaluated_value.to_bits(),
+                    deps,
+                )
+            })
+            .collect();
+        out.sort_by_key(|(var, _, _, _)| *var);
+        out
+    }
+
+    fn compare(case: fn(bool) -> (Model, ParamSpan), new_values: &[f64]) {
+        let (mut fast, fast_span) = case(true);
+        let (mut general, general_span) = case(false);
+        assert_eq!(
+            normalized(&fast),
+            normalized(&general),
+            "construction must match the general path"
+        );
+        fast.set_parameters_bulk(fast_span, new_values)
+            .expect("fast reprice");
+        fast.commit().expect("fast commit");
+        general
+            .set_parameters_bulk(general_span, new_values)
+            .expect("general reprice");
+        general.commit().expect("general commit");
+        assert_eq!(
+            normalized(&fast),
+            normalized(&general),
+            "after a parameter update must still match the general path"
+        );
+    }
+
+    fn uniform() -> BlockBounds<'static> {
+        BlockBounds::Uniform(Bounds::new(0.0, 1.0))
+    }
+
+    /// Correctness rejection: two distinct parameters reach one canonical
+    /// objective cell.
+    #[test]
+    fn overlapping_spans_two_params_one_cell() {
+        fn case(fast: bool) -> (Model, ParamSpan) {
+            let n = 2usize;
+            let mut model = Model::new();
+            let owner = model.instance();
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform())
+                .expect("v");
+            let p1 = model.add_parameter_block(&vec![1.0; n]).expect("p1");
+            let p2 = model.add_parameter_block(&vec![2.0; n]).expect("p2");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let pv1 = ParamView::new(owner, View::contiguous(p1, n)).expect("pv1");
+            let pv2 = ParamView::new(owner, View::contiguous(p2, n)).expect("pv2");
+            if fast {
+                let terms = vec![
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv1.clone(),
+                        },
+                    },
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv2.clone(),
+                        },
+                    },
+                ];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic falls back");
+            } else {
+                let mut vars = Vec::new();
+                let mut params = Vec::new();
+                let mut scales = Vec::new();
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(pv1.member(i).expect("p1"));
+                    scales.push(1.0);
+                }
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(pv2.member(i).expect("p2"));
+                    scales.push(1.0);
+                }
+                model
+                    .set_linear_objective_param_bulk(Sense::Maximize, &vars, &params, &scales, 0.0)
+                    .expect("general");
+            }
+            (model, p1)
+        }
+        compare(case, &[7.0, 8.0]);
+        let (fast, _) = case(true);
+        assert!(
+            fast.lowering_stats().general_affine > 0,
+            "two params one cell is a correctness rejection (general path)"
+        );
+    }
+
+    /// Conservative rejection: a zero-stride parameter broadcast across a
+    /// multi-cell objective run.
+    #[test]
+    fn zero_stride_parameter_across_multi_cell_target() {
+        fn case(fast: bool) -> (Model, ParamSpan) {
+            let n = 3usize;
+            let mut model = Model::new();
+            let owner = model.instance();
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform())
+                .expect("v");
+            let p_span = model.add_parameter_block(&[2.0]).expect("p");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let broadcast = ParamView::new(
+                owner,
+                View::new(
+                    crate::bulk::ParamSpan::from_parts(0, 1, crate::id::Generation::new()),
+                    [n],
+                    [0isize],
+                    0,
+                )
+                .expect("broadcast"),
+            )
+            .expect("pv");
+            let _ = p_span;
+            if fast {
+                let terms = vec![Term {
+                    vars: v.clone(),
+                    coeff: CoeffView::ScaledParam {
+                        scale: 1.0,
+                        params: broadcast.clone(),
+                    },
+                }];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic falls back");
+            } else {
+                let mut vars = Vec::new();
+                let mut params = Vec::new();
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(broadcast.member(i).expect("p"));
+                }
+                model
+                    .set_linear_objective_param_bulk(
+                        Sense::Maximize,
+                        &vars,
+                        &params,
+                        &vec![1.0; n],
+                        0.0,
+                    )
+                    .expect("general");
+            }
+            (model, p_span)
+        }
+        // The general path with a broadcast parameter cannot distinguish this
+        // from a broadcast cell: canonicalization merges the repeat. Compare.
+        compare(case, &[9.0]);
+        let (fast, _) = case(true);
+        assert_eq!(
+            fast.lowering_stats().general_affine,
+            0,
+            "zero-stride falls back to positions"
+        );
+    }
+
+    /// Conservative rejection: reversed (negative-stride) parameter view.
+    #[test]
+    fn reversed_parameter_stride_falls_back() {
+        fn case(fast: bool) -> (Model, ParamSpan) {
+            let n = 3usize;
+            let mut model = Model::new();
+            let owner = model.instance();
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform())
+                .expect("v");
+            let p_span = model.add_parameter_block(&vec![1.0; n]).expect("p");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let forward = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+            let reversed = forward.reverse(0).expect("reverse");
+            if fast {
+                let terms = vec![Term {
+                    vars: v,
+                    coeff: CoeffView::ScaledParam {
+                        scale: 1.0,
+                        params: reversed,
+                    },
+                }];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic falls back");
+            } else {
+                let mut vars = Vec::new();
+                let mut params = Vec::new();
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(reversed.member(i).expect("p"));
+                }
+                model
+                    .set_linear_objective_param_bulk(
+                        Sense::Maximize,
+                        &vars,
+                        &params,
+                        &vec![1.0; n],
+                        0.0,
+                    )
+                    .expect("general");
+            }
+            (model, p_span)
+        }
+        compare(case, &[10.0, 11.0, 12.0]);
+        // The proof declines a negative stride, so no dependency block is stored.
+        assert_eq!(case(true).0.lowering_stats().param_dep_blocks, 0);
+    }
+
+    /// Conservative rejection: `Dense × ParamView` (and other uncovered
+    /// coefficient products) stay on the general path.
+    #[test]
+    fn unsupported_coefficient_products_fall_back() {
+        let n = 2usize;
+        let owner = ModelInstanceId::allocate().expect("owner");
+        let p_span = crate::bulk::ParamSpan::from_parts(0, n as u32, crate::id::Generation::new());
+        let pv = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+        let v_span = crate::bulk::VarSpan::from_parts(0, n as u32, crate::id::Generation::new());
+        let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+
+        // Dense × ParamView.
+        let dense = LinArray::new(
+            owner,
+            [n],
+            vec![Term {
+                vars: v.clone(),
+                coeff: CoeffView::Dense {
+                    scale: 1.0,
+                    values: crate::modeling::NumView::from_vec(vec![1.0, 2.0]),
+                },
+            }],
+            ConstantView::Zero,
+        )
+        .expect("dense");
+        assert!(pv.mul_linarray(&dense).expect("ok").is_none());
+
+        // Already-parametric coefficient × ParamView.
+        let nested = LinArray::new(
+            owner,
+            [n],
+            vec![Term {
+                vars: v.clone(),
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: pv.clone(),
+                },
+            }],
+            ConstantView::Zero,
+        )
+        .expect("nested");
+        assert!(pv.mul_linarray(&nested).expect("ok").is_none());
+
+        // Shape outside the exact-shape subset: a length-3 array multiplied by
+        // a length-2 parameter view is declined (fallback), not mismatched.
+        let wide = LinArray::new(
+            owner,
+            [3usize],
+            vec![Term {
+                vars: VarView::new(
+                    owner,
+                    View::contiguous(
+                        crate::bulk::VarSpan::from_parts(0, 3, crate::id::Generation::new()),
+                        3,
+                    ),
+                )
+                .expect("wide v"),
+                coeff: CoeffView::One,
+            }],
+            ConstantView::Zero,
+        )
+        .expect("wide");
+        assert!(pv.mul_linarray(&wide).expect("ok").is_none());
+    }
+
+    /// Correctness rejection: a parameterized constant is not representable by
+    /// the scalar objective API and must not be silently dropped.
+    #[test]
+    fn unsupported_parametric_constant_rejects() {
+        let n = 2usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let v_span = model
+            .add_variable_block(n, VarType::Continuous, uniform())
+            .expect("v");
+        let p_span = model.add_parameter_block(&vec![1.0; n]).expect("p");
+        let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+        let pv = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+        let terms = vec![Term {
+            vars: v,
+            coeff: CoeffView::ScaledParam {
+                scale: 1.0,
+                params: pv.clone(),
+            },
+        }];
+        let array = LinArray::new(
+            owner,
+            [n],
+            terms,
+            ConstantView::ScaledParam {
+                scale: 1.0,
+                params: pv,
+            },
+        )
+        .expect("array");
+        let error = model
+            .set_linear_objective_from_linarray(Sense::Maximize, &array)
+            .expect_err("parameterized constant must reject");
+        assert!(matches!(error, ModelError::InvalidParamDepLayout(_)));
+        assert_eq!(model.num_objectives(), 0);
+    }
+
+    /// Correctness rejection: a mixed-row constant/parametric collision falls
+    /// back in `RowBlockPlan`.
+    #[test]
+    fn mixed_row_collision_is_general() {
+        let n = 2usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let v_span = model
+            .add_variable_block(n, VarType::Continuous, uniform())
+            .expect("v");
+        let p_span = model.add_parameter_block(&vec![1.0; n]).expect("p");
+        let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+        let pv = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+        let terms = vec![
+            Term {
+                vars: v.clone(),
+                coeff: CoeffView::Scalar(1.0),
+            },
+            Term {
+                vars: v,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: pv,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+        let mut batch = RowBatch::new(owner);
+        batch
+            .push(
+                LocalRow {
+                    row: 0,
+                    lower: 0.0,
+                    upper: 1.0,
+                },
+                array,
+            )
+            .expect("push");
+        assert_eq!(batch.plan(), RowBatchPlan::General);
     }
 }

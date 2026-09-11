@@ -2,7 +2,7 @@
 
 **Objective:** shared model-owned ordinal array IR plus block-native construction and parameter propagation, so elegant Rust and Python formulations lower through one bulk path.
 
-**Status:** MIR-00 (IR-01), MIR-01 (IR-02…IR-07) and MIR-02 (IR-08…IR-17) are complete and **merged to `main`** via PR #58 (`da7b383`), after the owner-review remediation and an independent green CI run (24 checks). MIR-02 is additionally guarded by the invariant mutation gauntlet (PR #61, `e215387`; **7/7 mutations killed**). Tranche 1 is accepted; MIR-03 is next.
+**Status:** MIR-00 (IR-01), MIR-01 (IR-02…IR-07) and MIR-02 (IR-08…IR-17) are complete and **merged to `main`** via PR #58 (`da7b383`), after the owner-review remediation and an independent green CI run (24 checks). MIR-02 is additionally guarded by the invariant mutation gauntlet (PR #61, `e215387`; **7/7 mutations killed**). **MIR-03 (IR-18…IR-23) is complete** at the Rust/shared-IR level (PR #63, head `77eab3a`; all gates and exact-head CI green). Deferred by design: MIR-04/05 user-facing mixed-row differential and MIR-06 Python BESS lowering.
 
 **Planning base:** `main@c590692ace5446cc20c7eb91cb8fa0d594a054b0`.
 
@@ -14,16 +14,16 @@
 
 **Decisions:** D-019; no span epoch; owner-checked ordinal views; L2 persisted dependency layout; sink-aware metadata eligibility with core revalidation; append-only packed bases; block-native transactional repricing; labels/names outside the expression IR; `Template::bind` instead of `AbstractModel`; no macro DSL foundation.
 
-**Blockers:** none known for MIR-03.
+**Blockers:** none.
 
-**Next gate:** MIR-03 (shared `roml::modeling` strided array IR, conservative layout proof, mixed CSR builder; IR-18…IR-23). Exit gate: the BESS parametric objective automatically produces eligible `ParamDepBlock`s through metadata proof with `general_affine == 0` on the flagship formulation.
+**Next gate:** MIR-04 (Rust L1 ergonomics: BESS/transportation/min-cost-flow examples with no raw IDs; labels as boundary metadata; IR-24/IR-25). MIR-03's deferred items are tracked as MIR-04/05 and MIR-06 debt in `evidence/MIR-03-REPORT.md`.
 
 | Phase | State | Evidence |
 |---|---|---|
 | MIR-00 | complete (IR-01) | `evidence/BASELINE.md`; `evidence/baseline-mir-bess-sample.json`; `tests/mir00_baseline_characterization.rs` |
 | MIR-01 | complete (IR-02…IR-07) | `evidence/MIR-01-REPORT.md`; `src/bulk.rs`; `tests/mir01_block_allocation.rs` |
 | MIR-02 | complete + merged (IR-08…IR-17) | `evidence/MIR-02-REPORT.md`; `evidence/MIR-02-MUTATION-REPORT.md`; `tests/mir02_parametric_blocks.rs`; `tests/mir02_parametric_rows.rs`; `tests/mir02_remediation.rs`; `tests/mir02_backend_batching.rs`; `roml-highs/tests/mir02_bess_batching.rs` |
-| MIR-03 | starting (IR-18…IR-23) | — |
+| MIR-03 | complete (IR-18…IR-23) | `evidence/MIR-03-REPORT.md`; `MIR-03-PLAN.md`; `src/modeling/{view,coeff,eligibility,builder}.rs`; `Model::set_linear_objective_from_linarray`; `Model::add_rows_from_plan`; `MixedRowBlock` / `Change::BulkMixedRows` / `ModelOp::AddMixedRows`; `model::mir03_*` tests |
 | MIR-04 | not started | — |
 | MIR-05 | not started | — |
 | MIR-06 | not started | — |

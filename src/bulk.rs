@@ -131,8 +131,10 @@ impl StridedMap {
             let size = self.shape[dim];
             let stride = self.strides[dim];
             // `ordinal_count` already guaranteed every dimension is non-zero
-            // and the product is in range, so this is a total decomposition.
-            let coord = (rem % size) as isize;
+            // and the product is in range. Coordinates are converted with a
+            // checked usize -> isize so a dimension above `isize::MAX` is a
+            // typed `None`, never a wrap.
+            let coord = isize::try_from(rem % size).ok()?;
             rem /= size;
             mapped = mapped.checked_add(coord.checked_mul(stride)?)?;
         }
@@ -145,7 +147,7 @@ impl StridedMap {
 /// Core never trusts this blindly: after canonicalization it validates the
 /// witness against the retained packed parameter cells and resolves it into a
 /// stored dependency block. A wrong witness is a typed atomic rejection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParamDepBlockWitness {
     /// Parameter span the family reads.
     pub params: ParamSpan,
@@ -163,7 +165,7 @@ pub struct ParamDepBlockWitness {
 }
 
 /// A caller-supplied L2 witness describing eligible dependency families.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParamDepLayout {
     /// One witness per dependency family.
     pub blocks: Vec<ParamDepBlockWitness>,

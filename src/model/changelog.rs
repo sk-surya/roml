@@ -233,6 +233,14 @@ pub enum Change {
         block: Arc<crate::delta::ParametricRowBlock>,
     },
 
+    /// A packed block of mixed constant + parametric linear rows was inserted
+    /// at once (MIR-03). One constraint allocation; numeric and parametric
+    /// cells share the same row set.
+    BulkMixedRows {
+        /// The packed mixed row block (shared).
+        block: Arc<crate::delta::MixedRowBlock>,
+    },
+
     // ========== Objective Changes ==========
     /// An objective was added.
     ObjectiveAdded {

@@ -1045,6 +1045,63 @@ impl CompilationSession {
                     }
                 }
 
+                // MIR-03 packed mixed rows: one semantic op over one row set.
+                // Numeric and parametric cells of the same allocated constraint
+                // combine into a single backend row (adapters may decompose
+                // internally, but never into two logical row additions).
+                ModelOp::AddMixedRows { block } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental mixed row-block addition",
+                    )?;
+                    for r in 0..block.constraints.len() {
+                        let con = block.constraints[r];
+                        let id = CompiledConstraintId(w.next_row_index);
+                        w.next_row_index += 1;
+                        let mut coefficients = Vec::new();
+                        let (ns, ne) = (
+                            block.numeric_ptr[r] as usize,
+                            block.numeric_ptr[r + 1] as usize,
+                        );
+                        for (&var, &value) in block.numeric_vars[ns..ne]
+                            .iter()
+                            .zip(&block.numeric_values[ns..ne])
+                        {
+                            let vid = *w.variable_ids.get(&var).ok_or_else(|| {
+                                CompileError::RebuildRequired(format!(
+                                    "AddMixedRows for unknown compiled variable ({var:?})"
+                                ))
+                            })?;
+                            coefficients.push((vid, value));
+                        }
+                        let (ps, pe) = (
+                            block.parametric_ptr[r] as usize,
+                            block.parametric_ptr[r + 1] as usize,
+                        );
+                        for k in ps..pe {
+                            let var = block.parametric_vars[k];
+                            let vid = *w.variable_ids.get(&var).ok_or_else(|| {
+                                CompileError::RebuildRequired(format!(
+                                    "AddMixedRows for unknown compiled variable ({var:?})"
+                                ))
+                            })?;
+                            coefficients.push((vid, block.parametric_values[k]));
+                        }
+                        coefficients.sort_by_key(|(vid, _)| *vid);
+                        operations.push(BackendOp::AddLinearRow(CompiledLinearRow {
+                            id,
+                            bounds: block.bounds[r],
+                            coefficients,
+                            name: None,
+                        }));
+                        w.row_ids.insert(con, id);
+                        w.compiled_to_row.insert(id, con);
+                        origin_additions.insert_constraint(id, EntityOrigin::UserConstraint(con));
+                    }
+                }
+
                 ModelOp::RemoveConstraint { con } => {
                     if Self::construct_depends_on_constraint(&current.construct_dependencies, *con)
                     {
