@@ -84,3 +84,42 @@ cargo test -p roml --doc                                compile_fail regression 
 2. Core post-canonical revalidation and the one-commit mixed-row core path.
 3. IR-23 model-level fallback differential.
 4. `roml-mosek`/`roml-xpress` remain untestable locally (proprietary SDKs).
+
+## Integration progress (post A/B/C, authorized)
+
+The three gating issues (constants, plan self-containment, `VarId` identity)
+are fixed at `bca2c53`. Integration has begun:
+
+- **Automatic objective seam (`7d5ee50`).**
+  `Model::set_linear_objective_from_linarray(sense, &LinArray)` derives the L2
+  dependency layout via `try_param_block_layout` (no hand-supplied witness),
+  materializes packed cells in canonical family order, and commits through the
+  existing MIR-02 post-canonical validation. Non-eligible input falls back to
+  the general path (no layout), still correct.
+- **IR-23 objective differential (`747716d`).** The automatic (packed) and
+  general (no-layout) objective paths produce equal canonical snapshots before
+  and after a bulk reprice.
+- **IR-31 flagship cardinality (`747716d`+).** `model::mir03_tests::
+  flagship_bess_objective_cardinality` builds 28,800 price parameters driving
+  57,600 objective cells from trusted block spans and asserts, automatically:
+  - `param_dep_blocks >= 2`, `param_positions_cells == 0`, `general_affine == 0`;
+  - `num_coefficients() == 57,600`;
+  - after `set_parameters_bulk` + commit: `param_position_lookups == 0`,
+    `overlay_lookups == 0`, `value_expr_evals == 0`,
+    `coefficient_patch_batches == 1`.
+  Runs in ~42 ms; core post-canonical validation accepts the derived witness.
+
+Verification: `cargo clippy -p roml --all-targets -- -D warnings` clean;
+`cargo nextest run -p roml` **1503 passed, 4 skipped**; rustdoc clean.
+
+### Still remaining (MIR-03 exit gate)
+
+1. The one-commit mixed constant+parametric **row** seam (a model commit API
+   consuming `RowBlockPlan`); `RowBatch`/`RowBlockPlan` exist but are not yet
+   wired to a model entry point.
+2. IR-23 differential across **every** rejection class (currently the eligible
+   objective only).
+3. Wiring the **Python** BESS formulation (`rm.dot(price_grid, discharge -
+   charge)`) through the automatic proof; the flagship counters above are at the
+   Rust core level.
+4. Full exact-head qualification matrix and evidence/state finalization.

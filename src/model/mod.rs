@@ -5892,4 +5892,61 @@ mod mir03_tests {
             general.take_snapshot().expect("general snapshot")
         );
     }
+
+    /// IR-31 flagship cardinality at the core level: 28,800 price parameters
+    /// driving 57,600 objective cells, automatically proven eligible.
+    #[test]
+    fn flagship_bess_objective_cardinality() {
+        let n = 28_800usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let bounds = Bounds::new(0.0, 1.0);
+        let charge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("charge");
+        let discharge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("discharge");
+        let price_span = model.add_parameter_block(&vec![50.0; n]).expect("price");
+        let charge = VarView::new(owner, View::contiguous(charge_span, n)).expect("charge view");
+        let discharge =
+            VarView::new(owner, View::contiguous(discharge_span, n)).expect("discharge view");
+        let price = ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+        let terms = vec![
+            Term {
+                vars: charge,
+                coeff: CoeffView::ScaledParam {
+                    scale: -1.0,
+                    params: price.clone(),
+                },
+            },
+            Term {
+                vars: discharge,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: price,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+        model
+            .set_linear_objective_from_linarray(Sense::Maximize, &array)
+            .expect("flagship objective");
+
+        let lowering = model.lowering_stats();
+        assert_eq!(model.num_coefficients(), 2 * n, "57,600 objective cells");
+        assert!(lowering.param_dep_blocks >= 2, "automatic families");
+        assert_eq!(lowering.param_positions_cells, 0);
+        assert_eq!(lowering.general_affine, 0);
+
+        model
+            .set_parameters_bulk(price_span, &vec![60.0; n])
+            .expect("reprice");
+        model.commit().expect("commit");
+        let propagation = model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
+    }
 }
