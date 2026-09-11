@@ -692,7 +692,7 @@ impl CoefficientIndex {
             self.p_scales.push(cell.scale);
             self.p_cached.push(cell.cached);
             self.p_ids.push(id);
-            let track = track_positions.map_or(true, |t| t[i]);
+            let track = track_positions.is_none_or(|t| t[i]);
             if track {
                 self.param_positions
                     .entry(cell.param)

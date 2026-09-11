@@ -1509,9 +1509,10 @@ impl CompilationSession {
                         }
                     }
                 }
-                // MIR-02 packed coefficient patch: expand to the same backend
-                // ops as equivalent scalar `SetCell` changes. The canonical
-                // delta stays one packed batch.
+                // MIR-02 packed coefficient patch: preserve objective batching
+                // through the backend IR (one `SetObjectiveCosts` per
+                // objective) so a native backend can use one bulk cost call;
+                // constraint patches expand to per-cell linear coefficients.
                 ModelOp::SetCoefficientPatchBatch { patches } => {
                     require_feature(
                         capabilities,
@@ -1519,6 +1520,10 @@ impl CompilationSession {
                         BackendFeature::IncrementalCoefficients,
                         "coefficient patch batch",
                     )?;
+                    let mut objective_groups: Vec<(
+                        CompiledObjectiveId,
+                        Vec<(CompiledVariableId, f64)>,
+                    )> = Vec::new();
                     for patch in patches.iter() {
                         if let CoefficientTarget::Constraint(con) = patch.target {
                             if Self::construct_depends_on_constraint(
@@ -1556,19 +1561,24 @@ impl CompilationSession {
                                         "coefficient patch for unknown compiled objective ({obj:?})"
                                     ))
                                 })?;
-                                operations.push(BackendOp::SetObjectiveCoefficient {
-                                    objective: oid,
-                                    variable: vid,
-                                    value: patch.new,
-                                });
-                                if let Some(cells) = w.compiled_objective_coefficients.get_mut(&oid)
-                                {
-                                    cells.retain(|(cid, _)| *cid != vid);
-                                    cells.push((vid, patch.new));
-                                    cells.sort_by_key(|(cid, _)| *cid);
+                                match objective_groups.iter_mut().find(|(id, _)| *id == oid) {
+                                    Some((_, costs)) => costs.push((vid, patch.new)),
+                                    None => objective_groups.push((oid, vec![(vid, patch.new)])),
                                 }
                             }
                         }
+                    }
+                    // One bulk bookkeeping update per objective (avoid the
+                    // O(n²) per-patch retain+sort).
+                    for (objective, costs) in objective_groups {
+                        if let Some(cells) = w.compiled_objective_coefficients.get_mut(&objective) {
+                            let incoming: std::collections::HashSet<CompiledVariableId> =
+                                costs.iter().map(|(cid, _)| *cid).collect();
+                            cells.retain(|(cid, _)| !incoming.contains(cid));
+                            cells.extend(costs.iter().copied());
+                            cells.sort_by_key(|(cid, _)| *cid);
+                        }
+                        operations.push(BackendOp::SetObjectiveCosts { objective, costs });
                     }
                 }
                 ModelOp::SetSemiContinuousBound { .. } => {

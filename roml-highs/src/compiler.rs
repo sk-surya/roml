@@ -41,6 +41,42 @@ use roml::model::objective::Sense;
 use roml::model::variable::VarType;
 use roml::solver::backend::{BackendError, ErrorCategory, HealthEffect};
 
+/// Debug-only counters for the MIR-02 packed objective-cost path.
+///
+/// They prove structural batching: an eligible reprice must produce bulk
+/// native cost calls and zero scalar per-cell cost calls.
+#[cfg(debug_assertions)]
+pub mod cost_call_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Native bulk objective-cost calls (`...CostByRange`/`...CostBySet`).
+    pub static BULK_COST_CALLS: AtomicU64 = AtomicU64::new(0);
+    /// Native scalar objective-cost calls (`Highs_changeColCost`).
+    pub static SCALAR_COST_CALLS: AtomicU64 = AtomicU64::new(0);
+    /// Cumulative wall time spent inside native bulk objective-cost calls.
+    pub static BULK_COST_NANOS: AtomicU64 = AtomicU64::new(0);
+
+    /// Zero all counters.
+    pub fn reset() {
+        BULK_COST_CALLS.store(0, Ordering::Relaxed);
+        SCALAR_COST_CALLS.store(0, Ordering::Relaxed);
+        BULK_COST_NANOS.store(0, Ordering::Relaxed);
+    }
+
+    /// Read `(bulk, scalar)` native cost-call counts.
+    pub fn snapshot() -> (u64, u64) {
+        (
+            BULK_COST_CALLS.load(Ordering::Relaxed),
+            SCALAR_COST_CALLS.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Cumulative nanoseconds spent in native bulk objective-cost calls.
+    pub fn bulk_cost_nanos() -> u64 {
+        BULK_COST_NANOS.load(Ordering::Relaxed)
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Normalise a ROML bound value to a HiGHS-compatible value.
@@ -813,6 +849,74 @@ pub(crate) fn apply_backend_delta(
                                 "Highs_changeColCost",
                             )?;
                         }
+                        #[cfg(debug_assertions)]
+                        cost_call_stats::SCALAR_COST_CALLS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+
+            // MIR-02 packed objective costs: one native bulk call instead of
+            // one `Highs_changeColCost` per cell. Prefer the contiguous range
+            // form; fall back to the set form.
+            BackendOp::SetObjectiveCosts { objective, costs } => {
+                if !compiled_to_user_objective.contains_key(objective) {
+                    return Err(missing_objective(*objective));
+                }
+                let mut cols: Vec<HighsInt> = Vec::with_capacity(costs.len());
+                let mut values: Vec<f64> = Vec::with_capacity(costs.len());
+                for (variable, value) in costs {
+                    let col = col_map
+                        .get(*variable)
+                        .ok_or_else(|| missing_variable(*variable))?;
+                    cols.push(col);
+                    values.push(*value);
+                }
+                // Update the held compiled cache (observationally equivalent
+                // to applying each scalar `SetObjectiveCoefficient`).
+                let cache = obj_costs.entry(*objective).or_default();
+                for ((variable, value), _) in costs.iter().zip(cols.iter()) {
+                    cache.insert(*variable, *value);
+                }
+                if *active_obj == compiled_to_user_objective.get(objective).copied()
+                    && !cols.is_empty()
+                {
+                    #[cfg(debug_assertions)]
+                    let started = std::time::Instant::now();
+                    unsafe {
+                        let contiguous = cols.windows(2).all(|w| w[1] == w[0] + 1);
+                        if contiguous {
+                            check_highs_status(
+                                Highs_changeColsCostByRange(
+                                    raw,
+                                    cols[0],
+                                    cols[cols.len() - 1],
+                                    values.as_ptr(),
+                                ),
+                                raw,
+                                "Highs_changeColsCostByRange",
+                            )?;
+                        } else {
+                            check_highs_status(
+                                Highs_changeColsCostBySet(
+                                    raw,
+                                    cols.len() as HighsInt,
+                                    cols.as_ptr(),
+                                    values.as_ptr(),
+                                ),
+                                raw,
+                                "Highs_changeColsCostBySet",
+                            )?;
+                        }
+                    }
+                    #[cfg(debug_assertions)]
+                    {
+                        cost_call_stats::BULK_COST_CALLS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        cost_call_stats::BULK_COST_NANOS.fetch_add(
+                            started.elapsed().as_nanos() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                     }
                 }
             }

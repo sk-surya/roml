@@ -101,7 +101,7 @@ impl StridedMap {
 
     /// Whether the map covers no cells.
     pub fn is_empty(&self) -> bool {
-        self.shape.iter().any(|&dim| dim == 0)
+        self.shape.contains(&0)
     }
 
     /// Resolve a flat ordinal to its mapped index, or `None` when out of
@@ -125,7 +125,11 @@ impl StridedMap {
         }
         let mut rem = ordinal;
         let mut mapped = self.offset;
-        for (&size, &stride) in self.shape.iter().zip(self.strides.iter()) {
+        // Row-major: the last shape dimension varies fastest, so decompose
+        // from the last dimension inward.
+        for dim in (0..self.shape.len()).rev() {
+            let size = self.shape[dim];
+            let stride = self.strides[dim];
             if size == 0 {
                 return None;
             }

@@ -843,6 +843,20 @@ impl ReferenceBackend {
                     .ok_or_else(|| invalid_objective(*objective))?;
                 upsert_compiled_coefficient(&mut entry.1, *variable, *value);
             }
+            BackendOp::SetObjectiveCosts { objective, costs } => {
+                for (variable, _) in costs {
+                    if !self.compiled_variables.contains_key(variable) {
+                        return Err(invalid_variable(*variable));
+                    }
+                }
+                let entry = self
+                    .compiled_objectives
+                    .get_mut(objective)
+                    .ok_or_else(|| invalid_objective(*objective))?;
+                for (variable, value) in costs {
+                    upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+                }
+            }
             BackendOp::RemoveObjectiveCoefficient {
                 objective,
                 variable,
