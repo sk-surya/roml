@@ -276,3 +276,102 @@ fn neutralize_objective(session: &mut HighsSession) -> Result<(), BackendError> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roml::advanced::{
+        BackendCapabilitySet, BackendFeature, CompilationSession, ConflictAtomId, FeatureSupport,
+        SupportLevel,
+    };
+    use roml::compiler::capability::CompilationPolicy;
+    use roml::{continuous, ConflictGrouping, Model};
+
+    fn base_snapshot() -> BackendSnapshot {
+        let mut model = Model::new();
+        model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let model_snapshot = model.take_snapshot().expect("snapshot");
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+        CompilationSession::new()
+            .compile_snapshot(
+                model.instance(),
+                &model_snapshot,
+                &CompilationPolicy::Auto,
+                &caps,
+            )
+            .expect("empty base")
+    }
+
+    fn oracle(
+        snapshot: &BackendSnapshot,
+    ) -> (Box<dyn FeasibilityOracle>, SemanticConflictUniverse) {
+        let universe = SemanticConflictUniverse {
+            compilation_id: snapshot.compilation_id,
+            atoms: Vec::new(),
+            compiled_restrictions: Vec::new(),
+            grouping: ConflictGrouping::Semantic,
+        };
+        let persistent = HighsSession::try_new().expect("bundled HiGHS");
+        let oracle = spawn_oracle(&persistent, snapshot, &universe).expect("oracle");
+        (oracle, universe)
+    }
+
+    #[test]
+    fn check_rejects_a_stale_selection_compilation_id() {
+        let snapshot = base_snapshot();
+        let (mut oracle, _universe) = oracle(&snapshot);
+        // A second compile yields a distinct exact compilation id.
+        let stale = RestrictionSelection {
+            compilation_id: base_snapshot().compilation_id,
+            atom_ids: Vec::new(),
+        };
+        assert!(oracle.check(&stale, &OracleBudget::default()).is_err());
+    }
+
+    #[test]
+    fn check_rejects_an_atom_outside_the_exact_universe() {
+        let snapshot = base_snapshot();
+        let (mut oracle, _universe) = oracle(&snapshot);
+        let foreign = RestrictionSelection {
+            compilation_id: snapshot.compilation_id,
+            atom_ids: vec![ConflictAtomId(999)],
+        };
+        assert!(oracle.check(&foreign, &OracleBudget::default()).is_err());
+    }
+
+    #[test]
+    fn negative_feasibility_tolerance_budget_is_rejected() {
+        let snapshot = base_snapshot();
+        let (mut oracle, universe) = oracle(&snapshot);
+        let budget = OracleBudget {
+            time_limit_ms: None,
+            feasibility_tolerance: Some(-1.0),
+        };
+        assert!(oracle
+            .check(&RestrictionSelection::all(&universe), &budget)
+            .is_err());
+    }
+
+    #[test]
+    fn check_accepts_a_budgeted_feasible_selection() {
+        let snapshot = base_snapshot();
+        let (mut oracle, universe) = oracle(&snapshot);
+        let budget = OracleBudget {
+            time_limit_ms: Some(50),
+            feasibility_tolerance: Some(1e-6),
+        };
+        let outcome = oracle
+            .check(&RestrictionSelection::all(&universe), &budget)
+            .expect("feasible selection");
+        assert!(matches!(outcome, FeasibilityOutcome::ProvenFeasible(_)));
+    }
+}
