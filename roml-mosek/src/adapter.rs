@@ -306,6 +306,19 @@ impl MosekAdapter {
                 }
             }
 
+            // ── Variable Block Added (MIR-01) ─────────────────────────────
+            Change::VariableBlockAdded { block } => {
+                for (offset, var) in block.ids().enumerate() {
+                    if let Some(bounds) = block.bounds_for(offset) {
+                        self.apply_one(&Change::VariableAdded {
+                            var,
+                            bounds,
+                            var_type: block.var_type(),
+                        })?;
+                    }
+                }
+            }
+
             // ── Variable Removed ──────────────────────────────────────────
             Change::VariableRemoved { var } => {
                 let col = match self.col_map.remove(*var) {

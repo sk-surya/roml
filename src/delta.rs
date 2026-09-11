@@ -78,6 +78,16 @@ pub enum ModelOp {
         var_type: VarType,
     },
 
+    /// Add a packed block of variables (MIR-01).
+    ///
+    /// Compiled from `Change::VariableBlockAdded`; the shared payload is
+    /// self-contained, so adapters expand it with no live-model access and the
+    /// canonical delta stays packed.
+    AddVariableBlock {
+        /// The packed variable block (shared).
+        block: Arc<crate::bulk::VariableBlock>,
+    },
+
     /// Remove a variable and all associated cells.
     RemoveVariable {
         /// The removed variable.

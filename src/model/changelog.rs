@@ -34,6 +34,17 @@ pub enum Change {
         var_type: VarType,
     },
 
+    /// A packed block of variables was added (MIR-01).
+    ///
+    /// One packed change instead of one `VariableAdded` per variable. The
+    /// payload is shared and self-contained, so it compiles and replays
+    /// without querying live model state; adapters may expand it into their
+    /// native per-column API.
+    VariableBlockAdded {
+        /// The packed variable block (shared).
+        block: Arc<crate::bulk::VariableBlock>,
+    },
+
     /// A variable was removed.
     VariableRemoved {
         /// The removed variable.

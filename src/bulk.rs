@@ -110,12 +110,18 @@ impl VarSpan {
     /// Returns `None` for an out-of-range offset. Liveness/generation of the
     /// returned id is validated by the owning store, so a deleted member
     /// fails validation while its siblings remain valid.
-    #[allow(dead_code)] // consumed by MIR-01 Task 3 (packed variable-block op)
+    #[allow(dead_code)] // used by bulk tests and the block payload's var_at
     pub(crate) fn id_at(&self, offset: usize) -> Option<VarId> {
         if offset >= self.len as usize {
             return None;
         }
         Some(VarId::new(self.start + offset as u32, self.generation))
+    }
+
+    /// Iterate every member identity in ordinal order.
+    pub fn ids(&self) -> impl Iterator<Item = VarId> + '_ {
+        (0..self.len as usize)
+            .map(move |offset| VarId::new(self.start + offset as u32, self.generation))
     }
 
     /// First arena index covered by the span.
@@ -238,8 +244,22 @@ impl VariableBlock {
         &self.bounds
     }
 
+    /// Iterate the block's member variable identities in ordinal order.
+    ///
+    /// Adapters expand a packed block into their native per-column API with
+    /// this; it does not expose the arena layout beyond the members.
+    pub fn ids(&self) -> impl Iterator<Item = VarId> + '_ {
+        self.span.ids()
+    }
+
+    /// Bounds of `offset`, or `None` when out of range.
+    #[inline]
+    pub fn bounds_for(&self, offset: usize) -> Option<Bounds> {
+        self.bounds.get(offset, self.len())
+    }
+
     /// Reconstruct the `offset`-th variable identity.
-    #[allow(dead_code)] // consumed by MIR-01 Task 3 (packed variable-block op)
+    #[allow(dead_code)] // consumed by the following MIR-01 delta projection
     pub(crate) fn var_at(&self, offset: usize) -> Option<VarId> {
         self.span.id_at(offset)
     }

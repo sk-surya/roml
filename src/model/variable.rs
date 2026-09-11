@@ -279,14 +279,19 @@ impl VariableStore {
 
     /// Add a contiguous block of variables sharing one declared type.
     ///
-    /// `bounds` supplies exactly one entry per variable. This reserves the
-    /// arena once and allocates sequentially; domain validation happens in
-    /// the `Model` layer *before* this mutating primitive is called.
-    pub fn add_block(&mut self, bounds: &[Bounds], var_type: VarType) -> VarSpan {
+    /// `bounds` yields exactly one entry per variable (`ExactSizeIterator`).
+    /// This reserves the arena once and allocates sequentially; domain
+    /// validation happens in the `Model` layer *before* this mutating
+    /// primitive is called.
+    pub fn add_block<I>(&mut self, bounds: I, var_type: VarType) -> VarSpan
+    where
+        I: ExactSizeIterator<Item = Bounds>,
+    {
+        let n = bounds.len();
         let (start, generation) = self
             .arena
-            .allocate_block(bounds.iter().map(|b| VariableData::new(*b, var_type)));
-        VarSpan::from_parts(start, bounds.len() as u32, generation)
+            .allocate_block(bounds.map(|b| VariableData::new(b, var_type)));
+        VarSpan::from_parts(start, n as u32, generation)
     }
 
     /// Remove a variable. Returns the data if it existed.
@@ -395,7 +400,7 @@ mod tests {
     fn add_block_is_contiguous_and_deletion_is_per_member() {
         let mut store = VariableStore::new();
         let bounds = [Bounds::NON_NEGATIVE; 3];
-        let span = store.add_block(&bounds, VarType::Continuous);
+        let span = store.add_block(bounds.iter().copied(), VarType::Continuous);
         assert_eq!(span.len(), 3);
 
         let ids: Vec<VarId> = (0..3).filter_map(|i| span.id_at(i)).collect();

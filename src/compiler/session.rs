@@ -786,6 +786,38 @@ impl CompilationSession {
                     origin_additions.insert_variable(id, EntityOrigin::UserVariable(*var));
                 }
 
+                // MIR-01 packed variable block: expand to the backend's
+                // per-column API with the same compiled-id allocation order,
+                // activity state, and origin records as replaying `AddVariable`
+                // per member. The canonical delta stays packed.
+                ModelOp::AddVariableBlock { block } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental variable-block addition",
+                    )?;
+                    for (offset, var) in block.ids().enumerate() {
+                        let bounds = block.bounds_for(offset).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "variable block is missing bounds for member {offset}"
+                            ))
+                        })?;
+                        let id = CompiledVariableId(w.next_variable_index);
+                        w.next_variable_index += 1;
+                        operations.push(BackendOp::AddVariable(CompiledVariable {
+                            id,
+                            bounds,
+                            var_type: block.var_type(),
+                            name: None,
+                        }));
+                        w.variable_ids.insert(var, id);
+                        w.variable_activity.insert(var, true);
+                        w.compiled_to_variable.insert(id, var);
+                        origin_additions.insert_variable(id, EntityOrigin::UserVariable(var));
+                    }
+                }
+
                 ModelOp::RemoveVariable { var } => {
                     // F1: a construct whose bridge artifact references the
                     // removed variable would hold a dangling compiled

@@ -44,7 +44,7 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
-use crate::bulk::ParamSpan;
+use crate::bulk::{BlockBounds, BlockBoundsOwned, ParamSpan, VarSpan, VariableBlock};
 #[cfg(test)]
 use crate::construct::FixturePayload;
 use crate::construct::{
@@ -1526,19 +1526,63 @@ impl Model {
     /// Returns the semantic [`Variable`] handle.
     pub fn add_variable(&mut self, def: VariableDef) -> Result<Variable, ModelError> {
         let (bounds, var_type, name) = def.into_parts();
-        if !bounds.is_valid() {
-            return Err(ModelError::InvalidBounds);
-        }
-        if !bounds.lower.is_finite() && bounds.lower != f64::NEG_INFINITY {
-            return Err(ModelError::NonFiniteValue("variable lower bound"));
-        }
-        if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
-            return Err(ModelError::NonFiniteValue("variable upper bound"));
-        }
-        if var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
-            return Err(ModelError::InvalidBinaryBounds);
-        }
+        validate_variable_domain(bounds, var_type)?;
         Ok(self.add_variable_internal(bounds, var_type, name))
+    }
+
+    /// Add a contiguous block of variables in one packed operation (MIR-01).
+    ///
+    /// The whole block is validated before any mutation: every bound must be
+    /// valid for the declared type, exactly like [`Self::add_variable`]. The
+    /// arena reserves once and allocates sequentially; the canonical change log
+    /// receives **one** [`Change::VariableBlockAdded`] (not `n`
+    /// `VariableAdded` events), which compiles to one self-contained
+    /// [`ModelOp::AddVariableBlock`].
+    ///
+    /// Adapters may expand the packed block into their native per-column API;
+    /// the op never queries live model state.
+    ///
+    /// Fallible (D10): an invalid element leaves the model, changelog, and
+    /// revision unchanged. An empty block is a no-op and records nothing.
+    pub fn add_variable_block(
+        &mut self,
+        n: usize,
+        var_type: VarType,
+        bounds: BlockBounds<'_>,
+    ) -> Result<VarSpan, ModelError> {
+        if n == 0 {
+            return Ok(self.variables.add_block(std::iter::empty(), var_type));
+        }
+        let owned_bounds = match bounds {
+            BlockBounds::Uniform(b) => {
+                validate_variable_domain(b, var_type)?;
+                BlockBoundsOwned::Uniform(b)
+            }
+            BlockBounds::PerElement(slice) => {
+                if slice.len() != n {
+                    return Err(ModelError::MismatchedBulkLengths {
+                        vars: n,
+                        coeffs: slice.len(),
+                    });
+                }
+                for b in slice {
+                    validate_variable_domain(*b, var_type)?;
+                }
+                BlockBoundsOwned::PerElement(Arc::from(slice))
+            }
+        };
+        let span = match &owned_bounds {
+            BlockBoundsOwned::Uniform(b) => self
+                .variables
+                .add_block(std::iter::repeat_n(*b, n), var_type),
+            BlockBoundsOwned::PerElement(slice) => {
+                self.variables.add_block(slice.iter().copied(), var_type)
+            }
+        };
+        self.changelog.push(Change::VariableBlockAdded {
+            block: Arc::new(VariableBlock::new(span, var_type, owned_bounds)),
+        });
+        Ok(span)
     }
 
     /// Internal infallible variable insertion (arena + changelog).
@@ -3767,6 +3811,30 @@ impl Model {
 
 // ── Constraint bounds validation ──────────────────────────────────────────
 
+/// Validate a variable domain before mutation.
+///
+/// Shared by scalar [`Model::add_variable`] and block
+/// [`Model::add_variable_block`] so both agree bit-for-bit: valid ordering,
+/// finite (or infinite-form) bounds, and the binary intersection rule.
+pub(crate) fn validate_variable_domain(
+    bounds: Bounds,
+    var_type: VarType,
+) -> Result<(), ModelError> {
+    if !bounds.is_valid() {
+        return Err(ModelError::InvalidBounds);
+    }
+    if !bounds.lower.is_finite() && bounds.lower != f64::NEG_INFINITY {
+        return Err(ModelError::NonFiniteValue("variable lower bound"));
+    }
+    if !bounds.upper.is_finite() && bounds.upper != f64::INFINITY {
+        return Err(ModelError::NonFiniteValue("variable upper bound"));
+    }
+    if var_type == VarType::Binary && (bounds.lower < 0.0 || bounds.upper > 1.0) {
+        return Err(ModelError::InvalidBinaryBounds);
+    }
+    Ok(())
+}
+
 /// Validate raw constraint bounds before mutation (D10/API-06.1/06.2).
 ///
 /// Rejects NaN bounds (typed [`ModelError::NonFiniteValue`]) and inverted
@@ -3799,6 +3867,7 @@ fn compile_change(change: Change) -> Result<ModelOp, ModelError> {
             bounds,
             var_type,
         }),
+        Change::VariableBlockAdded { block } => Ok(ModelOp::AddVariableBlock { block }),
         Change::VariableRemoved { var } => Ok(ModelOp::RemoveVariable { var }),
         Change::VariableBoundsChanged {
             var, new: bounds, ..

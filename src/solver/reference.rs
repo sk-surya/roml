@@ -168,6 +168,15 @@ impl ReferenceBackend {
             } => {
                 self.variables.insert(*var, (*bounds, *var_type, true));
             }
+            // MIR-01 packed variable block: same end state as replaying one
+            // `AddVariable` per member.
+            ModelOp::AddVariableBlock { block } => {
+                for (offset, var) in block.ids().enumerate() {
+                    if let Some(bounds) = block.bounds_for(offset) {
+                        self.variables.insert(var, (bounds, block.var_type(), true));
+                    }
+                }
+            }
             ModelOp::RemoveVariable { var } => {
                 self.variables.remove(var);
                 self.semicontinuous.remove(var);

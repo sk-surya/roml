@@ -344,6 +344,14 @@ impl XpressAdapter {
                     new_vars.push(*var);
                     new_var_state.insert(*var, (*bounds, *var_type));
                 }
+                Change::VariableBlockAdded { block } => {
+                    for (offset, var) in block.ids().enumerate() {
+                        if let Some(bounds) = block.bounds_for(offset) {
+                            new_vars.push(var);
+                            new_var_state.insert(var, (bounds, block.var_type()));
+                        }
+                    }
+                }
                 Change::VariableBoundsChanged { var, new, .. } => {
                     if let Some((bounds, _)) = new_var_state.get_mut(var) {
                         *bounds = *new;
@@ -606,6 +614,19 @@ impl XpressAdapter {
                         "XPRSchgcoltype",
                     )?;
                     self.integer_vars.insert(*var);
+                }
+            }
+
+            // ── Variable Block Added (MIR-01) ─────────────────────────────
+            Change::VariableBlockAdded { block } => {
+                for (offset, var) in block.ids().enumerate() {
+                    if let Some(bounds) = block.bounds_for(offset) {
+                        self.apply_one(&Change::VariableAdded {
+                            var,
+                            bounds,
+                            var_type: block.var_type(),
+                        })?;
+                    }
                 }
             }
 
