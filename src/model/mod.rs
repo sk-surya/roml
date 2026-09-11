@@ -6365,6 +6365,63 @@ mod mir03_row_seam_tests {
         );
     }
 
+    /// A partial sync followed by a retry resumes from the acknowledged
+    /// revision: the journaled mixed-row change is not lost or duplicated.
+    #[test]
+    fn mixed_row_plan_sync_failure_resumes_without_loss_or_duplication() {
+        use crate::solver::reference::ReferenceBackend;
+        use crate::sync::{AdapterCursor, ApplyOutcome};
+        let n = 2usize;
+        let mut fixture = build_fixture(n);
+        fixture
+            .model
+            .add_rows_from_plan(&fixture.plan)
+            .expect("mixed rows");
+        fixture.model.commit().expect("commit rows");
+        fixture
+            .model
+            .set_parameters_bulk(fixture.price_span, &vec![6.0; n])
+            .expect("reprice");
+        fixture.model.commit().expect("commit reprice");
+
+        let batches = fixture
+            .model
+            .deltas_since(ModelRevision::ZERO)
+            .expect("deltas");
+        assert!(
+            batches.len() >= 2,
+            "expected a row batch and a reprice batch"
+        );
+
+        // First sync acknowledges the row batch, then the session "fails".
+        let mut backend = ReferenceBackend::new();
+        let mut cursor = AdapterCursor::new();
+        let outcome = backend.apply_batch(batches[0], &mut cursor).expect("apply");
+        assert!(matches!(outcome, ApplyOutcome::Applied { .. }));
+        let acknowledged = cursor.applied_revision;
+
+        // Retry/resume from the acknowledged revision.
+        for batch in fixture
+            .model
+            .deltas_since(acknowledged)
+            .expect("remaining deltas")
+        {
+            backend.apply_batch(batch, &mut cursor).expect("resume");
+        }
+
+        let mut rebuilt = ReferenceBackend::new();
+        let mut rebuild_cursor = AdapterCursor::new();
+        rebuilt.rebuild(
+            &fixture.model.take_snapshot().expect("snapshot"),
+            &mut rebuild_cursor,
+        );
+        assert_eq!(
+            backend.normalized_view(),
+            rebuilt.normalized_view(),
+            "resumed sync must equal a clean rebuild"
+        );
+    }
+
     /// A corrupted dependency witness rejects before allocating rows or
     /// journaling anything.
     #[test]
