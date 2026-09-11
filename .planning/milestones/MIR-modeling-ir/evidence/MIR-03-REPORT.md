@@ -158,9 +158,7 @@ Reference: this is a journal/delta/compiler protocol change, not an IR change.
 ### Still remaining before the exit gate
 
 1. Tests 5 and 10 (harnesses above).
-2. Full IR-23 rejection differential at the model level (one class landed:
-   overlapping spans -> general path, matching the general construction; other
-   rejection classes remain).
+2. IR-23 rejection corpus: complete (see the table above).
 3. Exact-head qualification matrix + STATE/evidence finalization + PR #63 body.
 
 ### Exact-head qualification
@@ -184,7 +182,45 @@ only (proprietary SDKs; cannot compile/test locally) — documented residual.
 1. **Test 10** (fast mixed-row vs general symbolic): blocked on a general
    symbolic *mixed-row cell* API on the public surface. That is MIR-04/05
    ergonomics, not an IR or protocol gap.
-2. Full IR-23 rejection differential at the model level (one class landed:
-   overlapping spans -> general path, matching the general construction; other
-   rejection classes remain).
+2. IR-23 rejection corpus: complete (see the table above).
 3. Freeze SHAs and hold for review; do not merge #63.
+
+## IR-23 rejection corpus (correctness vs conservative)
+
+Every eligibility rejection is proven end-to-end: shared-IR formulation ->
+eligibility/`RowBlockPlan` rejects -> general path -> same normalized
+mathematical model, **before and after a bulk parameter update**
+(`model::mir03_ir23_tests`).
+
+| Rejection class | Kind | Formulation -> outcome | Test |
+|---|---|---|---|
+| two distinct params reach one canonical cell | **correctness** | `try_param_block_layout` None -> general; model equal before/after reprice | `overlapping_spans_two_params_one_cell` |
+| zero-stride parameter over a multi-cell target | conservative | proof declines -> positions fallback; model equal before/after reprice | `zero_stride_parameter_across_multi_cell_target` |
+| reversed / negative parameter stride | conservative | proof declines; `param_dep_blocks == 0`; model equal before/after reprice | `reversed_parameter_stride_falls_back` |
+| `Dense × ParamView` | conservative | `ParamView::mul_linarray` -> `None` | `unsupported_coefficient_products_fall_back` |
+| `ScaledParam × ParamView` (param x param) | conservative | `mul_linarray` -> `None` | `unsupported_coefficient_products_fall_back` |
+| shape outside the exact-shape subset | conservative | `mul_linarray` -> `None` | `unsupported_coefficient_products_fall_back` |
+| parameterized objective constant | **correctness** | typed `InvalidParamDepLayout`; no objective residue | `unsupported_parametric_constant_rejects` |
+| mixed-row constant/parametric collision | **correctness** | `RowBlockPlan::General` | `mixed_row_collision_is_general` |
+
+Notes:
+- **Correctness rejections** are impossible/unsafe packed representations and
+  must remain permanent.
+- **Conservative rejections** are packable forms the initial proof deliberately
+  declines; they are an explicit optimization backlog for MIR-04/06, not
+  correctness gaps.
+- Two classes are structurally model-level rejections and cannot be built (and
+  thus cannot be compared) via the public surface without a general symbolic
+  mixed-row API (see debt below).
+
+## Qualification debt (explicit, not MIR-03 blockers)
+
+- **MIR-04/05 qualification debt (test 10):** once a public/general
+  row-expression API exists, compare the same mixed numeric+parametric model
+  through the user-facing symbolic path against `Model::add_rows_from_plan`.
+  No artificial internal API is created to make this green. The `MixedRowBlock`
+  protocol is already self-contained and replay-tested.
+- **MIR-06 acceptance test:** wire the Python
+  `rm.dot(price_grid, discharge - charge)` BESS formulation through the shared
+  IR and the automatic objective seam. Not in scope for MIR-03; no Python
+  migration here.
