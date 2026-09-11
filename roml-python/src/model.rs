@@ -384,6 +384,41 @@ impl Model {
         ))
     }
 
+    /// Debug-only MIR diagnostics probe (D-019, DESIGN §11).
+    ///
+    /// Returns a dict with the nine counters `numeric_bulk`,
+    /// `parametric_bulk`, `general_affine`, `param_dep_blocks`,
+    /// `param_positions_cells`, `param_position_lookups`, `overlay_lookups`,
+    /// `value_expr_evals`, `coefficient_patch_batches`. Observational only;
+    /// release wheels expose no such surface.
+    #[cfg(debug_assertions)]
+    fn _debug_mir_stats(slf: &Bound<'_, Self>) -> PyResult<Py<PyDict>> {
+        let borrowed = slf.borrow();
+        let state = lock_state(&borrowed)?;
+        let l = state.model.lowering_stats();
+        let p = state.model.propagation_stats();
+        let dict = PyDict::new(slf.py());
+        dict.set_item("numeric_bulk", l.numeric_bulk)?;
+        dict.set_item("parametric_bulk", l.parametric_bulk)?;
+        dict.set_item("general_affine", l.general_affine)?;
+        dict.set_item("param_dep_blocks", l.param_dep_blocks)?;
+        dict.set_item("param_positions_cells", l.param_positions_cells)?;
+        dict.set_item("param_position_lookups", p.param_position_lookups)?;
+        dict.set_item("overlay_lookups", p.overlay_lookups)?;
+        dict.set_item("value_expr_evals", p.value_expr_evals)?;
+        dict.set_item("coefficient_patch_batches", p.coefficient_patch_batches)?;
+        Ok(dict.into())
+    }
+
+    /// Debug-only reset for the MIR diagnostics probe.
+    #[cfg(debug_assertions)]
+    fn _debug_reset_mir_stats(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        state.model.reset_diagnostics();
+        Ok(())
+    }
+
     #[pyo3(signature = (**values))]
     fn update(slf: &Bound<'_, Self>, values: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
         let borrowed = slf.borrow();

@@ -458,6 +458,8 @@ pub struct Model {
     metadata: std::collections::HashMap<EntityRef, EntityMetadata>,
     /// The generation-safe construct arena (design §7, P25 Task 4).
     constructs: ConstructStore,
+    /// MIR fast-path diagnostics (D-019, DESIGN §11). Never canonical.
+    pub(crate) diagnostics: crate::diagnostics::Diagnostics,
 }
 
 impl Default for Model {
@@ -480,6 +482,7 @@ impl Default for Model {
             instance: ModelInstanceId::allocate().expect("model instance counter exhausted"),
             metadata: std::collections::HashMap::new(),
             constructs: ConstructStore::new(),
+            diagnostics: crate::diagnostics::Diagnostics::default(),
         }
     }
 }
@@ -505,6 +508,9 @@ impl Clone for Model {
             metadata: self.metadata.clone(),
             // Constructs survive clone with the same ids, kinds, and activity.
             constructs: self.constructs.clone(),
+            // Diagnostics are observational only; cloning copies the current
+            // tallies rather than allocating a fresh instance.
+            diagnostics: self.diagnostics,
         }
     }
 }
@@ -2126,6 +2132,7 @@ impl Model {
             values: canon_values,
         });
         self.changelog.push(Change::BulkLinearRows { block });
+        self.diagnostics.lowering.numeric_bulk += 1;
         Ok(cons)
     }
 
@@ -2512,6 +2519,7 @@ impl Model {
         // their stored expressions; packed parametric cells recompute
         // contiguously through the reverse parameter index.
         let affected: Vec<_> = self.coefficients.for_param(param).collect();
+        self.diagnostics.propagation.overlay_lookups += affected.len() as u64;
         let lookup = self.parameters.as_lookup();
 
         for coeff_id in affected {
@@ -2526,6 +2534,7 @@ impl Model {
             // unconditional pre-write would clobber the cache with zero
             // on sub-epsilon updates).
             if let Some(old) = self.coefficients.get(coeff_id) {
+                self.diagnostics.propagation.value_expr_evals += 1;
                 let new_cached = old.value_expr.eval(&lookup);
                 if (old.cached_value - new_cached).abs() >= f64::EPSILON {
                     self.coefficients.set_cached_value(coeff_id, new_cached);
@@ -2540,7 +2549,11 @@ impl Model {
                 }
             }
         }
-        for update in self.coefficients.propagate_packed_param(param, new_value) {
+        for update in self.coefficients.propagate_packed_param(
+            param,
+            new_value,
+            &mut self.diagnostics.propagation,
+        ) {
             self.changelog.push(Change::CoefficientValueChanged {
                 coeff: update.id,
                 var: update.var,
@@ -2560,6 +2573,30 @@ impl Model {
     /// Get the number of parameters.
     pub fn num_parameters(&self) -> usize {
         self.parameters.len()
+    }
+
+    /// Read the accumulated construction-time MIR diagnostics.
+    ///
+    /// Observational only (D-019, DESIGN §11): these counters never affect
+    /// canonical state, revisions, snapshots, or solver projection.
+    pub fn lowering_stats(&self) -> crate::diagnostics::LoweringStats {
+        self.diagnostics.lowering
+    }
+
+    /// Read the accumulated update-time MIR diagnostics.
+    ///
+    /// Observational only; see [`Self::lowering_stats`].
+    pub fn propagation_stats(&self) -> crate::diagnostics::PropagationStats {
+        self.diagnostics.propagation
+    }
+
+    /// Zero every MIR diagnostic counter.
+    ///
+    /// Benchmark fixtures call this between measured runs so a tally reflects
+    /// one operation rather than the whole build. Canonical state is
+    /// untouched.
+    pub fn reset_diagnostics(&mut self) {
+        self.diagnostics.reset();
     }
 
     // ========== Coefficient Operations ==========
@@ -2608,6 +2645,7 @@ impl Model {
         let id = self
             .coefficients
             .add(var, target, value_expr, initial_value);
+        self.diagnostics.lowering.general_affine += 1;
 
         if let Some(old) = old_value {
             // Combined with existing cell — emit value change
@@ -2694,6 +2732,7 @@ impl Model {
         let id = self
             .coefficients
             .add(var, target, value_expr, initial_value);
+        self.diagnostics.lowering.general_affine += 1;
 
         // Look up the canonical expression from the combined cell.
         let combined_expr = self
@@ -2812,6 +2851,7 @@ impl Model {
         let cells: Arc<[(VarId, f64)]> = packed.into();
         self.changelog
             .push(Change::BulkObjectiveCoefficients { obj, cells });
+        self.diagnostics.lowering.numeric_bulk += 1;
         // Mirror the scalar path: report the constant iff it differs, then
         // activate.
         self.set_objective_constant_internal(obj, constant);
@@ -2943,6 +2983,7 @@ impl Model {
         self.coefficients.append_param_run(target, &packed);
         for (var, expr, cached) in combined {
             let id = self.coefficients.add(var, target, expr.clone(), cached);
+            self.diagnostics.lowering.general_affine += 1;
             self.changelog.push(Change::CoefficientAdded {
                 coeff: id,
                 var,
@@ -2961,8 +3002,11 @@ impl Model {
             })
             .collect::<Vec<_>>()
             .into();
+        let param_positions_cells = cells.len() as u64;
         self.changelog
             .push(Change::BulkObjectiveParamCoefficients { obj, cells });
+        self.diagnostics.lowering.parametric_bulk += 1;
+        self.diagnostics.lowering.param_positions_cells += param_positions_cells;
         // Mirror the scalar path: report the constant iff it differs, then
         // activate.
         self.set_objective_constant_internal(obj, constant);

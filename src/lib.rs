@@ -23,6 +23,8 @@ pub mod compiler;
 // surface in non-test builds); the `#[non_exhaustive]` boundary stays.
 pub mod construct;
 pub mod delta;
+/// Read-only MIR fast-path diagnostics (D-019, DESIGN §11).
+pub mod diagnostics;
 pub mod expr;
 pub mod function;
 pub mod id;

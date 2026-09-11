@@ -696,10 +696,15 @@ impl CoefficientIndex {
     /// updating caches in place and reporting every changed cell. The
     /// caller journals the matching `Change::CoefficientValueChanged`
     /// entries (same shape as scalar propagation).
+    ///
+    /// `stats` receives one `param_position_lookups` tick per reverse-index
+    /// position examined (including dead/shadowed positions that are
+    /// skipped), giving a direct baseline for the MIR-02 packed-block path.
     pub(crate) fn propagate_packed_param(
         &mut self,
         param: ParamId,
         value: f64,
+        stats: &mut crate::diagnostics::PropagationStats,
     ) -> Vec<ParamUpdate> {
         let mut out = Vec::new();
         let positions: &[u32] = self
@@ -707,6 +712,7 @@ impl CoefficientIndex {
             .get(&param)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        stats.param_position_lookups += positions.len() as u64;
         // Borrow split: positions first (immutable copy of indices).
         let positions: Vec<u32> = positions.to_vec();
         for pos in positions {
