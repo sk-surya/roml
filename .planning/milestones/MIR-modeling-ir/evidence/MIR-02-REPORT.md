@@ -198,3 +198,55 @@ git diff --check; cargo package --list -p roml                    clean
 - The compiled global `obj_costs` cache and the native cost vector are updated
   equivalently to the scalar path; full observational equivalence is covered by
   the rebuild-vs-incremental tests, not exhaustively re-proven here.
+
+---
+
+# Test expansion and code coverage (2026-09-11)
+
+Requested after the remediation: broaden tests and measure coverage.
+
+## New tests
+
+| File | Tests | Focus |
+|---|---|---|
+| `tests/mir02_edge_cases.rs` | 28 | span/block API surfaces; empty/unchanged/length/override bulk updates; parametric-row shape/bounds/scale/stale-entity/zero-drop/multi-row/empty-row rejection; layout row-reference and out-of-range rejection; general-oracle differential; partial-layout scalar reprice; shadow/removal dependency iteration; diagnostics reset; block parameter naming; packed delta payload fields; parametric-row scalar reprice and reference replay; multi-block commits |
+| `tests/mir02_remediation.rs` | 5 | the owner-review RED→GREEN regressions |
+| `tests/mir02_backend_batching.rs` | 3 | packed objective-cost projection; mixed objective+constraint; two objectives → two packed ops |
+| `roml-highs/tests/mir02_bess_batching.rs` | 4 | flagship bulk call; apply/solve split; IR-17 solve gate; gapped columns → set form |
+| in-crate unit tests | 8 | StridedMap accessors/signed/empty; span+block accessors; transaction block-pending; coefficient validation negative/out-of-range/non-finite |
+
+Full suite: **1578 tests, 4 skipped** (`cargo nextest run -p roml -p roml-highs --features roml-highs/bundled`).
+
+## Coverage
+
+`cargo llvm-cov nextest -p roml -p roml-highs --features roml-highs/bundled`:
+
+```text
+OVERALL 27759/32532 = 85.33% lines   (CI gate is 75%)
+src/bulk.rs                       97.30%  (252/259)
+src/diagnostics.rs               100.00%  (3/3)
+src/model/coefficient.rs          85.42%  (1535/1797)
+src/model/mod.rs                  92.31%  (3219/3487)
+src/model/transaction.rs          95.24%  (80/84)
+src/compiler/session.rs           74.68%  (1044/1398)
+src/compiler/backend_ir.rs        85.75%  (728/849)
+src/solver/reference.rs           82.54%  (851/1031)
+src/delta.rs                      97.82%  (314/321)
+src/model/changelog.rs            94.92%  (56/59)
+src/model/variable.rs             94.30%  (182/193)
+src/model/parameter.rs            98.36%  (120/122)
+roml-highs/src/compiler.rs        75.35%  (538/714)
+roml-highs/src/session.rs         88.42%  (1756/1986)
+```
+
+The newly added code is well covered (`bulk.rs` 97.3%, `transaction.rs`
+95.2%, `diagnostics.rs` 100%, `delta.rs` 97.8%). The remaining uncovered lines
+are defensive branches: dependency-map `continue`/error guards for metadata
+that valid witnesses never produce, `BackendOp::SetObjectiveCosts` reference
+validation error arms, and pre-existing uncovered paths in
+`src/compiler/session.rs` (bridge/construct compilation) and
+`roml-highs/src/compiler.rs` (objective-policy forms). No MIR success path is
+uncovered.
+
+Coverage is a local measurement; CI's `cargo llvm-cov --fail-under-lines 75`
+remains the gate.
