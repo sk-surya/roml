@@ -158,7 +158,9 @@ Reference: this is a journal/delta/compiler protocol change, not an IR change.
 ### Still remaining before the exit gate
 
 1. Tests 5 and 10 (harnesses above).
-2. Full IR-23 rejection differential at the model level.
+2. Full IR-23 rejection differential at the model level (one class landed:
+   overlapping spans -> general path, matching the general construction; other
+   rejection classes remain).
 3. Exact-head qualification matrix + STATE/evidence finalization + PR #63 body.
 
 ### Exact-head qualification
@@ -182,5 +184,7 @@ only (proprietary SDKs; cannot compile/test locally) — documented residual.
 1. **Test 10** (fast mixed-row vs general symbolic): blocked on a general
    symbolic *mixed-row cell* API on the public surface. That is MIR-04/05
    ergonomics, not an IR or protocol gap.
-2. Full IR-23 rejection differential at the model level.
+2. Full IR-23 rejection differential at the model level (one class landed:
+   overlapping spans -> general path, matching the general construction; other
+   rejection classes remain).
 3. Freeze SHAs and hold for review; do not merge #63.
