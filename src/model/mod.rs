@@ -3763,6 +3763,146 @@ impl Model {
         self.set_linear_objective_from_linarray(Sense::Minimize, array)
     }
 
+    /// Commit a cell-wise row constraint (MIR-04 L1): each cell of the
+    /// residual array becomes one constraint row, with the leading axis the
+    /// row set and the remaining axes that row's coefficients.
+    ///
+    /// The packed mixed-row seam (`add_rows_from_plan`) is used when the
+    /// conservative eligibility proof covers the form; otherwise the general
+    /// symbolic coefficient path is used so the formulation stays correct
+    /// (per-cell, not packed).
+    pub fn add_row(&mut self, spec: crate::modeling::RowSpec) -> Result<Vec<ConId>, ModelError> {
+        use crate::modeling::builder::{plan_row_block, RowBatchPlan};
+
+        let residual = spec.residual();
+        if residual.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "row LinArray belongs to another model",
+            ));
+        }
+        let nrows = residual.len();
+        if nrows == 0 {
+            return Ok(Vec::new());
+        }
+        let (lower, upper) = spec.bounds().as_pair();
+        let bounds = vec![(lower, upper); nrows];
+        match plan_row_block(self.instance(), &bounds, residual.clone()) {
+            RowBatchPlan::Planned(plan) => self.add_rows_from_plan(&plan),
+            RowBatchPlan::General => self.add_row_general(&bounds, residual),
+        }
+    }
+
+    /// General symbolic fallback for a cell-wise row constraint: one row per
+    /// cell, every coefficient compiled through
+    /// [`Self::add_constraint_coefficient`]. Validates every referenced entity
+    /// before any mutation.
+    fn add_row_general(
+        &mut self,
+        bounds: &[(f64, f64)],
+        array: &crate::modeling::LinArray,
+    ) -> Result<Vec<ConId>, ModelError> {
+        use crate::modeling::{CoeffView, ConstantView};
+
+        let total = array.len();
+        if total != bounds.len() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "row bounds length mismatch",
+            ));
+        }
+        // Per-cell constant shift (uniform for scalar, per-cell for dense).
+        let mut shifts = Vec::with_capacity(total);
+        for ordinal in 0..total {
+            let shift = match array.constant() {
+                ConstantView::Zero => 0.0,
+                ConstantView::Scalar(value) => *value,
+                ConstantView::Dense { scale, values } => {
+                    scale
+                        * values
+                            .get(ordinal)
+                            .ok_or(ModelError::InvalidParamDepLayout("stale dense constant"))?
+                }
+                ConstantView::ScaledParam { .. } => {
+                    return Err(ModelError::InvalidArrayShape(
+                        "row constant must be numeric",
+                    ))
+                }
+            };
+            if !shift.is_finite() {
+                return Err(ModelError::NonFiniteValue("row constant"));
+            }
+            shifts.push(shift);
+        }
+
+        // ---- Validate everything before mutation (API-06.5 atomicity) ----
+        for (ordinal, &(lower, upper)) in bounds.iter().enumerate() {
+            validate_constraint_bounds(ConstraintBounds {
+                lower: lower - shifts[ordinal],
+                upper: upper - shifts[ordinal],
+            })?;
+        }
+        for term in array.terms() {
+            if let CoeffView::Dense { scale, .. } | CoeffView::ScaledParam { scale, .. } =
+                &term.coeff
+            {
+                if !scale.is_finite() {
+                    return Err(ModelError::NonFiniteValue("row coefficient scale"));
+                }
+            }
+            for ordinal in 0..term.vars.view().len() {
+                let var = term
+                    .vars
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout("stale row variable"))?;
+                if !self.variables.contains(var) {
+                    return Err(ModelError::VariableNotFound(var));
+                }
+                if let CoeffView::ScaledParam { params, .. } = &term.coeff {
+                    let param = params
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout("stale row parameter"))?;
+                    if !self.parameters.contains(param) {
+                        return Err(ModelError::ParameterNotFound(param));
+                    }
+                }
+            }
+        }
+
+        // ---- Commit: one constraint per cell ----
+        let mut cons = Vec::with_capacity(total);
+        for (ordinal, &(lower, upper)) in bounds.iter().enumerate() {
+            let shift = shifts[ordinal];
+            let con = self.add_empty_constraint(ConstraintBounds {
+                lower: lower - shift,
+                upper: upper - shift,
+            });
+            for term in array.terms() {
+                let var = term
+                    .vars
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout("stale row variable"))?;
+                let value_expr = match &term.coeff {
+                    CoeffView::One => ValueExpr::constant(1.0),
+                    CoeffView::Scalar(value) => ValueExpr::constant(*value),
+                    CoeffView::Dense { scale, values } => {
+                        let value = values
+                            .get(ordinal)
+                            .ok_or(ModelError::InvalidParamDepLayout("stale dense coefficient"))?;
+                        ValueExpr::constant(scale * value)
+                    }
+                    CoeffView::ScaledParam { scale, params } => {
+                        let param = params
+                            .member(ordinal)
+                            .ok_or(ModelError::InvalidParamDepLayout("stale row parameter"))?;
+                        ValueExpr::scaled_param(*scale, param)
+                    }
+                };
+                self.add_constraint_coefficient(con, var, value_expr)?;
+            }
+            cons.push(con);
+        }
+        Ok(cons)
+    }
+
     fn set_linear_objective_param_bulk_impl(
         &mut self,
         sense: Sense,
@@ -7021,5 +7161,169 @@ impl VarArrayBuilder<'_> {
         let vview = VarView::new(owner, view)
             .map_err(|_| ModelError::InvalidArrayShape("variable view out of span"))?;
         Ok(VarArray::new(self.name, vview))
+    }
+}
+
+#[cfg(test)]
+mod mir04_row_seam_tests {
+    use super::*;
+
+    /// M4-2: a numeric balance-row block built from L1 handles commits through
+    /// the packed mixed-row seam and is canonically identical to the raw
+    /// `add_linear_rows_bulk` construction.
+    #[test]
+    fn balance_row_block_from_handles_matches_raw_bulk() {
+        let (b, t) = (2usize, 4usize);
+        let dt = 0.25f64;
+        let eta = 0.9f64;
+
+        // ---- L1 handle path ----
+        let mut fast = Model::new();
+        let energy = fast
+            .var("energy", [b, t])
+            .bounds(0.0, 100.0)
+            .build()
+            .expect("energy");
+        let charge = fast
+            .var("charge", [b, t])
+            .bounds(0.0, 10.0)
+            .build()
+            .expect("charge");
+        let discharge = fast
+            .var("discharge", [b, t])
+            .bounds(0.0, 10.0)
+            .build()
+            .expect("discharge");
+        let energy_next = energy.slice(1, 1, t - 1).expect("energy next");
+        let energy_prev = energy.slice(1, 0, t - 1).expect("energy prev");
+        let charge_next = charge.slice(1, 1, t - 1).expect("charge next");
+        let discharge_next = discharge.slice(1, 1, t - 1).expect("discharge next");
+        let rhs = energy_prev
+            .expr()
+            .expect("prev expr")
+            .try_add(charge_next.expr().expect("charge expr").scaled(dt * eta))
+            .expect("add charge")
+            .try_add(
+                discharge_next
+                    .expr()
+                    .expect("discharge expr")
+                    .scaled(-dt / eta),
+            )
+            .expect("add discharge");
+        let residual = energy_next
+            .expr()
+            .expect("next expr")
+            .try_sub(rhs)
+            .expect("residual");
+        let cons = fast.add_row(residual.eq(0.0)).expect("balance rows");
+        assert_eq!(cons.len(), b * (t - 1));
+        assert_eq!(fast.num_constraints(), b * (t - 1));
+        let lowering = fast.lowering_stats();
+        assert_eq!(lowering.general_affine, 0, "packed numeric row block");
+        assert_eq!(lowering.param_positions_cells, 0);
+        assert_eq!(lowering.numeric_bulk, 1, "one packed row block");
+
+        // ---- Raw bulk path over identically allocated blocks ----
+        let mut raw = Model::new();
+        let energy = raw
+            .var("energy", [b, t])
+            .bounds(0.0, 100.0)
+            .build()
+            .expect("energy");
+        let charge = raw
+            .var("charge", [b, t])
+            .bounds(0.0, 10.0)
+            .build()
+            .expect("charge");
+        let discharge = raw
+            .var("discharge", [b, t])
+            .bounds(0.0, 10.0)
+            .build()
+            .expect("discharge");
+        let mut row_ptr = vec![0u32];
+        let mut vars = Vec::new();
+        let mut values = Vec::new();
+        let mut bounds = Vec::new();
+        for i in 0..b {
+            for j in 0..(t - 1) {
+                let mut cells = vec![
+                    (energy.get(i * t + j + 1).expect("energy next"), 1.0),
+                    (energy.get(i * t + j).expect("energy prev"), -1.0),
+                    (charge.get(i * t + j + 1).expect("charge next"), -dt * eta),
+                    (
+                        discharge.get(i * t + j + 1).expect("discharge next"),
+                        dt / eta,
+                    ),
+                ];
+                cells.sort_by_key(|(var, _)| var.index());
+                for (var, value) in cells {
+                    vars.push(var);
+                    values.push(value);
+                }
+                row_ptr.push(vars.len() as u32);
+                bounds.push(ConstraintBounds {
+                    lower: 0.0,
+                    upper: 0.0,
+                });
+            }
+        }
+        raw.add_linear_rows_bulk(&row_ptr, &vars, &values, &bounds)
+            .expect("raw rows");
+
+        assert_eq!(
+            fast.take_snapshot().expect("fast snapshot"),
+            raw.take_snapshot().expect("raw snapshot"),
+        );
+    }
+
+    /// M4-2: a multi-row parametric block is conservatively declined by the
+    /// packed proof and stays correct through the general symbolic path.
+    #[test]
+    fn parametric_row_block_falls_back_to_general_and_stays_correct() {
+        let (rows, cols) = (2usize, 3usize);
+        let prices: Vec<f64> = (0..rows * cols).map(|k| 10.0 + k as f64).collect();
+
+        // ---- L1 handle path (elementwise `price * x`, declines to general) ----
+        let mut fast = Model::new();
+        let x = fast
+            .var("x", [rows, cols])
+            .bounds(0.0, 1.0)
+            .build()
+            .expect("x");
+        let price = fast.param("price", [rows, cols], &prices).expect("price");
+        let residual = price
+            .try_mul(&x.expr().expect("x expr"))
+            .expect("fast IR")
+            .expect("conservative IR covers price * x")
+            .scaled(-1.0);
+        let cons = fast.add_row(residual.le(-1.0)).expect("rows");
+        assert_eq!(cons.len(), rows * cols);
+        assert!(fast.lowering_stats().general_affine > 0, "general fallback");
+
+        // ---- Raw per-cell general path ----
+        let mut raw = Model::new();
+        let x = raw
+            .var("x", [rows, cols])
+            .bounds(0.0, 1.0)
+            .build()
+            .expect("x");
+        let price = raw.param("price", [rows, cols], &prices).expect("price");
+        for r in 0..rows {
+            for c in 0..cols {
+                let var = x.get(r * cols + c).expect("var");
+                let param = price.get(r * cols + c).expect("param");
+                let con = raw.add_empty_constraint(ConstraintBounds {
+                    lower: f64::NEG_INFINITY,
+                    upper: -1.0,
+                });
+                raw.add_constraint_coefficient(con, var, ValueExpr::scaled_param(-1.0, param))
+                    .expect("coefficient");
+            }
+        }
+
+        assert_eq!(
+            fast.take_snapshot().expect("fast snapshot"),
+            raw.take_snapshot().expect("raw snapshot"),
+        );
     }
 }

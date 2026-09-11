@@ -18,5 +18,5 @@ pub(crate) mod eligibility;
 mod view;
 
 pub use array::{ParamArray, Shape, VarArray};
-pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
+pub use coeff::{CoeffView, ConstantView, LinArray, NumView, RowBounds, RowSpec, Term};
 pub use view::{ParamView, VarView, View, ViewError};

@@ -418,6 +418,81 @@ impl LinArray {
     pub fn try_sub(self, other: Self) -> Result<Self, ViewError> {
         self.try_add(other.scaled(-1.0))
     }
+
+    /// A cell-wise `≤ bound` row constraint: each cell becomes one row.
+    pub fn le(self, bound: f64) -> RowSpec {
+        RowSpec {
+            residual: self,
+            bounds: RowBounds::Le(bound),
+        }
+    }
+
+    /// A cell-wise `≥ bound` row constraint: each cell becomes one row.
+    pub fn ge(self, bound: f64) -> RowSpec {
+        RowSpec {
+            residual: self,
+            bounds: RowBounds::Ge(bound),
+        }
+    }
+
+    /// A cell-wise `== bound` row constraint: each cell becomes one row.
+    pub fn eq(self, bound: f64) -> RowSpec {
+        RowSpec {
+            residual: self,
+            bounds: RowBounds::Eq(bound),
+        }
+    }
+}
+
+/// A per-cell bound rule for a [`RowSpec`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RowBounds {
+    /// Each cell is `≤ bound`.
+    Le(f64),
+    /// Each cell is `≥ bound`.
+    Ge(f64),
+    /// Each cell is `== bound`.
+    Eq(f64),
+}
+
+impl RowBounds {
+    /// Lower/upper pair for one row.
+    pub fn as_pair(self) -> (f64, f64) {
+        match self {
+            Self::Le(bound) => (f64::NEG_INFINITY, bound),
+            Self::Ge(bound) => (bound, f64::INFINITY),
+            Self::Eq(bound) => (bound, bound),
+        }
+    }
+
+    /// The scalar bound, if any.
+    pub fn scalar(self) -> f64 {
+        match self {
+            Self::Le(bound) | Self::Ge(bound) | Self::Eq(bound) => bound,
+        }
+    }
+}
+
+/// A cell-wise row constraint over a [`LinArray`] (MIR-04 L1).
+///
+/// Each cell of the residual array becomes one constraint row; the leading
+/// axis is the row set and the remaining axes are that row's coefficients.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowSpec {
+    residual: LinArray,
+    bounds: RowBounds,
+}
+
+impl RowSpec {
+    /// The residual array (LHS moved to the left, RHS as bounds).
+    pub fn residual(&self) -> &LinArray {
+        &self.residual
+    }
+
+    /// The per-cell bound rule.
+    pub fn bounds(&self) -> RowBounds {
+        self.bounds
+    }
 }
 
 impl ParamView {
