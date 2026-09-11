@@ -100,3 +100,43 @@ fn free_variable_bounds_are_emitted() {
     let text = String::from_utf8(bytes).expect("UTF-8 MPS");
     assert!(text.contains("FR"), "free bound record emitted");
 }
+
+#[test]
+fn free_constraint_row_is_unrepresentable() {
+    let mut model = Model::with_name("freerow");
+    let x = model
+        .add_variable(continuous().bounds(0.0, 1.0).named("x"))
+        .expect("x");
+    let row = model.add_empty_constraint(ConstraintBounds {
+        lower: f64::NEG_INFINITY,
+        upper: f64::INFINITY,
+    });
+    model.add_coeff(row, x, 1.0).expect("coeff");
+
+    let error = MpsWriter::new()
+        .write(&model, &mut Vec::new())
+        .expect_err("a free row has no MPS representation");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::Unrepresentable
+    );
+}
+
+#[test]
+fn non_finite_row_interval_width_is_rejected() {
+    let mut model = Model::with_name("width");
+    let x = model
+        .add_variable(continuous().bounds(-1e308, 1e308).named("x"))
+        .expect("x");
+    // Both bounds are finite but their width overflows to infinity.
+    let row = model.add_empty_constraint(ConstraintBounds::range(-1e308, 1e308));
+    model.add_coeff(row, x, 1.0).expect("coeff");
+
+    let error = MpsWriter::new()
+        .write(&model, &mut Vec::new())
+        .expect_err("an overflowing range width is not representable");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::NonFiniteValue
+    );
+}
