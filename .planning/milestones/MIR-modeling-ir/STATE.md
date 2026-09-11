@@ -2,7 +2,7 @@
 
 **Objective:** shared model-owned ordinal array IR plus block-native construction and parameter propagation, so elegant Rust and Python formulations lower through one bulk path.
 
-**Status:** MIR-00 (IR-01), MIR-01 (IR-02…IR-07) and MIR-02 (IR-08…IR-17) are complete and **merged to `main`** via PR #58 (`da7b383`), after the owner-review remediation and an independent green CI run (24 checks). MIR-02 is additionally guarded by the invariant mutation gauntlet (PR #61, `e215387`; **7/7 mutations killed**). **MIR-03 (IR-18…IR-23) is complete** at the Rust/shared-IR level (PR #63, head `77eab3a`; all gates and exact-head CI green). Deferred by design: MIR-04/05 user-facing mixed-row differential and MIR-06 Python BESS lowering.
+**Status:** MIR-00 (IR-01), MIR-01 (IR-02…IR-07) and MIR-02 (IR-08…IR-17) are complete and **merged to `main`** via PR #58 (`da7b383`), after the owner-review remediation and an independent green CI run (24 checks). MIR-02 is additionally guarded by the invariant mutation gauntlet (PR #61, `e215387`; **7/7 mutations killed**). **MIR-03 (IR-18…IR-23) is complete** at the Rust/shared-IR level (PR #63, head `77eab3a`; all gates and exact-head CI green). **MIR-04 (IR-24, IR-25) is complete** at the Rust/shared-IR level (PR #64, head `b7b26c2`; local gates green, reviewable). Deferred by design: MIR-05 rule builders and MIR-06 Python BESS lowering.
 
 **Planning base:** `main@c590692ace5446cc20c7eb91cb8fa0d594a054b0`.
 
@@ -16,7 +16,7 @@
 
 **Blockers:** none.
 
-**Next gate:** MIR-04 (Rust L1 ergonomics: BESS/transportation/min-cost-flow examples with no raw IDs; labels as boundary metadata; IR-24/IR-25). MIR-03's deferred items are tracked as MIR-04/05 and MIR-06 debt in `evidence/MIR-03-REPORT.md`.
+**Next gate:** MIR-05 (rule builders). MIR-04 satisfies IR-24/IR-25 at the Rust/shared-IR level; its deferred items and the `bess_mpc.rs` raw benchmark are tracked in `evidence/MIR-04-REPORT.md`.
 
 | Phase | State | Evidence |
 |---|---|---|
