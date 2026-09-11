@@ -213,3 +213,197 @@ fn side_name(side: crate::construct::ViolationSide) -> &'static str {
         crate::construct::ViolationSide::Upper => "upper",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::capability::{
+        BackendCapabilitySet, CompilationPolicy, FeatureSupport, SupportLevel,
+    };
+    use crate::construct::soft_constraint::{
+        PenaltyPolicy, PenaltyTarget, SoftConstraint, ViolationPolicy,
+    };
+    use crate::expr::ConstraintExprExt;
+    use crate::id::{ConId, Generation, VarId};
+    use crate::identity::ConstructId;
+    use crate::model::{continuous, Model};
+    use crate::snapshot::ModelSnapshot;
+    use crate::value_expr::ValueExpr;
+    use std::collections::HashMap;
+
+    type VarIds = HashMap<VarId, CompiledVariableId>;
+
+    fn capabilities() -> BackendCapabilitySet {
+        let mut set = BackendCapabilitySet::new();
+        set.set(
+            BackendFeature::SoftConstraint,
+            FeatureSupport {
+                level: SupportLevel::Bridge,
+                limitations: Default::default(),
+            },
+        );
+        set
+    }
+
+    fn active_snapshot() -> (ModelSnapshot, ConId, VarIds) {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let con = model.add_constraint((x).ge(1.0)).expect("row");
+        let mut variable_ids = VarIds::new();
+        variable_ids.insert(x, CompiledVariableId(0));
+        (model.take_snapshot().expect("snapshot"), con, variable_ids)
+    }
+
+    fn compile_with(
+        construct: ConstructId,
+        con: ConId,
+        violation: ViolationPolicy,
+        weight: ValueExpr,
+        snapshot: &ModelSnapshot,
+        variable_ids: &VarIds,
+    ) -> Result<BridgeOutput, CompileError> {
+        let payload = SoftConstraintConstraint {
+            handle: SoftConstraint::new(construct, con),
+            original_constraint: con,
+            violation,
+            penalty: PenaltyPolicy {
+                weight,
+                target: PenaltyTarget::None,
+            },
+        };
+        let caps = capabilities();
+        let policy = CompilationPolicy::Auto;
+        let parameter_values = HashMap::new();
+        let ctx = BridgeContext {
+            construct,
+            snapshot,
+            variable_ids,
+            parameter_values: &parameter_values,
+            policy: &policy,
+            capabilities: &caps,
+        };
+        compile(&payload, &ctx, 0, 0)
+    }
+
+    #[test]
+    fn absent_original_constraint_is_rejected() {
+        let (snapshot, _, variable_ids) = active_snapshot();
+        let missing = ConId::new(9_999, Generation::new());
+        let construct = ConstructId::allocate().expect("construct");
+        let error = compile_with(
+            construct,
+            missing,
+            ViolationPolicy::default(),
+            ValueExpr::constant(1.0),
+            &snapshot,
+            &variable_ids,
+        )
+        .expect_err("absent original rejects");
+        assert!(matches!(error, CompileError::UnsupportedFeature(ref m) if m.contains("absent")));
+    }
+
+    #[test]
+    fn inactive_original_constraint_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let con = model.add_constraint((x).ge(1.0)).expect("row");
+        model
+            .set_constraint_active(con, false)
+            .expect("deactivate row");
+        let snapshot = model.take_snapshot().expect("snapshot");
+        let mut variable_ids = VarIds::new();
+        variable_ids.insert(x, CompiledVariableId(0));
+        let construct = ConstructId::allocate().expect("construct");
+        let error = compile_with(
+            construct,
+            con,
+            ViolationPolicy::default(),
+            ValueExpr::constant(1.0),
+            &snapshot,
+            &variable_ids,
+        )
+        .expect_err("inactive original rejects");
+        assert!(matches!(error, CompileError::UnsupportedFeature(ref m) if m.contains("inactive")));
+    }
+
+    #[test]
+    fn non_finite_violation_cap_is_rejected() {
+        let (snapshot, con, variable_ids) = active_snapshot();
+        let construct = ConstructId::allocate().expect("construct");
+        let error = compile_with(
+            construct,
+            con,
+            ViolationPolicy {
+                max_violation: Some(f64::NAN),
+            },
+            ValueExpr::constant(1.0),
+            &snapshot,
+            &variable_ids,
+        )
+        .expect_err("non-finite cap rejects");
+        assert!(matches!(error, CompileError::InvalidBigM { .. }));
+    }
+
+    #[test]
+    fn negative_violation_cap_is_rejected() {
+        let (snapshot, con, variable_ids) = active_snapshot();
+        let construct = ConstructId::allocate().expect("construct");
+        let error = compile_with(
+            construct,
+            con,
+            ViolationPolicy {
+                max_violation: Some(-1.0),
+            },
+            ValueExpr::constant(1.0),
+            &snapshot,
+            &variable_ids,
+        )
+        .expect_err("negative cap rejects");
+        assert!(matches!(error, CompileError::InvalidBigM { .. }));
+    }
+
+    #[test]
+    fn non_finite_and_negative_weights_are_rejected() {
+        let (snapshot, con, variable_ids) = active_snapshot();
+        for weight in [f64::NAN, -1.0] {
+            let construct = ConstructId::allocate().expect("construct");
+            let error = compile_with(
+                construct,
+                con,
+                ViolationPolicy::default(),
+                ValueExpr::constant(weight),
+                &snapshot,
+                &variable_ids,
+            )
+            .expect_err("invalid weight rejects");
+            match error {
+                CompileError::UnsupportedFeature(_) => {}
+                other => panic!("expected UnsupportedFeature, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_weight_parameter_is_a_typed_error() {
+        let (snapshot, con, variable_ids) = active_snapshot();
+        let construct = ConstructId::allocate().expect("construct");
+        let missing = crate::id::ParamId::new(9_999, Generation::new());
+        let error = compile_with(
+            construct,
+            con,
+            ViolationPolicy::default(),
+            ValueExpr::param(missing),
+            &snapshot,
+            &variable_ids,
+        )
+        .expect_err("missing weight parameter rejects");
+        match error {
+            CompileError::MissingConstructParameter { .. } => {}
+            other => panic!("expected MissingConstructParameter, got {other:?}"),
+        }
+    }
+}
