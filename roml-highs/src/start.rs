@@ -105,3 +105,67 @@ pub fn unsupported_hint_error() -> BackendError {
         HealthEffect::Recoverable,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use roml::assignment::PrimalAssignment;
+    use roml::id::Generation;
+    use roml::solver::plan::RepairPolicy;
+    use roml::Model;
+
+    fn start_with(user: VarId, value: f64, lineage: roml::identity::ModelLineageId) -> MipStart {
+        let mut values = BTreeMap::new();
+        values.insert(user, value);
+        MipStart::new(
+            PrimalAssignment {
+                lineage,
+                source_instance: None,
+                source_revision: None,
+                values,
+            },
+            RepairPolicy::AllowRepair,
+        )
+    }
+
+    #[test]
+    fn unknown_user_variable_is_a_typed_error_before_any_native_call() {
+        let model = Model::new();
+        let user = VarId::new(0, Generation::new());
+        let start = start_with(user, 1.0, model.lineage());
+        // A null handle is safe: the mapping fails before the native call.
+        let error = apply_mip_starts(
+            std::ptr::null_mut(),
+            &[start],
+            &IndexMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("unknown user variable rejects");
+        assert!(format!("{error}").contains("no compiled column"));
+    }
+
+    #[test]
+    fn compiled_variable_without_native_column_is_a_typed_error() {
+        let model = Model::new();
+        let user = VarId::new(0, Generation::new());
+        let mut compiled_to_user = HashMap::new();
+        compiled_to_user.insert(CompiledVariableId(0), user);
+        let start = start_with(user, 1.0, model.lineage());
+        let error = apply_mip_starts(
+            std::ptr::null_mut(),
+            &[start],
+            &IndexMap::new(),
+            &compiled_to_user,
+        )
+        .expect_err("missing native column rejects");
+        assert!(format!("{error}").contains("no native column"));
+    }
+
+    #[test]
+    fn unsupported_hint_error_is_typed_unsupported() {
+        let error = unsupported_hint_error();
+        assert!(format!("{error}").contains("no variable-hint API"));
+    }
+}
