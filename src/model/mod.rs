@@ -97,6 +97,8 @@ pub enum ModelError {
     ConstructNotFound(Construct),
     /// Invalid bounds (lower > upper).
     InvalidBounds,
+    /// A structured array shape/values request was invalid (MIR-04).
+    InvalidArrayShape(&'static str),
     /// Binary bounds must lie within `[0, 1]`.
     InvalidBinaryBounds,
     /// A numeric value was not finite (NaN or infinite).
@@ -259,6 +261,7 @@ impl std::fmt::Display for ModelError {
                 write!(f, "Construct not found (stale or removed): {id:?}")
             }
             Self::InvalidBounds => write!(f, "Invalid bounds: lower > upper"),
+            Self::InvalidArrayShape(reason) => write!(f, "Invalid array shape: {reason}"),
             Self::InvalidBinaryBounds => {
                 write!(
                     f,
@@ -2873,6 +2876,51 @@ impl Model {
             }
         }
         Ok(self.parameters.add_block(values))
+    }
+
+    /// Begin a structured variable array (MIR-04 L1):
+    /// `m.var("charge", [b, t]).bounds(0.0, p).build()?`.
+    pub fn var(
+        &mut self,
+        name: impl Into<String>,
+        shape: impl Into<crate::modeling::Shape>,
+    ) -> VarArrayBuilder<'_> {
+        VarArrayBuilder {
+            model: self,
+            name: name.into(),
+            shape: shape.into(),
+            bounds: Bounds::NON_NEGATIVE,
+            var_type: VarType::Continuous,
+        }
+    }
+
+    /// Create a structured parameter array (MIR-04 L1).
+    pub fn param(
+        &mut self,
+        name: impl Into<String>,
+        shape: impl Into<crate::modeling::Shape>,
+        values: &[f64],
+    ) -> Result<crate::modeling::ParamArray, ModelError> {
+        use crate::modeling::{ParamArray, ParamView, Shape, View};
+        let shape: Shape = shape.into();
+        let n = shape
+            .product()
+            .ok_or(ModelError::InvalidArrayShape("shape overflow"))?;
+        if values.len() != n {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: n,
+                coeffs: values.len(),
+            });
+        }
+        let strides = crate::modeling::array::row_major_strides(shape.dims())
+            .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
+        let span = self.add_parameter_block(values)?;
+        let owner = self.instance();
+        let view = View::new(span, shape.dims().to_vec(), strides, 0)
+            .map_err(|_| ModelError::InvalidArrayShape("invalid parameter view"))?;
+        let pview = ParamView::new(owner, view)
+            .map_err(|_| ModelError::InvalidArrayShape("parameter view out of span"))?;
+        Ok(ParamArray::new(name.into(), pview))
     }
 
     /// Get a parameter value.
@@ -6911,5 +6959,50 @@ mod mir03_ir23_tests {
             )
             .expect("push");
         assert_eq!(batch.plan(), RowBatchPlan::General);
+    }
+}
+
+/// Builder for a structured variable array (MIR-04 L1).
+///
+/// Created by [`Model::var`]; allocate the block with [`Self::build`].
+pub struct VarArrayBuilder<'a> {
+    model: &'a mut Model,
+    name: String,
+    shape: crate::modeling::Shape,
+    bounds: Bounds,
+    var_type: VarType,
+}
+
+impl VarArrayBuilder<'_> {
+    /// Set uniform `[lower, upper]` bounds (default non-negative).
+    pub fn bounds(mut self, lower: f64, upper: f64) -> Self {
+        self.bounds = Bounds::new(lower, upper);
+        self
+    }
+
+    /// Set the variable type (continuous/integer/binary).
+    pub fn kind(mut self, var_type: VarType) -> Self {
+        self.var_type = var_type;
+        self
+    }
+
+    /// Allocate the block in one packed operation and return the handle.
+    pub fn build(self) -> Result<crate::modeling::VarArray, ModelError> {
+        use crate::modeling::{VarArray, VarView, View};
+        let shape = self.shape;
+        let n = shape
+            .product()
+            .ok_or(ModelError::InvalidArrayShape("shape overflow"))?;
+        let strides = crate::modeling::array::row_major_strides(shape.dims())
+            .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
+        let span =
+            self.model
+                .add_variable_block(n, self.var_type, BlockBounds::Uniform(self.bounds))?;
+        let owner = self.model.instance();
+        let view = View::new(span, shape.dims().to_vec(), strides, 0)
+            .map_err(|_| ModelError::InvalidArrayShape("invalid variable view"))?;
+        let vview = VarView::new(owner, view)
+            .map_err(|_| ModelError::InvalidArrayShape("variable view out of span"))?;
+        Ok(VarArray::new(self.name, vview))
     }
 }
