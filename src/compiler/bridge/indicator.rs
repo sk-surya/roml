@@ -206,3 +206,116 @@ fn indicator_bounds(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::Generation;
+    use crate::identity::ConstructId;
+
+    fn construct() -> crate::construct::Construct {
+        ConstructId::allocate().expect("construct")
+    }
+
+    #[test]
+    fn one_sided_implications_covers_every_set_kind() {
+        let c = construct();
+        let params = HashMap::new();
+
+        let le =
+            one_sided_implications(&ScalarSet::LessEqual(ValueExpr::constant(4.0)), c, &params)
+                .expect("le");
+        assert_eq!(le.len(), 1);
+        assert_eq!(le[0].op, "<=");
+        assert_eq!(le[0].rhs, 4.0);
+        assert!(matches!(le[0].side, BigMImplication::Upper));
+
+        let ge = one_sided_implications(
+            &ScalarSet::GreaterEqual(ValueExpr::constant(2.0)),
+            c,
+            &params,
+        )
+        .expect("ge");
+        assert_eq!(ge.len(), 1);
+        assert_eq!(ge[0].op, ">=");
+        assert!(matches!(ge[0].side, BigMImplication::Lower));
+
+        let eq = one_sided_implications(&ScalarSet::EqualTo(ValueExpr::constant(3.0)), c, &params)
+            .expect("eq");
+        assert_eq!(eq.len(), 2);
+        assert_eq!(eq[0].rhs, 3.0);
+        assert_eq!(eq[1].rhs, 3.0);
+
+        let interval = one_sided_implications(
+            &ScalarSet::Interval {
+                lower: ValueExpr::constant(1.0),
+                upper: ValueExpr::constant(5.0),
+            },
+            c,
+            &params,
+        )
+        .expect("interval");
+        assert_eq!(interval.len(), 2);
+        assert_eq!(interval[0].op, ">=");
+        assert_eq!(interval[1].op, "<=");
+    }
+
+    #[test]
+    fn one_sided_implications_reject_a_missing_parameter() {
+        let c = construct();
+        let params = HashMap::new();
+        let p = ParamId::new(9_999, Generation::new());
+        let error = one_sided_implications(&ScalarSet::LessEqual(ValueExpr::param(p)), c, &params)
+            .expect_err("missing parameter in rhs rejects");
+        assert!(matches!(
+            error,
+            CompileError::MissingConstructParameter { .. }
+        ));
+    }
+
+    #[test]
+    fn indicator_bounds_covers_all_direction_side_combinations() {
+        let one = |side| OneSided {
+            side,
+            rhs: 5.0,
+            op: "op",
+        };
+
+        assert_eq!(
+            indicator_bounds(
+                IndicatorDirection::WhenOne,
+                one(BigMImplication::Upper),
+                2.0,
+                1.0
+            ),
+            (ConstraintBounds::le(6.0), 1.0)
+        );
+        assert_eq!(
+            indicator_bounds(
+                IndicatorDirection::WhenOne,
+                one(BigMImplication::Lower),
+                2.0,
+                1.0
+            ),
+            (ConstraintBounds::ge(2.0), -1.0)
+        );
+        assert_eq!(
+            indicator_bounds(
+                IndicatorDirection::WhenZero,
+                one(BigMImplication::Upper),
+                2.0,
+                1.0
+            ),
+            (ConstraintBounds::le(4.0), -1.0)
+        );
+        assert_eq!(
+            indicator_bounds(
+                IndicatorDirection::WhenZero,
+                one(BigMImplication::Lower),
+                2.0,
+                1.0
+            ),
+            (ConstraintBounds::ge(4.0), 1.0)
+        );
+    }
+}
