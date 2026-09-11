@@ -2529,4 +2529,78 @@ mod mir02_dependency_validation_tests {
         };
         assert!(CoefficientIndex::validate_param_dep_blocks(&cells, &[overflow]).is_err());
     }
+
+    #[test]
+    fn negative_offsets_out_of_range_and_nonfinite_scale_are_rejected() {
+        let cells = vec![cell(0, 0, 1.0), cell(1, 1, 1.0)];
+        let target = objective_target();
+        let span = ParamSpan::from_parts(0, 2, Generation::new());
+
+        let make = |param_map: StridedMap, cell_start: u32, cell_map: StridedMap, scale: f64| {
+            StoredParamDepBlock {
+                params: span,
+                param_map,
+                cell_start,
+                cell_map,
+                scale,
+                target,
+            }
+        };
+
+        // Negative parameter offset (shape length 2 so the stride applies).
+        let negative_param = make(
+            StridedMap::new([2usize], [-1isize], 0),
+            0,
+            StridedMap::contiguous(2),
+            1.0,
+        );
+        assert!(matches!(
+            CoefficientIndex::validate_param_dep_blocks(&cells, &[negative_param]).unwrap_err(),
+            ModelError::InvalidParamDepLayout(_)
+        ));
+
+        // Negative cell offset.
+        let negative_cell = make(
+            StridedMap::contiguous(2),
+            0,
+            StridedMap::new([2usize], [-1isize], 0),
+            1.0,
+        );
+        assert!(matches!(
+            CoefficientIndex::validate_param_dep_blocks(&cells, &[negative_cell]).unwrap_err(),
+            ModelError::InvalidParamDepLayout(_)
+        ));
+
+        // Non-finite scale.
+        let nonfinite = make(
+            StridedMap::contiguous(1),
+            0,
+            StridedMap::contiguous(1),
+            f64::NAN,
+        );
+        assert!(matches!(
+            CoefficientIndex::validate_param_dep_blocks(&cells, &[nonfinite]).unwrap_err(),
+            ModelError::NonFiniteValue(_)
+        ));
+
+        // Cell offset outside the run.
+        let outside = make(
+            StridedMap::contiguous(1),
+            99,
+            StridedMap::contiguous(1),
+            1.0,
+        );
+        assert!(matches!(
+            CoefficientIndex::validate_param_dep_blocks(&cells, &[outside]).unwrap_err(),
+            ModelError::InvalidParamDepLayout(_)
+        ));
+
+        // Parameter mismatch: ordinal 0 claims parameter 1.
+        let mut mismatched = make(StridedMap::contiguous(1), 0, StridedMap::contiguous(1), 1.0);
+        mismatched.params = ParamSpan::from_parts(1, 2, Generation::new());
+        assert!(matches!(
+            CoefficientIndex::validate_param_dep_blocks(&cells, &[mismatched]).unwrap_err(),
+            ModelError::InvalidParamDepLayout(_)
+        ));
+    }
 }

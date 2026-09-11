@@ -151,12 +151,14 @@ fn eligible_reprice_uses_one_bulk_highs_cost_call() {
 
     let (bulk, scalar) = roml_highs::cost_call_stats::snapshot();
     let bulk_nanos = roml_highs::cost_call_stats::bulk_cost_nanos();
+    let (range_calls, set_calls) = roml_highs::cost_call_stats::bulk_form_stats();
     let (rebuilds, delta_batches) = roml_highs::sync_stats::snapshot();
     println!(
         "MIR-02 eligible reprice: params={n} initial={initial:?} noop={noop:?} \
          reprice={reprice:?} apply+solve={apply_solve:?} post_noop={post_noop:?} \
          bulk_cost_calls={bulk} scalar_cost_calls={scalar} \
-         bulk_native={bulk_nanos}ns rebuilds={rebuilds} delta_batches={delta_batches}"
+         bulk_native={bulk_nanos}ns range={range_calls} set={set_calls} \
+         rebuilds={rebuilds} delta_batches={delta_batches}"
     );
 
     assert!(
@@ -167,6 +169,11 @@ fn eligible_reprice_uses_one_bulk_highs_cost_call() {
         scalar, 0,
         "pure eligible objective reprice must issue zero scalar cost calls"
     );
+    assert_eq!(
+        range_calls, 1,
+        "contiguous compiled columns use the range form"
+    );
+    assert_eq!(set_calls, 0);
     assert_eq!(
         model.propagation_stats().coefficient_patch_batches,
         1,
@@ -325,4 +332,92 @@ fn ir17_solve_then_append_then_shadow_matches_rebuild() {
     );
     // Sanity: the sequence produced finite objective values.
     assert!(first.objective_value().is_some() && second.objective_value().is_some());
+}
+
+/// Eligible objective whose charge and discharge objective columns are
+/// separated by filler variables, so the compiled column set is
+/// non-contiguous and the set form is required.
+fn build_gapped_eligible(n: usize, gap: usize) -> (Model, ParamSpan) {
+    let mut model = Model::new();
+    let charge: Vec<VarId> = (0..n)
+        .map(|_| model.add_variable(continuous().bounds(0.0, 1.0)).unwrap())
+        .collect();
+    for _ in 0..gap {
+        let _ = model.add_variable(continuous().bounds(0.0, 1.0)).unwrap();
+    }
+    let discharge: Vec<VarId> = (0..n)
+        .map(|_| model.add_variable(continuous().bounds(0.0, 1.0)).unwrap())
+        .collect();
+
+    let span = model
+        .add_parameter_block(&(0..n).map(|i| 5.0 + i as f64).collect::<Vec<_>>())
+        .expect("parameter block");
+    let price: Vec<ParamId> = span.ids().collect();
+    let mut vars = Vec::new();
+    let mut params = Vec::new();
+    let mut scales = Vec::new();
+    for (var, param) in charge.iter().zip(price.iter()) {
+        vars.push(*var);
+        params.push(*param);
+        scales.push(-DT);
+    }
+    for (var, param) in discharge.iter().zip(price.iter()) {
+        vars.push(*var);
+        params.push(*param);
+        scales.push(DT);
+    }
+    let layout = ParamDepLayout {
+        blocks: vec![
+            ParamDepBlockWitness {
+                params: span,
+                param_map: StridedMap::contiguous(n),
+                cell_offset: 0,
+                cell_map: StridedMap::contiguous(n),
+                scale: -DT,
+                row: None,
+            },
+            ParamDepBlockWitness {
+                params: span,
+                param_map: StridedMap::contiguous(n),
+                cell_offset: n as u32,
+                cell_map: StridedMap::contiguous(n),
+                scale: DT,
+                row: None,
+            },
+        ],
+    };
+    model
+        .set_linear_objective_param_bulk_with_layout(
+            Sense::Maximize,
+            &vars,
+            &params,
+            &scales,
+            0.0,
+            &layout,
+        )
+        .expect("gapped eligible objective");
+    (model, span)
+}
+
+#[test]
+fn eligible_reprice_with_gapped_columns_uses_set_form() {
+    let n = 32;
+    let (mut model, span) = build_gapped_eligible(n, 7);
+    let mut solver = Highs::new().expect("highs");
+    solver.solve(&mut model).expect("initial solve");
+
+    let new: Vec<f64> = (0..n).map(|i| 3.0 + i as f64).collect();
+    roml_highs::cost_call_stats::reset();
+    model
+        .set_parameters_bulk(span, &new)
+        .expect("queue reprice");
+    model.commit().expect("commit reprice");
+    solver.solve(&mut model).expect("reprice solve");
+
+    let (bulk, scalar) = roml_highs::cost_call_stats::snapshot();
+    let (range_calls, set_calls) = roml_highs::cost_call_stats::bulk_form_stats();
+    assert_eq!(scalar, 0, "zero scalar cost calls");
+    assert_eq!(bulk, 1, "one packed bulk cost call");
+    assert_eq!(range_calls, 0, "gapped columns cannot use the range form");
+    assert_eq!(set_calls, 1, "gapped columns use the set form");
 }

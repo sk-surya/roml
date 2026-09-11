@@ -55,12 +55,18 @@ pub mod cost_call_stats {
     pub static SCALAR_COST_CALLS: AtomicU64 = AtomicU64::new(0);
     /// Cumulative wall time spent inside native bulk objective-cost calls.
     pub static BULK_COST_NANOS: AtomicU64 = AtomicU64::new(0);
+    /// Bulk calls that used the contiguous-range form.
+    pub static BULK_RANGE_CALLS: AtomicU64 = AtomicU64::new(0);
+    /// Bulk calls that used the set form (non-contiguous columns).
+    pub static BULK_SET_CALLS: AtomicU64 = AtomicU64::new(0);
 
     /// Zero all counters.
     pub fn reset() {
         BULK_COST_CALLS.store(0, Ordering::Relaxed);
         SCALAR_COST_CALLS.store(0, Ordering::Relaxed);
         BULK_COST_NANOS.store(0, Ordering::Relaxed);
+        BULK_RANGE_CALLS.store(0, Ordering::Relaxed);
+        BULK_SET_CALLS.store(0, Ordering::Relaxed);
     }
 
     /// Read `(bulk, scalar)` native cost-call counts.
@@ -74,6 +80,14 @@ pub mod cost_call_stats {
     /// Cumulative nanoseconds spent in native bulk objective-cost calls.
     pub fn bulk_cost_nanos() -> u64 {
         BULK_COST_NANOS.load(Ordering::Relaxed)
+    }
+
+    /// Read `(range_form, set_form)` bulk-call counts.
+    pub fn bulk_form_stats() -> (u64, u64) {
+        (
+            BULK_RANGE_CALLS.load(Ordering::Relaxed),
+            BULK_SET_CALLS.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -886,6 +900,9 @@ pub(crate) fn apply_backend_delta(
                     unsafe {
                         let contiguous = cols.windows(2).all(|w| w[1] == w[0] + 1);
                         if contiguous {
+                            #[cfg(debug_assertions)]
+                            cost_call_stats::BULK_RANGE_CALLS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             check_highs_status(
                                 Highs_changeColsCostByRange(
                                     raw,
@@ -897,6 +914,9 @@ pub(crate) fn apply_backend_delta(
                                 "Highs_changeColsCostByRange",
                             )?;
                         } else {
+                            #[cfg(debug_assertions)]
+                            cost_call_stats::BULK_SET_CALLS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             check_highs_status(
                                 Highs_changeColsCostBySet(
                                     raw,

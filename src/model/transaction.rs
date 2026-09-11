@@ -140,4 +140,26 @@ mod tests {
 
         assert!(!tx.has_pending());
     }
+
+    #[test]
+    fn block_pending_lifecycle() {
+        let mut tx = Transaction::new();
+        let span = ParamSpan::from_parts(0, 2, Generation::new());
+        tx.set_param_block(span, vec![1.0, 2.0]);
+
+        assert!(tx.has_pending(), "a block alone is pending");
+        assert_eq!(tx.pending_count(), 1);
+        let blocks = tx.take_pending_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].1, vec![1.0, 2.0]);
+        assert!(!tx.has_pending(), "taking blocks clears pending");
+
+        tx.set_param_block(span, vec![3.0, 4.0]);
+        tx.set_param(make_param(0), 8.0);
+        assert_eq!(tx.pending_count(), 2, "one block + one scalar");
+        tx.rollback();
+        assert!(!tx.has_pending());
+        assert!(tx.take_pending_blocks().is_empty());
+        assert_eq!(tx.take_pending().count(), 0);
+    }
 }

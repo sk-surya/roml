@@ -465,6 +465,55 @@ mod tests {
     }
 
     #[test]
+    fn strided_map_accessors_signed_offsets_and_empty_shapes() {
+        // Accessors and a signed offset with a negative stride.
+        let signed = StridedMap::new([2usize, 3], [1isize, 2], -4);
+        assert_eq!(signed.shape(), &[2, 3]);
+        assert_eq!(signed.strides(), &[1, 2]);
+        assert_eq!(signed.offset(), -4);
+        assert_eq!(signed.len(), 6);
+        assert!(!signed.is_empty());
+        let mapped: Vec<isize> = (0..6).filter_map(|i| signed.get(i)).collect();
+        assert_eq!(mapped, vec![-4, -2, 0, -3, -1, 1]);
+        assert_eq!(signed.get(6), None);
+
+        let descending = StridedMap::new([3usize], [-1isize], 5);
+        assert_eq!(descending.get(0), Some(5));
+        assert_eq!(descending.get(2), Some(3));
+
+        let empty = StridedMap::new([0usize], [1isize], 0);
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert_eq!(empty.get(0), None);
+    }
+
+    #[test]
+    fn span_and_block_accessors_are_consistent() {
+        let vs = VarSpan::from_parts(10, 3, Generation::new());
+        assert_eq!(vs.len(), 3);
+        assert!(!vs.is_empty());
+        assert_eq!(vs.start(), 10);
+        assert_eq!(vs.generation(), Generation::new());
+        assert_eq!(vs.id_at(2).map(|v| v.index()), Some(12));
+        assert_eq!(vs.ids().count(), 3);
+
+        let ps = ParamSpan::from_parts(4, 2, Generation::new());
+        assert_eq!(ps.len(), 2);
+        assert!(!ps.is_empty());
+        assert_eq!(ps.start(), 4);
+        assert_eq!(ps.id_at(0).map(|p| p.index()), Some(4));
+
+        let block = VariableBlock::new(
+            vs,
+            VarType::Continuous,
+            BlockBoundsOwned::Uniform(Bounds::NON_NEGATIVE),
+        );
+        assert_eq!(block.var_at(0).map(|v| v.index()), Some(10));
+        assert_eq!(block.var_at(3), None);
+        assert_eq!(block.span(), vs);
+    }
+
+    #[test]
     fn block_bounds_owned_resolves_every_offset() {
         let uniform = BlockBoundsOwned::from_input(BlockBounds::Uniform(Bounds::new(0.0, 5.0)), 3);
         assert_eq!(uniform.get(0, 3), Some(Bounds::new(0.0, 5.0)));
