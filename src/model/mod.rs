@@ -3377,6 +3377,101 @@ impl Model {
         )
     }
 
+    /// Set a linear objective from a span-backed
+    /// [`LinArray`](crate::modeling::LinArray), deriving the L2 dependency
+    /// layout automatically (MIR-03, IR-21).
+    ///
+    /// The array must belong to this model and contain only `scale × ParamView`
+    /// terms (the initial conservative subset); otherwise a typed error is
+    /// returned so the caller can use the general symbolic path. On success the
+    /// derived witness is validated by the existing MIR-02 post-canonical check
+    /// ([`ModelError::InvalidParamDepLayout`] on mismatch); eligible families
+    /// store dependency blocks and populate no per-cell `param_positions`.
+    pub fn set_linear_objective_from_linarray(
+        &mut self,
+        sense: Sense,
+        array: &crate::modeling::LinArray,
+    ) -> Result<ObjId, ModelError> {
+        use crate::modeling::{
+            try_param_block_layout, CoeffView, ConstantView, SinkMap, TargetRun,
+        };
+
+        if array.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "objective LinArray belongs to another model",
+            ));
+        }
+        let constant = match array.constant() {
+            ConstantView::Zero => 0.0,
+            ConstantView::Scalar(value) => *value,
+            _ => {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "objective LinArray constant must be zero or scalar",
+                ))
+            }
+        };
+        if array.terms().iter().any(|term| !term.coeff.is_parametric()) {
+            return Err(ModelError::InvalidParamDepLayout(
+                "objective LinArray must contain only parametric terms",
+            ));
+        }
+
+        let sink = SinkMap::new(
+            array.shape().to_vec(),
+            vec![TargetRun {
+                target: 0,
+                objective: true,
+                start: 0,
+                len: array.len(),
+            }],
+        )
+        .map_err(|_| ModelError::InvalidParamDepLayout("invalid objective sink map"))?;
+        let layout = try_param_block_layout(&sink, array.terms());
+
+        // Materialize the packed cells in canonical family order so they align
+        // with the derived witness's cumulative p-base offsets.
+        let mut sorted: Vec<&crate::modeling::Term> = array.terms().iter().collect();
+        sorted.sort_by_key(|term| term.vars.view().span().start());
+        let mut vars = Vec::new();
+        let mut params = Vec::new();
+        let mut scales = Vec::new();
+        for term in sorted {
+            let (scale, pview) = match &term.coeff {
+                CoeffView::ScaledParam { scale, params } => (*scale, params),
+                _ => {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "objective LinArray must contain only parametric terms",
+                    ))
+                }
+            };
+            let vview = term.vars.view();
+            for ordinal in 0..vview.len() {
+                let variable =
+                    term.vars
+                        .member(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout(
+                            "stale objective variable",
+                        ))?;
+                let parameter = pview
+                    .member(ordinal)
+                    .ok_or(ModelError::InvalidParamDepLayout(
+                        "stale objective parameter",
+                    ))?;
+                vars.push(variable);
+                params.push(parameter);
+                scales.push(scale);
+            }
+        }
+        self.set_linear_objective_param_bulk_impl(
+            sense,
+            &vars,
+            &params,
+            &scales,
+            constant,
+            layout.as_ref(),
+        )
+    }
+
     fn set_linear_objective_param_bulk_impl(
         &mut self,
         sense: Sense,
@@ -5633,5 +5728,84 @@ mod bulk_objective_tests {
             Err(ModelError::MismatchedBulkLengths { .. })
         ));
         assert_eq!(model.num_objectives(), 1, "rejections leave no residue");
+    }
+}
+
+#[cfg(test)]
+mod mir03_tests {
+    use super::*;
+    use crate::modeling::{CoeffView, ConstantView, LinArray, ParamView, Term, VarView, View};
+
+    /// IR-21/IR-31 core: a BESS-like two-family parametric objective derives
+    /// its dependency layout automatically (no hand-supplied witness), keeps
+    /// `general_affine == 0`, stores dependency blocks, populates no per-cell
+    /// positions, and retains the MIR-02 bulk-reprice propagation gates.
+    #[test]
+    fn automatic_bess_objective_creates_dependency_blocks() {
+        let n = 4usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let bounds = Bounds::new(0.0, 1.0);
+        let charge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("charge block");
+        let discharge_span = model
+            .add_variable_block(n, VarType::Continuous, BlockBounds::Uniform(bounds))
+            .expect("discharge block");
+        let price_span = model
+            .add_parameter_block(&vec![50.0; n])
+            .expect("price block");
+
+        let charge = VarView::new(owner, View::contiguous(charge_span, n)).expect("charge view");
+        let discharge =
+            VarView::new(owner, View::contiguous(discharge_span, n)).expect("discharge view");
+        let price = ParamView::new(owner, View::contiguous(price_span, n)).expect("price view");
+
+        let terms = vec![
+            Term {
+                vars: charge,
+                coeff: CoeffView::ScaledParam {
+                    scale: -1.0,
+                    params: price.clone(),
+                },
+            },
+            Term {
+                vars: discharge,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: price,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+
+        model
+            .set_linear_objective_from_linarray(Sense::Maximize, &array)
+            .expect("automatic objective");
+
+        let lowering = model.lowering_stats();
+        assert!(
+            lowering.param_dep_blocks > 0,
+            "automatic proof must store dependency blocks: {lowering:?}"
+        );
+        assert_eq!(
+            lowering.param_positions_cells, 0,
+            "covered families must not populate per-cell param_positions: {lowering:?}"
+        );
+        assert_eq!(
+            lowering.general_affine, 0,
+            "automatic proof must stay on the packed path: {lowering:?}"
+        );
+
+        // Bulk reprice retains the MIR-02 propagation gates.
+        model
+            .set_parameters_bulk(price_span, &vec![60.0; n])
+            .expect("reprice");
+        model.commit().expect("commit");
+        let propagation = model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
     }
 }

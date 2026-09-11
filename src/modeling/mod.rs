@@ -19,6 +19,10 @@ mod view;
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
 pub use view::{ParamView, VarView, View, ViewError};
 
+// Crate-internal L1→L2 planning surface consumed by the canonical model/compiler
+// integration. Not a public construction surface until MIR-04.
+pub(crate) use eligibility::{try_param_block_layout, SinkMap, TargetRun};
+
 // L1→L2 planning internals (`builder`, `eligibility`) are crate-private and
 // reached through `crate::modeling::<module>::…`; they are not public
 // construction surfaces until the MIR-04 model builders create symbolic views
