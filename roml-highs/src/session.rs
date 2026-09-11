@@ -81,6 +81,9 @@ impl BackendSession for HighsSession {
     fn synchronize(&mut self, sync: Synchronization) -> Result<SyncReceipt, BackendError> {
         match sync {
             Synchronization::CompiledRebuild(snapshot) => {
+                #[cfg(debug_assertions)]
+                crate::session::sync_stats::REBUILDS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let revision = snapshot.source_revision;
                 info!(
                     "Rebuilding HiGHS session from compiled backend snapshot at revision {}",
@@ -142,6 +145,9 @@ impl BackendSession for HighsSession {
             }
 
             Synchronization::CompiledDeltaBatch(batch) => {
+                #[cfg(debug_assertions)]
+                crate::session::sync_stats::DELTA_BATCHES
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 info!(
                     "Applying compiled delta r{} -> r{} ({} ops)",
                     batch.from_revision,
@@ -3228,5 +3234,33 @@ mod tests {
             "a compile-rejected cutoff must not mutate the native model"
         );
         assert_eq!(highs.current_compilation, Some(held));
+    }
+}
+
+/// Debug-only synchronization-mode counters (MIR-02 qualification).
+///
+/// They let a fixture prove an eligible reprice was applied incrementally
+/// (`CompiledDeltaBatch`) rather than by a full snapshot rebuild.
+#[cfg(debug_assertions)]
+pub mod sync_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Full compiled snapshot rebuilds.
+    pub static REBUILDS: AtomicU64 = AtomicU64::new(0);
+    /// Incremental compiled delta batches applied.
+    pub static DELTA_BATCHES: AtomicU64 = AtomicU64::new(0);
+
+    /// Zero both counters.
+    pub fn reset() {
+        REBUILDS.store(0, Ordering::Relaxed);
+        DELTA_BATCHES.store(0, Ordering::Relaxed);
+    }
+
+    /// Read `(rebuilds, delta_batches)`.
+    pub fn snapshot() -> (u64, u64) {
+        (
+            REBUILDS.load(Ordering::Relaxed),
+            DELTA_BATCHES.load(Ordering::Relaxed),
+        )
     }
 }

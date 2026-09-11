@@ -290,6 +290,11 @@ impl XpressAdapter {
                     | Change::CoefficientRemoved { .. }
                     | Change::CoefficientValueChanged { .. }
                     | Change::ObjectiveRemoved { .. }
+                    // MIR-02 packed block deltas are applied through the
+                    // per-change path (the bulk additive path does not model
+                    // them).
+                    | Change::BulkCoefficientPatch { .. }
+                    | Change::BulkParametricRows { .. }
             )
         })
     }
@@ -343,6 +348,14 @@ impl XpressAdapter {
                 } => {
                     new_vars.push(*var);
                     new_var_state.insert(*var, (*bounds, *var_type));
+                }
+                Change::VariableBlockAdded { block } => {
+                    for (offset, var) in block.ids().enumerate() {
+                        if let Some(bounds) = block.bounds_for(offset) {
+                            new_vars.push(var);
+                            new_var_state.insert(var, (bounds, block.var_type()));
+                        }
+                    }
                 }
                 Change::VariableBoundsChanged { var, new, .. } => {
                     if let Some((bounds, _)) = new_var_state.get_mut(var) {
@@ -606,6 +619,19 @@ impl XpressAdapter {
                         "XPRSchgcoltype",
                     )?;
                     self.integer_vars.insert(*var);
+                }
+            }
+
+            // ── Variable Block Added (MIR-01) ─────────────────────────────
+            Change::VariableBlockAdded { block } => {
+                for (offset, var) in block.ids().enumerate() {
+                    if let Some(bounds) = block.bounds_for(offset) {
+                        self.apply_one(&Change::VariableAdded {
+                            var,
+                            bounds,
+                            var_type: block.var_type(),
+                        })?;
+                    }
                 }
             }
 
@@ -885,6 +911,85 @@ impl XpressAdapter {
                     }
                 }
             },
+
+            // ── Packed parameter values (MIR-02) ───────────────────────────
+            Change::BulkParameterValues { .. } => {}
+
+            // ── Packed coefficient patch (MIR-02) ──────────────────────────
+            Change::BulkCoefficientPatch { patches } => {
+                for patch in patches.iter() {
+                    match patch.target {
+                        CoefficientTarget::Constraint(con) => {
+                            if let (Some(row), Some(col)) =
+                                (self.row_map.get(&con), self.col_map.get(&patch.var))
+                            {
+                                check(
+                                    unsafe { ffi::XPRSchgcoef(self.prob, row, col, patch.new) },
+                                    "XPRSchgcoef (patch)",
+                                )?;
+                            }
+                        }
+                        CoefficientTarget::Objective(obj) => {
+                            self.obj_costs
+                                .entry(obj)
+                                .or_default()
+                                .insert(patch.var, patch.new);
+                            if Some(obj) == self.active_obj {
+                                if let Some(col) = self.col_map.get(&patch.var) {
+                                    check(
+                                        unsafe { ffi::XPRSchgobj(self.prob, 1, &col, &patch.new) },
+                                        "XPRSchgobj (patch)",
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Packed parametric rows (MIR-02) ────────────────────────────
+            Change::BulkParametricRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    let (rt, rhs, rng) = xprs_row(block.bounds[r].lower, block.bounds[r].upper);
+                    let row_idx = unsafe {
+                        let mut n = 0i32;
+                        ffi::XPRSgetintattrib(self.prob, ffi::XPRS_ROWS, &mut n);
+                        n
+                    };
+                    let start = [0i32];
+                    check(
+                        unsafe {
+                            ffi::XPRSaddrows(
+                                self.prob,
+                                1,
+                                0,
+                                &(rt as i8),
+                                &rhs,
+                                &rng,
+                                start.as_ptr(),
+                                std::ptr::null(),
+                                std::ptr::null(),
+                            )
+                        },
+                        "XPRSaddrows (param row)",
+                    )?;
+                    self.row_map.insert(con, row_idx);
+                    self.con_bounds
+                        .insert(con, (block.bounds[r].lower, block.bounds[r].upper));
+                    let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                    for k in s..e {
+                        if let (Some(row), Some(col)) =
+                            (self.row_map.get(&con), self.col_map.get(&block.vars[k]))
+                        {
+                            check(
+                                unsafe { ffi::XPRSchgcoef(self.prob, row, col, block.values[k]) },
+                                "XPRSchgcoef (param row)",
+                            )?;
+                        }
+                    }
+                }
+            }
 
             // ── Objective Added ────────────────────────────────────────────
             Change::ObjectiveAdded { obj, sense } => {

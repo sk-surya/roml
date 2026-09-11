@@ -1,5 +1,6 @@
 //! Variable storage and operations.
 
+use crate::bulk::VarSpan;
 use crate::id::{IdArena, VarId};
 
 /// Variable type (continuous, integer, or binary).
@@ -276,6 +277,23 @@ impl VariableStore {
         VarId::new(index, generation)
     }
 
+    /// Add a contiguous block of variables sharing one declared type.
+    ///
+    /// `bounds` yields exactly one entry per variable (`ExactSizeIterator`).
+    /// This reserves the arena once and allocates sequentially; domain
+    /// validation happens in the `Model` layer *before* this mutating
+    /// primitive is called.
+    pub fn add_block<I>(&mut self, bounds: I, var_type: VarType) -> VarSpan
+    where
+        I: ExactSizeIterator<Item = Bounds>,
+    {
+        let n = bounds.len();
+        let (start, generation) = self
+            .arena
+            .allocate_block(bounds.map(|b| VariableData::new(b, var_type)));
+        VarSpan::from_parts(start, n as u32, generation)
+    }
+
     /// Remove a variable. Returns the data if it existed.
     pub fn remove(&mut self, id: VarId) -> Option<VariableData> {
         self.arena.remove(id.index(), id.generation())
@@ -376,5 +394,38 @@ mod tests {
         let active: Vec<_> = store.iter_active().map(|(id, _)| id).collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0], id2);
+    }
+
+    #[test]
+    fn add_block_is_contiguous_and_deletion_is_per_member() {
+        let mut store = VariableStore::new();
+        let bounds = [Bounds::NON_NEGATIVE; 3];
+        let span = store.add_block(bounds.iter().copied(), VarType::Continuous);
+        assert_eq!(span.len(), 3);
+
+        let ids: Vec<VarId> = (0..3).filter_map(|i| span.id_at(i)).collect();
+        assert_eq!(ids.len(), 3);
+        // Contiguous ordinal allocation with one shared generation.
+        assert_eq!(ids[0].index() + 1, ids[1].index());
+        assert_eq!(ids[1].index() + 1, ids[2].index());
+        assert!(ids.iter().all(|v| v.generation() == span.generation()));
+        assert!(ids.iter().all(|v| store.contains(*v)));
+
+        // Deleting one member invalidates only that member (D-019 invariant 2).
+        assert!(store.remove(ids[1]).is_some());
+        assert!(store.contains(ids[0]));
+        assert!(!store.contains(ids[1]));
+        assert!(store.contains(ids[2]));
+    }
+
+    #[test]
+    fn store_capacity_and_empty_states() {
+        let mut store = VariableStore::with_capacity(4);
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+        let id = store.add(Bounds::default(), VarType::Continuous);
+        assert!(!store.is_empty());
+        assert!(store.contains(id));
+        assert_eq!(Bounds::default(), Bounds::NON_NEGATIVE);
     }
 }

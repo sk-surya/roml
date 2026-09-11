@@ -786,6 +786,38 @@ impl CompilationSession {
                     origin_additions.insert_variable(id, EntityOrigin::UserVariable(*var));
                 }
 
+                // MIR-01 packed variable block: expand to the backend's
+                // per-column API with the same compiled-id allocation order,
+                // activity state, and origin records as replaying `AddVariable`
+                // per member. The canonical delta stays packed.
+                ModelOp::AddVariableBlock { block } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental variable-block addition",
+                    )?;
+                    for (offset, var) in block.ids().enumerate() {
+                        let bounds = block.bounds_for(offset).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "variable block is missing bounds for member {offset}"
+                            ))
+                        })?;
+                        let id = CompiledVariableId(w.next_variable_index);
+                        w.next_variable_index += 1;
+                        operations.push(BackendOp::AddVariable(CompiledVariable {
+                            id,
+                            bounds,
+                            var_type: block.var_type(),
+                            name: None,
+                        }));
+                        w.variable_ids.insert(var, id);
+                        w.variable_activity.insert(var, true);
+                        w.compiled_to_variable.insert(id, var);
+                        origin_additions.insert_variable(id, EntityOrigin::UserVariable(var));
+                    }
+                }
+
                 ModelOp::RemoveVariable { var } => {
                     // F1: a construct whose bridge artifact references the
                     // removed variable would hold a dangling compiled
@@ -963,6 +995,43 @@ impl CompilationSession {
                             coefficients.push((vid, value));
                         }
                         // Deterministic compiled order (by compiled id).
+                        coefficients.sort_by_key(|(vid, _)| *vid);
+                        operations.push(BackendOp::AddLinearRow(CompiledLinearRow {
+                            id,
+                            bounds: block.bounds[r],
+                            coefficients,
+                            name: None,
+                        }));
+                        w.row_ids.insert(con, id);
+                        w.compiled_to_row.insert(id, con);
+                        origin_additions.insert_constraint(id, EntityOrigin::UserConstraint(con));
+                    }
+                }
+
+                // MIR-02 packed parametric row block: one backend row op per
+                // row with evaluated coefficients, mirroring AddLinearRows.
+                ModelOp::AddParametricRows { block } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalRows,
+                        "incremental parametric row-block addition",
+                    )?;
+                    for r in 0..block.constraints.len() {
+                        let con = block.constraints[r];
+                        let id = CompiledConstraintId(w.next_row_index);
+                        w.next_row_index += 1;
+                        let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                        let mut coefficients = Vec::with_capacity(e.saturating_sub(s));
+                        for k in s..e {
+                            let var = block.vars[k];
+                            let vid = *w.variable_ids.get(&var).ok_or_else(|| {
+                                CompileError::RebuildRequired(format!(
+                                    "AddParametricRows for unknown compiled variable ({var:?})"
+                                ))
+                            })?;
+                            coefficients.push((vid, block.values[k]));
+                        }
                         coefficients.sort_by_key(|(vid, _)| *vid);
                         operations.push(BackendOp::AddLinearRow(CompiledLinearRow {
                             id,
@@ -1421,6 +1490,95 @@ impl CompilationSession {
                             "SetParameter for {param:?} touches a construct dependency; the \
                              generated bridge artifact would go stale (F1)"
                         )));
+                    }
+                }
+                // MIR-02 packed parameter block: same construct-dependency
+                // guard as scalar parameter changes; no backend-IR equivalent
+                // is required (parameter values are read where needed).
+                ModelOp::SetParametersBulk { changes } => {
+                    for change in changes.iter() {
+                        if Self::construct_depends_on_parameter(
+                            &current.construct_dependencies,
+                            change.param,
+                        ) {
+                            return Err(CompileError::RebuildRequired(format!(
+                                "SetParametersBulk for {:?} touches a construct dependency; the \
+                                 generated bridge artifact would go stale (F1)",
+                                change.param
+                            )));
+                        }
+                    }
+                }
+                // MIR-02 packed coefficient patch: preserve objective batching
+                // through the backend IR (one `SetObjectiveCosts` per
+                // objective) so a native backend can use one bulk cost call;
+                // constraint patches expand to per-cell linear coefficients.
+                ModelOp::SetCoefficientPatchBatch { patches } => {
+                    require_feature(
+                        capabilities,
+                        policy,
+                        BackendFeature::IncrementalCoefficients,
+                        "coefficient patch batch",
+                    )?;
+                    let mut objective_groups: Vec<(
+                        CompiledObjectiveId,
+                        Vec<(CompiledVariableId, f64)>,
+                    )> = Vec::new();
+                    for patch in patches.iter() {
+                        if let CoefficientTarget::Constraint(con) = patch.target {
+                            if Self::construct_depends_on_constraint(
+                                &current.construct_dependencies,
+                                con,
+                            ) {
+                                return Err(CompileError::RebuildRequired(format!(
+                                    "coefficient patch for soft constraint {con:?} touches a \
+                                     generated side row; a fresh snapshot is required (F1)"
+                                )));
+                            }
+                        }
+                        let vid = *w.variable_ids.get(&patch.var).ok_or_else(|| {
+                            CompileError::RebuildRequired(format!(
+                                "coefficient patch for unknown compiled variable ({:?})",
+                                patch.var
+                            ))
+                        })?;
+                        match patch.target {
+                            CoefficientTarget::Constraint(con) => {
+                                let rid = *w.row_ids.get(&con).ok_or_else(|| {
+                                    CompileError::RebuildRequired(format!(
+                                        "coefficient patch for unknown compiled row ({con:?})"
+                                    ))
+                                })?;
+                                operations.push(BackendOp::SetLinearCoefficient {
+                                    constraint: rid,
+                                    variable: vid,
+                                    value: patch.new,
+                                });
+                            }
+                            CoefficientTarget::Objective(obj) => {
+                                let oid = *w.objective_ids.get(&obj).ok_or_else(|| {
+                                    CompileError::RebuildRequired(format!(
+                                        "coefficient patch for unknown compiled objective ({obj:?})"
+                                    ))
+                                })?;
+                                match objective_groups.iter_mut().find(|(id, _)| *id == oid) {
+                                    Some((_, costs)) => costs.push((vid, patch.new)),
+                                    None => objective_groups.push((oid, vec![(vid, patch.new)])),
+                                }
+                            }
+                        }
+                    }
+                    // One bulk bookkeeping update per objective (avoid the
+                    // O(n²) per-patch retain+sort).
+                    for (objective, costs) in objective_groups {
+                        if let Some(cells) = w.compiled_objective_coefficients.get_mut(&objective) {
+                            let incoming: std::collections::HashSet<CompiledVariableId> =
+                                costs.iter().map(|(cid, _)| *cid).collect();
+                            cells.retain(|(cid, _)| !incoming.contains(cid));
+                            cells.extend(costs.iter().copied());
+                            cells.sort_by_key(|(cid, _)| *cid);
+                        }
+                        operations.push(BackendOp::SetObjectiveCosts { objective, costs });
                     }
                 }
                 ModelOp::SetSemiContinuousBound { .. } => {

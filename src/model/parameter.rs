@@ -1,5 +1,6 @@
 //! Parameter storage and opertions.
 
+use crate::bulk::ParamSpan;
 use crate::id::{IdArena, ParamId};
 
 /// Internal data for a parameter.
@@ -88,6 +89,19 @@ impl ParameterStore {
         data.name = Some(name);
         let (index, generation) = self.arena.allocate(data);
         ParamId::new(index, generation)
+    }
+
+    /// Add a contiguous block of parameters.
+    ///
+    /// Allocates the arena once and appends sequentially. There is no
+    /// parameter-creation journal event: adding parameters is not itself a
+    /// solver-facing mutation (D-019 invariant 7), and this preserves the
+    /// scalar [`Self::add`] semantics exactly.
+    pub fn add_block(&mut self, values: &[f64]) -> ParamSpan {
+        let (start, generation) = self
+            .arena
+            .allocate_block(values.iter().map(|v| ParameterData::new(*v)));
+        ParamSpan::from_parts(start, values.len() as u32, generation)
     }
 
     /// Remove a parameter. Returns the data if it existed.
@@ -206,5 +220,18 @@ mod tests {
         assert!(store.contains(id));
         assert_eq!(store.get_value(id), Some(3.0));
         assert_eq!(store.get(id).unwrap().name.as_deref(), Some("param"));
+    }
+
+    #[test]
+    fn add_block_allocates_contiguously_without_names() {
+        let mut store = ParameterStore::new();
+        let span = store.add_block(&[1.0, 2.0, 3.0]);
+        assert_eq!(span.len(), 3);
+        assert_eq!(store.len(), 3);
+        let ids: Vec<ParamId> = (0..3).filter_map(|i| span.id_at(i)).collect();
+        assert_eq!(store.get_value(ids[0]), Some(1.0));
+        assert_eq!(store.get_value(ids[2]), Some(3.0));
+        assert_eq!(ids[0].index() + 2, ids[2].index());
+        assert!(ids.iter().all(|p| store.get(*p).unwrap().name.is_none()));
     }
 }

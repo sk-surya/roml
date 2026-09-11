@@ -66,6 +66,10 @@ compile_error!("features `bundled` and `system` are mutually exclusive; activate
 mod bindings;
 mod callback;
 mod compiler;
+#[cfg(debug_assertions)]
+pub use compiler::cost_call_stats;
+#[cfg(debug_assertions)]
+pub use session::sync_stats;
 mod error;
 mod facade;
 mod iis;

@@ -393,6 +393,18 @@ pub enum BackendOp {
         /// New coefficient value.
         value: f64,
     },
+    /// Set a packed block of objective cost cells (MIR-02 batching).
+    ///
+    /// Upsert semantics for a group of variables under one objective. The
+    /// logical patch batch is preserved through compilation so a native
+    /// backend can apply it with one bulk call instead of one scalar cost call
+    /// per cell.
+    SetObjectiveCosts {
+        /// The affected compiled objective.
+        objective: CompiledObjectiveId,
+        /// `(variable, new cost)` pairs.
+        costs: Vec<(CompiledVariableId, f64)>,
+    },
     /// Remove an objective coefficient cell.
     RemoveObjectiveCoefficient {
         /// The affected compiled objective.
@@ -734,6 +746,20 @@ impl BackendDeltaBatch {
                         return Err(CompileError::InvalidReference {
                             entity: CompiledEntityRef::Variable(*variable),
                         });
+                    }
+                }
+                BackendOp::SetObjectiveCosts { objective, costs } => {
+                    if !present.objectives.contains(objective) {
+                        return Err(CompileError::InvalidReference {
+                            entity: CompiledEntityRef::Objective(*objective),
+                        });
+                    }
+                    for (variable, _) in costs {
+                        if !present.variables.contains(variable) {
+                            return Err(CompileError::InvalidReference {
+                                entity: CompiledEntityRef::Variable(*variable),
+                            });
+                        }
                     }
                 }
                 BackendOp::RemoveObjectiveCoefficient {
@@ -1162,6 +1188,15 @@ impl BackendOp {
                 enc.push_u32(objective.0);
                 enc.push_u32(variable.0);
                 enc.push_f64(*value);
+            }
+            BackendOp::SetObjectiveCosts { objective, costs } => {
+                enc.push_u8(15);
+                enc.push_u32(objective.0);
+                enc.push_u32(costs.len() as u32);
+                for (variable, value) in costs {
+                    enc.push_u32(variable.0);
+                    enc.push_f64(*value);
+                }
             }
             BackendOp::RemoveObjectiveCoefficient {
                 objective,

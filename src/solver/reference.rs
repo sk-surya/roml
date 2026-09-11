@@ -158,6 +158,19 @@ impl ReferenceBackend {
         Self::default()
     }
 
+    /// Deterministic `(variable, symbolic expression)` view of objective
+    /// cells. Used to prove that a patch updates the evaluated cache without
+    /// replacing the parameterized expression form.
+    pub fn symbolic_objective_cells(&self) -> Vec<(crate::id::VarId, ValueExpr)> {
+        let mut out: Vec<(crate::id::VarId, ValueExpr)> = self
+            .objective_cells
+            .iter()
+            .map(|(key, (expr, _, _))| (key.1, expr.clone()))
+            .collect();
+        out.sort_by_key(|(var, _)| *var);
+        out
+    }
+
     /// Apply a single ModelOp to this backend.
     pub fn apply_op(&mut self, op: &ModelOp) -> Result<(), String> {
         match op {
@@ -167,6 +180,15 @@ impl ReferenceBackend {
                 var_type,
             } => {
                 self.variables.insert(*var, (*bounds, *var_type, true));
+            }
+            // MIR-01 packed variable block: same end state as replaying one
+            // `AddVariable` per member.
+            ModelOp::AddVariableBlock { block } => {
+                for (offset, var) in block.ids().enumerate() {
+                    if let Some(bounds) = block.bounds_for(offset) {
+                        self.variables.insert(var, (bounds, block.var_type(), true));
+                    }
+                }
             }
             ModelOp::RemoveVariable { var } => {
                 self.variables.remove(var);
@@ -218,6 +240,24 @@ impl ReferenceBackend {
                         self.constraint_cells.insert(
                             (CoefficientTarget::Constraint(con), var),
                             (ValueExpr::constant(value), value),
+                        );
+                    }
+                }
+            }
+            // MIR-02 packed parametric rows: same end state as replaying one
+            // `AddConstraint` plus one scaled-parameter `SetCell` per cell.
+            ModelOp::AddParametricRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    self.constraints.insert(con, (block.bounds[r], true));
+                    let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                    for k in s..e {
+                        self.constraint_cells.insert(
+                            (CoefficientTarget::Constraint(con), block.vars[k]),
+                            (
+                                ValueExpr::scaled_param(block.scales[k], block.params[k]),
+                                block.values[k],
+                            ),
                         );
                     }
                 }
@@ -340,6 +380,43 @@ impl ReferenceBackend {
             }
             ModelOp::SetParameter { param, value } => {
                 self.parameters.insert(*param, *value);
+            }
+            // MIR-02 packed parameter block: one op for a whole committed
+            // parameter block.
+            ModelOp::SetParametersBulk { changes } => {
+                for change in changes.iter() {
+                    self.parameters.insert(change.param, change.new);
+                }
+            }
+            // MIR-02 packed coefficient patch: each patch is self-contained
+            // (target, variable, new value). Update the existing cell's
+            // evaluated cache in place, preserving its symbolic expression;
+            // a patch that targets a missing cell is a typed error (the
+            // adapter must rebuild rather than invent a constant cell).
+            ModelOp::SetCoefficientPatchBatch { patches } => {
+                for patch in patches.iter() {
+                    let key = (patch.target, patch.var);
+                    match patch.target {
+                        CoefficientTarget::Constraint(_) => {
+                            let entry = self.constraint_cells.get_mut(&key).ok_or_else(|| {
+                                format!(
+                                    "coefficient patch targets missing constraint cell {:?}",
+                                    key
+                                )
+                            })?;
+                            entry.1 = patch.new;
+                        }
+                        CoefficientTarget::Objective(_) => {
+                            let entry = self.objective_cells.get_mut(&key).ok_or_else(|| {
+                                format!(
+                                    "coefficient patch targets missing objective cell {:?}",
+                                    key
+                                )
+                            })?;
+                            entry.1 = patch.new;
+                        }
+                    }
+                }
             }
             ModelOp::SetObjectiveSense { obj, sense } => {
                 if let Some(entry) = self.objectives.get_mut(obj) {
@@ -765,6 +842,20 @@ impl ReferenceBackend {
                     .get_mut(objective)
                     .ok_or_else(|| invalid_objective(*objective))?;
                 upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+            }
+            BackendOp::SetObjectiveCosts { objective, costs } => {
+                for (variable, _) in costs {
+                    if !self.compiled_variables.contains_key(variable) {
+                        return Err(invalid_variable(*variable));
+                    }
+                }
+                let entry = self
+                    .compiled_objectives
+                    .get_mut(objective)
+                    .ok_or_else(|| invalid_objective(*objective))?;
+                for (variable, value) in costs {
+                    upsert_compiled_coefficient(&mut entry.1, *variable, *value);
+                }
             }
             BackendOp::RemoveObjectiveCoefficient {
                 objective,

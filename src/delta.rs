@@ -36,6 +36,57 @@ pub struct LinearRowBlock {
     pub values: Vec<f64>,
 }
 
+/// A packed block of parameterized linear constraint rows (MIR-02).
+///
+/// Canonical journal/delta payload for bulk parametric row insertion: row `r`
+/// owns `vars[row_ptr[r]..row_ptr[r+1]]` with parallel `params`/`scales` and
+/// `bounds[r]`; `values[r]` is the evaluated cache at insertion. Cells are
+/// `scale * param`, exactly the canonical packed form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParametricRowBlock {
+    /// Row identities in block order.
+    pub constraints: Vec<ConId>,
+    /// Final bounds per row.
+    pub bounds: Vec<ConstraintBounds>,
+    /// CSR row pointers over the parallel arrays (`len == rows + 1`).
+    pub row_ptr: Vec<u32>,
+    /// Canonical variable runs, concatenated.
+    pub vars: Vec<VarId>,
+    /// Parameter run parallel to `vars`.
+    pub params: Vec<ParamId>,
+    /// Scale run parallel to `vars`.
+    pub scales: Vec<f64>,
+    /// Evaluated `scale * param` values parallel to `vars`.
+    pub values: Vec<f64>,
+}
+
+/// One parameter value change inside a packed block update (MIR-02).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParameterValueChange {
+    /// The affected parameter.
+    pub param: ParamId,
+    /// Previous value.
+    pub old: f64,
+    /// New value.
+    pub new: f64,
+}
+
+/// One self-contained coefficient patch for an eligible dependency cell
+/// (MIR-02). The patch carries the canonical target/variable and the new
+/// evaluated value, so an adapter applies it with no live-model p-base
+/// access.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoefficientPatch {
+    /// The canonical cell target (constraint or objective).
+    pub target: CoefficientTarget,
+    /// The variable the coefficient multiplies.
+    pub var: VarId,
+    /// Previous evaluated value.
+    pub old: f64,
+    /// New evaluated value.
+    pub new: f64,
+}
+
 /// One packed parameterized objective cell (P1C-2): the coefficient is
 /// `scale * param`, evaluated at insertion and re-evaluated on parameter
 /// updates through the packed reverse index (no per-cell expression).
@@ -76,6 +127,16 @@ pub enum ModelOp {
         bounds: Bounds,
         /// Domain type (continuous, integer, or binary).
         var_type: VarType,
+    },
+
+    /// Add a packed block of variables (MIR-01).
+    ///
+    /// Compiled from `Change::VariableBlockAdded`; the shared payload is
+    /// self-contained, so adapters expand it with no live-model access and the
+    /// canonical delta stays packed.
+    AddVariableBlock {
+        /// The packed variable block (shared).
+        block: Arc<crate::bulk::VariableBlock>,
     },
 
     /// Remove a variable and all associated cells.
@@ -185,6 +246,15 @@ pub enum ModelOp {
         block: Arc<LinearRowBlock>,
     },
 
+    /// Insert a packed block of parameterized linear rows at once (MIR-02).
+    ///
+    /// Cells are `scale * param`; adapters expand to at most one backend row
+    /// op per row using the evaluated `values`.
+    AddParametricRows {
+        /// The packed parametric row block (shared).
+        block: Arc<ParametricRowBlock>,
+    },
+
     /// Add a new objective.
     AddObjective {
         /// The added objective.
@@ -271,6 +341,24 @@ pub enum ModelOp {
         param: ParamId,
         /// New value.
         value: f64,
+    },
+
+    /// Set a packed block of parameter values at once (MIR-02).
+    ///
+    /// One packed parameter-value change for a committed parameter block.
+    SetParametersBulk {
+        /// The packed parameter changes (shared).
+        changes: Arc<[ParameterValueChange]>,
+    },
+
+    /// Apply one packed coefficient-patch batch (MIR-02).
+    ///
+    /// Emitted once per committed parameter block; the batch may contain
+    /// patches from several eligible dependency families (for example charge
+    /// and discharge). Every patch is self-contained.
+    SetCoefficientPatchBatch {
+        /// The packed coefficient patches (shared).
+        patches: Arc<[CoefficientPatch]>,
     },
 
     /// Mark a variable as semi-continuous with the given lower bound.
@@ -455,6 +543,8 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
         cells: HashMap<ConId, Vec<(VarId, ValueExpr)>>,
         /// Packed row blocks, in op encounter order (P1A).
         row_blocks: Vec<Arc<LinearRowBlock>>,
+        /// Packed parametric row blocks, in op encounter order (MIR-02).
+        param_row_blocks: Vec<Arc<ParametricRowBlock>>,
     }
     let mut acc = Accumulator {
         added: Vec::new(),
@@ -462,6 +552,7 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
         folded: HashMap::new(),
         cells: HashMap::new(),
         row_blocks: Vec::new(),
+        param_row_blocks: Vec::new(),
     };
     for op in operations {
         match op {
@@ -491,6 +582,9 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
             }
             ModelOp::AddLinearRows { block } => {
                 acc.row_blocks.push(block.clone());
+            }
+            ModelOp::AddParametricRows { block } => {
+                acc.param_row_blocks.push(block.clone());
             }
             _ => {}
         }
@@ -538,6 +632,36 @@ fn reconstruct_function_entries(operations: &[ModelOp]) -> Vec<FunctionEntry> {
                 .iter()
                 .zip(&block.values[s..e])
                 .map(|(var, value)| (*var, ValueExpr::constant(*value)))
+                .collect();
+            symbolic.sort_by_key(|(var, _)| *var);
+            let mut expr = LinExpr::new();
+            for (var, value_expr) in symbolic {
+                expr = expr.term(TermCoeff::Expr(value_expr), var);
+            }
+            entries.push(FunctionEntry {
+                constraint: con,
+                function: ScalarFunction::Linear(expr),
+                set,
+            });
+        }
+    }
+    // MIR-02 packed parametric rows: symbolic `scale * param` terms.
+    for block in &acc.param_row_blocks {
+        for r in 0..block.constraints.len() {
+            let con = block.constraints[r];
+            if acc.removed.contains(&con) {
+                continue;
+            }
+            let effective = acc.folded.get(&con).copied().unwrap_or(block.bounds[r]);
+            let set = ScalarSet::from(effective);
+            let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+            let mut symbolic: Vec<(VarId, ValueExpr)> = (s..e)
+                .map(|k| {
+                    (
+                        block.vars[k],
+                        ValueExpr::scaled_param(block.scales[k], block.params[k]),
+                    )
+                })
                 .collect();
             symbolic.sort_by_key(|(var, _)| *var);
             let mut expr = LinExpr::new();

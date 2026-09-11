@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use crate::bulk::ParamSpan;
 use crate::id::ParamId;
 
 /// A transaction for batched parameter updates.
@@ -18,8 +19,12 @@ use crate::id::ParamId;
 /// Collects parameter changes and applies them atomically on commit.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Transaction {
-    /// Pending parameter changes: ParamId -> new value.
+    /// Pending scalar parameter changes: ParamId -> new value.
     pending: HashMap<ParamId, f64>,
+    /// Pending block updates (MIR-02): span plus one value per member. A block
+    /// request is retained as a block, not expanded into `n` scalar map
+    /// insertions.
+    pending_blocks: Vec<(ParamSpan, Vec<f64>)>,
 }
 
 /// Methods used by Model.
@@ -30,6 +35,7 @@ impl Transaction {
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
+            pending_blocks: Vec::new(),
         }
     }
 
@@ -40,14 +46,19 @@ impl Transaction {
         self.pending.insert(param, value);
     }
 
-    /// Check if there are pending changes.
-    pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+    /// Queue a bulk parameter block update (MIR-02).
+    pub fn set_param_block(&mut self, span: ParamSpan, values: Vec<f64>) {
+        self.pending_blocks.push((span, values));
     }
 
-    /// Get the number of pending changes.
+    /// Check if there are pending changes.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty() || !self.pending_blocks.is_empty()
+    }
+
+    /// Get the number of pending requests (scalars plus blocks).
     pub fn pending_count(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.pending_blocks.len()
     }
 
     /// Get the pending value for a parameter (if any).
@@ -62,9 +73,15 @@ impl Transaction {
         std::mem::take(&mut self.pending).into_iter()
     }
 
+    /// Take all pending block updates, clearing them.
+    pub fn take_pending_blocks(&mut self) -> Vec<(ParamSpan, Vec<f64>)> {
+        std::mem::take(&mut self.pending_blocks)
+    }
+
     /// Clear all pending changes without applying them.
     pub fn rollback(&mut self) {
         self.pending.clear();
+        self.pending_blocks.clear();
     }
 
     /// Iterate over pending changes without consuming them.
@@ -122,5 +139,28 @@ mod tests {
         tx.rollback();
 
         assert!(!tx.has_pending());
+    }
+
+    #[test]
+    fn block_pending_lifecycle() {
+        let mut tx = Transaction::new();
+        let span = ParamSpan::from_parts(0, 2, Generation::new());
+        tx.set_param_block(span, vec![1.0, 2.0]);
+
+        assert!(tx.has_pending(), "a block alone is pending");
+        assert_eq!(tx.pending_count(), 1);
+        let blocks = tx.take_pending_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].1, vec![1.0, 2.0]);
+        assert!(!tx.has_pending(), "taking blocks clears pending");
+
+        tx.set_param_block(span, vec![3.0, 4.0]);
+        tx.set_param(make_param(0), 8.0);
+        assert_eq!(tx.pending_count(), 2, "one block + one scalar");
+        assert_eq!(tx.iter_pending().count(), 1, "iter_pending sees scalars");
+        tx.rollback();
+        assert!(!tx.has_pending());
+        assert!(tx.take_pending_blocks().is_empty());
+        assert_eq!(tx.take_pending().count(), 0);
     }
 }

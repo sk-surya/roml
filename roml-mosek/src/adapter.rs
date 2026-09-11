@@ -306,6 +306,19 @@ impl MosekAdapter {
                 }
             }
 
+            // ── Variable Block Added (MIR-01) ─────────────────────────────
+            Change::VariableBlockAdded { block } => {
+                for (offset, var) in block.ids().enumerate() {
+                    if let Some(bounds) = block.bounds_for(offset) {
+                        self.apply_one(&Change::VariableAdded {
+                            var,
+                            bounds,
+                            var_type: block.var_type(),
+                        })?;
+                    }
+                }
+            }
+
             // ── Variable Removed ──────────────────────────────────────────
             Change::VariableRemoved { var } => {
                 let col = match self.col_map.remove(*var) {
@@ -546,12 +559,77 @@ impl MosekAdapter {
                 }
             },
 
+            // ── Packed parameter values (MIR-02) ───────────────────────────
+            Change::BulkParameterValues { .. } => {}
+
+            // ── Packed coefficient patch (MIR-02) ──────────────────────────
+            Change::BulkCoefficientPatch { patches } => {
+                for patch in patches.iter() {
+                    match patch.target {
+                        CoefficientTarget::Constraint(con) => {
+                            if let (Some(row), Some(col)) =
+                                (self.row_map.get(&con), self.col_map.get(&patch.var))
+                            {
+                                check(
+                                    unsafe { ffi::MSK_putaij(self.task, row, col, patch.new) },
+                                    "MSK_putaij (patch)",
+                                )?;
+                            }
+                        }
+                        CoefficientTarget::Objective(obj) => {
+                            self.obj_costs
+                                .entry(obj)
+                                .or_default()
+                                .insert(patch.var, patch.new);
+                            if Some(obj) == self.active_obj {
+                                if let Some(col) = self.col_map.get(&patch.var) {
+                                    check(
+                                        unsafe { ffi::MSK_putcj(self.task, col, patch.new) },
+                                        "MSK_putcj (patch)",
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Packed parametric rows (MIR-02) ────────────────────────────
+            Change::BulkParametricRows { block } => {
+                for r in 0..block.constraints.len() {
+                    let con = block.constraints[r];
+                    let row_idx = self.num_cons();
+                    check(
+                        unsafe { ffi::MSK_appendcons(self.task, 1) },
+                        "MSK_appendcons",
+                    )?;
+                    let (bk, lb, ub) = mosek_bounds(block.bounds[r].lower, block.bounds[r].upper);
+                    check(
+                        unsafe { ffi::MSK_putconbound(self.task, row_idx, bk, lb, ub) },
+                        "MSK_putconbound",
+                    )?;
+                    self.row_map.insert(con, row_idx);
+                    self.con_bounds
+                        .insert(con, (block.bounds[r].lower, block.bounds[r].upper));
+                    let (s, e) = (block.row_ptr[r] as usize, block.row_ptr[r + 1] as usize);
+                    for k in s..e {
+                        if let (Some(row), Some(col)) =
+                            (self.row_map.get(&con), self.col_map.get(&block.vars[k]))
+                        {
+                            check(
+                                unsafe { ffi::MSK_putaij(self.task, row, col, block.values[k]) },
+                                "MSK_putaij (param row)",
+                            )?;
+                        }
+                    }
+                }
+            }
+
             // ── Objective Added ────────────────────────────────────────────
             Change::ObjectiveAdded { obj, sense } => {
                 self.obj_senses.insert(*obj, *sense);
                 self.obj_costs.entry(*obj).or_default();
             }
-
             // ── Objective Removed ──────────────────────────────────────────
             Change::ObjectiveRemoved { obj } => {
                 self.obj_costs.remove(obj);
