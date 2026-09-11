@@ -862,3 +862,117 @@ fn internal_error(model: &Model, message: &str) -> MpsWriteError {
         message.to_owned(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model() -> Model {
+        Model::new()
+    }
+
+    #[test]
+    fn next_generated_name_skips_occupied_candidates() {
+        assert_eq!(next_generated_name("OBJ", 1, &BTreeSet::new()), "OBJ000001");
+        let mut occupied = BTreeSet::new();
+        occupied.insert("OBJ000001".to_string());
+        occupied.insert("OBJ000002".to_string());
+        assert_eq!(next_generated_name("OBJ", 1, &occupied), "OBJ000003");
+    }
+
+    #[test]
+    fn ordered_dependencies_walk_all_expression_arms() {
+        let p = |index: u32| ParamId::new(index, crate::id::Generation::new());
+        let expr = ValueExpr::add(
+            ValueExpr::sub(ValueExpr::param(p(1)), ValueExpr::param(p(2))),
+            ValueExpr::mul(
+                ValueExpr::div(
+                    ValueExpr::param(p(1)),
+                    ValueExpr::neg(ValueExpr::constant(1.0)),
+                ),
+                ValueExpr::param(p(2)),
+            ),
+        );
+        // Dedup preserves first-occurrence order across every arm.
+        assert_eq!(ordered_dependencies(&expr), vec![p(1), p(2)]);
+        assert!(ordered_dependencies(&ValueExpr::constant(3.0)).is_empty());
+    }
+
+    #[test]
+    fn checked_finite_normalizes_and_rejects() {
+        let model = model();
+        assert_eq!(
+            checked_finite(&model, MpsEntityKind::Variable, "x", -0.0, "bounds").expect("finite"),
+            0.0
+        );
+        assert_eq!(
+            checked_finite(&model, MpsEntityKind::Variable, "x", 2.5, "bounds").expect("finite"),
+            2.5
+        );
+        let error = checked_finite(&model, MpsEntityKind::Variable, "x", f64::NAN, "bounds")
+            .expect_err("non-finite rejects");
+        assert_eq!(error.kind(), &MpsWriteErrorKind::NonFiniteValue);
+        assert_eq!(error.context().entity_kind, Some(MpsEntityKind::Variable));
+        assert_eq!(error.context().numeric_field.as_deref(), Some("bounds"));
+    }
+
+    #[test]
+    fn error_constructors_populate_context() {
+        let model = model();
+        let p = ParamId::new(7, crate::id::Generation::new());
+        let p2 = ParamId::new(8, crate::id::Generation::new());
+
+        let error = error_for_model(&model, MpsWriteErrorKind::ModelValidation, "bad".into());
+        assert_eq!(error.kind(), &MpsWriteErrorKind::ModelValidation);
+        assert_eq!(error.context().message.as_deref(), Some("bad"));
+
+        let error = stale_error(&model, MpsEntityKind::Variable, "gone".into());
+        assert_eq!(error.kind(), &MpsWriteErrorKind::StaleEntity);
+        assert_eq!(error.context().entity_kind, Some(MpsEntityKind::Variable));
+        assert_eq!(error.context().message.as_deref(), Some("gone"));
+
+        let error = entity_error(
+            &model,
+            MpsWriteErrorKind::NonFiniteValue,
+            MpsEntityKind::MatrixCell,
+            "cell",
+            "coeff",
+        );
+        assert_eq!(error.kind(), &MpsWriteErrorKind::NonFiniteValue);
+        assert_eq!(error.context().entity_name.as_deref(), Some("cell"));
+        assert_eq!(error.context().feature.as_deref(), Some("coeff"));
+        assert_eq!(error.context().numeric_field.as_deref(), Some("coeff"));
+
+        let error = entity_error(
+            &model,
+            MpsWriteErrorKind::Unrepresentable,
+            MpsEntityKind::Construct,
+            "c",
+            "absolute-value construct",
+        );
+        assert_eq!(error.context().numeric_field, None);
+
+        let error = parameter_error(&model, p, "weight", Vec::new());
+        assert_eq!(error.kind(), &MpsWriteErrorKind::ParameterEvaluation);
+        assert_eq!(error.context().feature.as_deref(), Some("weight"));
+        assert_eq!(error.context().parameter_dependencies, vec![p]);
+
+        let error = parameter_error(&model, p, "weight", vec![p2]);
+        assert_eq!(error.context().parameter_dependencies, vec![p2]);
+
+        let error = missing_parameter_error(&model, p, vec![p2]);
+        assert_eq!(error.kind(), &MpsWriteErrorKind::ParameterEvaluation);
+        assert_eq!(error.context().entity_kind, Some(MpsEntityKind::MatrixCell));
+        assert!(error
+            .context()
+            .feature
+            .as_deref()
+            .expect("feature")
+            .contains("missing parameter dependency"));
+        assert_eq!(error.context().parameter_dependencies, vec![p2]);
+
+        let error = internal_error(&model, "invariant");
+        assert_eq!(error.kind(), &MpsWriteErrorKind::InternalInvariant);
+        assert_eq!(error.context().message.as_deref(), Some("invariant"));
+    }
+}

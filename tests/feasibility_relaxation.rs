@@ -843,3 +843,25 @@ fn explicit_scope_unknown_persistent_fixing_variable_is_rejected() {
         roml::solver::relaxation::FeasibilityRelaxationError::Preflight(_)
     ));
 }
+
+#[test]
+fn all_eligible_scope_with_no_finite_restrictions_is_rejected() {
+    let mut model = Model::new();
+    model
+        .add_variable(continuous().bounds(f64::NEG_INFINITY, f64::INFINITY))
+        .unwrap();
+    model.commit().unwrap();
+
+    let mut session = SolverSession::new(ReferenceSolveSession::new());
+    let error = session
+        .solve_feasibility_relaxation(&mut model, FeasibilityRelaxationPlan::default())
+        .expect_err("no finite eligible restrictions");
+    assert!(
+        matches!(
+            &error,
+            roml::solver::relaxation::FeasibilityRelaxationError::Preflight(message)
+                if message.contains("no finite eligible")
+        ),
+        "unexpected error: {error:?}"
+    );
+}
