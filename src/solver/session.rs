@@ -411,4 +411,84 @@ mod tests {
         assert_eq!(stub.version(), "stub");
         assert_eq!(stub.capabilities(), BackendCapabilities::default());
     }
+
+    #[test]
+    fn overlay_and_iis_defaults_reject_with_typed_unsupported() {
+        use crate::compiler::backend_ir::CompilationId;
+        use crate::compiler::capability::{
+            BackendFeature, CompilationPolicy, FeatureSupport, SupportLevel,
+        };
+        use crate::compiler::origin::{OriginMap, OverlayId};
+        use crate::solver::infeasibility::{NativeConflictRequest, SemanticConflictUniverse};
+        use crate::solver::overlay::{CompiledOverlay, OverlayApplyReceipt};
+
+        // An empty compiled base establishes a valid backend snapshot for the
+        // default methods (which ignore it and reject).
+        let model = crate::Model::new();
+        let model_snapshot = model.take_snapshot().expect("snapshot");
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+        let snapshot = crate::advanced::CompilationSession::new()
+            .compile_snapshot(
+                model.instance(),
+                &model_snapshot,
+                &CompilationPolicy::Auto,
+                &caps,
+            )
+            .expect("empty base");
+
+        let mut stub = StubSession {
+            caps: BackendCapabilitySet::new(),
+        };
+
+        let overlay = CompiledOverlay {
+            base_compilation: CompilationId::allocate().expect("id"),
+            compilation_id: CompilationId::allocate().expect("id"),
+            overlay_id: OverlayId::allocate().expect("overlay id"),
+            operations: Vec::new(),
+            origin_additions: OriginMap::new(),
+            objective_policy_override: None,
+        };
+        assert!(
+            format!("{}", stub.apply_overlay(&overlay).expect_err("reject"))
+                .contains("does not qualify")
+        );
+
+        let receipt = OverlayApplyReceipt {
+            overlay_id: OverlayId::allocate().expect("overlay id"),
+            base_compilation: CompilationId::allocate().expect("id"),
+            applied_compilation: CompilationId::allocate().expect("id"),
+        };
+        assert!(
+            format!("{}", stub.rollback_overlay(&receipt).expect_err("reject"))
+                .contains("does not qualify")
+        );
+
+        let request = NativeConflictRequest {
+            compilation_id: CompilationId::allocate().expect("id"),
+            snapshot: snapshot.clone(),
+        };
+        assert!(
+            format!("{}", stub.native_conflict(&request).expect_err("reject"))
+                .contains("does not qualify")
+        );
+
+        let universe = SemanticConflictUniverse {
+            compilation_id: CompilationId::allocate().expect("id"),
+            atoms: Vec::new(),
+            compiled_restrictions: Vec::new(),
+            grouping: crate::ConflictGrouping::Semantic,
+        };
+        let oracle_error = stub
+            .spawn_infeasibility_oracle(&snapshot, &universe)
+            .err()
+            .expect("reject");
+        assert!(format!("{oracle_error}").contains("does not qualify"));
+    }
 }
