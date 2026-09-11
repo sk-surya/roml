@@ -24,7 +24,7 @@
 | MIR-01 | complete (IR-02…IR-07) | `evidence/MIR-01-REPORT.md`; `src/bulk.rs`; `tests/mir01_block_allocation.rs` |
 | MIR-02 | complete + merged (IR-08…IR-17) | `evidence/MIR-02-REPORT.md`; `evidence/MIR-02-MUTATION-REPORT.md`; `tests/mir02_parametric_blocks.rs`; `tests/mir02_parametric_rows.rs`; `tests/mir02_remediation.rs`; `tests/mir02_backend_batching.rs`; `roml-highs/tests/mir02_bess_batching.rs` |
 | MIR-03 | complete (IR-18…IR-23) | `evidence/MIR-03-REPORT.md`; `MIR-03-PLAN.md`; `src/modeling/{view,coeff,eligibility,builder}.rs`; `Model::set_linear_objective_from_linarray`; `Model::add_rows_from_plan`; `MixedRowBlock` / `Change::BulkMixedRows` / `ModelOp::AddMixedRows`; `model::mir03_*` tests |
-| MIR-04 | in progress: M4-1 handles, M4-2 expression algebra (cell-wise/reduction rows + array objectives), M4-3 label boundary, M4-4 fingerprint, M4-5 L1 examples + gate done; M4-6 solution read-back remains | `MIR-04-PLAN.md`; `src/modeling/{array,coeff,builder,labeled}.rs`; `src/snapshot.rs`; `examples/l1_{bess,transportation,min_cost_flow}.rs`; `tests/mir04_*.rs` |
+| MIR-04 | complete (IR-24, IR-25): M4-1 handles, M4-2 expression algebra (cell-wise/reduction rows + array objectives), M4-3 label boundary, M4-4 fingerprint, M4-5 L1 examples + gate, M4-6 solution read-back | `MIR-04-PLAN.md`, `evidence/MIR-04-REPORT.md`; `src/modeling/{array,coeff,builder,labeled}.rs`; `src/snapshot.rs`; `src/solution/mod.rs`; `examples/l1_{bess,transportation,min_cost_flow}.rs`; `tests/mir04_*.rs` |
 | MIR-05 | not started | — |
 | MIR-06 | not started | — |
 | MIR-07 | not started | — |

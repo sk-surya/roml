@@ -27,6 +27,39 @@ use crate::solver::SolveStatus;
 
 pub use metadata::{SolveMetadata, SynchronizationMode};
 
+/// A typed failure reading a structured variable array out of a solution
+/// (MIR-04, IR-24).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SolutionReadError {
+    /// The array cell ordinal is outside the array.
+    OrdinalOutOfRange {
+        /// Requested ordinal.
+        ordinal: usize,
+        /// Array length.
+        len: usize,
+    },
+    /// The solution has no value for the cell's variable.
+    MissingValue {
+        /// Array cell ordinal.
+        ordinal: usize,
+    },
+}
+
+impl std::fmt::Display for SolutionReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OrdinalOutOfRange { ordinal, len } => {
+                write!(f, "array ordinal {ordinal} out of range for length {len}")
+            }
+            Self::MissingValue { ordinal } => {
+                write!(f, "solution has no value for array cell {ordinal}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SolutionReadError {}
+
 /// Typed failures returned by original-constraint violation accessors.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ViolationError {
@@ -213,6 +246,37 @@ impl Solution {
     /// Get all variable values.
     pub fn values(&self) -> &HashMap<VarId, f64> {
         &self.values
+    }
+
+    /// Read a structured variable array's values in row-major ordinal order
+    /// (MIR-04, IR-24): missing variables yield `None` at that position.
+    pub fn array_values(&self, array: &crate::modeling::VarArray) -> Vec<Option<f64>> {
+        (0..array.len())
+            .map(|ordinal| self.array_value(array, ordinal))
+            .collect()
+    }
+
+    /// Read a structured variable array's values in row-major ordinal order,
+    /// requiring every cell to be present in the solution.
+    pub fn try_array_values(
+        &self,
+        array: &crate::modeling::VarArray,
+    ) -> Result<Vec<f64>, SolutionReadError> {
+        let len = array.len();
+        (0..len)
+            .map(|ordinal| {
+                let var = array
+                    .get(ordinal)
+                    .ok_or(SolutionReadError::OrdinalOutOfRange { ordinal, len })?;
+                self.value(var)
+                    .ok_or(SolutionReadError::MissingValue { ordinal })
+            })
+            .collect()
+    }
+
+    /// Read one cell of a structured variable array.
+    pub fn array_value(&self, array: &crate::modeling::VarArray, ordinal: usize) -> Option<f64> {
+        array.get(ordinal).and_then(|var| self.value(var))
     }
 
     /// Produce a lineage-bound [`PrimalAssignment`] of this solution's
