@@ -2960,6 +2960,14 @@ impl Model {
         let mut block_patches = Vec::new();
         self.coefficients
             .propagate_packed_span(span, &self.parameters, &mut block_patches);
+        // Non-eligible packed fallback: cells retained in the per-cell
+        // reverse index. Empty (zero lookups) for fully eligible families.
+        self.coefficients.propagate_packed_positions_span(
+            span,
+            &self.parameters,
+            &mut self.diagnostics.propagation,
+            &mut block_patches,
+        );
 
         self.changelog.push(Change::BulkParameterValues {
             changes: changed.into(),
@@ -3445,7 +3453,7 @@ impl Model {
         }
         let obj = self.add_objective_internal(sense, None);
         let target = CoefficientTarget::Objective(obj);
-        match layout {
+        let positions_tracked = match layout {
             Some(layout) => {
                 let blocks: Vec<StoredParamDepBlock> = layout
                     .blocks
@@ -3461,10 +3469,13 @@ impl Model {
                     .collect();
                 self.diagnostics.lowering.param_dep_blocks += blocks.len() as u64;
                 self.coefficients
-                    .append_param_run_with_deps(target, &packed, blocks)?;
+                    .append_param_run_with_deps(target, &packed, blocks)?
             }
-            None => self.coefficients.append_param_run(target, &packed),
-        }
+            None => {
+                self.coefficients.append_param_run(target, &packed);
+                packed.len()
+            }
+        };
         for (var, expr, cached) in combined {
             let id = self.coefficients.add(var, target, expr.clone(), cached);
             self.diagnostics.lowering.general_affine += 1;
@@ -3486,15 +3497,10 @@ impl Model {
             })
             .collect::<Vec<_>>()
             .into();
-        let tracked_positions = if layout.is_none() {
-            cells.len() as u64
-        } else {
-            0
-        };
         self.changelog
             .push(Change::BulkObjectiveParamCoefficients { obj, cells });
         self.diagnostics.lowering.parametric_bulk += 1;
-        self.diagnostics.lowering.param_positions_cells += tracked_positions;
+        self.diagnostics.lowering.param_positions_cells += positions_tracked as u64;
         // Mirror the scalar path: report the constant iff it differs, then
         // activate.
         self.set_objective_constant_internal(obj, constant);
@@ -3509,6 +3515,7 @@ impl Model {
         layout: &ParamDepLayout,
         packed: &[ParamCell],
     ) -> Result<(), ModelError> {
+        let mut owner = vec![0u8; packed.len()];
         for witness in &layout.blocks {
             if witness.row.is_some() {
                 return Err(ModelError::InvalidParamDepLayout(
@@ -3517,6 +3524,11 @@ impl Model {
             }
             if !witness.scale.is_finite() {
                 return Err(ModelError::NonFiniteValue("dependency scale"));
+            }
+            if !witness.param_map.is_well_formed() || !witness.cell_map.is_well_formed() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "malformed dependency map metadata",
+                ));
             }
             if witness.param_map.len() != witness.cell_map.len() {
                 return Err(ModelError::InvalidParamDepLayout(
@@ -3555,6 +3567,12 @@ impl Model {
                 if cell.scale != witness.scale {
                     return Err(ModelError::InvalidParamDepLayout(
                         "witness scale does not match the canonical cell",
+                    ));
+                }
+                owner[idx] += 1;
+                if owner[idx] > 1 {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "canonical cell covered by more than one dependency block",
                     ));
                 }
             }

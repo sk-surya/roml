@@ -158,6 +158,19 @@ impl ReferenceBackend {
         Self::default()
     }
 
+    /// Deterministic `(variable, symbolic expression)` view of objective
+    /// cells. Used to prove that a patch updates the evaluated cache without
+    /// replacing the parameterized expression form.
+    pub fn symbolic_objective_cells(&self) -> Vec<(crate::id::VarId, ValueExpr)> {
+        let mut out: Vec<(crate::id::VarId, ValueExpr)> = self
+            .objective_cells
+            .iter()
+            .map(|(key, (expr, _, _))| (key.1, expr.clone()))
+            .collect();
+        out.sort_by_key(|(var, _)| *var);
+        out
+    }
+
     /// Apply a single ModelOp to this backend.
     pub fn apply_op(&mut self, op: &ModelOp) -> Result<(), String> {
         match op {
@@ -376,23 +389,31 @@ impl ReferenceBackend {
                 }
             }
             // MIR-02 packed coefficient patch: each patch is self-contained
-            // (target, variable, new value).
+            // (target, variable, new value). Update the existing cell's
+            // evaluated cache in place, preserving its symbolic expression;
+            // a patch that targets a missing cell is a typed error (the
+            // adapter must rebuild rather than invent a constant cell).
             ModelOp::SetCoefficientPatchBatch { patches } => {
                 for patch in patches.iter() {
+                    let key = (patch.target, patch.var);
                     match patch.target {
                         CoefficientTarget::Constraint(_) => {
-                            self.constraint_cells.insert(
-                                (patch.target, patch.var),
-                                (ValueExpr::constant(patch.new), patch.new),
-                            );
+                            let entry = self.constraint_cells.get_mut(&key).ok_or_else(|| {
+                                format!(
+                                    "coefficient patch targets missing constraint cell {:?}",
+                                    key
+                                )
+                            })?;
+                            entry.1 = patch.new;
                         }
-                        CoefficientTarget::Objective(obj) => {
-                            let constant =
-                                self.objective_constants.get(&obj).copied().unwrap_or(0.0);
-                            self.objective_cells.insert(
-                                (patch.target, patch.var),
-                                (ValueExpr::constant(patch.new), patch.new, constant),
-                            );
+                        CoefficientTarget::Objective(_) => {
+                            let entry = self.objective_cells.get_mut(&key).ok_or_else(|| {
+                                format!(
+                                    "coefficient patch targets missing objective cell {:?}",
+                                    key
+                                )
+                            })?;
+                            entry.1 = patch.new;
                         }
                     }
                 }

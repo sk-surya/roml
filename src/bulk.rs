@@ -40,7 +40,12 @@ impl StridedMap {
     }
 
     /// Build a map from raw shape/strides/offset.
-    pub fn new(
+    ///
+    /// Crate-private: raw metadata is only accepted from validated internal
+    /// constructors until MIR-03 adds validated public constructors. A map
+    /// built here is still checked by `is_well_formed`/`get` before use.
+    #[allow(dead_code)] // exercised by unit tests until MIR-03 exposes it
+    pub(crate) fn new(
         shape: impl Into<Arc<[usize]>>,
         strides: impl Into<Arc<[isize]>>,
         offset: isize,
@@ -70,35 +75,63 @@ impl StridedMap {
         self.offset
     }
 
-    /// Number of mapped cells (the product of the shape).
+    /// Whether the metadata is internally consistent: ranks agree and the
+    /// shape product fits in `usize`.
+    ///
+    /// Core witness validation calls this before traversal, so malformed
+    /// metadata is a typed rejection rather than a panic, wrap, or silent
+    /// truncation. A zero stride is **not** rejected here — repeated ordinals
+    /// may validly map to one parameter; duplicate *cell* positions are what
+    /// dependency validation rejects.
+    pub fn is_well_formed(&self) -> bool {
+        self.shape.len() == self.strides.len() && self.ordinal_count().is_some()
+    }
+
+    fn ordinal_count(&self) -> Option<usize> {
+        self.shape
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+    }
+
+    /// Number of mapped cells (the product of the shape), or 0 for malformed
+    /// metadata. Distinguish malformed metadata with [`Self::is_well_formed`].
     pub fn len(&self) -> usize {
-        if self.shape.is_empty() {
-            return 0;
-        }
-        self.shape.iter().product()
+        self.ordinal_count().unwrap_or(0)
     }
 
     /// Whether the map covers no cells.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.shape.iter().any(|&dim| dim == 0)
     }
 
     /// Resolve a flat ordinal to its mapped index, or `None` when out of
-    /// bounds. The result may be negative (signed strides).
+    /// bounds or when the metadata/arithmetic is malformed.
+    ///
+    /// # Ordinal traversal convention (frozen)
+    ///
+    /// Ordinals are row-major: the **last** shape dimension varies fastest.
+    /// `ordinal` decomposes as `Σ coord[d] · (Π_{e>d} shape[e])`, and the
+    /// result is `offset + Σ coord[d] · strides[d]`. All arithmetic is checked;
+    /// overflow yields `None`, never a panic or a wrapped index. Signed
+    /// strides may produce a negative mapped index (the caller validates it
+    /// against the concrete run).
     pub fn get(&self, ordinal: usize) -> Option<isize> {
-        if ordinal >= self.len() {
+        if self.shape.len() != self.strides.len() {
+            return None;
+        }
+        let total = self.ordinal_count()?;
+        if ordinal >= total {
             return None;
         }
         let mut rem = ordinal;
         let mut mapped = self.offset;
-        for (dim, (&size, &stride)) in self.shape.iter().zip(self.strides.iter()).enumerate() {
-            let _ = dim;
+        for (&size, &stride) in self.shape.iter().zip(self.strides.iter()) {
             if size == 0 {
                 return None;
             }
             let coord = (rem % size) as isize;
             rem /= size;
-            mapped += coord * stride;
+            mapped = mapped.checked_add(coord.checked_mul(stride)?)?;
         }
         Some(mapped)
     }
@@ -389,6 +422,43 @@ impl VariableBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strided_map_rejects_malformed_metadata() {
+        // Rank mismatch: zip would silently truncate, so `is_well_formed` and
+        // `get` must reject.
+        let mismatched = StridedMap::new([2usize, 3], [1isize], 0);
+        assert!(!mismatched.is_well_formed());
+        assert_eq!(mismatched.get(0), None);
+
+        // Shape product overflow.
+        let overflowing = StridedMap::new([usize::MAX, 2], [1isize, 1], 0);
+        assert!(!overflowing.is_well_formed());
+        assert_eq!(overflowing.get(0), None);
+
+        // Signed arithmetic overflow is checked, not wrapped.
+        let arithmetic = StridedMap::new([3usize], [isize::MAX], 0);
+        assert!(arithmetic.is_well_formed());
+        assert_eq!(arithmetic.get(0), Some(0));
+        assert_eq!(arithmetic.get(1), Some(isize::MAX));
+        assert_eq!(arithmetic.get(2), None, "checked_mul overflow yields None");
+    }
+
+    #[test]
+    fn strided_map_row_major_ordinals_and_zero_stride() {
+        // Row-major: last dimension varies fastest.
+        let row_major = StridedMap::new([2usize, 3], [3isize, 1], 0);
+        let mapped: Vec<isize> = (0..6).filter_map(|i| row_major.get(i)).collect();
+        assert_eq!(mapped, vec![0, 1, 2, 3, 4, 5]);
+
+        // A zero stride repeats a parameter ordinal; it is well-formed and is
+        // not rejected here (duplicate *cell* positions are rejected by
+        // dependency validation).
+        let repeated = StridedMap::new([3usize], [0isize], 0);
+        assert!(repeated.is_well_formed());
+        assert_eq!(repeated.get(0), Some(0));
+        assert_eq!(repeated.get(2), Some(0));
+    }
 
     #[test]
     fn block_bounds_owned_resolves_every_offset() {

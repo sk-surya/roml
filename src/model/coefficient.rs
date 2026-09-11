@@ -647,16 +647,20 @@ impl CoefficientIndex {
     /// model layer canonicalizes). One target slice covers the range, and
     /// the compact reverse parameter index extends by the new positions.
     pub(crate) fn append_param_run(&mut self, target: CoefficientTarget, cells: &[ParamCell]) {
-        self.append_param_run_inner(target, cells, true);
+        self.append_param_run_inner(target, cells, None);
     }
 
-    /// Append one canonical packed parametric run, optionally tracking
-    /// per-cell reverse positions.
+    /// Append one canonical packed parametric run, tracking per-cell reverse
+    /// positions for every cell not covered by a dependency block.
+    ///
+    /// `track_positions == None` tracks all cells; `Some(track)` tracks only
+    /// the indices marked `true` (uncovered cells of a partially eligible
+    /// run).
     fn append_param_run_inner(
         &mut self,
         target: CoefficientTarget,
         cells: &[ParamCell],
-        track_positions: bool,
+        track_positions: Option<&[bool]>,
     ) {
         #[cfg(debug_assertions)]
         {
@@ -664,6 +668,9 @@ impl CoefficientIndex {
             debug_assert!(cells
                 .iter()
                 .all(|c| c.scale.is_finite() && c.cached.is_finite()));
+            if let Some(track) = track_positions {
+                debug_assert_eq!(track.len(), cells.len());
+            }
         }
         let n = cells.len();
         if n == 0 {
@@ -676,7 +683,7 @@ impl CoefficientIndex {
         self.p_cached.reserve(n);
         self.p_ids.reserve(n);
         let start = self.p_vars.len() as u32;
-        for cell in cells.iter() {
+        for (i, cell) in cells.iter().enumerate() {
             let pos = self.p_vars.len() as u32;
             let (index, generation) = self.ids.allocate(CellLocation::ParamBase(pos));
             let id = CoeffId::new(index, generation);
@@ -685,7 +692,8 @@ impl CoefficientIndex {
             self.p_scales.push(cell.scale);
             self.p_cached.push(cell.cached);
             self.p_ids.push(id);
-            if track_positions {
+            let track = track_positions.map_or(true, |t| t[i]);
+            if track {
                 self.param_positions
                     .entry(cell.param)
                     .or_default()
@@ -707,24 +715,26 @@ impl CoefficientIndex {
         }
     }
 
-    /// Append one canonical packed parametric run covered by validated L2
-    /// dependency blocks (MIR-02).
+    /// Validate dependency blocks against the canonical packed run **before**
+    /// any mutation (MIR-02 ownership proof).
     ///
-    /// The witness is validated against the candidate canonical run *before*
-    /// any mutation, so an invalid layout is a typed atomic rejection. On
-    /// success the run is appended **without** per-cell `param_positions`
-    /// entries and the resolved blocks are stored; their `cell_start` becomes
-    /// the absolute packed ordinal.
-    pub(crate) fn append_param_run_with_deps(
-        &mut self,
-        target: CoefficientTarget,
+    /// Returns `Ok(())` only when every claimed ordinal resolves to the
+    /// matching canonical cell and no canonical cell is claimed by more than
+    /// one dependency entry. Duplicate coverage — including two ordinals of
+    /// one witness mapping to the same cell — is a typed atomic rejection.
+    pub(crate) fn validate_param_dep_blocks(
         cells: &[ParamCell],
-        mut blocks: Vec<StoredParamDepBlock>,
+        blocks: &[StoredParamDepBlock],
     ) -> Result<(), ModelError> {
-        let run_start = self.p_vars.len() as u32;
-        for block in &blocks {
+        let mut owner = vec![0u8; cells.len()];
+        for block in blocks {
             if !block.scale.is_finite() {
                 return Err(ModelError::NonFiniteValue("dependency scale"));
+            }
+            if !block.param_map.is_well_formed() || !block.cell_map.is_well_formed() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "malformed dependency map metadata",
+                ));
             }
             if block.param_map.len() != block.cell_map.len() {
                 return Err(ModelError::InvalidParamDepLayout(
@@ -765,14 +775,54 @@ impl CoefficientIndex {
                         "witness scale does not match the canonical cell",
                     ));
                 }
+                owner[idx] += 1;
+                if owner[idx] > 1 {
+                    return Err(ModelError::InvalidParamDepLayout(
+                        "canonical cell covered by more than one dependency block",
+                    ));
+                }
             }
         }
+        Ok(())
+    }
+
+    /// Append one canonical packed parametric run partially or fully covered
+    /// by validated L2 dependency blocks (MIR-02).
+    ///
+    /// The witness is validated against the candidate canonical run *before*
+    /// any mutation, so an invalid or overlapping layout is a typed atomic
+    /// rejection. Covered canonical cells store no `param_positions` entry;
+    /// **uncovered** cells retain the ordinary per-cell fallback. Returns the
+    /// number of positions tracked (uncovered cells).
+    pub(crate) fn append_param_run_with_deps(
+        &mut self,
+        target: CoefficientTarget,
+        cells: &[ParamCell],
+        mut blocks: Vec<StoredParamDepBlock>,
+    ) -> Result<usize, ModelError> {
+        Self::validate_param_dep_blocks(cells, &blocks)?;
+        // Mark covered canonical cells; the rest keep positions.
+        let mut track = vec![true; cells.len()];
+        for block in &blocks {
+            for k in 0..block.cell_map.len() {
+                if let Some(cell_offset) = block.cell_map.get(k) {
+                    if cell_offset >= 0 {
+                        let idx = block.cell_start as usize + cell_offset as usize;
+                        if idx < track.len() {
+                            track[idx] = false;
+                        }
+                    }
+                }
+            }
+        }
+        let tracked = track.iter().filter(|&&t| t).count();
+        let run_start = self.p_vars.len() as u32;
         for block in &mut blocks {
             block.cell_start += run_start;
         }
-        self.append_param_run_inner(target, cells, false);
+        self.append_param_run_inner(target, cells, Some(&track));
         self.param_dep_blocks.extend(blocks);
-        Ok(())
+        Ok(tracked)
     }
 
     /// Number of stored dependency blocks (MIR diagnostics / tests).
@@ -945,6 +995,58 @@ impl CoefficientIndex {
                     scale,
                     param,
                 });
+            }
+        }
+    }
+
+    /// Propagate a parameter span through the per-cell `param_positions`
+    /// reverse index (MIR-02 remediation).
+    ///
+    /// This is the non-eligible packed fallback that must remain correct when
+    /// a bulk update also drives eligible block families. Dead/shadowed cells
+    /// are skipped. `param_position_lookups` counts the positions examined, so
+    /// a fully eligible family (no positions) contributes zero.
+    pub(crate) fn propagate_packed_positions_span(
+        &mut self,
+        span: ParamSpan,
+        params: &ParameterStore,
+        stats: &mut crate::diagnostics::PropagationStats,
+        out: &mut Vec<BlockPatch>,
+    ) {
+        for offset in 0..span.len() {
+            let param = match span.id_at(offset) {
+                Some(p) => p,
+                None => continue,
+            };
+            let positions: Vec<u32> = self
+                .param_positions
+                .get(&param)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .to_vec();
+            stats.param_position_lookups += positions.len() as u64;
+            for pos in positions {
+                if bit_get(&self.p_dead, pos) || bit_get(&self.p_shadowed, pos) {
+                    continue;
+                }
+                let value = params.get_value(param).unwrap_or(0.0);
+                let new = self.p_scales[pos as usize] * value;
+                let old = self.p_cached[pos as usize];
+                if (old - new).abs() < f64::EPSILON {
+                    continue;
+                }
+                self.p_cached[pos as usize] = new;
+                if let Some(target) = self.param_target_at(pos) {
+                    out.push(BlockPatch {
+                        coeff: self.p_ids[pos as usize],
+                        target,
+                        var: self.p_vars[pos as usize],
+                        old,
+                        new,
+                        scale: self.p_scales[pos as usize],
+                        param,
+                    });
+                }
             }
         }
     }
@@ -2362,5 +2464,69 @@ mod perf_probe_rows_tests {
             "store append 100kx10 rows: {:.1} ms",
             dt.as_secs_f64() * 1e3
         );
+    }
+}
+
+#[cfg(test)]
+mod mir02_dependency_validation_tests {
+    use super::*;
+    use crate::id::Generation;
+
+    fn cell(var: u32, param: u32, scale: f64) -> ParamCell {
+        ParamCell {
+            var: VarId::new(var, Generation::new()),
+            param: ParamId::new(param, Generation::new()),
+            scale,
+            cached: scale,
+        }
+    }
+
+    fn objective_target() -> CoefficientTarget {
+        CoefficientTarget::Objective(ObjId::new(0, Generation::new()))
+    }
+
+    #[test]
+    fn duplicate_cell_positions_in_one_witness_are_rejected() {
+        // Two ordinals map to the same parameter (stride 0) *and* the same
+        // canonical cell (cell stride 0): repeated parameters are legal, but a
+        // cannonical cell covered twice is not.
+        let cells = vec![cell(0, 0, 1.0), cell(1, 1, 1.0)];
+        let block = StoredParamDepBlock {
+            params: ParamSpan::from_parts(0, 2, Generation::new()),
+            param_map: StridedMap::new([2usize], [0isize], 0),
+            cell_start: 0,
+            cell_map: StridedMap::new([2usize], [0isize], 0),
+            scale: 1.0,
+            target: objective_target(),
+        };
+        let error = CoefficientIndex::validate_param_dep_blocks(&cells, &[block])
+            .expect_err("duplicate canonical coverage rejects");
+        assert!(matches!(error, ModelError::InvalidParamDepLayout(_)));
+    }
+
+    #[test]
+    fn malformed_witness_map_metadata_is_rejected() {
+        let cells = vec![cell(0, 0, 1.0)];
+        let block = StoredParamDepBlock {
+            params: ParamSpan::from_parts(0, 1, Generation::new()),
+            param_map: StridedMap::new([1usize], [1isize, 2isize], 0),
+            cell_start: 0,
+            cell_map: StridedMap::contiguous(1),
+            scale: 1.0,
+            target: objective_target(),
+        };
+        let error = CoefficientIndex::validate_param_dep_blocks(&cells, &[block])
+            .expect_err("rank-mismatched map rejects");
+        assert!(matches!(error, ModelError::InvalidParamDepLayout(_)));
+
+        let overflow = StoredParamDepBlock {
+            params: ParamSpan::from_parts(0, 1, Generation::new()),
+            param_map: StridedMap::new([usize::MAX, 2usize], [1isize, 1isize], 0),
+            cell_start: 0,
+            cell_map: StridedMap::contiguous(1),
+            scale: 1.0,
+            target: objective_target(),
+        };
+        assert!(CoefficientIndex::validate_param_dep_blocks(&cells, &[overflow]).is_err());
     }
 }
