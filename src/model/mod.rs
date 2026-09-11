@@ -44,6 +44,7 @@ pub type Objective = crate::id::ObjId;
 /// Semantic alias for a parameter handle (D8). A plain type alias of [`ParamId`].
 pub type Parameter = crate::id::ParamId;
 
+use crate::bulk::ParamSpan;
 #[cfg(test)]
 use crate::construct::FixturePayload;
 use crate::construct::{
@@ -2402,6 +2403,27 @@ impl Model {
             None => self.parameters.add(def.value),
         };
         Ok(id)
+    }
+
+    /// Add a contiguous block of parameters in one bulk store operation.
+    ///
+    /// Every value is validated finite before any mutation, then the arena
+    /// reserves once and appends sequentially. Parameter *existence* is not a
+    /// solver-facing mutation (D-019 invariant 7): exactly like
+    /// [`Self::add_parameter`], this records no changelog event, emits no
+    /// `Change`/`ModelOp`, and does not advance the revision merely because
+    /// parameters now exist. The returned [`ParamSpan`] is a trusted block
+    /// identity that later block APIs consume.
+    ///
+    /// Fallible (D10): a non-finite value rejects the whole block atomically
+    /// (the store is untouched).
+    pub fn add_parameter_block(&mut self, values: &[f64]) -> Result<ParamSpan, ModelError> {
+        for value in values {
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("parameter value"));
+            }
+        }
+        Ok(self.parameters.add_block(values))
     }
 
     /// Get a parameter value.

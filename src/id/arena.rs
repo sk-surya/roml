@@ -89,6 +89,31 @@ impl<T> IdArena<T> {
         self.slots.reserve(additional);
     }
 
+    /// Allocate a contiguous block of slots that share one fresh generation.
+    ///
+    /// Reserves capacity once, then appends every item sequentially. Returns
+    /// the first slot index and the shared generation. Indices are never
+    /// reused, so the returned generation is fresh regardless of prior
+    /// deletions, and the block can later be reconstructed from
+    /// `(start, offset, generation)`.
+    pub fn allocate_block<I>(&mut self, items: I) -> (u32, Generation)
+    where
+        I: ExactSizeIterator<Item = T>,
+    {
+        let n = items.len();
+        self.slots.reserve(n);
+        let start = self.slots.len() as u32;
+        let generation = Generation::new();
+        for data in items {
+            self.slots.push(Slot {
+                data: Some(data),
+                generation,
+            });
+        }
+        self.count += n;
+        (start, generation)
+    }
+
     /// Remove an entity by index and generation.
     ///
     /// Returns the data if the ID was valid, None if stale or out of bounds.

@@ -15,6 +15,8 @@
 
 pub mod advanced;
 pub mod assignment;
+/// Language-independent L2 block descriptors (D-019, DESIGN §2–3).
+pub mod bulk;
 pub mod compiler;
 // A30 (P32): the real per-construct variants land in P32 Task 16, so the
 // construct module and `ConstructKind`/`ConstructEntry` become PUBLIC exports.
@@ -47,6 +49,7 @@ pub mod value_expr;
 pub use assignment::{
     AssignmentError, ContinuousLock, LockSelector, PrimalAssignment, SolutionLock,
 };
+pub use bulk::{BlockBounds, BlockBoundsOwned, ParamSpan, VarSpan, VariableBlock};
 pub use construct::{
     AbsoluteValueConstraint, AbsoluteValueVariant, BinaryProductConstraint, BooleanConstraint,
     BooleanKind, CardinalityConstraint, CardinalityKind, Construct, ConstructEntry, ConstructKind,
