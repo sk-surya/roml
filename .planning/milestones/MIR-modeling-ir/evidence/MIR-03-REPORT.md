@@ -123,3 +123,40 @@ Verification: `cargo clippy -p roml --all-targets -- -D warnings` clean;
    charge)`) through the automatic proof; the flagship counters above are at the
    Rust core level.
 4. Full exact-head qualification matrix and evidence/state finalization.
+
+## Row seam: BulkMixedRows protocol (authorized)
+
+Reference: this is a journal/delta/compiler protocol change, not an IR change.
+
+- `MixedRowBlock` (delta payload): one constraint allocation + bounds, numeric
+  CSR stream, parametric CSR stream, derived `ParamDepLayout`.
+- `Change::BulkMixedRows` -> `ModelOp::AddMixedRows` (one semantic op on one row
+  set); delta semantic reconstruction combines both streams per row.
+- Compiler emits one backend row per allocated constraint with combined
+  numeric+parametric coefficients; reference backend mirrors it with constant and
+  `scaled_param` symbolic cells. One logical row addition, never two.
+- `Model::add_rows_from_plan(&RowBlockPlan)` validates owner, bounds, finite
+  values, live vars/params, **and the derived witness** before allocating rows or
+  journaling; allocates `ConId`s once; appends the numeric block and the
+  parametric runs (storing eligible dependency blocks); journals one change.
+
+### Qualification test status (owner's list)
+
+| # | Test | Status |
+|---|---|---|
+| 1 | one constraint allocation, one change | done (`num_constraints==1`, `numeric_bulk==1`, `parametric_bulk==1`, one commit) |
+| 2 | journal replay reproduces normalized state | done (`deltas_since(ZERO)` -> reference backend == rebuild) |
+| 3 | compiler/session rebuild reproduces solver state | done (reference rebuild equals incremental) |
+| 4 | incremental sync == clean rebuild | done (before and after reprice) |
+| 5 | fail sync after journaled, retry, not lost/duplicated | **deferred** — needs a fault-injecting session harness |
+| 6 | stale-generation input rejects atomically | done |
+| 7 | dependency-layout corruption rejects atomically | done (pre-allocation witness validation) |
+| 8 | constants folded into bounds survive | done (`[0,10]` + constant 3 -> `[-3,7]`) |
+| 9 | bulk update after replay uses blocks, avoids positions | done (0 lookups, 1 patch batch) |
+| 10 | fast mixed-row vs general symbolic: identical snapshot/solve | **deferred** — no general symbolic mixed-row cell API on the public surface (MIR-04/05) |
+
+### Still remaining before the exit gate
+
+1. Tests 5 and 10 (harnesses above).
+2. Full IR-23 rejection differential at the model level.
+3. Exact-head qualification matrix + STATe/evidence finalization + PR #63 body.
