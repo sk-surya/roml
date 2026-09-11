@@ -81,3 +81,120 @@ sink-aware witness; core validates it post-canonicalization into a
 `StoredParamDepBlock`. `set_parameters_bulk(span, values)` + `commit()` yields
 one packed parameter-value change and one packed coefficient-patch batch
 whose patches are self-contained.
+
+---
+
+# MIR-02 Remediation — owner review 2026-09-11
+
+PR #58 was rejected on review. The following P1/P2 findings were remediated on
+the same branch (`phase-mir-tranche1`); tranche 1 remains **unaccepted** and
+awaits independent re-review. MIR-03 was not started.
+
+## P1 — bulk update preserves the non-eligible packed fallback
+
+`apply_parameter_block` now also propagates cells retained in `param_positions`
+via `CoefficientIndex::propagate_packed_positions_span`, merging their changes
+into the same packed coefficient-patch batch. Fully eligible families still
+perform zero `param_positions` lookups.
+
+RED→GREEN: `tests/mir02_remediation.rs::bulk_update_propagates_non_eligible_packed_positions`.
+
+## P1 — dependency-layout ownership proof
+
+`CoefficientIndex::validate_param_dep_blocks` and
+`Model::validate_objective_dep_layout` now require every claimed canonical
+position to resolve to the matching cell and be owned **exactly once**.
+A cell covered twice (across witnesses or twice within one witness) is a typed
+atomic `InvalidParamDepLayout`. Partial layouts track `param_positions` only for
+uncovered cells; `param_positions_cells` reports the true uncovered count.
+
+RED→GREEN: `empty_layout_keeps_every_cell_on_the_position_fallback`,
+`partial_layout_uses_blocks_for_covered_and_positions_for_uncovered`,
+`overlapping_witnesses_are_rejected_atomically`, plus in-crate
+`duplicate_cell_positions_in_one_witness_are_rejected` and
+`malformed_witness_map_metadata_is_rejected`.
+
+## P1 — packed batching through Backend IR and HiGHS
+
+`BackendOp::SetObjectiveCosts { objective, costs }` is introduced;
+`CompilationSession` groups objective patches by compiled objective into one
+packed op (constraint patches still expand per cell). HiGHS applies it with one
+`Highs_changeColsCostByRange` (contiguous compiled columns) or
+`Highs_changeColsCostBySet`, updating `obj_costs` equivalently to the scalar
+path. An O(n²) per-patch `retain`+`sort` in the compiled-objective-coefficient
+bookkeeping was replaced with one bulk update per objective.
+
+Structural evidence: `tests/mir02_backend_batching.rs` asserts one
+`SetObjectiveCosts` and zero `SetObjectiveCoefficient`/`SetLinearCoefficient`
+ops for a direct eligible reprice; `roml-highs/tests/mir02_bess_batching.rs`
+asserts one bulk native call (0.4 ms), zero scalar cost calls, and one canonical
+patch batch. Debug counters: `roml_highs::cost_call_stats` and
+`roml_highs::sync_stats`.
+
+Raw timings (persistent HiGHS, 28,800 params / 57,600 objective cells):
+
+| Path | Before remediation | After remediation |
+|---|---|---|
+| canonical reprice (queue + commit) | — | 12 ms |
+| incremental apply + solve (low-level session) | ~65 s | apply 51 ms + solve 42 ms |
+| facade `Highs::solve` after reprice | ~65 s | 179 ms |
+| scalar native cost calls | 57,600 | 0 |
+| bulk native cost calls | 0 | 1 (0.4 ms) |
+| pre-existing O(n²) compiler bookkeeping | ~65 s | eliminated |
+
+The ~65 s before remediation comprised the O(n²) compiled-objective
+bookkeeping plus per-cell native calls; both are gone. No MIR-08 latency
+threshold is frozen.
+
+## P1 — IR-17 with a real prior solve
+
+`roml-highs/tests/mir02_bess_batching.rs::ir17_solve_then_append_then_shadow_matches_rebuild`
+runs build → solve → append fresh packed cells → solve → shadow an existing
+logical cell → solve, and asserts the incremental objective equals a fresh
+snapshot rebuild. It also proves the appended and shadowed cells are handled by
+the live session.
+
+## P2 — symbolic reference state
+
+`ReferenceBackend` patch batches update the existing cell's evaluated cache in
+place, preserving the parameterized `ValueExpr`, and treat a missing target cell
+as a typed apply error. `ReferenceBackend::symbolic_objective_cells` exposes the
+symbolic shape.
+
+RED→GREEN: `reference_replay_preserves_symbolic_patch_cells` (symbolic equality
+between incremental replay and snapshot rebuild, not just numeric normalized
+views).
+
+## P2 — StridedMap hardening
+
+Raw `StridedMap::new` is crate-private; `is_well_formed` rejects rank mismatch
+and shape-product overflow; `get` uses checked arithmetic and the frozen
+row-major convention (last dimension fastest — a real bug caught by the new
+unit test). Zero strides remain legal; duplicate canonical cell positions are
+rejected by dependency validation.
+
+Unit tests: `strided_map_rejects_malformed_metadata`,
+`strided_map_row_major_ordinals_and_zero_stride`.
+
+## Verification (remediation head)
+
+```text
+cargo fmt --all -- --check                                        clean
+cargo clippy -p roml -p roml-highs -p roml-python ... -D warnings  clean
+RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps            clean
+cargo nextest run -p roml -p roml-highs --features .../bundled     1543 passed, 4 skipped
+python -m pytest python/tests --ignore=python/tests/typing        148 passed, 1 skipped
+scripts/check-quality-policy.sh origin/main                       pass
+git diff --check; cargo package --list -p roml                    clean
+```
+
+## Residual risk / not verified
+
+- `roml-mosek` / `roml-xpress` still cannot be type-checked locally
+  (proprietary SDKs); their `Change` arms are rustfmt-parsed only.
+- The high-level BESS formulation does not automatically produce eligible
+  blocks until MIR-03's sink-aware `try_param_block_layout`; the fixture uses a
+  hand-verified layout.
+- The compiled global `obj_costs` cache and the native cost vector are updated
+  equivalently to the scalar path; full observational equivalence is covered by
+  the rebuild-vs-incremental tests, not exhaustively re-proven here.

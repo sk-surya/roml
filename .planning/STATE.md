@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: MIR
 milestone_name: Shared Modeling IR and Block-Native Core
 status: in_progress
-stopped_at: MIR-00/01/02 complete (IR-01..IR-17 evidenced); MIR-03 next
+stopped_at: MIR-02 remediated after owner review; tranche 1 awaiting independent re-review
 last_updated: "2026-09-11T00:00:00Z"
-current_phase: MIR-03
-current_phase_name: shared array IR, eligibility proof and CSR builder
+current_phase: MIR-02
+current_phase_name: remediation pending independent re-review
 implementation_authorized: true
 ---
 
@@ -29,15 +29,17 @@ Tranche 1 — MIR-00, MIR-01, MIR-02 — is authorized. One implementation phase
 
 ## Next gate
 
-Tranche 1 (MIR-00/01/02) is implemented and evidenced. Next is MIR-03: the
-shared `roml::modeling` strided array IR, the sink-aware
-`try_param_block_layout` eligibility proof, and the mixed CSR builder
-(IR-18…IR-23). The high-level BESS formulation does not automatically produce
-eligible dependency blocks until MIR-03 provides that proof.
+Tranche 1 (MIR-00/01/02) is implemented, MIR-02 was remediated after owner
+review on 2026-09-11, and the direct persistent-HiGHS solve gate passes. The
+tranche is **not accepted**: PR #58 must be independently re-reviewed before any
+MIR-03 work. MIR-03 (shared `roml::modeling` strided array IR, sink-aware
+`try_param_block_layout`, mixed CSR builder) is not started.
 
-MIR-00 (`evidence/BASELINE.md`), MIR-01 (`evidence/MIR-01-REPORT.md`) and
-MIR-02 (`evidence/MIR-02-REPORT.md`) report the measured baseline, trusted
-block allocation, and packed parametric construction/block-native repricing.
+Remediation evidence is in
+`.planning/milestones/MIR-modeling-ir/evidence/MIR-02-REPORT.md` (remediation
+section), with tests `tests/mir02_remediation.rs`,
+`tests/mir02_backend_batching.rs`, and
+`roml-highs/tests/mir02_bess_batching.rs`.
 
 ## Binding authorities
 
