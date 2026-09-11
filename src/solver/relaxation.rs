@@ -15,7 +15,7 @@ use crate::compiler::origin::{EntityOrigin, GeneratedRole, OriginMap, OverlayId}
 use crate::compiler::session::CompilationSession;
 use crate::id::{ConId, VarId};
 use crate::identity::{ModelInstanceId, ModelLineageId};
-use crate::model::{Bounds, Constraint, Objective, Variable};
+use crate::model::{Bounds, Constraint, Variable};
 use crate::revision::ModelRevision;
 use crate::solution::Solution;
 use crate::solver::backend::TerminationStatus;
@@ -1329,8 +1329,6 @@ fn _termination_status(status: TerminationStatus) -> SolveStatus {
 // callers that prefer the semantic names while retaining the existing id
 // aliases in the core model.
 #[allow(dead_code)]
-fn _typed_ids(_: ConId, _: VarId, _: Objective) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1443,5 +1441,314 @@ mod helper_tests {
         };
         assert_eq!(restriction_cap(&model, &bound).expect("cap"), None);
         assert_eq!(restriction_weight(&model, &bound).expect("weight"), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod report_members_tests {
+    use super::*;
+    use crate::construct::soft_constraint::{PenaltyPolicy, PenaltyTarget, ViolationPolicy};
+    use crate::expr::ConstraintExprExt;
+    use crate::id::Generation;
+    use crate::model::{continuous, integer, Model};
+    use crate::value_expr::ValueExpr;
+
+    #[test]
+    fn unknown_reason_covers_every_status_family() {
+        use RelaxationUnknownReason as R;
+        let cases = [
+            (SolveStatus::TimeLimit, R::TimeLimit),
+            (SolveStatus::IterationLimit, R::IterationLimit),
+            (SolveStatus::NodeLimit, R::IterationLimit),
+            (SolveStatus::Numerical, R::Numerical),
+            (SolveStatus::Interrupted, R::Interrupted),
+            (SolveStatus::Optimal, R::Unclassified),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(unknown_reason(status), expected, "status {status:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_candidate_variable_is_rejected() {
+        let mut model = Model::new();
+        model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let ghost = VarId::new(9_999, Generation::new());
+        let error = report_members(&model, &[], &[(ghost, 1.0)]).expect_err("unknown variable");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("unknown variable")
+        ));
+    }
+
+    #[test]
+    fn duplicate_candidate_variable_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let error =
+            report_members(&model, &[], &[(x, 0.0), (x, 0.0)]).expect_err("duplicate candidate");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("duplicate")
+        ));
+    }
+
+    #[test]
+    fn non_integral_candidate_for_an_integer_variable_is_rejected() {
+        let mut model = Model::new();
+        let x = model.add_variable(integer().bounds(0.0, 10.0)).expect("x");
+        let error = report_members(&model, &[], &[(x, 0.5)]).expect_err("non-integral candidate");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("non-integral")
+        ));
+    }
+
+    #[test]
+    fn candidate_violating_a_non_relaxed_constraint_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 10.0))
+            .expect("x");
+        model.add_constraint(x.ge(5.0)).expect("row");
+        let error = report_members(&model, &[], &[(x, 0.0)]).expect_err("non-relaxed violation");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("non-relaxed")
+        ));
+    }
+
+    #[test]
+    fn missing_constraint_and_variable_restrictions_are_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let ghost_con = ConId::new(9_999, Generation::new());
+        let weighted = vec![(
+            RelaxationRestriction::ConstraintSide {
+                constraint: ghost_con,
+                side: BoundSide::Lower,
+            },
+            1.0,
+        )];
+        let error = report_members(&model, &weighted, &[(x, 0.0)]).expect_err("missing constraint");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("missing constraint")
+        ));
+
+        let ghost_var = VarId::new(9_999, Generation::new());
+        let weighted = vec![(
+            RelaxationRestriction::VariableBound {
+                variable: ghost_var,
+                side: BoundSide::Lower,
+            },
+            1.0,
+        )];
+        let error = report_members(&model, &weighted, &[(x, 0.0)]).expect_err("missing variable");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("missing variable")
+        ));
+    }
+
+    #[test]
+    fn missing_persistent_fixing_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let weighted = vec![(RelaxationRestriction::PersistentFixing { variable: x }, 1.0)];
+        let error = report_members(&model, &weighted, &[(x, 0.0)]).expect_err("missing fixing");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message) if message.contains("missing fixing")
+        ));
+    }
+
+    #[test]
+    fn non_finite_weight_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let weighted = vec![(
+            RelaxationRestriction::VariableBound {
+                variable: x,
+                side: BoundSide::Lower,
+            },
+            f64::INFINITY,
+        )];
+        let error = report_members(&model, &weighted, &[(x, 0.0)]).expect_err("non-finite weight");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message)
+                if message.contains("non-finite relaxation evidence")
+        ));
+    }
+
+    #[test]
+    fn violation_exceeding_the_soft_cap_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 20.0))
+            .expect("x");
+        let con = model.add_constraint(x.ge(10.0)).expect("row");
+        model
+            .soften_constraint(
+                con,
+                ViolationPolicy {
+                    max_violation: Some(3.0),
+                },
+                PenaltyPolicy {
+                    weight: ValueExpr::constant(1.0),
+                    target: PenaltyTarget::None,
+                },
+            )
+            .expect("soften");
+        let weighted = vec![(
+            RelaxationRestriction::ConstraintSide {
+                constraint: con,
+                side: BoundSide::Lower,
+            },
+            1.0,
+        )];
+        let error = report_members(&model, &weighted, &[(x, 0.0)]).expect_err("cap exceeded");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Numerical(message)
+                if message.contains("exceeds temporary row cap")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use crate::advanced::{
+        BackendCapabilitySet, BackendFeature, CompilationSession, FeatureSupport, SupportLevel,
+    };
+    use crate::compiler::capability::CompilationPolicy;
+    use crate::expr::ConstraintExprExt;
+    use crate::model::{continuous, Model};
+
+    #[test]
+    fn all_eligible_scope_collects_finite_sides_bounds_and_fixings() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 10.0))
+            .expect("x");
+        // A two-sided (equality) row collects both finite constraint sides.
+        model.add_constraint((x).eq(5.0)).expect("row");
+        model.fix(x, 5.0).expect("fix");
+        let model_snapshot = model.take_snapshot().expect("snapshot");
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+        let mut compiler = CompilationSession::new();
+        compiler
+            .compile_snapshot(
+                model.instance(),
+                &model_snapshot,
+                &CompilationPolicy::Auto,
+                &caps,
+            )
+            .expect("compile base");
+
+        let plan = FeasibilityRelaxationPlan::default();
+        let (_overlay, weighted) =
+            compile_portable_overlay(&model, &compiler, &plan).expect("all-eligible overlay");
+        // x lower/upper + x persistent fixing + constraint lower/upper sides.
+        assert!(
+            weighted.len() >= 5,
+            "expected every finite eligible restriction, got {}",
+            weighted.len()
+        );
+    }
+
+    fn compile_base(model: &Model) -> CompilationSession {
+        let mut caps = BackendCapabilitySet::new();
+        caps.set(
+            BackendFeature::Lp,
+            FeatureSupport {
+                level: SupportLevel::Native,
+                limitations: Default::default(),
+            },
+        );
+        let snapshot = model.take_snapshot().expect("snapshot");
+        let mut compiler = CompilationSession::new();
+        compiler
+            .compile_snapshot(model.instance(), &snapshot, &CompilationPolicy::Auto, &caps)
+            .expect("compile base");
+        compiler
+    }
+
+    #[test]
+    fn explicit_scope_referencing_stale_entities_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 10.0))
+            .expect("x");
+        let con = model.add_constraint((x).ge(1.0)).expect("row");
+        let compiler = compile_base(&model);
+        model.remove_constraint(con).expect("remove row");
+
+        let plan = FeasibilityRelaxationPlan {
+            scope: RelaxationScope::Explicit(vec![RelaxationRestriction::ConstraintSide {
+                constraint: con,
+                side: BoundSide::Lower,
+            }]),
+            ..Default::default()
+        };
+        let error =
+            compile_portable_overlay(&model, &compiler, &plan).expect_err("stale constraint");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Preflight(message) if message.contains("unknown constraint")
+        ));
+
+        let ghost = crate::id::VarId::new(9_999, crate::id::Generation::new());
+        let plan = FeasibilityRelaxationPlan {
+            scope: RelaxationScope::Explicit(vec![RelaxationRestriction::VariableBound {
+                variable: ghost,
+                side: BoundSide::Lower,
+            }]),
+            ..Default::default()
+        };
+        let error = compile_portable_overlay(&model, &compiler, &plan).expect_err("stale variable");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Preflight(message) if message.contains("unknown variable")
+        ));
+    }
+
+    #[test]
+    fn explicit_persistent_fixing_without_a_fixing_is_rejected() {
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 10.0))
+            .expect("x");
+        let compiler = compile_base(&model);
+        let plan = FeasibilityRelaxationPlan {
+            scope: RelaxationScope::Explicit(vec![RelaxationRestriction::PersistentFixing {
+                variable: x,
+            }]),
+            ..Default::default()
+        };
+        let error = compile_portable_overlay(&model, &compiler, &plan).expect_err("no fixing");
+        assert!(matches!(
+            error,
+            FeasibilityRelaxationError::Preflight(message) if message.contains("persistent fixing")
+        ));
     }
 }
