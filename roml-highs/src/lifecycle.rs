@@ -308,3 +308,46 @@ impl Drop for HighsSession {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::callback::register_callback;
+    use roml::solver::callback::{CallbackAction, CallbackData, CallbackHandler};
+
+    struct AcceptHandler;
+
+    impl CallbackHandler for AcceptHandler {
+        fn on_candidate(&mut self, _data: &CallbackData) -> CallbackAction {
+            CallbackAction::Accept
+        }
+    }
+
+    #[test]
+    fn new_unchecked_constructs_a_live_session() {
+        let session = HighsSession::new_unchecked();
+        assert!(!session.raw.is_null());
+    }
+
+    #[test]
+    fn drop_cleans_up_a_registered_callback_state() {
+        // Normally the solve path clears `callback_state`; Drop's cleanup is
+        // the panic-path safety net. Register a real state and drop to
+        // exercise it.
+        let mut session = HighsSession::new_unchecked();
+        let empty_cols = IndexMap::<CompiledVariableId>::new();
+        let empty_rows = IndexMap::<CompiledConstraintId>::new();
+        let empty_users = HashMap::new();
+        let state = register_callback(
+            session.raw,
+            Box::new(AcceptHandler),
+            &empty_cols,
+            &empty_rows,
+            &empty_users,
+            0,
+        )
+        .expect("register callback");
+        session.callback_state = Some(state);
+        drop(session);
+    }
+}
