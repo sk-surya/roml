@@ -24,7 +24,7 @@
 | MIR-01 | complete (IR-02…IR-07) | `evidence/MIR-01-REPORT.md`; `src/bulk.rs`; `tests/mir01_block_allocation.rs` |
 | MIR-02 | complete + merged (IR-08…IR-17) | `evidence/MIR-02-REPORT.md`; `evidence/MIR-02-MUTATION-REPORT.md`; `tests/mir02_parametric_blocks.rs`; `tests/mir02_parametric_rows.rs`; `tests/mir02_remediation.rs`; `tests/mir02_backend_batching.rs`; `roml-highs/tests/mir02_bess_batching.rs` |
 | MIR-03 | complete (IR-18…IR-23) | `evidence/MIR-03-REPORT.md`; `MIR-03-PLAN.md`; `src/modeling/{view,coeff,eligibility,builder}.rs`; `Model::set_linear_objective_from_linarray`; `Model::add_rows_from_plan`; `MixedRowBlock` / `Change::BulkMixedRows` / `ModelOp::AddMixedRows`; `model::mir03_*` tests |
-| MIR-04 | in progress (IR-24, IR-25): M4-1 array handles + M4-2 expression algebra (objective + cell-wise rows) done | `MIR-04-PLAN.md`; `src/modeling/array.rs`; `src/modeling/coeff.rs`; `src/modeling/builder.rs`; `tests/mir04_arrays.rs`; `tests/mir04_expr.rs` |
+| MIR-04 | in progress (IR-24, IR-25): M4-1 handles + M4-2 expression algebra + M4-3 label boundary done | `MIR-04-PLAN.md`; `src/modeling/{array,coeff,builder,labeled}.rs`; `tests/mir04_{arrays,expr,labels}.rs` |
 | MIR-05 | not started | — |
 | MIR-06 | not started | — |
 | MIR-07 | not started | — |
