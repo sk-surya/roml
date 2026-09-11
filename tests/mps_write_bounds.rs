@@ -124,6 +124,22 @@ const INTEGER_CUSTOM: &[ExpectedBound] = &[
         value: Some(5.0),
     },
 ];
+/// Integer lower above the INTORG default upper (1) must raise the upper to
+/// +inf before emitting `LI`, so no transient empty domain is produced.
+const INTEGER_ABOVE_ONE: &[ExpectedBound] = &[
+    ExpectedBound {
+        kind: format::MpsBoundKind::PlusInfinity,
+        value: None,
+    },
+    ExpectedBound {
+        kind: format::MpsBoundKind::IntegerLower,
+        value: Some(2.0),
+    },
+    ExpectedBound {
+        kind: format::MpsBoundKind::IntegerUpper,
+        value: Some(8.0),
+    },
+];
 const INTEGER_FREE: &[ExpectedBound] = &[
     ExpectedBound {
         kind: format::MpsBoundKind::MinusInfinity,
@@ -209,6 +225,13 @@ const DOMAIN_CASES: &[DomainCase] = &[
         declared: Bounds::new(-2.0, 5.0),
         fixing: None,
         expected: INTEGER_CUSTOM,
+    },
+    DomainCase {
+        label: "integer above one",
+        definition: || integer().bounds(2.0, 8.0),
+        declared: Bounds::new(2.0, 8.0),
+        fixing: None,
+        expected: INTEGER_ABOVE_ONE,
     },
     DomainCase {
         label: "integer free",
