@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::id::{Generation, ParamId, VarId};
 use crate::model::variable::{Bounds, VarType};
 
-/// Bounds input to [`Model::add_variable_block`](crate::Model::add_variable_block).
+/// Bounds input to the `Model::add_variable_block` block API (MIR-01).
 ///
 /// The caller may supply one bounds value for the whole block or exactly one
 /// entry per variable.
@@ -54,7 +54,7 @@ impl BlockBoundsOwned {
         }
     }
 
-    /// Attach a uniform payload from a wire-format entry.
+    /// Convert validated caller input into an owned, self-contained payload.
     #[allow(dead_code)] // consumed by MIR-01 Task 3 (packed variable-block op)
     pub(crate) fn from_input(input: BlockBounds<'_>, n: usize) -> Self {
         match input {
