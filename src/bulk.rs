@@ -145,7 +145,7 @@ impl StridedMap {
 /// Core never trusts this blindly: after canonicalization it validates the
 /// witness against the retained packed parameter cells and resolves it into a
 /// stored dependency block. A wrong witness is a typed atomic rejection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParamDepBlockWitness {
     /// Parameter span the family reads.
     pub params: ParamSpan,
@@ -163,7 +163,7 @@ pub struct ParamDepBlockWitness {
 }
 
 /// A caller-supplied L2 witness describing eligible dependency families.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParamDepLayout {
     /// One witness per dependency family.
     pub blocks: Vec<ParamDepBlockWitness>,

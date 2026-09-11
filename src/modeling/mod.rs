@@ -11,10 +11,12 @@
 //! dependency descriptor: `roml::modeling` produces an L2 witness, and core
 //! revalidates it after canonicalization.
 
+mod builder;
 mod coeff;
 mod eligibility;
 mod view;
 
+pub use builder::{RowBatch, RowBatchPlan, RowSink};
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
 pub use eligibility::{try_param_block_layout, CanonicalCell, SinkCells};
 pub use view::{ParamView, VarView, View, ViewError};
