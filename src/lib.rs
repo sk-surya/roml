@@ -36,6 +36,7 @@ pub mod io;
 pub(crate) mod journal;
 pub mod metadata;
 pub mod model;
+pub mod modeling;
 pub mod objective_policy;
 pub mod revision;
 pub mod snapshot;
