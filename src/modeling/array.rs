@@ -122,6 +122,20 @@ impl VarArray {
         &self.view
     }
 
+    /// A linear expression over this array with unit coefficients.
+    pub fn expr(&self) -> Result<crate::modeling::LinArray, ViewError> {
+        use crate::modeling::{CoeffView, ConstantView, LinArray, Term};
+        LinArray::new(
+            self.owner(),
+            self.shape().to_vec(),
+            vec![Term {
+                vars: self.view.clone(),
+                coeff: CoeffView::One,
+            }],
+            ConstantView::Zero,
+        )
+    }
+
     /// Metadata-only slice along `axis` (`[start, start + len)`).
     pub fn slice(&self, axis: usize, start: usize, len: usize) -> Result<Self, ViewError> {
         Ok(Self {
@@ -195,6 +209,18 @@ impl ParamArray {
     /// The underlying trusted symbolic view.
     pub fn view(&self) -> &ParamView {
         &self.view
+    }
+
+    /// Multiply this parameter array by a linear expression.
+    ///
+    /// Returns `Ok(Some(..))` on the conservative fast IR, `Ok(None)` when the
+    /// form is not covered (the caller uses the general symbolic path), and a
+    /// typed error for cross-model composition or an invalid shape.
+    pub fn try_mul(
+        &self,
+        array: &crate::modeling::LinArray,
+    ) -> Result<Option<crate::modeling::LinArray>, ViewError> {
+        self.view.mul_linarray(array)
     }
 
     /// Metadata-only slice along `axis`.

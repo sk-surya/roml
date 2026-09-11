@@ -3746,6 +3746,23 @@ impl Model {
         )
     }
 
+    /// Maximize an array linear expression (MIR-04 L1). Derives the dependency
+    /// layout automatically via [`Self::set_linear_objective_from_linarray`].
+    pub fn maximize_array(
+        &mut self,
+        array: &crate::modeling::LinArray,
+    ) -> Result<ObjId, ModelError> {
+        self.set_linear_objective_from_linarray(Sense::Maximize, array)
+    }
+
+    /// Minimize an array linear expression (MIR-04 L1).
+    pub fn minimize_array(
+        &mut self,
+        array: &crate::modeling::LinArray,
+    ) -> Result<ObjId, ModelError> {
+        self.set_linear_objective_from_linarray(Sense::Minimize, array)
+    }
+
     fn set_linear_objective_param_bulk_impl(
         &mut self,
         sense: Sense,
