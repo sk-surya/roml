@@ -140,3 +140,25 @@ fn non_finite_row_interval_width_is_rejected() {
         &roml::io::mps::MpsWriteErrorKind::NonFiniteValue
     );
 }
+
+#[test]
+fn active_constructs_are_unrepresentable_in_mps() {
+    use roml::construct::AbsoluteValueVariant;
+
+    let mut model = Model::with_name("construct");
+    let x = model
+        .add_variable(continuous().bounds(-5.0, 5.0).named("x"))
+        .expect("x");
+    model
+        .add_absolute_value(x.into(), AbsoluteValueVariant::Absolute, None)
+        .expect("absolute-value construct");
+
+    let error = MpsWriter::new()
+        .write(&model, &mut Vec::new())
+        .expect_err("active semantic constructs have no MPS representation");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::Unrepresentable
+    );
+    assert!(format!("{error}").contains("absolute-value construct"));
+}
