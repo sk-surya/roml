@@ -131,8 +131,10 @@ impl StridedMap {
             let size = self.shape[dim];
             let stride = self.strides[dim];
             // `ordinal_count` already guaranteed every dimension is non-zero
-            // and the product is in range, so this is a total decomposition.
-            let coord = (rem % size) as isize;
+            // and the product is in range. Coordinates are converted with a
+            // checked usize -> isize so a dimension above `isize::MAX` is a
+            // typed `None`, never a wrap.
+            let coord = isize::try_from(rem % size).ok()?;
             rem /= size;
             mapped = mapped.checked_add(coord.checked_mul(stride)?)?;
         }

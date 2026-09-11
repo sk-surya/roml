@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use crate::modeling::view::mapped_range;
 use crate::modeling::{ParamView, VarView, View, ViewError};
 use crate::ModelInstanceId;
 
@@ -28,25 +29,6 @@ pub struct NumView {
     view: View<()>,
 }
 
-/// The inclusive range of buffer offsets a strided view can map, or `None` on
-/// overflow. Computed in O(rank) from metadata only.
-fn mapped_range(shape: &[usize], strides: &[isize], offset: isize) -> Option<(isize, isize)> {
-    let mut low = offset;
-    let mut high = offset;
-    for (dim, stride) in shape.iter().zip(strides.iter()) {
-        if *dim == 0 {
-            continue;
-        }
-        let span = (*dim as isize - 1).checked_mul(*stride)?;
-        if span >= 0 {
-            high = high.checked_add(span)?;
-        } else {
-            low = low.checked_add(span)?;
-        }
-    }
-    Some((low, high))
-}
-
 impl NumView {
     /// A validated strided numeric view over a shared buffer.
     ///
@@ -61,7 +43,8 @@ impl NumView {
         let view = View::new((), shape, strides, offset)?;
         let (low, high) = mapped_range(view.shape(), view.strides(), view.offset())
             .ok_or(ViewError::IndexOverflow)?;
-        if !view.is_empty() && (low < 0 || high >= values.len() as isize) {
+        let buffer_len = isize::try_from(values.len()).map_err(|_| ViewError::IndexOverflow)?;
+        if !view.is_empty() && (low < 0 || high >= buffer_len) {
             return Err(ViewError::Unsupported(
                 "numeric view offset out of buffer range",
             ));
@@ -499,6 +482,7 @@ mod tests {
             owner,
             View::contiguous(VarSpan::from_parts(0, len as u32, Generation::new()), len),
         )
+        .expect("var view")
     }
 
     fn param_view(owner: ModelInstanceId, len: usize) -> ParamView {
@@ -506,6 +490,7 @@ mod tests {
             owner,
             View::contiguous(ParamSpan::from_parts(0, len as u32, Generation::new()), len),
         )
+        .expect("param view")
     }
 
     #[test]

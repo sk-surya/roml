@@ -1,87 +1,86 @@
-# MIR-03 Report — shared modeling IR (foundation, post-review remediation)
+# MIR-03 Report — shared modeling IR (foundation, final pre-integration pass)
 
 **Phase:** MIR-03. **Requirements:** IR-18…IR-23.
 **Branch:** `phase-mir-03`. **Execution base:**
 `main@43887eece93e77bcd2581bd94a79e084502c6e20`.
 
-**Status: in progress / architecture review.** The isolated IR foundation was
-remediated against owner review of `0cae40a`. **No model/compiler wiring has
-been attempted** (deliberately deferred until this review passes). The exit gate
+**Status: architecture-review candidate.** The isolated IR foundation has been
+remediated twice. **No model/compiler wiring has been attempted.** The exit gate
 (BESS automatic eligibility, `general_affine == 0`) is not met.
 
-## Review remediation
+## Final pass (review of `96bb1ed`)
 
-1. **`try_param_block_layout` redesigned around `r -> (target(r), var_j(r))`.**
-   The sink now supplies target/layout metadata ([`SinkMap`] with compact
-   [`TargetRun`]s + per-term packed bases); the variable comes from each
-   `Term.vars`. The preconstructed `SinkCells::cell(r) -> CanonicalCell` was
-   removed. A BESS-like two-term objective regression (one objective target,
-   disjoint charge/discharge `VarView`s, one shared `ParamView`, two
-   `ScaledParam` terms) is eligible and yields two dependency families.
-2. **Metadata-only proof.** No `Vec<CanonicalCell>` enumeration. Eligibility is
-   conservative algebra over the target runs, each term's `VarView` map, the
-   parameter maps and the packed bases: pairwise-disjoint variable spans; per-run
-   non-overlapping packed ranges; for runs longer than one ordinal, contiguous
-   dense (row-major canonical) variable/parameter views with positive parameter
-   strides. A one-ordinal run is trivially injective and admits a broadcast
-   (zero-stride) variable/parameter. False negative → fallback; false positive is
-   a defect.
-3. **Honest row targets.** The witness `row` is `Some(target)` for a row run and
-   `None` only for an objective run; a family spanning several row targets is
-   **split into per-target blocks**. The previous test that used targets `0..N`
-   while emitting `row = None` is gone. `broadcast_over_rows_uses_honest_row_targets`
-   asserts the witness rows agree with the sink targets.
-4. **`LinArray::new` validates all coefficient-side metadata**: `ScaledParam`
-   parameter owner (coefficient *and* constant) must equal the array owner;
-   `Dense` values and `ScaledParam` parameter shapes must match the array shape
-   (coefficient *and* constant). Cross-model parameter composition fails before
-   any ID reconstruction. Direct regressions construct malicious public
-   `CoeffView`/`ConstantView` values.
-5. **Checked `View` transforms.** `slice`/`reverse` use checked
-   `usize -> isize`, multiplication, addition and stride negation; overflow is a
-   typed `ViewError::IndexOverflow`, never a wrap or debug panic. Reversing a
-   zero-length axis is a no-op (offset unchanged). Tests cover huge start/dim,
-   `isize::MIN` negation, offset multiply/add overflow, and zero-length reverse.
-6. **`NumView` scope: option A.** `NumView` is now a validated strided view
-   (owned/shared buffer + `View<()>`) with `new` (buffer-range-validated from
-   metadata in O(rank)), metadata-only `slice`/`reverse`/`transpose`, and
-   zero-copy sharing. The full IR-19 representation is now documented, not just
-   contiguous.
+1. **No caller-supplied packed bases.** `TargetRun` no longer carries `bases`.
+   `try_param_block_layout` derives canonical family ordering (by first canonical
+   variable ordinal) and cumulative p-base offsets internally; the RED
+   regression `canonical_order_follows_variable_order_not_source_order` supplies
+   the terms in reverse source order and asserts the derived offsets follow
+   canonical `VarId` order. Core post-canonical validation is unchanged (defense
+   in depth).
+2. **Complete mixed-row plan.** `RowBatchPlan::Planned(RowBlockPlan)` replaces
+   the parametric-only result and owns the row topology (`LocalRow`), the numeric
+   packed stream (`NumericCell`), the parametric `ParamDepLayout`, and the
+   derived canonical offsets — one future core mixed-row commit needs no raw
+   `Term` re-reading and no independent collision rediscovery. Tests A–E:
+   mixed row plan; multiple rows with each target allocated once; constant+
+   parametric collision → `General`; two-parametric collision → `General`;
+   numeric-only batch stays on the numeric stream. (The core commit itself is
+   pending integration, so IR-22 is not claimed complete.)
+3. **Ownership trust boundary closed.** `VarView::new`/`ParamView::new` are
+   `pub(crate)`; `SinkMap`/`TargetRun`/`try_param_block_layout`/`RowBatch`/
+   `RowBlockPlan` are crate-private L1→L2 planning internals. A `compile_fail`
+   doctest on `VarView` proves no public safe path can pair a span with a forged
+   owner.
+4. **Span-range validation.** `VarView`/`ParamView` construction proves from
+   metadata (O(rank) `mapped_range`) that every mapped member offset is within
+   the span; metadata-only `slice`/`reverse`/`transpose` preserve that. Tests:
+   offset beyond span, positive-stride past end, negative below zero, valid
+   reversed view.
+5. **Checked-integer audit.** `StridedMap::get` coordinates, `is_contiguous_dense`
+   dimensions, eligibility `run.start`/length conversions, `NumView`
+   `mapped_range` and buffer-length comparisons, and `View::slice`/`reverse` all
+   use checked `usize -> isize`/`usize -> u32` conversions and arithmetic.
+   Malformed/unrepresentable metadata is a typed error or fallback; boundary
+   regressions use `usize::MAX` dimensions without allocating buffers.
+
+## Interfaces (crate-private until MIR-04)
+
+```text
+SinkMap { shape, runs: Vec<TargetRun> }
+TargetRun { target, objective, start, len }        // no bases
+try_param_block_layout(&SinkMap, &[Term]) -> Option<ParamDepLayout>  // derived cell_offset
+RowBatch { new, len, is_empty, push(LocalRow, LinArray), plan() }
+RowBatchPlan::{ Planned(RowBlockPlan), General }
+RowBlockPlan { owner(), rows(): &[LocalRow], numeric(): &[NumericCell], parametric(): &ParamDepLayout }
+```
 
 ## IR-21 regressions
 
 | Case | Expectation | Test |
 |---|---|---|
 | BESS two-term objective | eligible, two families | `bess_objective_two_terms_produce_two_families` |
+| canonical vs source order | derived offsets follow `VarId` order | `canonical_order_follows_variable_order_not_source_order` |
 | broadcast over rows | eligible, honest `row=Some` | `broadcast_over_rows_uses_honest_row_targets` |
 | broadcast into one objective cell | ineligible | `broadcast_into_one_objective_cell_is_ineligible` |
 | overlapping two-term spans | ineligible | `overlapping_two_term_spans_are_ineligible` |
-| interleaved / overlapping packed bases | fallback | `interleaved_or_overlapping_packed_bases_fall_back` |
 | non-monotone parameter stride | fallback | `non_monotone_parameter_stride_falls_back` |
-| zero stride over a multi-ordinal run | fallback | `zero_stride_over_a_multi_ordinal_run_falls_back` |
+| zero stride over multi-ordinal run | fallback | `zero_stride_over_a_multi_ordinal_run_falls_back` |
 | malformed sink cover / duplicate rows | typed rejection | `sink_map_rejects_bad_run_covers_and_duplicate_rows` |
-| cross-model parameter coefficient | typed rejection | `builder::tests::cross_model_parameter_coefficient_is_rejected`, `coeff::tests::linarray_rejects_foreign_and_misshaped_coefficient_metadata` |
+| dimensions above `isize::MAX` | no accidental eligibility | `unrepresentable_dimensions_never_prove_eligibility` |
 
-## Verification (remediation head)
+## Verification
 
 ```text
 cargo fmt --all -- --check                              clean
 cargo clippy -p roml --all-targets -- -D warnings       clean
-cargo nextest run -p roml                               1492 passed, 4 skipped
+cargo nextest run -p roml                               1498 passed, 4 skipped
 RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps  clean
+cargo test -p roml --doc                                compile_fail regression passes
 ```
-
-26 in-crate `modeling::*` tests.
 
 ## Residual / deliberately not done
 
-1. **Core post-canonical revalidation of the honest witness is not yet
-   exercised.** The witnesses are unit-tested for internal consistency with the
-   sink targets; feeding them through `validate_objective_dep_layout` /
-   `validate_param_dep_blocks` requires the model/compiler integration, which is
-   out of scope until this review passes.
-2. **IR-23 model-level fallback differential** (fast vs general normalized
-   snapshots) is not written.
-3. Broadcasting beyond exact-shape match and reductions/matmul topology
-   metadata remain outside the initial conservative subset.
+1. Model/compiler wiring; BESS automatic eligibility; `general_affine == 0`.
+2. Core post-canonical revalidation and the one-commit mixed-row core path.
+3. IR-23 model-level fallback differential.
 4. `roml-mosek`/`roml-xpress` remain untestable locally (proprietary SDKs).

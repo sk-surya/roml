@@ -58,6 +58,8 @@ pub enum ViewError {
     Unsupported(&'static str),
     /// A checked metadata transformation overflowed `isize`/`usize`.
     IndexOverflow,
+    /// A view maps a member offset outside its underlying span.
+    SpanOutOfRange,
     /// Two symbolic arrays belong to different model instances.
     CrossModel {
         /// Left operand owner.
@@ -94,6 +96,7 @@ impl std::fmt::Display for ViewError {
                 write!(f, "unsupported IR composition (general fallback): {what}")
             }
             Self::IndexOverflow => write!(f, "view metadata transformation overflowed"),
+            Self::SpanOutOfRange => write!(f, "view maps a member outside its span"),
             Self::CrossModel { left, right } => {
                 write!(f, "cross-model view composition: {left:?} vs {right:?}")
             }
@@ -102,6 +105,47 @@ impl std::fmt::Display for ViewError {
 }
 
 impl std::error::Error for ViewError {}
+
+/// The inclusive range of member offsets a strided view can map, or `None` when
+/// a dimension does not fit `isize` or the arithmetic overflows. Computed in
+/// O(rank) from metadata only.
+pub(crate) fn mapped_range(
+    shape: &[usize],
+    strides: &[isize],
+    offset: isize,
+) -> Option<(isize, isize)> {
+    if shape.len() != strides.len() {
+        return None;
+    }
+    let mut low = offset;
+    let mut high = offset;
+    for (dim, stride) in shape.iter().zip(strides.iter()) {
+        if *dim == 0 {
+            continue;
+        }
+        let last = isize::try_from(dim.checked_sub(1)?).ok()?;
+        let span = last.checked_mul(*stride)?;
+        if span >= 0 {
+            high = high.checked_add(span)?;
+        } else {
+            low = low.checked_add(span)?;
+        }
+    }
+    Some((low, high))
+}
+
+/// Prove from metadata that every member offset a view maps is within `span_len`.
+fn validate_within_span<S>(view: &View<S>, span_len: usize) -> Result<(), ViewError> {
+    if view.is_empty() {
+        return Ok(());
+    }
+    let (low, high) = view.mapped_range().ok_or(ViewError::IndexOverflow)?;
+    let len = isize::try_from(span_len).map_err(|_| ViewError::IndexOverflow)?;
+    if low < 0 || high >= len {
+        return Err(ViewError::SpanOutOfRange);
+    }
+    Ok(())
+}
 
 /// A model-owned strided view over a trusted block span.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +206,11 @@ impl<S> View<S> {
     /// Signed offset into the span.
     pub fn offset(&self) -> isize {
         self.map.offset()
+    }
+
+    /// Inclusive range of member offsets the view maps, or `None` on overflow.
+    pub(crate) fn mapped_range(&self) -> Option<(isize, isize)> {
+        mapped_range(self.shape(), self.strides(), self.offset())
     }
 
     /// Number of mapped ordinals (product of the shape).
@@ -276,6 +325,20 @@ impl<S> View<S> {
 }
 
 /// A symbolic variable view owned by one model instance.
+///
+/// Construction is crate-private until the MIR-04 model builders create
+/// symbolic views from the owning model, so no public safe path can pair a span
+/// from model A with owner B:
+///
+/// ```compile_fail
+/// use roml::bulk::VarSpan;
+/// use roml::modeling::{VarView, View};
+/// use roml::ModelInstanceId;
+/// # fn span() -> VarSpan { unimplemented!() }
+/// let span = span();
+/// let owner = ModelInstanceId::allocate().unwrap();
+/// let _ = VarView::new(owner, View::contiguous(span, 1));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarView {
     owner: ModelInstanceId,
@@ -284,8 +347,13 @@ pub struct VarView {
 
 impl VarView {
     /// Wrap a trusted variable span in its owning model.
-    pub fn new(owner: ModelInstanceId, view: View<VarSpan>) -> Self {
-        Self { owner, view }
+    ///
+    /// Crate-private until the MIR-04 model builders construct symbolic views
+    /// from the owning model: a public constructor would let ownership be
+    /// forged. Every mapped member offset is validated against the span.
+    pub(crate) fn new(owner: ModelInstanceId, view: View<VarSpan>) -> Result<Self, ViewError> {
+        validate_within_span(&view, view.span().len())?;
+        Ok(Self { owner, view })
     }
 
     /// The owning model instance.
@@ -349,8 +417,13 @@ pub struct ParamView {
 
 impl ParamView {
     /// Wrap a trusted parameter span in its owning model.
-    pub fn new(owner: ModelInstanceId, view: View<ParamSpan>) -> Self {
-        Self { owner, view }
+    ///
+    /// Crate-private until the MIR-04 model builders construct symbolic views
+    /// from the owning model. Every mapped member offset is validated against
+    /// the span.
+    pub(crate) fn new(owner: ModelInstanceId, view: View<ParamSpan>) -> Result<Self, ViewError> {
+        validate_within_span(&view, view.span().len())?;
+        Ok(Self { owner, view })
     }
 
     /// The owning model instance.
@@ -418,6 +491,7 @@ mod tests {
                 len as usize,
             ),
         )
+        .expect("var view")
     }
 
     fn param_view(owner: ModelInstanceId, start: u32, len: u32) -> ParamView {
@@ -428,6 +502,7 @@ mod tests {
                 len as usize,
             ),
         )
+        .expect("param view")
     }
 
     #[test]
@@ -556,5 +631,69 @@ mod tests {
         assert_eq!(reversed.offset(), 5);
         assert_eq!(reversed.shape(), &[0]);
         assert!(reversed.is_empty());
+    }
+
+    #[test]
+    fn symbolic_view_range_is_validated_against_the_span() {
+        let owner = ModelInstanceId::allocate().expect("owner");
+        // Offset beyond the span.
+        let beyond = VarView::new(
+            owner,
+            View::new(
+                VarSpan::from_parts(0, 3, Generation::new()),
+                [2usize],
+                [1isize],
+                2,
+            )
+            .expect("view"),
+        );
+        assert!(matches!(beyond, Err(ViewError::SpanOutOfRange)));
+
+        // Positive-stride range extending past the end.
+        let past_end = VarView::new(
+            owner,
+            View::new(
+                VarSpan::from_parts(0, 2, Generation::new()),
+                [3usize],
+                [1isize],
+                0,
+            )
+            .expect("view"),
+        );
+        assert!(matches!(past_end, Err(ViewError::SpanOutOfRange)));
+
+        // Negative range below zero.
+        let below_zero = ParamView::new(
+            owner,
+            View::new(
+                ParamSpan::from_parts(0, 3, Generation::new()),
+                [4usize],
+                [-1isize],
+                0,
+            )
+            .expect("view"),
+        );
+        assert!(matches!(below_zero, Err(ViewError::SpanOutOfRange)));
+
+        // A valid reversed view stays valid and maps the reversed ordinals.
+        let base = View::new(
+            VarSpan::from_parts(0, 4, Generation::new()),
+            [4usize],
+            [1isize],
+            0,
+        )
+        .expect("view");
+        let reversed = VarView::new(owner, base.reverse(0).expect("reverse")).expect("valid");
+        let mapped: Vec<isize> = (0..4).filter_map(|i| reversed.view().get(i)).collect();
+        assert_eq!(mapped, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn dimensions_above_isize_max_do_not_wrap() {
+        // A dimension above isize::MAX: ordinal decomposition is a typed None,
+        // never a wrapped coordinate. No buffer of that size is allocated.
+        let view = View::new((), [usize::MAX], [1isize], 0).expect("view");
+        assert_eq!(view.get(usize::MAX - 1), None);
+        assert_eq!(view.get(0), Some(0));
     }
 }

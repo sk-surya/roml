@@ -36,6 +36,8 @@ pub mod io;
 pub(crate) mod journal;
 pub mod metadata;
 pub mod model;
+#[allow(dead_code)]
+// foundation exercised by unit tests; the model/compiler consumer lands in the MIR-03 exit-gate phase
 pub mod modeling;
 pub mod objective_policy;
 pub mod revision;

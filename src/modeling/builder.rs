@@ -1,19 +1,83 @@
-//! Mixed constant + parametric row batching (MIR-03, IR-22).
+//! Mixed constant + parametric row lowering plan (MIR-03, IR-22).
 //!
-//! [`RowBatch`] accumulates sink maps and their terms, then decides from
-//! metadata whether the whole batch commits as one packed parametric row batch
-//! or uses the general symbolic path. Cross-row canonical-cell disjointness is
-//! the lowering's responsibility; core revalidation remains authoritative.
+//! [`RowBatch`] accumulates rows and produces a [`RowBlockPlan`] that owns the
+//! complete L1→L2 commit metadata: local row topology, the numeric (constant)
+//! packed cell stream, the parametric [`ParamDepLayout`], and the derived
+//! canonical p-base offsets. A future core mixed-row commit consumes the plan
+//! directly without rereading or reinterpreting raw [`Term`]s, and the model
+//! layer never independently rediscovers canonical collisions.
+//!
+//! Collisions (a constant and a parametric contribution, or two parametric
+//! contributions, reaching one `(row, variable)` cell) are detected by the
+//! conservative variable-span disjointness proof and fall back to `General`.
+//! A numeric-only batch stays representable by the numeric stream rather than
+//! being mislabeled as an unsupported parametric case.
 
-use crate::modeling::eligibility::{try_param_block_layout, SinkMap};
-use crate::modeling::{CoeffView, Term, ViewError};
+use std::collections::HashSet;
+
+use crate::bulk::ParamDepLayout;
+use crate::modeling::eligibility::{try_param_block_layout, SinkMap, TargetRun};
+use crate::modeling::{CoeffView, LinArray, Term, ViewError};
 use crate::ModelInstanceId;
+
+/// One local row in a plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalRow {
+    /// Local row index within the batch (canonical target ordinal).
+    pub row: u32,
+    /// Row lower bound.
+    pub lower: f64,
+    /// Row upper bound.
+    pub upper: f64,
+}
+
+/// One numeric (constant) packed cell contribution.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NumericCell {
+    /// Local row index.
+    pub row: u32,
+    /// Canonical variable ordinal.
+    pub var: u32,
+    /// Numeric coefficient.
+    pub value: f64,
+}
+
+/// A complete L1→L2 row lowering plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowBlockPlan {
+    owner: ModelInstanceId,
+    rows: Vec<LocalRow>,
+    numeric: Vec<NumericCell>,
+    parametric: ParamDepLayout,
+}
+
+impl RowBlockPlan {
+    /// The owning model.
+    pub fn owner(&self) -> ModelInstanceId {
+        self.owner
+    }
+
+    /// Local row topology, in allocation order.
+    pub fn rows(&self) -> &[LocalRow] {
+        &self.rows
+    }
+
+    /// The numeric (constant) packed cell stream.
+    pub fn numeric(&self) -> &[NumericCell] {
+        &self.numeric
+    }
+
+    /// The parametric dependency layout (derived canonical p-base offsets).
+    pub fn parametric(&self) -> &ParamDepLayout {
+        &self.parametric
+    }
+}
 
 /// The decision for one accumulated row batch.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowBatchPlan {
-    /// The batch commits as one packed parametric row batch.
-    Parametric(crate::bulk::ParamDepLayout),
+    /// A complete mixed or numeric row plan.
+    Planned(RowBlockPlan),
     /// At least one row must use the general symbolic path.
     General,
 }
@@ -22,7 +86,8 @@ pub enum RowBatchPlan {
 #[derive(Clone, Debug)]
 pub struct RowBatch {
     owner: ModelInstanceId,
-    rows: Vec<(SinkMap, Vec<Term>)>,
+    rows: Vec<(LocalRow, LinArray)>,
+    seen: HashSet<u32>,
 }
 
 impl RowBatch {
@@ -31,6 +96,7 @@ impl RowBatch {
         Self {
             owner,
             rows: Vec::new(),
+            seen: HashSet::new(),
         }
     }
 
@@ -44,48 +110,84 @@ impl RowBatch {
         self.rows.is_empty()
     }
 
-    /// Accumulate one sink. Rejects a variable or parameter coefficient owned
-    /// by another model before any proof or ID reconstruction.
-    pub fn push(&mut self, sink: SinkMap, terms: Vec<Term>) -> Result<(), ViewError> {
-        for term in &terms {
-            if term.vars.owner() != self.owner {
-                return Err(ViewError::CrossModel {
-                    left: self.owner,
-                    right: term.vars.owner(),
-                });
-            }
-            match &term.coeff {
-                CoeffView::ScaledParam { params, .. } if params.owner() != self.owner => {
-                    return Err(ViewError::CrossModel {
-                        left: self.owner,
-                        right: params.owner(),
-                    });
-                }
-                _ => {}
-            }
+    /// Accumulate one row. Rejects a foreign array or a repeated row target.
+    pub fn push(&mut self, row: LocalRow, array: LinArray) -> Result<(), ViewError> {
+        if array.owner() != self.owner {
+            return Err(ViewError::CrossModel {
+                left: self.owner,
+                right: array.owner(),
+            });
         }
-        self.rows.push((sink, terms));
+        if !self.seen.insert(row.row) {
+            return Err(ViewError::Unsupported("duplicate row target in batch"));
+        }
+        self.rows.push((row, array));
         Ok(())
     }
 
-    /// Decide whether the whole batch can commit as one packed parametric batch.
+    /// Build the complete batch plan, or fall back to the general path.
     pub fn plan(&self) -> RowBatchPlan {
+        let mut numeric = Vec::new();
         let mut blocks = Vec::new();
-        for (sink, terms) in &self.rows {
-            match try_param_block_layout(sink, terms) {
+        for (row, array) in &self.rows {
+            let len = array.len();
+            if len == 0 {
+                return RowBatchPlan::General;
+            }
+            let sink = match SinkMap::new(
+                array.shape().to_vec(),
+                vec![TargetRun {
+                    target: row.row,
+                    objective: false,
+                    start: 0,
+                    len,
+                }],
+            ) {
+                Ok(sink) => sink,
+                Err(_) => return RowBatchPlan::General,
+            };
+            match try_param_block_layout(&sink, array.terms()) {
                 Some(layout) => blocks.extend(layout.blocks),
                 None => {
-                    if terms.iter().any(|term| term.coeff.is_parametric()) {
+                    if array.terms().iter().any(|term| term.coeff.is_parametric()) {
                         return RowBatchPlan::General;
                     }
                 }
             }
+            if emit_numeric(row.row, array.terms(), &mut numeric).is_none() {
+                return RowBatchPlan::General;
+            }
         }
-        if blocks.is_empty() {
-            return RowBatchPlan::General;
-        }
-        RowBatchPlan::Parametric(crate::bulk::ParamDepLayout { blocks })
+        RowBatchPlan::Planned(RowBlockPlan {
+            owner: self.owner,
+            rows: self.rows.iter().map(|(row, _)| row.clone()).collect(),
+            numeric,
+            parametric: ParamDepLayout { blocks },
+        })
     }
+}
+
+/// Emit the numeric packed stream for a row's non-parametric terms.
+fn emit_numeric(row: u32, terms: &[Term], out: &mut Vec<NumericCell>) -> Option<()> {
+    for term in terms {
+        if term.coeff.is_parametric() {
+            continue;
+        }
+        let view = term.vars.view();
+        for ordinal in 0..view.len() {
+            let offset = view.get(ordinal)?;
+            let offset = u32::try_from(offset).ok()?;
+            let var = view.span().start().checked_add(offset)?;
+            let value = match &term.coeff {
+                CoeffView::One => 1.0,
+                CoeffView::Scalar(value) => *value,
+                CoeffView::Dense { scale, values } => scale * values.get(ordinal)?,
+                CoeffView::ScaledParam { .. } => continue,
+            };
+            out.push(NumericCell { row, var, value });
+        }
+    }
+    Some(())
 }
 
 #[cfg(test)]
@@ -93,7 +195,6 @@ mod tests {
     use super::*;
     use crate::bulk::{ParamSpan, VarSpan};
     use crate::id::Generation;
-    use crate::modeling::eligibility::TargetRun;
     use crate::modeling::{ParamView, VarView, View};
 
     fn new_owner() -> ModelInstanceId {
@@ -108,6 +209,7 @@ mod tests {
                 len,
             ),
         )
+        .expect("var view")
     }
 
     fn param(owner: ModelInstanceId, len: usize) -> ParamView {
@@ -115,89 +217,170 @@ mod tests {
             owner,
             View::contiguous(ParamSpan::from_parts(0, len as u32, Generation::new()), len),
         )
+        .expect("param view")
     }
 
-    fn param_term(owner: ModelInstanceId, start: u32, len: usize) -> Term {
+    fn numeric_term(owner: ModelInstanceId, start: u32, len: usize, value: f64) -> Term {
+        Term {
+            vars: var(owner, start, len),
+            coeff: CoeffView::Scalar(value),
+        }
+    }
+
+    fn param_term(owner: ModelInstanceId, start: u32, len: usize, scale: f64) -> Term {
         Term {
             vars: var(owner, start, len),
             coeff: CoeffView::ScaledParam {
-                scale: 1.0,
+                scale,
                 params: param(owner, len),
             },
         }
     }
 
-    fn sink(len: usize, row: Option<u32>) -> SinkMap {
-        SinkMap::new(
-            [len],
-            vec![TargetRun {
-                target: row.unwrap_or(0),
-                objective: row.is_none(),
-                start: 0,
-                len,
-                bases: vec![0],
-            }],
-        )
-        .expect("sink")
+    fn row(index: u32) -> LocalRow {
+        LocalRow {
+            row: index,
+            lower: 0.0,
+            upper: 1.0,
+        }
+    }
+
+    fn array(owner: ModelInstanceId, len: usize, terms: Vec<Term>) -> LinArray {
+        LinArray::new(owner, [len], terms, crate::modeling::ConstantView::Zero).expect("array")
     }
 
     #[test]
-    fn disjoint_parametric_rows_commit_as_one_batch() {
+    fn mixed_constant_and_parametric_row_plans_once() {
         let owner = new_owner();
+        let n = 2usize;
         let mut batch = RowBatch::new(owner);
-        batch
-            .push(sink(2, Some(0)), vec![param_term(owner, 0, 2)])
-            .expect("row");
-        batch
-            .push(sink(2, Some(1)), vec![param_term(owner, 2, 2)])
-            .expect("row");
+        let terms = vec![
+            numeric_term(owner, 0, n, 2.0),
+            param_term(owner, n as u32, n, 1.0),
+        ];
+        batch.push(row(0), array(owner, n, terms)).expect("row");
         match batch.plan() {
-            RowBatchPlan::Parametric(layout) => {
-                assert_eq!(layout.blocks.len(), 2);
-                assert_eq!(layout.blocks[0].row, Some(0));
-                assert_eq!(layout.blocks[1].row, Some(1));
+            RowBatchPlan::Planned(plan) => {
+                assert_eq!(plan.rows().len(), 1);
+                assert_eq!(plan.numeric().len(), n);
+                assert_eq!(plan.parametric().blocks.len(), 1);
+                assert_eq!(plan.parametric().blocks[0].row, Some(0));
+                assert_eq!(plan.parametric().blocks[0].cell_offset, 0);
             }
-            other => panic!("expected parametric batch, got {other:?}"),
+            other => panic!("expected planned mixed batch, got {other:?}"),
         }
     }
 
     #[test]
-    fn non_parametric_only_batch_is_general() {
+    fn multiple_mixed_rows_allocate_each_target_once() {
         let owner = new_owner();
+        let n = 2usize;
         let mut batch = RowBatch::new(owner);
         batch
             .push(
-                sink(2, None),
-                vec![Term {
-                    vars: var(owner, 0, 2),
-                    coeff: CoeffView::Scalar(1.0),
-                }],
+                row(0),
+                array(
+                    owner,
+                    n,
+                    vec![
+                        numeric_term(owner, 0, n, 1.0),
+                        param_term(owner, n as u32, n, 1.0),
+                    ],
+                ),
             )
-            .expect("row");
+            .expect("row 0");
+        batch
+            .push(
+                row(1),
+                array(
+                    owner,
+                    n,
+                    vec![numeric_term(owner, 2, n, 3.0), param_term(owner, 4, n, 1.0)],
+                ),
+            )
+            .expect("row 1");
+        match batch.plan() {
+            RowBatchPlan::Planned(plan) => {
+                assert_eq!(plan.rows().len(), 2);
+                assert_eq!(plan.numeric().len(), 2 * n);
+                assert_eq!(plan.parametric().blocks.len(), 2);
+                let rows: HashSet<u32> = plan.rows().iter().map(|r| r.row).collect();
+                assert_eq!(rows, HashSet::from([0, 1]));
+            }
+            other => panic!("expected planned batch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn constant_and_parametric_collision_falls_back() {
+        let owner = new_owner();
+        let n = 2usize;
+        let mut batch = RowBatch::new(owner);
+        // Both terms use the same variable span -> one canonical cell.
+        let terms = vec![numeric_term(owner, 0, n, 2.0), param_term(owner, 0, n, 1.0)];
+        batch.push(row(0), array(owner, n, terms)).expect("row");
         assert_eq!(batch.plan(), RowBatchPlan::General);
     }
 
     #[test]
-    fn cross_model_term_is_rejected() {
+    fn two_parametric_collision_falls_back() {
+        let owner = new_owner();
+        let n = 2usize;
+        let mut batch = RowBatch::new(owner);
+        let terms = vec![param_term(owner, 0, n, 1.0), param_term(owner, 0, n, 2.0)];
+        batch.push(row(0), array(owner, n, terms)).expect("row");
+        assert_eq!(batch.plan(), RowBatchPlan::General);
+    }
+
+    #[test]
+    fn numeric_only_batch_uses_the_numeric_stream() {
+        let owner = new_owner();
+        let n = 2usize;
+        let mut batch = RowBatch::new(owner);
+        batch
+            .push(
+                row(0),
+                array(owner, n, vec![numeric_term(owner, 0, n, 5.0)]),
+            )
+            .expect("row");
+        match batch.plan() {
+            RowBatchPlan::Planned(plan) => {
+                assert!(plan.parametric().blocks.is_empty());
+                assert_eq!(plan.numeric().len(), n);
+                assert!(plan.numeric().iter().all(|cell| cell.value == 5.0));
+            }
+            other => panic!("expected numeric plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_row_target_is_rejected() {
         let owner = new_owner();
         let mut batch = RowBatch::new(owner);
+        batch
+            .push(
+                row(0),
+                array(owner, 1, vec![numeric_term(owner, 0, 1, 1.0)]),
+            )
+            .expect("row");
         assert!(batch
-            .push(sink(1, None), vec![param_term(new_owner(), 0, 1)])
+            .push(
+                row(0),
+                array(owner, 1, vec![numeric_term(owner, 1, 1, 1.0)])
+            )
             .is_err());
     }
 
     #[test]
-    fn cross_model_parameter_coefficient_is_rejected() {
+    fn foreign_array_is_rejected() {
         let owner = new_owner();
         let mut batch = RowBatch::new(owner);
-        // Variable belongs to `owner` but the parameter view belongs to another.
-        let term = Term {
-            vars: var(owner, 0, 1),
-            coeff: CoeffView::ScaledParam {
-                scale: 1.0,
-                params: param(new_owner(), 1),
-            },
-        };
-        assert!(batch.push(sink(1, None), vec![term]).is_err());
+        let other = new_owner();
+        assert!(batch
+            .push(
+                row(0),
+                array(other, 1, vec![numeric_term(other, 0, 1, 1.0)]),
+            )
+            .is_err());
     }
 }

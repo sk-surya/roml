@@ -4,31 +4,34 @@
 //! ordinal `r` writes canonical cell `(target(r), var_j(r))` for each term `j`.
 //! [`try_param_block_layout`] proves from **metadata only** that the parametric
 //! terms admit L2 [`ParamDepBlockWitness`](crate::bulk::ParamDepBlockWitness)
-//! families instead of per-cell `param_positions`; core revalidates the witness
-//! against post-canonical storage before accepting it (IR-12).
+//! families and derives their canonical packed (p-base) offsets internally.
+//! Core revalidates the witness against post-canonical storage (IR-12).
 //!
 //! The proof is algebraic: it reasons over the sink target runs, each term's
-//! `VarView` map, the parameter maps and the packed layout bases. It never
-//! enumerates `Vec<CanonicalCell>` over the array. False positive = defect;
-//! false negative = conservative fallback.
+//! `VarView` map, the parameter maps and the derived canonical family order. It
+//! never enumerates `Vec<CanonicalCell>` and never trusts a caller-supplied base.
+//! False positive = defect; false negative = conservative fallback.
 //!
 //! Initial conservative conditions:
-//! - every term's variable span is pairwise disjoint from the others (so no two
-//!   terms can reach one canonical cell);
-//! - each run's per-term packed ranges are pairwise disjoint (no interleaving);
-//! - for a run of length > 1, the term's variable view and parameter view are
-//!   contiguous dense (row-major canonical strides, hence injective) with
-//!   strictly positive parameter strides;
-//! - a run of length 1 is trivially injective and admits a broadcast (zero
-//!   stride) variable or parameter.
+//! - every term's variable span is pairwise disjoint from the others;
+//! - for a run of length > 1, the variable view and parameter view are
+//!   contiguous dense (row-major canonical, hence injective) with strictly
+//!   positive parameter strides; a one-ordinal run is trivially injective and
+//!   admits a broadcast (zero-stride) variable or parameter;
+//! - parametric families within a run are ordered by their first canonical
+//!   variable ordinal, and their packed p-base offsets are the cumulative
+//!   lengths of that canonical order.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::bulk::{ParamDepBlockWitness, ParamDepLayout, StridedMap};
+use crate::bulk::{ParamDepBlockWitness, ParamDepLayout, ParamSpan, StridedMap};
 use crate::modeling::{CoeffView, Term, ViewError};
 
 /// One contiguous slice of array ordinals sharing one canonical sink target.
+///
+/// A target run carries **no** packed base: p-base offsets are derived by the
+/// proof from canonical variable order, never asserted by a caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetRun {
     /// Canonical target ordinal (a row ordinal, or the objective marker for an
@@ -41,16 +44,12 @@ pub struct TargetRun {
     pub start: usize,
     /// Number of array ordinals in the run.
     pub len: usize,
-    /// Packed-run base of each term's family cells within this run, in `terms`
-    /// order. `bases[j]` is the offset of term `j`'s first cell in the packed
-    /// coefficient run.
-    pub bases: Vec<u32>,
 }
 
 /// Sink metadata consumed by the eligibility proof.
 ///
 /// The target map is compact: a partition of the array ordinals into target
-/// runs, not a per-cell `target` vector, and never per-cell canonical cells.
+/// runs, never a per-cell target vector or canonical cells.
 #[derive(Clone, Debug)]
 pub struct SinkMap {
     shape: Arc<[usize]>,
@@ -60,7 +59,10 @@ pub struct SinkMap {
 impl SinkMap {
     /// Build a sink map from a row-major shape and an ordered, exact cover of
     /// the ordinal range by target runs.
-    pub fn new(shape: impl Into<Arc<[usize]>>, runs: Vec<TargetRun>) -> Result<Self, ViewError> {
+    pub(crate) fn new(
+        shape: impl Into<Arc<[usize]>>,
+        runs: Vec<TargetRun>,
+    ) -> Result<Self, ViewError> {
         let shape: Arc<[usize]> = shape.into();
         let total = shape
             .iter()
@@ -108,7 +110,7 @@ impl SinkMap {
 
 /// Whether a shape/stride view is contiguous dense under the row-major
 /// convention (last dimension fastest), hence injective over any ordinal range.
-fn is_contiguous_dense(shape: &[usize], strides: &[isize]) -> bool {
+pub(crate) fn is_contiguous_dense(shape: &[usize], strides: &[isize]) -> bool {
     if shape.len() != strides.len() || shape.is_empty() {
         return false;
     }
@@ -117,7 +119,11 @@ fn is_contiguous_dense(shape: &[usize], strides: &[isize]) -> bool {
         if strides[dim] != expected {
             return false;
         }
-        expected = match expected.checked_mul(shape[dim] as isize) {
+        let size = match isize::try_from(shape[dim]) {
+            Ok(size) => size,
+            Err(_) => return false,
+        };
+        expected = match expected.checked_mul(size) {
             Some(value) => value,
             None => return false,
         };
@@ -131,7 +137,7 @@ fn overlaps(a: (usize, usize), b: (usize, usize)) -> bool {
 
 /// Prove a conservative L2 dependency layout for `terms`, or `None` to use the
 /// general symbolic path.
-pub fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDepLayout> {
+pub(crate) fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDepLayout> {
     if terms.is_empty() {
         return None;
     }
@@ -150,7 +156,7 @@ pub fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDep
                 return None;
             }
             let span = view.span();
-            let start = span.start() as usize;
+            let start = usize::try_from(span.start()).ok()?;
             let end = start.checked_add(span.len())?;
             Some((start, end))
         })
@@ -165,28 +171,13 @@ pub fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDep
 
     let mut blocks = Vec::new();
     for run in sink.runs() {
-        if run.bases.len() != terms.len() {
-            return None;
-        }
         let run_end = run.start.checked_add(run.len)?;
-        // Per-term packed ranges within this run must be pairwise disjoint.
-        for i in 0..terms.len() {
-            for j in (i + 1)..terms.len() {
-                let ri = (
-                    run.bases[i] as usize,
-                    (run.bases[i] as usize).checked_add(run.len)?,
-                );
-                let rj = (
-                    run.bases[j] as usize,
-                    (run.bases[j] as usize).checked_add(run.len)?,
-                );
-                if overlaps(ri, rj) {
-                    return None;
-                }
-            }
-        }
-
-        for (index, term) in terms.iter().enumerate() {
+        let run_len = isize::try_from(run.len).ok()?;
+        // Gather this run's parametric families with their first canonical
+        // variable ordinal; the p-base order follows canonical variable order,
+        // not source term order.
+        let mut families: Vec<(u32, f64, StridedMap, ParamSpan)> = Vec::new();
+        for term in terms {
             let (scale, params) = match &term.coeff {
                 CoeffView::ScaledParam { scale, params } => (*scale, params),
                 _ => continue,
@@ -203,21 +194,31 @@ pub fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDep
                 }
                 StridedMap::new([1usize], [1isize], offset)
             } else {
-                // Injectivity over the run: contiguous dense variable and
-                // parameter views with strictly positive strides.
                 if !is_contiguous_dense(vars.shape(), vars.strides())
                     || !is_contiguous_dense(pview.shape(), pview.strides())
                     || pview.strides().iter().any(|stride| *stride <= 0)
                 {
                     return None;
                 }
-                let offset = pview.offset().checked_add(run.start as isize)?;
+                let start = isize::try_from(run.start).ok()?;
+                let offset = pview.offset().checked_add(start)?;
                 StridedMap::new([run.len], [1isize], offset)
             };
+            let (low, _high) = vars.mapped_range()?;
+            let low = u32::try_from(low).ok()?;
+            let first_var = vars.span().start().checked_add(low)?;
+            families.push((first_var, scale, param_map, *pview.span()));
+        }
+        families.sort_by_key(|family| family.0);
+        if families.windows(2).any(|w| w[0].0 == w[1].0) {
+            return None;
+        }
+        let mut base: u32 = 0;
+        for (_, scale, param_map, params) in families {
             blocks.push(ParamDepBlockWitness {
-                params: *pview.span(),
+                params,
                 param_map,
-                cell_offset: run.bases[index],
+                cell_offset: base,
                 cell_map: StridedMap::contiguous(run.len),
                 scale,
                 row: if run.objective {
@@ -226,7 +227,9 @@ pub fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDep
                     Some(run.target)
                 },
             });
+            base = base.checked_add(u32::try_from(run.len).ok()?)?;
         }
+        let _ = run_len;
     }
 
     if blocks.is_empty() {
@@ -238,7 +241,7 @@ pub fn try_param_block_layout(sink: &SinkMap, terms: &[Term]) -> Option<ParamDep
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bulk::{ParamSpan, VarSpan};
+    use crate::bulk::VarSpan;
     use crate::id::Generation;
     use crate::modeling::{ParamView, VarView, View};
     use crate::ModelInstanceId;
@@ -251,6 +254,7 @@ mod tests {
                 len,
             ),
         )
+        .expect("var view")
     }
 
     fn param(owner: ModelInstanceId, start: u32, len: usize) -> ParamView {
@@ -261,6 +265,7 @@ mod tests {
                 len,
             ),
         )
+        .expect("param view")
     }
 
     fn param_term(vars: VarView, params: ParamView, scale: f64) -> Term {
@@ -270,20 +275,18 @@ mod tests {
         }
     }
 
-    fn objective_run(len: usize, bases: Vec<u32>) -> TargetRun {
+    fn objective_run(len: usize) -> TargetRun {
         TargetRun {
             target: 0,
             objective: true,
             start: 0,
             len,
-            bases,
         }
     }
 
     #[test]
     fn bess_objective_two_terms_produce_two_families() {
         let owner = ModelInstanceId::allocate().expect("owner");
-        // one objective target, disjoint charge/discharge views, same param view.
         let n = 4;
         let charge = var(owner, 0, n);
         let discharge = var(owner, n as u32, n);
@@ -292,19 +295,39 @@ mod tests {
             param_term(charge, price.clone(), -1.0),
             param_term(discharge, price, 1.0),
         ];
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0, n as u32])]).expect("sink");
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
         let layout = try_param_block_layout(&sink, &terms).expect("eligible");
         assert_eq!(layout.blocks.len(), 2);
         assert_eq!(layout.blocks[0].cell_offset, 0);
         assert_eq!(layout.blocks[0].row, None);
         assert_eq!(layout.blocks[1].cell_offset, n as u32);
+    }
+
+    #[test]
+    fn canonical_order_follows_variable_order_not_source_order() {
+        let owner = ModelInstanceId::allocate().expect("owner");
+        let n = 3usize;
+        let charge = var(owner, 0, n); // canonical var span first
+        let discharge = var(owner, n as u32, n);
+        let price = param(owner, 0, n);
+        // Deliberately reverse source order: discharge (scale +1) first, charge
+        // (scale -1) second.
+        let terms = vec![
+            param_term(discharge, price.clone(), 1.0),
+            param_term(charge, price, -1.0),
+        ];
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
+        let layout = try_param_block_layout(&sink, &terms).expect("eligible");
+        // Charge (var span 0..n, scale -1) must receive p-base 0; discharge n.
+        assert_eq!(layout.blocks[0].scale, -1.0);
+        assert_eq!(layout.blocks[0].cell_offset, 0);
         assert_eq!(layout.blocks[1].scale, 1.0);
+        assert_eq!(layout.blocks[1].cell_offset, n as u32);
     }
 
     #[test]
     fn broadcast_over_rows_uses_honest_row_targets() {
         let owner = ModelInstanceId::allocate().expect("owner");
-        // A broadcast (zero-stride) variable used once per distinct row target.
         let rows = 3usize;
         let broadcast = VarView::new(
             owner,
@@ -315,7 +338,8 @@ mod tests {
                 0,
             )
             .expect("broadcast view"),
-        );
+        )
+        .expect("var view");
         let p = param(owner, 0, rows);
         let terms = vec![param_term(broadcast, p, 2.0)];
         let runs: Vec<TargetRun> = (0..rows)
@@ -324,7 +348,6 @@ mod tests {
                 objective: false,
                 start: b,
                 len: 1,
-                bases: vec![b as u32],
             })
             .collect();
         let sink = SinkMap::new([rows], runs).expect("sink");
@@ -332,7 +355,7 @@ mod tests {
         assert_eq!(layout.blocks.len(), rows);
         for (b, block) in layout.blocks.iter().enumerate() {
             assert_eq!(block.row, Some(b as u32));
-            assert_eq!(block.cell_offset, b as u32);
+            assert_eq!(block.cell_offset, 0);
             assert_eq!(block.cell_map.len(), 1);
         }
     }
@@ -350,9 +373,10 @@ mod tests {
                 0,
             )
             .expect("broadcast view"),
-        );
+        )
+        .expect("var view");
         let terms = vec![param_term(broadcast, param(owner, 0, n), 1.0)];
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0])]).expect("sink");
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
         assert!(try_param_block_layout(&sink, &terms).is_none());
     }
 
@@ -360,26 +384,11 @@ mod tests {
     fn overlapping_two_term_spans_are_ineligible() {
         let owner = ModelInstanceId::allocate().expect("owner");
         let n = 3usize;
-        let first = var(owner, 0, n);
-        let second = var(owner, 1, n); // overlaps first
-        let terms = vec![
-            param_term(first, param(owner, 0, n), 1.0),
-            param_term(second, param(owner, 0, n), 1.0),
-        ];
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0, n as u32])]).expect("sink");
-        assert!(try_param_block_layout(&sink, &terms).is_none());
-    }
-
-    #[test]
-    fn interleaved_or_overlapping_packed_bases_fall_back() {
-        let owner = ModelInstanceId::allocate().expect("owner");
-        let n = 3usize;
         let terms = vec![
             param_term(var(owner, 0, n), param(owner, 0, n), 1.0),
-            param_term(var(owner, n as u32, n), param(owner, 0, n), 1.0),
+            param_term(var(owner, 1, n), param(owner, 0, n), 1.0),
         ];
-        // Both families claim the same packed base: overlapping ranges.
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0, 0])]).expect("sink");
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
         assert!(try_param_block_layout(&sink, &terms).is_none());
     }
 
@@ -389,7 +398,7 @@ mod tests {
         let n = 4usize;
         let reversed = param(owner, 0, n).reverse(0).expect("reverse");
         let terms = vec![param_term(var(owner, 0, n), reversed, 1.0)];
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0])]).expect("sink");
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
         assert!(try_param_block_layout(&sink, &terms).is_none());
     }
 
@@ -406,9 +415,10 @@ mod tests {
                 0,
             )
             .expect("broadcast param"),
-        );
+        )
+        .expect("param view");
         let terms = vec![param_term(var(owner, 0, n), broadcast_param, 1.0)];
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0])]).expect("sink");
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
         assert!(try_param_block_layout(&sink, &terms).is_none());
     }
 
@@ -422,7 +432,6 @@ mod tests {
                 objective: false,
                 start: 0,
                 len: 3,
-                bases: vec![0],
             }]
         )
         .is_err());
@@ -432,14 +441,12 @@ mod tests {
                 objective: false,
                 start: 0,
                 len: 2,
-                bases: vec![0],
             },
             TargetRun {
                 target: 0,
                 objective: false,
                 start: 2,
                 len: 2,
-                bases: vec![2],
             },
         ];
         assert!(SinkMap::new([4usize], dup).is_err());
@@ -453,7 +460,17 @@ mod tests {
             vars: var(owner, 0, n),
             coeff: CoeffView::Scalar(1.0),
         };
-        let sink = SinkMap::new([n], vec![objective_run(n, vec![0])]).expect("sink");
+        let sink = SinkMap::new([n], vec![objective_run(n)]).expect("sink");
         assert!(try_param_block_layout(&sink, &[term]).is_none());
+    }
+
+    #[test]
+    fn unrepresentable_dimensions_never_prove_eligibility() {
+        // A dimension above isize::MAX must not be treated as contiguous dense.
+        assert!(!is_contiguous_dense(&[usize::MAX], &[1isize]));
+        assert!(!is_contiguous_dense(
+            &[2, usize::MAX],
+            &[isize::MAX, 1isize]
+        ));
     }
 }

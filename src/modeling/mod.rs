@@ -16,7 +16,10 @@ mod coeff;
 mod eligibility;
 mod view;
 
-pub use builder::{RowBatch, RowBatchPlan};
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, Term};
-pub use eligibility::{try_param_block_layout, SinkMap, TargetRun};
 pub use view::{ParamView, VarView, View, ViewError};
+
+// L1→L2 planning internals (`builder`, `eligibility`) are crate-private and
+// reached through `crate::modeling::<module>::…`; they are not public
+// construction surfaces until the MIR-04 model builders create symbolic views
+// from the owning model.
