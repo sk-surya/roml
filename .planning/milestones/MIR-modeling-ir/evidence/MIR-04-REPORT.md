@@ -21,9 +21,12 @@ native examples with no raw ids, and solution read-back.
 - One packed variable block per array; per-element names never materialized.
 
 ### M4-2 Expression algebra (IR-24)
+- Natural operators over `VarArray`/`LinArray`/`f64`: `Add`, `Sub`, `Neg`, and
+  scalar `Mul`/`Div`, plus scalar `+ f64`/`- f64` constant shifts. The fallible
+  `try_add`/`try_sub`/`try_shift`/`try_mul` methods remain the typed-error
+  surface.
 - `VarArray::expr()` (unit coefficients); `ParamArray::try_mul(&LinArray)`
-  (conservative fast IR or explicit `None`); `LinArray::{try_add, try_sub,
-  scaled}`.
+  (conservative fast IR or explicit `None`).
 - **Cell-wise rows:** `LinArray::{le, ge, eq, le_each, ge_each, eq_each}` ->
   `RowSpec` -> `Model::add_row` (one constraint per cell).
 - **Reduction rows:** `LinArray::{rows_eq, rows_le, rows_ge}` ->
@@ -34,9 +37,17 @@ native examples with no raw ids, and solution read-back.
   numeric/mixed arrays commit through the general objective path. Row paths use
   the packed mixed-row seam when the numeric form is covered, else the general
   symbolic path.
+- **Contiguous reshape:** `View`/`VarView`/`ParamView`/`NumView`/`LinArray`/
+  `VarArray`/`ParamArray` reshape metadata-only when the view is contiguous
+  dense, with a typed rejection for strided or size-changing requests.
 - Numeric cell streams are canonicalized (sorted/merged/zero-dropped) before
   the packed append, so `append_canonical_block`'s invariant holds even for
   overlapping views (e.g. `energy[:, 1:]` and `energy[:, :-1]`).
+- **Constant semantics:** a `ConstantView::Scalar(c)` is *per cell*. A row that
+  sums `n` cells contributes `n·c` to its bounds, and an array objective over
+  `N` cells contributes `N·c`. Dense constants sum their row/cell values. This
+  is enforced in `shift_bounds`, `row_constant`, `add_rows_general`, and both
+  objective paths (`model::mir04_constant_tests`).
 
 ### M4-3 Label boundary (IR-24)
 - `Labeled<A: Shaped>` with `Axis { name, labels }`; `new` validates rank and
@@ -63,8 +74,15 @@ native examples with no raw ids, and solution read-back.
 
 ### M4-6 Solution read-back (IR-24)
 - `Solution::{array_values, try_array_values, array_value}` read a `VarArray`
-  in row-major order; missing values are `None`/typed `SolutionReadError`,
-  never silent zeros.
+  in row-major order. Strict reads enforce
+  `array.owner() == solution.metadata.model_instance` and return typed
+  `SolutionReadError::CrossModel` for a foreign array; lenient reads return
+  `None` for a foreign array, never another model's value.
+- Real solves record the instance automatically. Synthetic solutions
+  (`Solution::from_values`) must opt in with `Solution::with_source_instance`,
+  because their default metadata carries no real provenance.
+- Missing values are `None`/typed `SolutionReadError::MissingValue`, never
+  silent zeros.
 
 ## Exit gate (IR-24)
 
@@ -87,6 +105,28 @@ normalized ordinal-IR fingerprints (`tests/mir04_labels.rs`,
   `param_positions_cells == 0`, `general_affine == 0`, and reprice with 0
   lookups / 1 patch batch (`tests/mir04_expr.rs`, MIR-03 flagship).
 
+## Review round 1 remediation (correctness)
+
+The review found two correctness issues and one completeness issue; all are fixed
+and covered by RED→GREEN tests.
+
+1. **Per-cell constants.** `ConstantView::Scalar(c)` is per cell, so reduction
+   rows and array objectives must scale by the cell count (and dense constants
+   sum their row/cell values). Fixed in `builder::{shift_bounds, row_constant}`,
+   `Model::add_rows_general`, and both objective paths. Tests:
+   `model::mir04_constant_tests` (`Σ_j (x[i,j] + 2) == 10` ⇔
+   `Σ_j x[i,j] == 10 − 2n`, packed and general, including `nrows == 1`; dense
+   row sums; packed/general objective constants). The MIR-03 seam test that had
+   encoded the old single-shift behavior was corrected to `[-6, 4]`.
+2. **Solution ownership.** Structured reads now require
+   `array.owner() == solution.metadata.model_instance`; a foreign array is a
+   typed `SolutionReadError::CrossModel` (strict) or `None` (lenient). Synthetic
+   solutions must `with_source_instance`; `tests/mir04_solution.rs` covers
+   cross-model rejection and the unbound-synthetic policy.
+3. **Planned L1 surface.** The planned ergonomic core is finished (operators,
+   scalar mul/div/neg, reduction rows, contiguous reshape); the remaining plan
+   items are explicitly re-scoped in `MIR-04-PLAN.md` (amendment) and below.
+
 ## Verification
 
 ```text
@@ -94,22 +134,27 @@ cargo fmt --all -- --check                              clean
 cargo check -p roml --all-targets                       clean
 cargo clippy -p roml --all-targets -- -D warnings       clean
 RUSTDOCFLAGS='-D warnings' cargo doc -p roml --no-deps  clean
-cargo nextest run -p roml                               1530 passed, 4 skipped
+cargo nextest run -p roml                               1541 passed, 4 skipped
 scripts/check-quality-policy.sh                         pass
 git diff --check                                        clean
-cargo package --list -p roml                            216 files
+cargo package --list -p roml                            218 files
 ```
 
-## Residual risk / deferred
+## Residual risk / deliberately deferred
 
 - `roml-highs/examples/bess_mpc.rs` remains the raw-API performance benchmark.
   Its mixed-length objective (a numeric terminal term plus a shorter parametric
-  term array) is not expressible through the single-shape `LinArray` yet; the
+  term array) is not expressible through the single-shape `LinArray`; the
   ordinary L1 BESS example satisfies IR-24. Tracked for MIR-05/06.
-- Multi-cell-per-row **parametric** reductions and parameterized objective
-  constants (`ScaledParam` constants) are conservative rejections that fall
-  back to the general symbolic path; extending the packed representation is an
-  optimization backlog, not a correctness gap.
-- `roml-mosek`/`roml-xpress` remain rustfmt-parsed only for the new seams
-  (proprietary SDKs).
+- Naming sugar `m.add`/`m.maximize` is deferred in favor of `add_row`/
+  `maximize_array` (recorded in the plan amendment).
+- `sum` as a scalar expression node is deferred: the objective sum is implicit
+  and reduction rows are `rows_*`, because the single-term-view `LinArray`
+  cannot represent many terms per cell. Rule builders (MIR-05) may introduce a
+  compact reduction topology without gathering per-cell ids.
+- The elementwise `ParamArray * LinArray` operator stays the fallible
+  `try_mul` (the conservative rule may decline); multi-term parametric
+  reductions and parameterized constants are conservative rejections that fall
+  back to the general symbolic path.
+- `roml-mosek`/`roml-xpress` remain rustfmt-parsed only for the new seams.
 - Python is intentionally untouched (MIR-06).

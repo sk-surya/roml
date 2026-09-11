@@ -130,6 +130,14 @@ impl NumView {
             view: self.view.transpose(a, b)?,
         })
     }
+
+    /// Metadata-only reshape (contiguous dense views only).
+    pub fn reshape(&self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError> {
+        Ok(Self {
+            values: self.values.clone(),
+            view: self.view.reshape(shape)?,
+        })
+    }
 }
 
 /// A variable linear-expression coefficient family.
@@ -417,6 +425,74 @@ impl LinArray {
     /// Subtract two arrays of the same owner and shape.
     pub fn try_sub(self, other: Self) -> Result<Self, ViewError> {
         self.try_add(other.scaled(-1.0))
+    }
+
+    /// Add a scalar to the constant of every cell (MIR-04, IR-24).
+    ///
+    /// `Zero`/`Scalar` shift directly; `Dense` materializes a shifted buffer; a
+    /// parameterized constant has no scalar form here and is a typed
+    /// [`ViewError::Unsupported`] rejection (the operator form panics on it, so
+    /// fallible callers should prefer this method).
+    pub fn try_shift(self, delta: f64) -> Result<Self, ViewError> {
+        let constant = match self.constant {
+            ConstantView::Zero => ConstantView::Scalar(delta),
+            ConstantView::Scalar(value) => ConstantView::Scalar(value + delta),
+            ConstantView::Dense { scale, values } => {
+                let mut shifted = Vec::with_capacity(values.len());
+                for ordinal in 0..values.len() {
+                    let value = values
+                        .get(ordinal)
+                        .ok_or(ViewError::Unsupported("dense constant offset"))?;
+                    shifted.push(scale * value + delta);
+                }
+                ConstantView::Dense {
+                    scale: 1.0,
+                    values: NumView::from_vec(shifted),
+                }
+            }
+            ConstantView::ScaledParam { .. } => {
+                return Err(ViewError::Unsupported(
+                    "cannot add a scalar to a parameterized constant",
+                ))
+            }
+        };
+        Ok(Self { constant, ..self })
+    }
+
+    /// Metadata-only reshape when every variable/coefficient view is contiguous
+    /// dense; otherwise a typed [`ViewError::Unsupported`] rejection.
+    pub fn reshape(self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError> {
+        let shape: Arc<[usize]> = shape.into();
+        let mut terms = Vec::with_capacity(self.terms.len());
+        for term in self.terms {
+            let vars = term.vars.reshape(shape.clone())?;
+            let coeff = match term.coeff {
+                CoeffView::One => CoeffView::One,
+                CoeffView::Scalar(value) => CoeffView::Scalar(value),
+                CoeffView::Dense { scale, values } => CoeffView::Dense {
+                    scale,
+                    values: values.reshape(shape.clone())?,
+                },
+                CoeffView::ScaledParam { scale, params } => CoeffView::ScaledParam {
+                    scale,
+                    params: params.reshape(shape.clone())?,
+                },
+            };
+            terms.push(Term { vars, coeff });
+        }
+        let constant = match self.constant {
+            ConstantView::Zero => ConstantView::Zero,
+            ConstantView::Scalar(value) => ConstantView::Scalar(value),
+            ConstantView::Dense { scale, values } => ConstantView::Dense {
+                scale,
+                values: values.reshape(shape.clone())?,
+            },
+            ConstantView::ScaledParam { scale, params } => ConstantView::ScaledParam {
+                scale,
+                params: params.reshape(shape.clone())?,
+            },
+        };
+        Self::new(self.owner, shape, terms, constant)
     }
 
     /// A cell-wise `≤ bound` row constraint: each cell becomes one row.

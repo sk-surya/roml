@@ -31,6 +31,13 @@ pub use metadata::{SolveMetadata, SynchronizationMode};
 /// (MIR-04, IR-24).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SolutionReadError {
+    /// The array belongs to a different model instance than the solution.
+    CrossModel {
+        /// The solution's recorded source instance.
+        expected: crate::identity::ModelInstanceId,
+        /// The array's owning instance.
+        actual: crate::identity::ModelInstanceId,
+    },
     /// The array cell ordinal is outside the array.
     OrdinalOutOfRange {
         /// Requested ordinal.
@@ -48,6 +55,10 @@ pub enum SolutionReadError {
 impl std::fmt::Display for SolutionReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CrossModel { expected, actual } => write!(
+                f,
+                "array belongs to model instance {actual:?}, not the solution's {expected:?}"
+            ),
             Self::OrdinalOutOfRange { ordinal, len } => {
                 write!(f, "array ordinal {ordinal} out of range for length {len}")
             }
@@ -207,6 +218,18 @@ impl Solution {
         }
     }
 
+    /// Bind this solution to `instance` for strict structured-array reads
+    /// (MIR-04, IR-24).
+    ///
+    /// A real solve records its model instance automatically. A synthetic
+    /// solution ([`Self::new`] / [`Self::from_values`] / `SolutionBuilder`)
+    /// carries no real provenance, so [`Self::try_array_values`] rejects it
+    /// unless the caller explicitly binds the instance here.
+    pub fn with_source_instance(mut self, instance: crate::identity::ModelInstanceId) -> Self {
+        self.metadata.model_instance = instance;
+        self
+    }
+
     /// Get the solver status.
     pub fn status(&self) -> SolveStatus {
         self.status
@@ -249,7 +272,8 @@ impl Solution {
     }
 
     /// Read a structured variable array's values in row-major ordinal order
-    /// (MIR-04, IR-24): missing variables yield `None` at that position.
+    /// (MIR-04, IR-24): a foreign array or a missing variable yields `None` at
+    /// that position (never a plausible value from another model).
     pub fn array_values(&self, array: &crate::modeling::VarArray) -> Vec<Option<f64>> {
         (0..array.len())
             .map(|ordinal| self.array_value(array, ordinal))
@@ -257,11 +281,18 @@ impl Solution {
     }
 
     /// Read a structured variable array's values in row-major ordinal order,
-    /// requiring every cell to be present in the solution.
+    /// requiring the array to belong to this solution's source model instance
+    /// and every cell to be present.
     pub fn try_array_values(
         &self,
         array: &crate::modeling::VarArray,
     ) -> Result<Vec<f64>, SolutionReadError> {
+        if array.owner() != self.metadata.model_instance {
+            return Err(SolutionReadError::CrossModel {
+                expected: self.metadata.model_instance,
+                actual: array.owner(),
+            });
+        }
         let len = array.len();
         (0..len)
             .map(|ordinal| {
@@ -274,8 +305,12 @@ impl Solution {
             .collect()
     }
 
-    /// Read one cell of a structured variable array.
+    /// Read one cell of a structured variable array. A foreign array yields
+    /// `None`; use [`Self::try_array_values`] for a typed ownership error.
     pub fn array_value(&self, array: &crate::modeling::VarArray, ordinal: usize) -> Option<f64> {
+        if array.owner() != self.metadata.model_instance {
+            return None;
+        }
         array.get(ordinal).and_then(|var| self.value(var))
     }
 

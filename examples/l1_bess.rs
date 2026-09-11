@@ -39,18 +39,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let previous_energy = energy.slice(1, 0, periods - 1)?;
     let next_charge = charge.slice(1, 1, periods - 1)?;
     let next_discharge = discharge.slice(1, 1, periods - 1)?;
-    let inventory = previous_energy
-        .expr()?
-        .try_add(next_charge.expr()?.scaled(dt * efficiency))?
-        .try_add(next_discharge.expr()?.scaled(-dt / efficiency))?;
-    model.add_row(next_energy.expr()?.try_sub(inventory)?.eq(0.0))?;
+    let inventory = previous_energy.clone()
+        + dt * (efficiency * next_charge.clone() - next_discharge.clone() / efficiency);
+    model.add_row((next_energy.clone() - inventory).eq(0.0))?;
 
     // maximize dt * price * (discharge - charge)
-    let net = discharge.expr()?.try_sub(charge.expr()?)?;
     let objective = price
-        .try_mul(&net)?
+        .try_mul(&(discharge.clone() - charge.clone()))?
         .expect("conservative IR covers price * (discharge - charge)")
-        .scaled(dt);
+        * dt;
     model.maximize_array(&objective)?;
 
     let lowering = model.lowering_stats();

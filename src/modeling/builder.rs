@@ -228,7 +228,8 @@ impl RowBatch {
             }
             // Fold the constant into the bounds; any unsupported/non-finite
             // constant is an atomic fallback.
-            let Some((lower, upper)) = shift_bounds(row.lower, row.upper, array.constant()) else {
+            let Some((lower, upper)) = shift_bounds(row.lower, row.upper, array.constant(), len)
+            else {
                 return RowBatchPlan::General;
             };
             rows.push(LocalRow {
@@ -456,19 +457,14 @@ pub fn plan_leading_row_block(
     if canonicalize_numeric_rows(&mut numeric).is_none() {
         return RowBatchPlan::General;
     }
-    // A per-cell constant varies within a row and has no scalar bounds form.
-    let shift = match array.constant() {
-        ConstantView::Zero => 0.0,
-        ConstantView::Scalar(value) => *value,
-        ConstantView::Dense { .. } | ConstantView::ScaledParam { .. } => {
-            return RowBatchPlan::General
-        }
-    };
-    if !shift.is_finite() {
-        return RowBatchPlan::General;
-    }
+    // Per-row constant: a scalar contributes once per cell in the row, a dense
+    // constant contributes the sum of the row's values, a parameterized
+    // constant has no scalar row-bounds form (general fallback).
     let mut rows = Vec::with_capacity(nrows);
     for (r, &(lower, upper)) in bounds.iter().enumerate() {
+        let Some(shift) = row_constant(array.constant(), r, row_len) else {
+            return RowBatchPlan::General;
+        };
         rows.push(LocalRow {
             row: r as u32,
             lower: lower - shift,
@@ -482,6 +478,24 @@ pub fn plan_leading_row_block(
         families: Vec::new(),
         parametric: ParamDepLayout { blocks: Vec::new() },
     })
+}
+
+/// The constant a leading-axis row sums over its `row_len` cells.
+fn row_constant(constant: &ConstantView, row: usize, row_len: usize) -> Option<f64> {
+    let shift = match constant {
+        ConstantView::Zero => 0.0,
+        ConstantView::Scalar(value) => *value * row_len as f64,
+        ConstantView::Dense { scale, values } => {
+            let start = row.checked_mul(row_len)?;
+            let mut sum = 0.0;
+            for offset in 0..row_len {
+                sum += values.get(start.checked_add(offset)?)?;
+            }
+            scale * sum
+        }
+        ConstantView::ScaledParam { .. } => return None,
+    };
+    shift.is_finite().then_some(shift)
 }
 
 /// Emit the numeric packed stream for a leading-axis row array.
@@ -547,18 +561,28 @@ fn param_slice(view: &View<ParamSpan>) -> ParamSlice {
 
 /// Fold a constant into scalar row bounds, or `None` when the constant cannot
 /// be represented (which must fall back rather than silently disappear).
-fn shift_bounds(lower: f64, upper: f64, constant: &ConstantView) -> Option<(f64, f64)> {
+///
+/// The row sums `cells` expression cells, so a per-cell scalar constant
+/// contributes `cells × c` and a dense constant contributes the sum of its
+/// row's values.
+fn shift_bounds(
+    lower: f64,
+    upper: f64,
+    constant: &ConstantView,
+    cells: usize,
+) -> Option<(f64, f64)> {
     let shift = match constant {
         ConstantView::Zero => 0.0,
-        ConstantView::Scalar(value) => *value,
-        // A single-cell dense constant is scalar-equivalent; a per-cell dense
-        // constant over a multi-cell row needs a per-cell bounds representation
-        // that this initial subset does not have, so it falls back.
+        ConstantView::Scalar(value) => *value * cells as f64,
         ConstantView::Dense { scale, values } => {
-            if values.len() != 1 {
+            if values.len() != cells {
                 return None;
             }
-            scale * values.get(0)?
+            let mut sum = 0.0;
+            for ordinal in 0..cells {
+                sum += values.get(ordinal)?;
+            }
+            scale * sum
         }
         ConstantView::ScaledParam { .. } => return None,
     };
@@ -745,11 +769,11 @@ mod tests {
         }
     }
 
-    // A2b: a multi-cell dense constant is not representable with scalar bounds.
+    // A2b: a multi-cell dense constant sums over the row's cells.
     #[test]
-    fn dense_multi_cell_constant_falls_back() {
+    fn dense_multi_cell_constant_sums_per_row() {
         let owner = new_owner();
-        let plan = plan_of(
+        match plan_of(
             owner,
             row(0, 0.0, 10.0),
             array(
@@ -761,8 +785,13 @@ mod tests {
                     values: crate::modeling::NumView::from_vec(vec![1.0, 2.0]),
                 },
             ),
-        );
-        assert_eq!(plan, RowBatchPlan::General);
+        ) {
+            RowBatchPlan::Planned(plan) => {
+                assert_eq!(plan.rows()[0].lower, -3.0);
+                assert_eq!(plan.rows()[0].upper, 7.0);
+            }
+            other => panic!("expected planned row, got {other:?}"),
+        }
     }
 
     // A3: a parameterized constant is never silently dropped.

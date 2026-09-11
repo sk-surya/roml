@@ -29,6 +29,17 @@ hatches. Labels are boundary metadata and never enter expression nodes.
   `m.maximize(expr)` / `m.minimize(expr)` commit through the MIR-03 automatic
   eligibility / `add_rows_from_plan` seams. Tests: differential vs the raw/scalar
   construction for a BESS objective and a balance-row block.
+  *Delivered:* `Add`/`Sub`/`Neg` and scalar `Mul`/`Div` over
+  `VarArray`/`LinArray`/`f64`, cell-wise rows (`le`/`ge`/`eq`/`*_each` →
+  `Model::add_row`), leading-axis reduction rows (`rows_eq`/`rows_le`/`rows_ge`
+  → `Model::add_rows`), array objectives (`maximize_array`/`minimize_array`),
+  and contiguous `reshape`. *Deliberately deferred (amended after review
+  round 1):* `m.add`/`m.maximize` naming sugar (use `add_row`/`maximize_array`);
+  `sum` as a scalar expression node (the objective's sum is implicit and row
+  reductions are `rows_*`, because the single-term-view `LinArray` cannot
+  represent many terms per cell); the elementwise `ParamArray * LinArray`
+  operator (kept as the fallible `ParamArray::try_mul`, whose conservative rule
+  may decline); broadcasting beyond the conservative subset (typed fallback).
 
 - **M4-3 — Label/component boundary (IR-25 prerequisite).** A Rust
   `Labeled<A, Axes>`-equivalent metadata wrapper around ordinal arrays; alignment
@@ -48,8 +59,27 @@ hatches. Labels are boundary metadata and never enter expression nodes.
   that greps ordinary example code for `VarId`/`LinExpr` construction and fails
   if present.
 
-- **M4-6 — Solution read-back.** `Solution::values(&array) -> ArrayView` (and
-  scalar extraction) so examples need no raw `VarId` for results.
+- **M4-6 — Solution read-back.** `Solution::array_values(&VarArray)`,
+  `Solution::try_array_values(&VarArray)` (strict, model-instance checked), and
+  `Solution::array_value(&VarArray, ordinal)` so examples need no raw `VarId`
+  for results. (`values` was already a `HashMap` accessor, so the array
+  accessors carry the `array_` prefix; synthetic solutions must
+  `with_source_instance` to enable strict reads.)
+
+## Amendment (review round 1)
+
+- Reduction and array-objective constants are **per cell**: a scalar constant
+  contributes once per cell (row: `n·c`; objective: `N·c`) and a dense constant
+  contributes the row/cell sum. Fixed in `builder::shift_bounds`/
+  `row_constant`, `Model::add_rows_general`, and both objective paths, with
+  RED→GREEN tests in `model::mir04_constant_tests`.
+- Structured read-back enforces `array.owner() == solution.metadata.model_instance`;
+  a foreign array is a typed `SolutionReadError::CrossModel` on strict reads and
+  `None` on lenient reads.
+- The planned L1 surface is delivered except the explicit deferrals recorded in
+  M4-2/M4-6 above (`m.add`/`m.maximize` naming, `sum` as a scalar node, the
+  elementwise `ParamArray * LinArray` operator, and non-conservative
+  broadcasting).
 
 ## Non-goals
 No Python work (MIR-06), no rule builders (MIR-05), no macro DSL, no Pyomo

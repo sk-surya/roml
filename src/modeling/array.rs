@@ -136,6 +136,13 @@ impl VarArray {
         )
     }
 
+    /// The linear form used by operator algebra (infallible for a validated
+    /// array).
+    pub(crate) fn lin(&self) -> crate::modeling::LinArray {
+        self.expr()
+            .expect("a validated variable array is a valid LinArray")
+    }
+
     /// Metadata-only slice along `axis` (`[start, start + len)`).
     pub fn slice(&self, axis: usize, start: usize, len: usize) -> Result<Self, ViewError> {
         Ok(Self {
@@ -157,6 +164,15 @@ impl VarArray {
         Ok(Self {
             name: self.name.clone(),
             view: self.view.transpose(a, b)?,
+        })
+    }
+
+    /// Metadata-only reshape (contiguous dense views only).
+    pub fn reshape(&self, shape: impl Into<Shape>) -> Result<Self, ViewError> {
+        let shape = shape.into();
+        Ok(Self {
+            name: self.name.clone(),
+            view: self.view.reshape(shape.dims().to_vec())?,
         })
     }
 }
@@ -244,6 +260,15 @@ impl ParamArray {
         Ok(Self {
             name: self.name.clone(),
             view: self.view.transpose(a, b)?,
+        })
+    }
+
+    /// Metadata-only reshape (contiguous dense views only).
+    pub fn reshape(&self, shape: impl Into<Shape>) -> Result<Self, ViewError> {
+        let shape = shape.into();
+        Ok(Self {
+            name: self.name.clone(),
+            view: self.view.reshape(shape.dims().to_vec())?,
         })
     }
 }

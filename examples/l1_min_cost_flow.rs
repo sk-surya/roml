@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Interior conservation: flow[k - 1] - flow[k] == demand[k] for k = 1..edges.
     let inlet = flow.slice(0, 0, edges - 1)?;
     let outlet = flow.slice(0, 1, edges - 1)?;
-    let conservation = inlet.expr()?.try_sub(outlet.expr()?)?;
+    let conservation = inlet.clone() - outlet.clone();
     model.add_row(conservation.eq_each(&demands)?)?;
 
     // minimize Σ cost * flow.

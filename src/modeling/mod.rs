@@ -16,6 +16,8 @@ pub(crate) mod builder;
 mod coeff;
 pub(crate) mod eligibility;
 mod labeled;
+#[allow(clippy::op_ref)]
+mod ops;
 mod view;
 
 pub use array::{ParamArray, Shape, VarArray};

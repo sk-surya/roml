@@ -106,6 +106,24 @@ impl std::fmt::Display for ViewError {
 
 impl std::error::Error for ViewError {}
 
+/// Canonical contiguous row-major strides for a shape (last dimension fastest),
+/// or `None` on `isize` overflow.
+pub(crate) fn row_major_strides(shape: &[usize]) -> Option<Vec<isize>> {
+    let mut strides = vec![1isize; shape.len()];
+    let mut acc: isize = 1;
+    for dim in (0..shape.len()).rev() {
+        strides[dim] = acc;
+        acc = acc.checked_mul(isize::try_from(shape[dim]).ok()?)?;
+    }
+    Some(strides)
+}
+
+/// Whether a shape/stride pair is contiguous dense under the row-major
+/// convention (last dimension fastest), hence flattenable by `reshape`.
+pub(crate) fn is_contiguous_dense(shape: &[usize], strides: &[isize]) -> bool {
+    crate::modeling::eligibility::is_contiguous_dense(shape, strides)
+}
+
 /// The inclusive range of member offsets a strided view can map, or `None` when
 /// a dimension does not fit `isize` or the arithmetic overflows. Computed in
 /// O(rank) from metadata only.
@@ -322,6 +340,37 @@ impl<S> View<S> {
             map: StridedMap::new(shape, strides, self.map.offset()),
         })
     }
+
+    /// Metadata-only reshape when the view is contiguous dense (row-major).
+    ///
+    /// A non-contiguous/strided view or a size-changing reshape is a typed
+    /// [`ViewError::Unsupported`] rejection; the mapping is never gathered into
+    /// a new buffer.
+    pub fn reshape(&self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError>
+    where
+        S: Clone,
+    {
+        let shape: Arc<[usize]> = shape.into();
+        let product = shape
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+            .ok_or(ViewError::ShapeOverflow)?;
+        if product != self.len() {
+            return Err(ViewError::Unsupported(
+                "reshape changes the number of cells",
+            ));
+        }
+        if !is_contiguous_dense(self.shape(), self.strides()) {
+            return Err(ViewError::Unsupported(
+                "reshape requires a contiguous dense view",
+            ));
+        }
+        let strides = row_major_strides(&shape).ok_or(ViewError::ShapeOverflow)?;
+        Ok(Self {
+            span: self.span.clone(),
+            map: StridedMap::new(shape, strides, self.map.offset()),
+        })
+    }
 }
 
 /// A symbolic variable view owned by one model instance.
@@ -396,6 +445,14 @@ impl VarView {
         })
     }
 
+    /// Metadata-only reshape (contiguous dense views only).
+    pub fn reshape(&self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError> {
+        Ok(Self {
+            owner: self.owner,
+            view: self.view.reshape(shape)?,
+        })
+    }
+
     /// Reject composition with a view from a different model instance.
     pub fn check_same_model(&self, other: &Self) -> Result<(), ViewError> {
         if self.owner != other.owner {
@@ -463,6 +520,14 @@ impl ParamView {
         Ok(Self {
             owner: self.owner,
             view: self.view.transpose(a, b)?,
+        })
+    }
+
+    /// Metadata-only reshape (contiguous dense views only).
+    pub fn reshape(&self, shape: impl Into<Arc<[usize]>>) -> Result<Self, ViewError> {
+        Ok(Self {
+            owner: self.owner,
+            view: self.view.reshape(shape)?,
         })
     }
 

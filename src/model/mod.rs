@@ -3677,10 +3677,23 @@ impl Model {
         }
         let constant = match array.constant() {
             ConstantView::Zero => 0.0,
-            ConstantView::Scalar(value) => *value,
-            _ => {
+            // The objective sums every cell, so a per-cell scalar contributes
+            // once per cell, and a dense constant contributes its total sum.
+            ConstantView::Scalar(value) => *value * array.len() as f64,
+            ConstantView::Dense { scale, values } => {
+                let mut sum = 0.0;
+                for ordinal in 0..values.len() {
+                    sum += values
+                        .get(ordinal)
+                        .ok_or(ModelError::InvalidParamDepLayout(
+                            "stale dense objective constant",
+                        ))?;
+                }
+                scale * sum
+            }
+            ConstantView::ScaledParam { .. } => {
                 return Err(ModelError::InvalidParamDepLayout(
-                    "objective LinArray constant must be zero or scalar",
+                    "objective LinArray constant must be numeric",
                 ))
             }
         };
@@ -3802,7 +3815,9 @@ impl Model {
         }
         let constant = match array.constant() {
             ConstantView::Zero => 0.0,
-            ConstantView::Scalar(value) => *value,
+            // The objective sums every cell: a per-cell scalar contributes
+            // once per cell, a dense constant contributes its total sum.
+            ConstantView::Scalar(value) => *value * array.len() as f64,
             ConstantView::Dense { scale, values } => {
                 let mut sum = 0.0;
                 for ordinal in 0..values.len() {
@@ -3988,24 +4003,42 @@ impl Model {
             .iter()
             .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
             .ok_or(ModelError::InvalidArrayShape("row block shape overflow"))?;
-        let shift = match array.constant() {
-            ConstantView::Zero => 0.0,
-            ConstantView::Scalar(value) => *value,
-            _ => {
-                return Err(ModelError::InvalidArrayShape(
-                    "row constant must be zero or scalar",
-                ))
+        // Per-row constant: a scalar contributes once per cell in the row, a
+        // dense constant contributes the sum of the row's values.
+        let mut shifts = Vec::with_capacity(nrows);
+        for r in 0..nrows {
+            let shift = match array.constant() {
+                ConstantView::Zero => 0.0,
+                ConstantView::Scalar(value) => *value * row_len as f64,
+                ConstantView::Dense { scale, values } => {
+                    let start = r
+                        .checked_mul(row_len)
+                        .ok_or(ModelError::InvalidArrayShape("row block shape overflow"))?;
+                    let mut sum = 0.0;
+                    for offset in 0..row_len {
+                        sum += values
+                            .get(start + offset)
+                            .ok_or(ModelError::InvalidParamDepLayout("stale dense constant"))?;
+                    }
+                    scale * sum
+                }
+                ConstantView::ScaledParam { .. } => {
+                    return Err(ModelError::InvalidArrayShape(
+                        "row constant must be numeric",
+                    ))
+                }
+            };
+            if !shift.is_finite() {
+                return Err(ModelError::NonFiniteValue("row constant"));
             }
-        };
-        if !shift.is_finite() {
-            return Err(ModelError::NonFiniteValue("row constant"));
+            shifts.push(shift);
         }
 
         // ---- Validate everything before mutation (API-06.5 atomicity) ----
-        for &(lower, upper) in bounds {
+        for (r, &(lower, upper)) in bounds.iter().enumerate() {
             validate_constraint_bounds(ConstraintBounds {
-                lower: lower - shift,
-                upper: upper - shift,
+                lower: lower - shifts[r],
+                upper: upper - shifts[r],
             })?;
         }
         for term in array.terms() {
@@ -4039,8 +4072,8 @@ impl Model {
         let mut cons = Vec::with_capacity(nrows);
         for (r, &(lower, upper)) in bounds.iter().enumerate() {
             let con = self.add_empty_constraint(ConstraintBounds {
-                lower: lower - shift,
-                upper: upper - shift,
+                lower: lower - shifts[r],
+                upper: upper - shifts[r],
             });
             let start = r * row_len;
             let end = start + row_len;
@@ -6759,15 +6792,16 @@ mod mir03_row_seam_tests {
         assert_eq!(lowering.param_positions_cells, 0, "no per-cell positions");
         assert_eq!(lowering.general_affine, 0);
 
-        // Constant 3.0 folded into [0, 10] -> [-3, 7].
+        // The row sums n = 2 cells each carrying constant 3.0, so the folded
+        // shift is 6 and [0, 10] -> [-6, 4].
         let snapshot = fixture.model.take_snapshot().expect("snapshot");
         let entry = snapshot
             .constraints
             .iter()
             .find(|c| c.id == cons[0])
             .expect("row");
-        assert_eq!(entry.bounds.lower, -3.0);
-        assert_eq!(entry.bounds.upper, 7.0);
+        assert_eq!(entry.bounds.lower, -6.0);
+        assert_eq!(entry.bounds.upper, 4.0);
 
         // A bulk parameter update still uses the dependency block.
         fixture
@@ -7684,5 +7718,174 @@ mod mir04_reduction_tests {
             fast.take_snapshot().expect("fast"),
             raw.take_snapshot().expect("raw")
         );
+    }
+}
+
+#[cfg(test)]
+mod mir04_constant_tests {
+    use super::*;
+    use crate::modeling::{CoeffView, ConstantView, LinArray, NumView, Term, VarView};
+
+    fn one_term(vars: &VarView) -> Term {
+        Term {
+            vars: vars.clone(),
+            coeff: CoeffView::One,
+        }
+    }
+
+    /// A scalar array constant is **per cell**: an array objective over `n`
+    /// cells contributes `n * c`, not `c` (general path).
+    #[test]
+    fn array_objective_scalar_constant_contributes_per_cell() {
+        let n = 3usize;
+        let mut fast = Model::new();
+        let x = fast.var("x", n).bounds(0.0, 1.0).build().expect("x");
+        let owner = fast.instance();
+        let obj = LinArray::new(
+            owner,
+            [n],
+            vec![one_term(x.view())],
+            ConstantView::Scalar(3.0),
+        )
+        .expect("array");
+        fast.minimize_array(&obj).expect("objective");
+        let snap = fast.take_snapshot().expect("snapshot");
+        assert_eq!(snap.objectives[0].constant, 3.0 * n as f64);
+    }
+
+    /// The packed (parametric) array objective applies the same per-cell
+    /// scalar-constant rule.
+    #[test]
+    fn packed_array_objective_scalar_constant_contributes_per_cell() {
+        let n = 3usize;
+        let mut fast = Model::new();
+        let x = fast.var("x", n).bounds(0.0, 1.0).build().expect("x");
+        let p = fast.param("p", n, &vec![2.0; n]).expect("p");
+        let owner = fast.instance();
+        let term = Term {
+            vars: x.view().clone(),
+            coeff: CoeffView::ScaledParam {
+                scale: 1.0,
+                params: p.view().clone(),
+            },
+        };
+        let obj = LinArray::new(owner, [n], vec![term], ConstantView::Scalar(3.0)).expect("array");
+        fast.maximize_array(&obj).expect("objective");
+        assert!(fast.lowering_stats().param_dep_blocks >= 1, "packed");
+        let snap = fast.take_snapshot().expect("snapshot");
+        assert_eq!(snap.objectives[0].constant, 3.0 * n as f64);
+    }
+
+    /// `Σ_j (x[i, j] + 2) == 10` is `Σ_j x[i, j] == 10 - 2n` on the packed
+    /// reduction path (including a single-row array).
+    #[test]
+    fn reduction_scalar_constant_contributes_per_cell_packed() {
+        for (m, n) in [(2usize, 3usize), (1usize, 3usize)] {
+            let mut fast = Model::new();
+            let x = fast.var("x", [m, n]).bounds(0.0, 1.0).build().expect("x");
+            let owner = fast.instance();
+            let shifted = LinArray::new(
+                owner,
+                [m, n],
+                vec![one_term(x.view())],
+                ConstantView::Scalar(2.0),
+            )
+            .expect("array");
+            let cons = fast
+                .add_rows(shifted.rows_eq(&vec![10.0; m]).expect("spec"))
+                .expect("rows");
+            assert_eq!(cons.len(), m);
+            for con in cons {
+                let b = fast.constraint_bounds(con).expect("bounds");
+                assert_eq!(b.upper, 10.0 - 2.0 * n as f64, "m={m} n={n}");
+            }
+
+            // Raw equivalent: Σ_j x[i, j] == 10 - 2n.
+            let mut raw = Model::new();
+            let x = raw.var("x", [m, n]).bounds(0.0, 1.0).build().expect("x");
+            let mut row_ptr = vec![0u32];
+            let mut vars = Vec::new();
+            let mut values = Vec::new();
+            let mut bounds = Vec::new();
+            for i in 0..m {
+                for j in 0..n {
+                    vars.push(x.get(i * n + j).expect("var"));
+                    values.push(1.0);
+                }
+                row_ptr.push(vars.len() as u32);
+                bounds.push(ConstraintBounds {
+                    lower: 10.0 - 2.0 * n as f64,
+                    upper: 10.0 - 2.0 * n as f64,
+                });
+            }
+            raw.add_linear_rows_bulk(&row_ptr, &vars, &values, &bounds)
+                .expect("raw rows");
+            assert_eq!(
+                fast.take_snapshot().expect("fast"),
+                raw.take_snapshot().expect("raw"),
+                "m={m} n={n}"
+            );
+        }
+    }
+
+    /// A dense reduction constant sums the row's cells.
+    #[test]
+    fn reduction_dense_constant_sums_per_row() {
+        let (m, n) = (2usize, 3usize);
+        let mut fast = Model::new();
+        let x = fast.var("x", [m, n]).bounds(0.0, 1.0).build().expect("x");
+        let owner = fast.instance();
+        let shifted = LinArray::new(
+            owner,
+            [m, n],
+            vec![one_term(x.view())],
+            ConstantView::Dense {
+                scale: 1.0,
+                values: NumView::new(
+                    std::sync::Arc::from(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+                    [m, n],
+                    [n as isize, 1],
+                    0,
+                )
+                .expect("dense view"),
+            },
+        )
+        .expect("array");
+        let cons = fast
+            .add_rows(shifted.rows_eq(&vec![10.0; m]).expect("spec"))
+            .expect("rows");
+        // Row 0 constant 1 + 2 + 3 = 6; row 1 constant 4 + 5 + 6 = 15.
+        let expected = [10.0 - 6.0, 10.0 - 15.0];
+        for (con, want) in cons.iter().zip(expected) {
+            let b = fast.constraint_bounds(*con).expect("bounds");
+            assert_eq!(b.upper, want);
+        }
+    }
+
+    /// The general reduction fallback applies the same per-cell rule.
+    #[test]
+    fn reduction_scalar_constant_contributes_per_cell_general() {
+        let (m, n) = (2usize, 3usize);
+        let mut fast = Model::new();
+        let x = fast.var("x", [m, n]).bounds(0.0, 1.0).build().expect("x");
+        let p = fast.param("p", [m, n], &[1.0; 6]).expect("p");
+        let owner = fast.instance();
+        let term = Term {
+            vars: x.view().clone(),
+            coeff: CoeffView::ScaledParam {
+                scale: 1.0,
+                params: p.view().clone(),
+            },
+        };
+        let shifted =
+            LinArray::new(owner, [m, n], vec![term], ConstantView::Scalar(2.0)).expect("array");
+        let cons = fast
+            .add_rows(shifted.rows_eq(&vec![10.0; m]).expect("spec"))
+            .expect("rows");
+        assert!(fast.lowering_stats().general_affine > 0, "general path");
+        for con in cons {
+            let b = fast.constraint_bounds(con).expect("bounds");
+            assert_eq!(b.upper, 10.0 - 2.0 * n as f64);
+        }
     }
 }
