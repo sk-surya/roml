@@ -1,0 +1,63 @@
+{
+ "mutations": [
+  {
+   "id": "overlapping_param_dep_blocks",
+   "invariant": "A canonical packed cell is owned by at most one dependency block",
+   "test": "roml lib: duplicate cell in one witness",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.002s] (1/1) roml model::coefficient::mir02_dependency_validation_tests::duplicate_cell_positions_in_one_witness_are_rejected"
+  },
+  {
+   "id": "overlapping_param_dep_blocks",
+   "invariant": "A canonical packed cell is owned by at most one dependency block",
+   "test": "mir02_remediation: overlapping witnesses",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.002s] (1/1) roml::mir02_remediation overlapping_witnesses_are_rejected_atomically"
+  },
+  {
+   "id": "dropped_uncovered_param_positions",
+   "invariant": "A bulk parameter update also drives non-eligible packed fallback cells",
+   "test": "mir02_remediation: non-eligible fallback",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.002s] (1/1) roml::mir02_remediation bulk_update_propagates_non_eligible_packed_positions"
+  },
+  {
+   "id": "wrong_strided_map_traversal",
+   "invariant": "StridedMap ordinals are row-major (last dimension fastest)",
+   "test": "roml lib: row-major ordinals",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.002s] (1/1) roml bulk::tests::strided_map_row_major_ordinals_and_zero_stride"
+  },
+  {
+   "id": "expanded_set_objective_costs",
+   "invariant": "An eligible objective reprice stays one packed SetObjectiveCosts op",
+   "test": "mir02_backend_batching: one packed cost op",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.014s] (1/1) roml::mir02_backend_batching eligible_reprice_compiles_to_one_packed_cost_op"
+  },
+  {
+   "id": "shadowed_packed_cell_not_skipped",
+   "invariant": "Shadowed packed cells are skipped during span propagation",
+   "test": "mir02_edge_cases: fully shadowed family",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.002s] (1/1) roml::mir02_edge_cases fully_shadowed_family_emits_value_change_without_patch_batch"
+  },
+  {
+   "id": "value_expr_lost_during_replay",
+   "invariant": "ReferenceBackend patch replay preserves the symbolic ValueExpr",
+   "test": "mir02_remediation: symbolic replay",
+   "killed": true,
+   "exit_code": 100,
+   "detail": "FAIL [   0.002s] (1/1) roml::mir02_remediation reference_replay_preserves_symbolic_patch_cells"
+  }
+ ],
+ "killed": 7,
+ "survived": 0,
+ "verdict": "all-killed"
+}
