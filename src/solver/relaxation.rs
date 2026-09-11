@@ -1371,3 +1371,77 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn termination_status_maps_every_variant() {
+        use crate::solver::backend::TerminationStatus as T;
+        let cases = [
+            (T::Optimal, SolveStatus::Optimal),
+            (T::Feasible, SolveStatus::Feasible),
+            (T::Infeasible, SolveStatus::Infeasible),
+            (T::Unbounded, SolveStatus::Unbounded),
+            (T::InfeasibleOrUnbounded, SolveStatus::InfeasibleOrUnbounded),
+            (T::TimeLimit, SolveStatus::TimeLimit),
+            (T::IterationLimit, SolveStatus::IterationLimit),
+            (T::NodeLimit, SolveStatus::NodeLimit),
+            (T::Interrupted, SolveStatus::Interrupted),
+            (T::NumericalIssue, SolveStatus::Numerical),
+            (T::Unknown, SolveStatus::Unknown),
+            (T::Error, SolveStatus::Error),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(_termination_status(status), expected);
+        }
+    }
+
+    #[test]
+    fn soft_constraint_cap_and_weight_are_read_from_the_construct() {
+        use crate::construct::soft_constraint::{PenaltyPolicy, PenaltyTarget, ViolationPolicy};
+        use crate::expr::ConstraintExprExt;
+        use crate::model::{continuous, Model};
+        use crate::solver::infeasibility::BoundSide;
+        use crate::value_expr::ValueExpr;
+
+        let mut model = Model::new();
+        let x = model
+            .add_variable(continuous().bounds(0.0, 1.0))
+            .expect("x");
+        let con = model.add_constraint((x).ge(1.0)).expect("row");
+        model
+            .soften_constraint(
+                con,
+                ViolationPolicy {
+                    max_violation: Some(3.0),
+                },
+                PenaltyPolicy {
+                    weight: ValueExpr::constant(2.5),
+                    target: PenaltyTarget::None,
+                },
+            )
+            .expect("soften");
+
+        let restriction = RelaxationRestriction::ConstraintSide {
+            constraint: con,
+            side: BoundSide::Lower,
+        };
+        assert_eq!(
+            restriction_cap(&model, &restriction).expect("cap"),
+            Some(3.0)
+        );
+        assert_eq!(
+            restriction_weight(&model, &restriction).expect("weight"),
+            2.5
+        );
+        // Non-constraint restrictions default weight 1 and no cap.
+        let bound = RelaxationRestriction::VariableBound {
+            variable: x,
+            side: BoundSide::Lower,
+        };
+        assert_eq!(restriction_cap(&model, &bound).expect("cap"), None);
+        assert_eq!(restriction_weight(&model, &bound).expect("weight"), 1.0);
+    }
+}
