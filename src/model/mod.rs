@@ -6530,3 +6530,386 @@ mod mir03_row_seam_tests {
         );
     }
 }
+
+/// IR-23 rejection corpus: every conservative eligibility rejection must fall
+/// back to the general path and produce the same normalized mathematical model,
+/// before and after a bulk parameter update. Correctness rejections are
+/// impossible packed representations; conservative rejections are packable
+/// forms the proof deliberately declines (future optimization backlog).
+#[cfg(test)]
+mod mir03_ir23_tests {
+    use super::*;
+    use crate::modeling::builder::{LocalRow, RowBatch, RowBatchPlan};
+    use crate::modeling::{CoeffView, ConstantView, LinArray, ParamView, Term, VarView, View};
+
+    fn normalized(model: &Model) -> Vec<(VarId, ValueExpr, u64, Vec<ParamId>)> {
+        let snapshot = model.take_snapshot().expect("snapshot");
+        let mut out: Vec<_> = snapshot
+            .cells
+            .iter()
+            .map(|cell| {
+                let mut deps = cell.dependencies.clone();
+                deps.sort();
+                (
+                    cell.cell_key.1,
+                    cell.value_expr.clone(),
+                    cell.evaluated_value.to_bits(),
+                    deps,
+                )
+            })
+            .collect();
+        out.sort_by_key(|(var, _, _, _)| *var);
+        out
+    }
+
+    fn compare(case: fn(bool) -> (Model, ParamSpan), new_values: &[f64]) {
+        let (mut fast, fast_span) = case(true);
+        let (mut general, general_span) = case(false);
+        assert_eq!(
+            normalized(&fast),
+            normalized(&general),
+            "construction must match the general path"
+        );
+        fast.set_parameters_bulk(fast_span, new_values)
+            .expect("fast reprice");
+        fast.commit().expect("fast commit");
+        general
+            .set_parameters_bulk(general_span, new_values)
+            .expect("general reprice");
+        general.commit().expect("general commit");
+        assert_eq!(
+            normalized(&fast),
+            normalized(&general),
+            "after a parameter update must still match the general path"
+        );
+    }
+
+    fn uniform() -> BlockBounds<'static> {
+        BlockBounds::Uniform(Bounds::new(0.0, 1.0))
+    }
+
+    /// Correctness rejection: two distinct parameters reach one canonical
+    /// objective cell.
+    #[test]
+    fn overlapping_spans_two_params_one_cell() {
+        fn case(fast: bool) -> (Model, ParamSpan) {
+            let n = 2usize;
+            let mut model = Model::new();
+            let owner = model.instance();
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform())
+                .expect("v");
+            let p1 = model.add_parameter_block(&vec![1.0; n]).expect("p1");
+            let p2 = model.add_parameter_block(&vec![2.0; n]).expect("p2");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let pv1 = ParamView::new(owner, View::contiguous(p1, n)).expect("pv1");
+            let pv2 = ParamView::new(owner, View::contiguous(p2, n)).expect("pv2");
+            if fast {
+                let terms = vec![
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv1.clone(),
+                        },
+                    },
+                    Term {
+                        vars: v.clone(),
+                        coeff: CoeffView::ScaledParam {
+                            scale: 1.0,
+                            params: pv2.clone(),
+                        },
+                    },
+                ];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic falls back");
+            } else {
+                let mut vars = Vec::new();
+                let mut params = Vec::new();
+                let mut scales = Vec::new();
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(pv1.member(i).expect("p1"));
+                    scales.push(1.0);
+                }
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(pv2.member(i).expect("p2"));
+                    scales.push(1.0);
+                }
+                model
+                    .set_linear_objective_param_bulk(Sense::Maximize, &vars, &params, &scales, 0.0)
+                    .expect("general");
+            }
+            (model, p1)
+        }
+        compare(case, &[7.0, 8.0]);
+        let (fast, _) = case(true);
+        assert!(
+            fast.lowering_stats().general_affine > 0,
+            "two params one cell is a correctness rejection (general path)"
+        );
+    }
+
+    /// Conservative rejection: a zero-stride parameter broadcast across a
+    /// multi-cell objective run.
+    #[test]
+    fn zero_stride_parameter_across_multi_cell_target() {
+        fn case(fast: bool) -> (Model, ParamSpan) {
+            let n = 3usize;
+            let mut model = Model::new();
+            let owner = model.instance();
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform())
+                .expect("v");
+            let p_span = model.add_parameter_block(&[2.0]).expect("p");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let broadcast = ParamView::new(
+                owner,
+                View::new(
+                    crate::bulk::ParamSpan::from_parts(0, 1, crate::id::Generation::new()),
+                    [n],
+                    [0isize],
+                    0,
+                )
+                .expect("broadcast"),
+            )
+            .expect("pv");
+            let _ = p_span;
+            if fast {
+                let terms = vec![Term {
+                    vars: v.clone(),
+                    coeff: CoeffView::ScaledParam {
+                        scale: 1.0,
+                        params: broadcast.clone(),
+                    },
+                }];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic falls back");
+            } else {
+                let mut vars = Vec::new();
+                let mut params = Vec::new();
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(broadcast.member(i).expect("p"));
+                }
+                model
+                    .set_linear_objective_param_bulk(
+                        Sense::Maximize,
+                        &vars,
+                        &params,
+                        &vec![1.0; n],
+                        0.0,
+                    )
+                    .expect("general");
+            }
+            (model, p_span)
+        }
+        // The general path with a broadcast parameter cannot distinguish this
+        // from a broadcast cell: canonicalization merges the repeat. Compare.
+        compare(case, &[9.0]);
+        let (fast, _) = case(true);
+        assert_eq!(
+            fast.lowering_stats().general_affine,
+            0,
+            "zero-stride falls back to positions"
+        );
+    }
+
+    /// Conservative rejection: reversed (negative-stride) parameter view.
+    #[test]
+    fn reversed_parameter_stride_falls_back() {
+        fn case(fast: bool) -> (Model, ParamSpan) {
+            let n = 3usize;
+            let mut model = Model::new();
+            let owner = model.instance();
+            let v_span = model
+                .add_variable_block(n, VarType::Continuous, uniform())
+                .expect("v");
+            let p_span = model.add_parameter_block(&vec![1.0; n]).expect("p");
+            let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+            let forward = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+            let reversed = forward.reverse(0).expect("reverse");
+            if fast {
+                let terms = vec![Term {
+                    vars: v,
+                    coeff: CoeffView::ScaledParam {
+                        scale: 1.0,
+                        params: reversed,
+                    },
+                }];
+                let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+                model
+                    .set_linear_objective_from_linarray(Sense::Maximize, &array)
+                    .expect("automatic falls back");
+            } else {
+                let mut vars = Vec::new();
+                let mut params = Vec::new();
+                for i in 0..n {
+                    vars.push(v.member(i).expect("v"));
+                    params.push(reversed.member(i).expect("p"));
+                }
+                model
+                    .set_linear_objective_param_bulk(
+                        Sense::Maximize,
+                        &vars,
+                        &params,
+                        &vec![1.0; n],
+                        0.0,
+                    )
+                    .expect("general");
+            }
+            (model, p_span)
+        }
+        compare(case, &[10.0, 11.0, 12.0]);
+        // The proof declines a negative stride, so no dependency block is stored.
+        assert_eq!(case(true).0.lowering_stats().param_dep_blocks, 0);
+    }
+
+    /// Conservative rejection: `Dense × ParamView` (and other uncovered
+    /// coefficient products) stay on the general path.
+    #[test]
+    fn unsupported_coefficient_products_fall_back() {
+        let n = 2usize;
+        let owner = ModelInstanceId::allocate().expect("owner");
+        let p_span = crate::bulk::ParamSpan::from_parts(0, n as u32, crate::id::Generation::new());
+        let pv = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+        let v_span = crate::bulk::VarSpan::from_parts(0, n as u32, crate::id::Generation::new());
+        let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+
+        // Dense × ParamView.
+        let dense = LinArray::new(
+            owner,
+            [n],
+            vec![Term {
+                vars: v.clone(),
+                coeff: CoeffView::Dense {
+                    scale: 1.0,
+                    values: crate::modeling::NumView::from_vec(vec![1.0, 2.0]),
+                },
+            }],
+            ConstantView::Zero,
+        )
+        .expect("dense");
+        assert!(pv.mul_linarray(&dense).expect("ok").is_none());
+
+        // Already-parametric coefficient × ParamView.
+        let nested = LinArray::new(
+            owner,
+            [n],
+            vec![Term {
+                vars: v.clone(),
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: pv.clone(),
+                },
+            }],
+            ConstantView::Zero,
+        )
+        .expect("nested");
+        assert!(pv.mul_linarray(&nested).expect("ok").is_none());
+
+        // Shape outside the exact-shape subset: a length-3 array multiplied by
+        // a length-2 parameter view is declined (fallback), not mismatched.
+        let wide = LinArray::new(
+            owner,
+            [3usize],
+            vec![Term {
+                vars: VarView::new(
+                    owner,
+                    View::contiguous(
+                        crate::bulk::VarSpan::from_parts(0, 3, crate::id::Generation::new()),
+                        3,
+                    ),
+                )
+                .expect("wide v"),
+                coeff: CoeffView::One,
+            }],
+            ConstantView::Zero,
+        )
+        .expect("wide");
+        assert!(pv.mul_linarray(&wide).expect("ok").is_none());
+    }
+
+    /// Correctness rejection: a parameterized constant is not representable by
+    /// the scalar objective API and must not be silently dropped.
+    #[test]
+    fn unsupported_parametric_constant_rejects() {
+        let n = 2usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let v_span = model
+            .add_variable_block(n, VarType::Continuous, uniform())
+            .expect("v");
+        let p_span = model.add_parameter_block(&vec![1.0; n]).expect("p");
+        let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+        let pv = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+        let terms = vec![Term {
+            vars: v,
+            coeff: CoeffView::ScaledParam {
+                scale: 1.0,
+                params: pv.clone(),
+            },
+        }];
+        let array = LinArray::new(
+            owner,
+            [n],
+            terms,
+            ConstantView::ScaledParam {
+                scale: 1.0,
+                params: pv,
+            },
+        )
+        .expect("array");
+        let error = model
+            .set_linear_objective_from_linarray(Sense::Maximize, &array)
+            .expect_err("parameterized constant must reject");
+        assert!(matches!(error, ModelError::InvalidParamDepLayout(_)));
+        assert_eq!(model.num_objectives(), 0);
+    }
+
+    /// Correctness rejection: a mixed-row constant/parametric collision falls
+    /// back in `RowBlockPlan`.
+    #[test]
+    fn mixed_row_collision_is_general() {
+        let n = 2usize;
+        let mut model = Model::new();
+        let owner = model.instance();
+        let v_span = model
+            .add_variable_block(n, VarType::Continuous, uniform())
+            .expect("v");
+        let p_span = model.add_parameter_block(&vec![1.0; n]).expect("p");
+        let v = VarView::new(owner, View::contiguous(v_span, n)).expect("v");
+        let pv = ParamView::new(owner, View::contiguous(p_span, n)).expect("pv");
+        let terms = vec![
+            Term {
+                vars: v.clone(),
+                coeff: CoeffView::Scalar(1.0),
+            },
+            Term {
+                vars: v,
+                coeff: CoeffView::ScaledParam {
+                    scale: 1.0,
+                    params: pv,
+                },
+            },
+        ];
+        let array = LinArray::new(owner, [n], terms, ConstantView::Zero).expect("array");
+        let mut batch = RowBatch::new(owner);
+        batch
+            .push(
+                LocalRow {
+                    row: 0,
+                    lower: 0.0,
+                    upper: 1.0,
+                },
+                array,
+            )
+            .expect("push");
+        assert_eq!(batch.plan(), RowBatchPlan::General);
+    }
+}
