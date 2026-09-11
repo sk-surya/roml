@@ -3977,6 +3977,41 @@ impl Model {
         }
     }
 
+    /// Accumulate rule-built rows from a closure and commit them in **one**
+    /// bulk operation (MIR-05, IR-26).
+    ///
+    /// The closure runs once per index to *construct* row expressions and
+    /// pushes them into a [`crate::modeling::RuleBatch`]; no model mutation or
+    /// journal entry happens until the whole batch commits through the packed
+    /// mixed-row seam (`add_rows_from_plan`). A closure error or a
+    /// non-packable batch is a typed error with no residue, so rule callbacks
+    /// never regress into one-model-mutation-per-callback.
+    pub fn add_rules<F>(&mut self, build: F) -> Result<Vec<ConId>, ModelError>
+    where
+        F: FnOnce(&mut crate::modeling::RuleBatch) -> Result<(), crate::modeling::ViewError>,
+    {
+        use crate::modeling::ViewError;
+
+        let mut batch = crate::modeling::RuleBatch::new(self.instance());
+        build(&mut batch).map_err(|error| {
+            ModelError::InvalidParamDepLayout(match error {
+                ViewError::CrossModel { .. } => "rule row belongs to another model",
+                _ => "rule batch rejected",
+            })
+        })?;
+        let nrows = batch.len();
+        if nrows == 0 {
+            return Ok(Vec::new());
+        }
+        let plan = batch.into_plan().ok_or(ModelError::InvalidParamDepLayout(
+            "rule batch is not packable; use the general L1 path",
+        ))?;
+        let cons = self.add_rows_from_plan(&plan)?;
+        self.diagnostics.lowering.rule_rows_accumulated += nrows as u64;
+        self.diagnostics.lowering.rule_bulk_commits += 1;
+        Ok(cons)
+    }
+
     /// General symbolic fallback for a leading-axis row block: one row per
     /// leading entry, summing that entry's coefficient cells. Validates every
     /// referenced entity before any mutation.
@@ -7887,5 +7922,55 @@ mod mir04_constant_tests {
             let b = fast.constraint_bounds(con).expect("bounds");
             assert_eq!(b.upper, 10.0 - 2.0 * n as f64);
         }
+    }
+}
+
+#[cfg(test)]
+mod mir05_rule_tests {
+    use super::*;
+
+    #[test]
+    fn rule_batch_journals_one_change_for_many_rows() {
+        let (m, n) = (4usize, 3usize);
+        let mut model = Model::new();
+        let x = model.var("x", [m, n]).bounds(0.0, 1.0).build().unwrap();
+        model.changelog.clear();
+        let cons = model
+            .add_rules(|rules| {
+                for i in 0..m {
+                    rules.add_eq(x.row(i)?, i as f64)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(cons.len(), m);
+        let changes = model.changelog.changes();
+        assert_eq!(changes.len(), 1, "one journal entry for all rule rows");
+        assert!(matches!(changes[0], Change::BulkMixedRows { .. }));
+    }
+
+    #[test]
+    fn non_packable_rule_batch_is_a_typed_rejection() {
+        let (m, n) = (2usize, 3usize);
+        let mut model = Model::new();
+        let x = model.var("x", [m, n]).bounds(0.0, 1.0).build().unwrap();
+        let p = model.param("p", [m, n], &[1.0; 6]).unwrap();
+        let before = model.num_constraints();
+        let result = model.add_rules(|rules| {
+            // Two terms over the same canonical cells are not packable when a
+            // parameter multiplies them (distinct-param/overlap collision).
+            let row0 = x.row(0)?;
+            let row0_again = x.slice(0, 0, 1)?.reshape([n])?;
+            let net = row0 + (-1.0) * row0_again;
+            let coeffs = p
+                .row(0)?
+                .try_mul(&net)?
+                .ok_or(crate::modeling::ViewError::Unsupported("not representable"))?;
+            rules.add_eq(coeffs, 0.0)?;
+            Ok(())
+        });
+        assert!(result.is_err(), "non-packable batch must reject");
+        assert_eq!(model.num_constraints(), before, "no residue");
+        assert_eq!(model.lowering_stats().rule_bulk_commits, 0);
     }
 }
