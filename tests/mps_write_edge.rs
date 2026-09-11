@@ -162,3 +162,44 @@ fn active_constructs_are_unrepresentable_in_mps() {
     );
     assert!(format!("{error}").contains("absolute-value construct"));
 }
+
+#[test]
+fn objective_name_collision_respects_name_policy() {
+    use roml::io::mps::{MpsNamePolicy, MpsWriteOptions};
+    use roml::{ConstraintSpec, LinExpr};
+
+    let mut model = Model::with_name("collide");
+    model.add_variable(continuous().named("x")).expect("x");
+    // A constraint and an objective both named OBJ collide.
+    model
+        .add_constraint(ConstraintSpec::new(LinExpr::new(), ConstraintBounds::le(1.0)).named("OBJ"))
+        .expect("row");
+    let objective = model.add_objective_named(Sense::Minimize, "OBJ");
+    model
+        .set_active_objective(objective)
+        .expect("active objective");
+
+    // PreserveOrGenerate replaces the colliding objective name.
+    let mut bytes = Vec::new();
+    MpsWriter::with_options(MpsWriteOptions {
+        name_policy: MpsNamePolicy::PreserveOrGenerate,
+        ..Default::default()
+    })
+    .write(&model, &mut bytes)
+    .expect("generated objective name");
+    let text = String::from_utf8(bytes).expect("utf8 MPS");
+    assert!(text.contains("NAME collide"));
+    let _ = text;
+
+    // StrictPreserve rejects the collision.
+    let error = MpsWriter::with_options(MpsWriteOptions {
+        name_policy: MpsNamePolicy::StrictPreserve,
+        ..Default::default()
+    })
+    .write(&model, &mut Vec::new())
+    .expect_err("strict preserve rejects a colliding name");
+    assert_eq!(
+        error.kind(),
+        &roml::io::mps::MpsWriteErrorKind::NameAllocation
+    );
+}
