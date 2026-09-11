@@ -511,6 +511,11 @@ mod tests {
         assert_eq!(block.var_at(0).map(|v| v.index()), Some(10));
         assert_eq!(block.var_at(3), None);
         assert_eq!(block.span(), vs);
+        assert_eq!(
+            block.bounds(),
+            &BlockBoundsOwned::Uniform(Bounds::NON_NEGATIVE)
+        );
+        assert_eq!(ps.generation(), Generation::new());
     }
 
     #[test]

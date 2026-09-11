@@ -2673,6 +2673,11 @@ impl Model {
         self.coefficients.param_dependent_count(param)
     }
 
+    /// Number of stored eligible dependency blocks (MIR-02 diagnostics).
+    pub fn parameter_dependency_block_count(&self) -> usize {
+        self.coefficients.dep_block_count()
+    }
+
     /// Queue a parameter change in the current transaction.
     ///
     /// The change is not applied until `commit()` is called.

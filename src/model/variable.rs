@@ -417,4 +417,15 @@ mod tests {
         assert!(!store.contains(ids[1]));
         assert!(store.contains(ids[2]));
     }
+
+    #[test]
+    fn store_capacity_and_empty_states() {
+        let mut store = VariableStore::with_capacity(4);
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+        let id = store.add(Bounds::default(), VarType::Continuous);
+        assert!(!store.is_empty());
+        assert!(store.contains(id));
+        assert_eq!(Bounds::default(), Bounds::NON_NEGATIVE);
+    }
 }

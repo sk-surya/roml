@@ -157,6 +157,7 @@ mod tests {
         tx.set_param_block(span, vec![3.0, 4.0]);
         tx.set_param(make_param(0), 8.0);
         assert_eq!(tx.pending_count(), 2, "one block + one scalar");
+        assert_eq!(tx.iter_pending().count(), 1, "iter_pending sees scalars");
         tx.rollback();
         assert!(!tx.has_pending());
         assert!(tx.take_pending_blocks().is_empty());

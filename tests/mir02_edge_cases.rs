@@ -954,3 +954,109 @@ fn parametric_row_block_payload_is_well_formed() {
         other => panic!("expected AddParametricRows, got {other:?}"),
     }
 }
+
+#[test]
+fn fully_shadowed_family_emits_value_change_without_patch_batch() {
+    let n = 2;
+    let mut model = Model::new();
+    let (charge, discharge) = vars(&mut model, n);
+    let span = model.add_parameter_block(&price_values(n)).unwrap();
+    let price: Vec<ParamId> = span.ids().collect();
+    let (v, p, s) = objective_slices(n, &charge, &discharge, &price);
+    let layout = ParamDepLayout {
+        blocks: vec![
+            ParamDepBlockWitness {
+                params: span,
+                param_map: StridedMap::contiguous(n),
+                cell_offset: 0,
+                cell_map: StridedMap::contiguous(n),
+                scale: -DT,
+                row: None,
+            },
+            ParamDepBlockWitness {
+                params: span,
+                param_map: StridedMap::contiguous(n),
+                cell_offset: n as u32,
+                cell_map: StridedMap::contiguous(n),
+                scale: DT,
+                row: None,
+            },
+        ],
+    };
+    let obj = model
+        .set_linear_objective_param_bulk_with_layout(Sense::Maximize, &v, &p, &s, 0.0, &layout)
+        .unwrap();
+    let target = CoefficientTarget::Objective(obj);
+    // Shadow every eligible cell, so block propagation has nothing to patch.
+    for var in charge.iter().chain(discharge.iter()) {
+        model.set_coefficient(target, *var, 1.0).unwrap();
+    }
+    model.commit().expect("flush");
+
+    let base = model.current_revision();
+    let new: Vec<f64> = (0..n).map(|i| 4.0 + i as f64).collect();
+    model.set_parameters_bulk(span, &new).expect("queue");
+    model.commit().expect("commit");
+    assert_eq!(
+        model.propagation_stats().coefficient_patch_batches,
+        0,
+        "no live block cells -> no patch batch"
+    );
+    let batches = model.deltas_since(base).expect("delta");
+    assert_eq!(
+        batches[0].operations.len(),
+        1,
+        "only the packed parameter-value change"
+    );
+    assert!(matches!(
+        batches[0].operations[0],
+        ModelOp::SetParametersBulk { .. }
+    ));
+}
+
+#[test]
+fn reprice_of_unrelated_span_does_not_touch_eligible_cells() {
+    let n = 4;
+    let (mut model, _span_a) = eligible_model(n);
+    let span_b = model
+        .add_parameter_block(&[1.0, 2.0, 3.0, 4.0])
+        .expect("second parameter block");
+    model.commit().expect("flush");
+    let base = model.current_revision();
+
+    let new: Vec<f64> = (0..n).map(|i| 9.0 + i as f64).collect();
+    model.set_parameters_bulk(span_b, &new).expect("queue");
+    model.commit().expect("commit");
+
+    assert_eq!(
+        model.propagation_stats().coefficient_patch_batches,
+        0,
+        "unrelated parameters leave the eligible family untouched"
+    );
+    let batches = model.deltas_since(base).expect("delta");
+    assert_eq!(batches[0].operations.len(), 1);
+}
+
+#[test]
+fn param_rows_reject_merged_scale_overflow() {
+    let (mut model, vars, span) = param_row_ids(1);
+    let p = span.ids().next().unwrap();
+    let error = model
+        .add_linear_rows_param_bulk(
+            &[0, 2],
+            &[vars[0], vars[0]],
+            &[p, p],
+            &[f64::MAX, f64::MAX],
+            &[ConstraintBounds::le(1.0)],
+        )
+        .expect_err("merged scale overflow rejects");
+    assert!(matches!(error, ModelError::NonFiniteValue(_)));
+    assert_eq!(model.num_constraints(), 0);
+}
+
+#[test]
+fn new_error_variants_display() {
+    assert!(format!("{}", ModelError::NotPackable("x")).contains("not packable"));
+    assert!(format!("{}", ModelError::InvalidParamDepLayout("x"))
+        .contains("invalid parameter dependency layout"));
+}

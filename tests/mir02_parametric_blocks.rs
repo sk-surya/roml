@@ -155,6 +155,11 @@ fn layout_stores_blocks_without_param_positions() {
     assert_eq!(lowering.general_affine, 0);
     assert_eq!(lowering.param_dep_blocks, 2, "charge + discharge families");
     assert_eq!(
+        model.parameter_dependency_block_count(),
+        2,
+        "dependency-block diagnostic matches"
+    );
+    assert_eq!(
         lowering.param_positions_cells, 0,
         "eligible families do not populate per-cell reverse positions"
     );

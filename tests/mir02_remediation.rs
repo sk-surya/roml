@@ -195,6 +195,7 @@ fn partial_layout_uses_blocks_for_covered_and_positions_for_uncovered() {
     });
     let lowering = model.lowering_stats();
     assert_eq!(lowering.param_dep_blocks, 1);
+    assert_eq!(model.parameter_dependency_block_count(), 1);
     assert_eq!(
         lowering.param_positions_cells as usize, n,
         "only the uncovered discharge cells retain positions"
