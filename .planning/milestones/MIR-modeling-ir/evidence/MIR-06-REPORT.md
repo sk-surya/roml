@@ -45,9 +45,23 @@ Frozen contract (IR-25/IR-28):
 - Python tests: determinism, owner independence, structural sensitivity
   (`python/tests/test_fingerprint.py`; suite now 154 passed, 4 skipped).
 
+## M6-1A — Public shared-handle construction seam (complete)
+
+`Model::var_handle(span, shape)` / `Model::param_handle(span, shape)` wrap an
+already-allocated trusted `VarSpan`/`ParamSpan` as a `roml::modeling`
+`VarArray`/`ParamArray` (metadata over the span; shape product must equal the
+span length). This is the public seam the Python binding will use in M6-1A/B to
+hold shared handles instead of `Vec<VarId>`/`Vec<ParamId>` gathers. Tests:
+`model::mir06_handle_seam_tests`.
+
 ## Status
 
-M6-0B complete. Planned next: M6-1A (public shared-handle construction seam:
-Python `VarArray`/`ParamArray` wrap Rust `VarArray`/`ParamArray`), then
-M6-1B/1C (View transforms, delete gathered id vectors), M6-2, M6-3, M6-4.
+M6-0B and M6-1A (Rust seam) complete. Planned next: M6-1A/B/C Python side
+(`PyVarArray`/`PyParamArray` wrap `roml::modeling` handles; `__getitem__`/
+slice/transpose/reshape as `View` transforms; delete `vars`/`params`/`ordinals`
+vectors and `param_array_ids`; naming/update differential + grep/LOC invariant
+gate), then M6-2A/B (shared `GeneralLinArray` fallback; Python `ExprArray`
+wrapper), M6-3 (decorator rules → `RuleBatch`), M6-4 (Rust vs Python BESS
+fingerprint + packed-counter gate).
+
 

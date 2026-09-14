@@ -87,6 +87,14 @@ impl VarArray {
         }
     }
 
+    /// Build a handle from a trusted view with no boundary name (MIR-06 seam).
+    pub(crate) fn from_view(view: VarView) -> Self {
+        Self {
+            name: Arc::from(""),
+            view,
+        }
+    }
+
     /// Boundary name (metadata only; never part of expression nodes).
     pub fn name(&self) -> &str {
         &self.name
@@ -206,6 +214,14 @@ impl ParamArray {
     pub(crate) fn new(name: impl Into<Arc<str>>, view: ParamView) -> Self {
         Self {
             name: name.into(),
+            view,
+        }
+    }
+
+    /// Build a handle from a trusted view with no boundary name (MIR-06 seam).
+    pub(crate) fn from_view(view: ParamView) -> Self {
+        Self {
+            name: Arc::from(""),
             view,
         }
     }

@@ -33,6 +33,10 @@ before/after migration is in `MIGRATION.md`.
   ordinals. Combined with the existing `normalized_ordinal_fingerprint()`, this
   freezes the cross-language equivalence contract (IR-28); ops outside the
   frozen packed-construction set are a typed `ModelError::JournalContract`.
+- `Model::var_handle(span, shape)` / `Model::param_handle(span, shape)` wrap an
+  already-allocated trusted `VarSpan`/`ParamSpan` as a structured MIR-04 handle
+  (the public seam bindings use to share the array IR instead of gathering
+  per-element ids).
 
 #### Rule builders (MIR-05, unreleased)
 - `Model::add_indexed_rules(indices, |rules, i| ...)` drives the iteration

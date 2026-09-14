@@ -2903,6 +2903,50 @@ impl Model {
         Ok(self.parameters.add_block(values))
     }
 
+    /// Wrap an already-allocated variable span as a structured L1 handle
+    /// (MIR-06): the public seam a binding uses to share the MIR-04 array IR
+    /// instead of gathering per-element ids.
+    ///
+    /// The shape product must equal the span length. The handle is metadata
+    /// over the trusted span — no allocation and no per-element names.
+    pub fn var_handle(
+        &self,
+        span: VarSpan,
+        shape: impl Into<crate::modeling::Shape>,
+    ) -> Result<crate::modeling::VarArray, ModelError> {
+        let shape: crate::modeling::Shape = shape.into();
+        if shape.product() != Some(span.len()) {
+            return Err(ModelError::InvalidArrayShape(
+                "variable handle shape does not match the span length",
+            ));
+        }
+        let strides = crate::modeling::array::row_major_strides(shape.dims())
+            .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
+        let view = crate::modeling::View::new(span, shape.dims().to_vec(), strides, 0)?;
+        let var_view = crate::modeling::VarView::new(self.instance(), view)?;
+        Ok(crate::modeling::VarArray::from_view(var_view))
+    }
+
+    /// Wrap an already-allocated parameter span as a structured L1 handle
+    /// (MIR-06), the parameter counterpart of [`Self::var_handle`].
+    pub fn param_handle(
+        &self,
+        span: ParamSpan,
+        shape: impl Into<crate::modeling::Shape>,
+    ) -> Result<crate::modeling::ParamArray, ModelError> {
+        let shape: crate::modeling::Shape = shape.into();
+        if shape.product() != Some(span.len()) {
+            return Err(ModelError::InvalidArrayShape(
+                "parameter handle shape does not match the span length",
+            ));
+        }
+        let strides = crate::modeling::array::row_major_strides(shape.dims())
+            .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
+        let view = crate::modeling::View::new(span, shape.dims().to_vec(), strides, 0)?;
+        let param_view = crate::modeling::ParamView::new(self.instance(), view)?;
+        Ok(crate::modeling::ParamArray::from_view(param_view))
+    }
+
     /// Begin a structured variable array (MIR-04 L1):
     /// `m.var("charge", [b, t]).bounds(0.0, p).build()?`.
     pub fn var(
@@ -8493,5 +8537,44 @@ mod mir06_journal_fingerprint_tests {
         ));
         model.commit().unwrap();
         assert!(model.normalized_journal_fingerprint().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod mir06_handle_seam_tests {
+    use super::*;
+
+    #[test]
+    fn var_handle_wraps_an_allocated_span() {
+        let mut model = Model::new();
+        let span = model
+            .add_variable_block(
+                6,
+                VarType::Continuous,
+                BlockBounds::Uniform(Bounds::new(0.0, 1.0)),
+            )
+            .expect("block");
+        let array = model.var_handle(span, [2, 3]).expect("handle");
+        assert_eq!(array.shape(), &[2, 3]);
+        assert_eq!(array.owner(), model.instance());
+        assert_eq!(array.get(4).expect("cell").index(), 4);
+        let row = array.row(1).expect("row");
+        assert_eq!(row.shape(), &[3]);
+        assert_eq!(row.get(0).expect("cell").index(), 3);
+        // A shape that does not match the span length is rejected.
+        assert!(model.var_handle(span, [2, 2]).is_err());
+    }
+
+    #[test]
+    fn param_handle_wraps_an_allocated_span() {
+        let mut model = Model::new();
+        let span = model
+            .add_parameter_block(&[1.0, 2.0, 3.0, 4.0])
+            .expect("block");
+        let array = model.param_handle(span, [2, 2]).expect("handle");
+        assert_eq!(array.shape(), &[2, 2]);
+        assert_eq!(array.owner(), model.instance());
+        assert_eq!(array.get(3).expect("cell").index(), 3);
+        assert!(model.param_handle(span, [3]).is_err());
     }
 }
