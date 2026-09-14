@@ -50,3 +50,18 @@ accumulate CSR and bulk-commit once).
   no change to the MIR-04 L1 or MIR-03 packed seams.
 - Broadcasting/reductions beyond the conservative subset keep the typed
   fallback; rule rows are backed by the same packed `RowBlockPlan` seam.
+
+## Amendment (review round 1)
+
+- **Indexed API (ROML drives the iteration).**
+  `Model::add_indexed_rules(indices, |rules, i| ...)` iterates any
+  `IntoIterator` and constructs each index's rows into the shared `RuleBatch`;
+  `add_rules(closure)` remains for self-driven loops. Both commit once
+  (`rule_bulk_commits == 1`).
+- **Detailed diagnostics.** `ModelError::View(ViewError)` (with `From<ViewError>`
+  and a `source()` chain) preserves the exact cross-model / slice / shape
+  failure instead of collapsing it to a reason string.
+- **Delta/reprice qualification.** The rule-batch `BulkMixedRows` is
+  replay-qualified (retained-delta replay equals a clean rebuild) and
+  reprice-qualified (stored dependency blocks; 0 live-model lookups/evals, 1
+  packed patch batch).

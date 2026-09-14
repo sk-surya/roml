@@ -27,12 +27,16 @@ before/after migration is in `MIGRATION.md`.
 ### Added
 
 #### Rule builders (MIR-05, unreleased)
-- `Model::add_rules(closure)` runs a closure once per index to construct row
-  expressions into an in-memory `RuleBatch` and commits the whole batch through
-  the packed mixed-row seam in one operation. `LoweringStats` exposes
-  `rule_rows_accumulated` and `rule_bulk_commits == 1`; a failing closure, a
-  foreign array, or a non-packable batch rejects atomically with no per-row
-  model mutation.
+- `Model::add_indexed_rules(indices, |rules, i| ...)` drives the iteration
+  inside ROML: each index constructs its row expressions into an in-memory
+  `RuleBatch`, and the whole batch commits through the packed mixed-row seam in
+  one operation. `Model::add_rules(closure)` remains for callers that prefer to
+  drive the loop themselves. `LoweringStats` exposes `rule_rows_accumulated`
+  and `rule_bulk_commits == 1`; a failing closure, a foreign array, or a
+  non-packable batch rejects atomically with no per-row model mutation.
+- `ModelError::View(ViewError)` preserves the exact structured-array failure
+  (cross-model owner, slice out of range, shape mismatch) with a `source()`
+  chain, instead of collapsing it into a generic reason string.
 - `VarArray::row(i)` / `ParamArray::row(i)` give per-index coefficient arrays,
   and `From<VarArray> for LinArray` keeps rule call sites free of raw ids.
 

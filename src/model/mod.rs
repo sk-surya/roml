@@ -67,6 +67,7 @@ use crate::function::{FunctionConstraint, ScalarFunction, ScalarSet};
 use crate::id::{CoeffId, ConId, ObjId, ParamId, VarId};
 use crate::identity::{ModelInstanceId, ModelLineageId};
 use crate::metadata::{EntityMetadata, EntityRef};
+use crate::modeling::ViewError;
 use crate::revision::ModelRevision;
 use crate::snapshot::ModelSnapshot;
 use crate::solution::{SignedCorrection, Solution};
@@ -247,6 +248,10 @@ pub enum ModelError {
     /// (MIR-02): distinct parameters reach one canonical `(target, variable)`
     /// cell. Rejected atomically so the caller can use the general path.
     NotPackable(&'static str),
+    /// A structured-array/view operation failed with its detailed MIR error
+    /// (MIR-05). Preserves the original [`ViewError`] rather than collapsing it
+    /// into a generic reason string.
+    View(ViewError),
 }
 
 impl std::fmt::Display for ModelError {
@@ -414,11 +419,25 @@ impl std::fmt::Display for ModelError {
             Self::NotPackable(reason) => {
                 write!(f, "parametric construction is not packable: {reason}")
             }
+            Self::View(error) => write!(f, "{error}"),
         }
     }
 }
 
-impl std::error::Error for ModelError {}
+impl std::error::Error for ModelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::View(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<ViewError> for ModelError {
+    fn from(error: ViewError) -> Self {
+        Self::View(error)
+    }
+}
 
 /// The core MILP model - solver-agnostic representation.
 ///
@@ -3980,31 +3999,63 @@ impl Model {
     /// Accumulate rule-built rows from a closure and commit them in **one**
     /// bulk operation (MIR-05, IR-26).
     ///
-    /// The closure runs once per index to *construct* row expressions and
-    /// pushes them into a [`crate::modeling::RuleBatch`]; no model mutation or
-    /// journal entry happens until the whole batch commits through the packed
-    /// mixed-row seam (`add_rows_from_plan`). A closure error or a
+    /// The closure pushes rows into a [`crate::modeling::RuleBatch`]; no model
+    /// mutation or journal entry happens until the whole batch commits through
+    /// the packed mixed-row seam (`add_rows_from_plan`). A closure error or a
     /// non-packable batch is a typed error with no residue, so rule callbacks
     /// never regress into one-model-mutation-per-callback.
+    ///
+    /// When ROML should drive the iteration, use
+    /// [`Self::add_indexed_rules`] instead.
     pub fn add_rules<F>(&mut self, build: F) -> Result<Vec<ConId>, ModelError>
     where
-        F: FnOnce(&mut crate::modeling::RuleBatch) -> Result<(), crate::modeling::ViewError>,
+        F: FnOnce(&mut crate::modeling::RuleBatch) -> Result<(), ViewError>,
     {
-        use crate::modeling::ViewError;
-
         let mut batch = crate::modeling::RuleBatch::new(self.instance());
-        build(&mut batch).map_err(|error| {
-            ModelError::InvalidParamDepLayout(match error {
-                ViewError::CrossModel { .. } => "rule row belongs to another model",
-                _ => "rule batch rejected",
-            })
-        })?;
+        build(&mut batch)?;
+        self.commit_rule_batch(batch)
+    }
+
+    /// Run `rule` once per index in `indices`, accumulating rows and committing
+    /// them in **one** bulk operation (MIR-05, IR-26).
+    ///
+    /// ROML performs the iteration; each index constructs its row expressions
+    /// into the shared [`crate::modeling::RuleBatch`]. All canonical mutation is
+    /// deferred to the single bulk commit.
+    ///
+    /// ```ignore
+    /// let cons = model.add_indexed_rules(0..nodes, |rules, i| {
+    ///     rules.add_eq(x.row(i)?, supply[i])?;
+    ///     Ok(())
+    /// })?;
+    /// ```
+    pub fn add_indexed_rules<I, F>(
+        &mut self,
+        indices: I,
+        mut rule: F,
+    ) -> Result<Vec<ConId>, ModelError>
+    where
+        I: IntoIterator,
+        F: FnMut(&mut crate::modeling::RuleBatch, I::Item) -> Result<(), ViewError>,
+    {
+        let mut batch = crate::modeling::RuleBatch::new(self.instance());
+        for index in indices {
+            rule(&mut batch, index)?;
+        }
+        self.commit_rule_batch(batch)
+    }
+
+    /// Commit an accumulated rule batch in one packed mixed-row operation.
+    fn commit_rule_batch(
+        &mut self,
+        batch: crate::modeling::RuleBatch,
+    ) -> Result<Vec<ConId>, ModelError> {
         let nrows = batch.len();
         if nrows == 0 {
             return Ok(Vec::new());
         }
-        let plan = batch.into_plan().ok_or(ModelError::InvalidParamDepLayout(
-            "rule batch is not packable; use the general L1 path",
+        let plan = batch.into_plan().ok_or(ModelError::NotPackable(
+            "rule batch cannot be represented by packed rows; use the general L1 path",
         ))?;
         let cons = self.add_rows_from_plan(&plan)?;
         self.diagnostics.lowering.rule_rows_accumulated += nrows as u64;
@@ -7972,5 +8023,63 @@ mod mir05_rule_tests {
         assert!(result.is_err(), "non-packable batch must reject");
         assert_eq!(model.num_constraints(), before, "no residue");
         assert_eq!(model.lowering_stats().rule_bulk_commits, 0);
+    }
+
+    /// IR-26 + IR-14/IR-22: the `BulkMixedRows` emitted by a rule batch stays
+    /// self-contained through delta replay and a bulk reprice.
+    #[test]
+    fn rule_batch_delta_replay_matches_rebuild_across_reprice() {
+        use crate::solver::reference::ReferenceBackend;
+        use crate::sync::AdapterCursor;
+
+        let (m, n) = (3usize, 4usize);
+        let mut model = Model::new();
+        let x = model.var("x", [m, n]).bounds(0.0, 1.0).build().unwrap();
+        let price = model.param("price", [m, n], &[2.0; 12]).unwrap();
+        model
+            .add_indexed_rules(0..m, |rules, i| {
+                let row = x.row(i)?;
+                let coeffs = price
+                    .row(i)?
+                    .try_mul(&row.expr()?)?
+                    .ok_or(ViewError::Unsupported("not representable"))?;
+                rules.add_eq(coeffs, 1.0)?;
+                Ok(())
+            })
+            .unwrap();
+        model.commit().expect("commit rule rows");
+
+        let span = *price.view().view().span();
+        model
+            .set_parameters_bulk(span, &[3.0; 12])
+            .expect("reprice");
+        model.commit().expect("commit reprice");
+
+        // Incremental: replay every retained delta from the beginning.
+        let mut incremental = ReferenceBackend::new();
+        let mut cursor = AdapterCursor::new();
+        for batch in model.deltas_since(ModelRevision::ZERO).expect("deltas") {
+            incremental.apply_batch(batch, &mut cursor).expect("apply");
+        }
+        // Clean rebuild from the final canonical snapshot.
+        let mut rebuilt = ReferenceBackend::new();
+        let mut rebuild_cursor = AdapterCursor::new();
+        rebuilt.rebuild(
+            &model.take_snapshot().expect("snapshot"),
+            &mut rebuild_cursor,
+        );
+        assert_eq!(
+            incremental.normalized_view(),
+            rebuilt.normalized_view(),
+            "rule-batch delta replay must match a clean rebuild after reprice"
+        );
+
+        // The reprice uses the stored dependency blocks with no live-model
+        // lookups and one packed patch batch.
+        let propagation = model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
     }
 }
