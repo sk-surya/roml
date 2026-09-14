@@ -26,6 +26,14 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+#### Cross-language fingerprints (MIR-06, unreleased)
+- `Model::normalized_journal_fingerprint()` (Rust) and
+  `Model.normalized_journal_fingerprint()` (Python) fingerprint the ordered
+  semantic journal with absolute ids/owners replaced by first-occurrence
+  ordinals. Combined with the existing `normalized_ordinal_fingerprint()`, this
+  freezes the cross-language equivalence contract (IR-28); ops outside the
+  frozen packed-construction set are a typed `ModelError::JournalContract`.
+
 #### Rule builders (MIR-05, unreleased)
 - `Model::add_indexed_rules(indices, |rules, i| ...)` drives the iteration
   inside ROML: each index constructs its row expressions into an in-memory

@@ -18,7 +18,36 @@
     LinArray, ParamView}` (MIR-03/04) and route Python rule callbacks through
   the MIR-05 `RuleBatch` accumulator.
 
+## M6-0B — Journal fingerprint contract (complete)
+
+Real Python baseline (built with `maturin build --release --locked`, installed
+wheel outside the source tree):
+
+```text
+cargo check -p roml-python                              clean (19.5s)
+python -m pytest python/tests -q                       151 passed, 4 skipped
+python -m pytest python/tests/test_mpc.py -q -rs       4 passed (oracle runs)
+```
+
+Frozen contract (IR-25/IR-28):
+
+- `Model::normalized_journal_fingerprint()` (Rust) hashes the ordered
+  `ModelOp`s of the retained delta journal, normalizing absolute ids (incl.
+  generations) and owners to first-occurrence ordinals and excluding derived
+  caches (evaluated values, dependency layouts). The contract covers the packed
+  construction ops shared by the Rust/Python BESS formulations; an op outside
+  it is a typed `ModelError::JournalContract` (no silent under-approximation).
+  The model must be committed first (no partial fingerprint).
+- Python exposes `Model.normalized_ordinal_fingerprint()` and
+  `Model.normalized_journal_fingerprint()`, flushing pending core changes first.
+- Rust tests: identical semantics across owners/ids match; a structural
+  difference changes the value; an uncommitted journal is a typed error.
+- Python tests: determinism, owner independence, structural sensitivity
+  (`python/tests/test_fingerprint.py`; suite now 154 passed, 4 skipped).
+
 ## Status
 
-Planning complete (`MIR-06-PLAN.md`). Implementation of M6-1 (Python arrays
-wrap shared views) is the next step; see the plan for tasks and gates.
+M6-0B complete. Planned next: M6-1A (public shared-handle construction seam:
+Python `VarArray`/`ParamArray` wrap Rust `VarArray`/`ParamArray`), then
+M6-1B/1C (View transforms, delete gathered id vectors), M6-2, M6-3, M6-4.
+

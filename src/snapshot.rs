@@ -294,44 +294,44 @@ impl ModelSnapshot {
 
 /// A dependency-free, deterministic FNV-1a 64-bit hasher (stable across runs
 /// and Rust versions, unlike `DefaultHasher`).
-struct Fnv(u64);
+pub(crate) struct Fnv(u64);
 
 impl Fnv {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
 
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Self::OFFSET)
     }
 
-    fn byte(&mut self, byte: u8) {
+    pub(crate) fn byte(&mut self, byte: u8) {
         self.0 ^= u64::from(byte);
         self.0 = self.0.wrapping_mul(Self::PRIME);
     }
 
-    fn bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             self.byte(byte);
         }
     }
 
-    fn u64(&mut self, value: u64) {
+    pub(crate) fn u64(&mut self, value: u64) {
         self.bytes(&value.to_le_bytes());
     }
 
-    fn usize(&mut self, value: usize) {
+    pub(crate) fn usize(&mut self, value: usize) {
         self.u64(value as u64);
     }
 
-    fn f64(&mut self, value: f64) {
+    pub(crate) fn f64(&mut self, value: f64) {
         self.u64(value.to_bits());
     }
 
-    fn tag(&mut self, tag: u8) {
+    pub(crate) fn tag(&mut self, tag: u8) {
         self.byte(tag);
     }
 
-    fn value_expr(&mut self, expr: &ValueExpr, params: &HashMap<ParamId, usize>) {
+    pub(crate) fn value_expr(&mut self, expr: &ValueExpr, params: &HashMap<ParamId, usize>) {
         match expr {
             ValueExpr::Constant(value) => {
                 self.tag(1);
@@ -368,12 +368,12 @@ impl Fnv {
         }
     }
 
-    fn finish(self) -> u64 {
+    pub(crate) fn finish(self) -> u64 {
         self.0
     }
 }
 
-fn var_type_tag(var_type: VarType) -> u8 {
+pub(crate) fn var_type_tag(var_type: VarType) -> u8 {
     match var_type {
         VarType::Continuous => 0,
         VarType::Integer => 1,
@@ -381,7 +381,7 @@ fn var_type_tag(var_type: VarType) -> u8 {
     }
 }
 
-fn sense_tag(sense: Sense) -> u8 {
+pub(crate) fn sense_tag(sense: Sense) -> u8 {
     match sense {
         Sense::Minimize => 0,
         Sense::Maximize => 1,

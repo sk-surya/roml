@@ -232,6 +232,34 @@ impl Model {
         lock_state(&slf.borrow()).map(|state| state.name.clone())
     }
 
+    /// A deterministic fingerprint over the normalized ordinal IR (MIR-04,
+    /// IR-25): compiled/canonical ordinals, coefficients and topology, with
+    /// absolute ids, owners, names, labels and parameter values excluded.
+    /// Pending core changes are committed first.
+    fn normalized_ordinal_fingerprint(slf: &Bound<'_, Self>) -> PyResult<u64> {
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        state.model.commit().map_err(map_model_error)?;
+        state
+            .model
+            .normalized_ordinal_fingerprint()
+            .map_err(map_model_error)
+    }
+
+    /// A deterministic fingerprint over the normalized semantic journal
+    /// (MIR-06, IR-28): the ordered packed construction ops with absolute ids
+    /// replaced by first-occurrence ordinals. Pending core changes are
+    /// committed first.
+    fn normalized_journal_fingerprint(slf: &Bound<'_, Self>) -> PyResult<u64> {
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        state.model.commit().map_err(map_model_error)?;
+        state
+            .model
+            .normalized_journal_fingerprint()
+            .map_err(map_model_error)
+    }
+
     fn __repr__(slf: &Bound<'_, Self>) -> String {
         // Nonblocking read: a busy model renders a placeholder instead of
         // blocking the caller (repr must never hang); poison still shows.

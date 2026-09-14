@@ -76,10 +76,10 @@ use crate::solution::{SignedCorrection, Solution};
 
 use crate::value_expr::ValueExpr;
 
+use log::warn;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
-
-use log::warn;
 
 /// Error type for model operations.
 #[derive(Clone, Debug, PartialEq)]
@@ -252,6 +252,9 @@ pub enum ModelError {
     /// (MIR-05). Preserves the original [`ViewError`] rather than collapsing it
     /// into a generic reason string.
     View(ViewError),
+    /// The semantic-journal fingerprint was requested for an op outside the
+    /// frozen cross-language contract (MIR-06, IR-28).
+    JournalContract(&'static str),
 }
 
 impl std::fmt::Display for ModelError {
@@ -420,6 +423,9 @@ impl std::fmt::Display for ModelError {
                 write!(f, "parametric construction is not packable: {reason}")
             }
             Self::View(error) => write!(f, "{error}"),
+            Self::JournalContract(reason) => {
+                write!(f, "semantic-journal fingerprint contract: {reason}")
+            }
         }
     }
 }
@@ -3938,6 +3944,71 @@ impl Model {
     /// structural difference changes it.
     pub fn normalized_ordinal_fingerprint(&self) -> Result<u64, ModelError> {
         Ok(self.take_snapshot()?.normalized_ordinal_fingerprint())
+    }
+
+    /// A deterministic fingerprint over the **semantic journal** — the ordered
+    /// [`ModelOp`]s compiled from the retained revision deltas (MIR-06, IR-28).
+    ///
+    /// Normalization uses the same principle as
+    /// [`Self::normalized_ordinal_fingerprint`]: absolute ids (including
+    /// generations) and owners are replaced by first-occurrence ordinals, and
+    /// derived numeric caches (evaluated values, dependency layouts) are
+    /// excluded, so two models with identical semantics produce the same value
+    /// even when their ids differ. The contract covers the packed construction
+    /// ops shared by the Rust and Python BESS formulations; an op outside it is
+    /// a typed [`ModelError::JournalContract`] rather than a silent
+    /// under-approximation.
+    ///
+    /// The model must be committed first: the fingerprint is over the retained
+    /// delta journal.
+    pub fn normalized_journal_fingerprint(&self) -> Result<u64, ModelError> {
+        use crate::snapshot::Fnv;
+
+        if !self.changelog.is_empty() {
+            return Err(ModelError::JournalContract(
+                "commit before fingerprinting the semantic journal",
+            ));
+        }
+        let snapshot = self.take_snapshot()?;
+        let var_ord: HashMap<VarId, usize> = snapshot
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.id, i))
+            .collect();
+        let con_ord: HashMap<ConId, usize> = snapshot
+            .constraints
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.id, i))
+            .collect();
+        let obj_ord: HashMap<ObjId, usize> = snapshot
+            .objectives
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (o.id, i))
+            .collect();
+        let param_ord: HashMap<ParamId, usize> = snapshot
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id, i))
+            .collect();
+
+        let mut hasher = Fnv::new();
+        hasher.tag(0xF0);
+        let batches = self
+            .deltas_since(ModelRevision::ZERO)
+            .map_err(|_| ModelError::RevisionOverflow)?;
+        hasher.usize(batches.len());
+        for batch in batches {
+            hasher.tag(0xB0);
+            hasher.usize(batch.operations.len());
+            for op in &batch.operations {
+                hash_journal_op(&mut hasher, op, &var_ord, &con_ord, &obj_ord, &param_ord)?;
+            }
+        }
+        Ok(hasher.finish())
     }
 
     /// Commit a cell-wise row constraint (MIR-04 L1): each cell of the
@@ -8081,5 +8152,346 @@ mod mir05_rule_tests {
         assert_eq!(propagation.overlay_lookups, 0);
         assert_eq!(propagation.value_expr_evals, 0);
         assert_eq!(propagation.coefficient_patch_batches, 1);
+    }
+}
+
+/// Normalize one semantic-journal op into the cross-language fingerprint
+/// contract (MIR-06, IR-28): absolute ids become first-occurrence ordinals,
+/// owners never appear, and derived caches (evaluated values, dependency
+/// layouts) are excluded.
+fn hash_journal_op(
+    hasher: &mut crate::snapshot::Fnv,
+    op: &ModelOp,
+    var_ord: &HashMap<VarId, usize>,
+    con_ord: &HashMap<ConId, usize>,
+    obj_ord: &HashMap<ObjId, usize>,
+    param_ord: &HashMap<ParamId, usize>,
+) -> Result<(), ModelError> {
+    use crate::model::coefficient::CoefficientTarget;
+    use crate::snapshot::{sense_tag, var_type_tag};
+
+    let vo = |id: VarId| var_ord.get(&id).copied().unwrap_or(usize::MAX);
+    let co = |id: ConId| con_ord.get(&id).copied().unwrap_or(usize::MAX);
+    let oo = |id: ObjId| obj_ord.get(&id).copied().unwrap_or(usize::MAX);
+    let po = |id: ParamId| param_ord.get(&id).copied().unwrap_or(usize::MAX);
+    let bounds = |hasher: &mut crate::snapshot::Fnv, b: &ConstraintBounds| {
+        hasher.f64(b.lower);
+        hasher.f64(b.upper);
+    };
+    let target = |hasher: &mut crate::snapshot::Fnv, t: CoefficientTarget| match t {
+        CoefficientTarget::Constraint(c) => {
+            hasher.tag(0);
+            hasher.usize(co(c));
+        }
+        CoefficientTarget::Objective(o) => {
+            hasher.tag(1);
+            hasher.usize(oo(o));
+        }
+    };
+
+    match op {
+        ModelOp::AddVariable {
+            var,
+            bounds: b,
+            var_type,
+        } => {
+            hasher.tag(1);
+            hasher.usize(vo(*var));
+            hasher.f64(b.lower);
+            hasher.f64(b.upper);
+            hasher.tag(var_type_tag(*var_type));
+        }
+        ModelOp::AddVariableBlock { block } => {
+            hasher.tag(2);
+            let len = block.len();
+            hasher.usize(len);
+            hasher.tag(var_type_tag(block.var_type()));
+            for offset in 0..len {
+                let b = block
+                    .bounds_for(offset)
+                    .ok_or(ModelError::JournalContract("variable block bounds"))?;
+                hasher.f64(b.lower);
+                hasher.f64(b.upper);
+            }
+        }
+        ModelOp::SetVariableBounds { var, bounds: b } => {
+            hasher.tag(3);
+            hasher.usize(vo(*var));
+            hasher.f64(b.lower);
+            hasher.f64(b.upper);
+        }
+        ModelOp::SetVariableType { var, var_type } => {
+            hasher.tag(4);
+            hasher.usize(vo(*var));
+            hasher.tag(var_type_tag(*var_type));
+        }
+        ModelOp::SetVariableActive { var, active } => {
+            hasher.tag(5);
+            hasher.usize(vo(*var));
+            hasher.tag(u8::from(*active));
+        }
+        ModelOp::RemoveVariable { var } => {
+            hasher.tag(6);
+            hasher.usize(vo(*var));
+        }
+        ModelOp::AddConstraint { con, bounds: b } => {
+            hasher.tag(7);
+            hasher.usize(co(*con));
+            bounds(hasher, b);
+        }
+        ModelOp::SetConstraintBounds { con, bounds: b } => {
+            hasher.tag(8);
+            hasher.usize(co(*con));
+            bounds(hasher, b);
+        }
+        ModelOp::SetConstraintActive { con, active } => {
+            hasher.tag(9);
+            hasher.usize(co(*con));
+            hasher.tag(u8::from(*active));
+        }
+        ModelOp::RemoveConstraint { con } => {
+            hasher.tag(10);
+            hasher.usize(co(*con));
+        }
+        ModelOp::SetCell {
+            cell_key,
+            value_expr,
+            ..
+        } => {
+            hasher.tag(11);
+            target(hasher, cell_key.0);
+            hasher.usize(vo(cell_key.1));
+            hasher.value_expr(value_expr, param_ord);
+        }
+        ModelOp::RemoveCell { cell_key } => {
+            hasher.tag(12);
+            target(hasher, cell_key.0);
+            hasher.usize(vo(cell_key.1));
+        }
+        ModelOp::AddLinearRows { block } => {
+            hasher.tag(13);
+            for b in &block.bounds {
+                bounds(hasher, b);
+            }
+            for p in &block.row_ptr {
+                hasher.usize(*p as usize);
+            }
+            hasher.usize(block.vars.len());
+            for v in &block.vars {
+                hasher.usize(vo(*v));
+            }
+            for value in &block.values {
+                hasher.f64(*value);
+            }
+        }
+        ModelOp::AddParametricRows { block } => {
+            hasher.tag(14);
+            for b in &block.bounds {
+                bounds(hasher, b);
+            }
+            for p in &block.row_ptr {
+                hasher.usize(*p as usize);
+            }
+            hasher.usize(block.vars.len());
+            for v in &block.vars {
+                hasher.usize(vo(*v));
+            }
+            for p in &block.params {
+                hasher.usize(po(*p));
+            }
+            for s in &block.scales {
+                hasher.f64(*s);
+            }
+        }
+        ModelOp::AddMixedRows { block } => {
+            hasher.tag(15);
+            for b in &block.bounds {
+                bounds(hasher, b);
+            }
+            for p in &block.numeric_ptr {
+                hasher.usize(*p as usize);
+            }
+            for v in &block.numeric_vars {
+                hasher.usize(vo(*v));
+            }
+            for value in &block.numeric_values {
+                hasher.f64(*value);
+            }
+            for p in &block.parametric_ptr {
+                hasher.usize(*p as usize);
+            }
+            for v in &block.parametric_vars {
+                hasher.usize(vo(*v));
+            }
+            for p in &block.parametric_params {
+                hasher.usize(po(*p));
+            }
+            for s in &block.parametric_scales {
+                hasher.f64(*s);
+            }
+        }
+        ModelOp::AddObjective { obj, sense } => {
+            hasher.tag(16);
+            hasher.usize(oo(*obj));
+            hasher.tag(sense_tag(*sense));
+        }
+        ModelOp::SetActiveObjective { obj } => {
+            hasher.tag(17);
+            match obj {
+                Some(o) => {
+                    hasher.tag(1);
+                    hasher.usize(oo(*o));
+                }
+                None => hasher.tag(0),
+            }
+        }
+        ModelOp::SetObjectiveSense { obj, sense } => {
+            hasher.tag(18);
+            hasher.usize(oo(*obj));
+            hasher.tag(sense_tag(*sense));
+        }
+        ModelOp::SetObjectiveConstant { obj, constant } => {
+            hasher.tag(19);
+            hasher.usize(oo(*obj));
+            hasher.f64(*constant);
+        }
+        ModelOp::SetObjectiveCells { obj, cells } => {
+            hasher.tag(20);
+            hasher.usize(oo(*obj));
+            hasher.usize(cells.len());
+            for (var, value) in cells.iter() {
+                hasher.usize(vo(*var));
+                hasher.f64(*value);
+            }
+        }
+        ModelOp::SetObjectiveParamCells { obj, cells } => {
+            hasher.tag(21);
+            hasher.usize(oo(*obj));
+            hasher.usize(cells.len());
+            for cell in cells.iter() {
+                hasher.usize(vo(cell.var));
+                hasher.usize(po(cell.param));
+                hasher.f64(cell.scale);
+            }
+        }
+        ModelOp::SetObjectiveCell {
+            cell_key,
+            value_expr,
+            ..
+        } => {
+            hasher.tag(22);
+            target(hasher, cell_key.0);
+            hasher.usize(vo(cell_key.1));
+            hasher.value_expr(value_expr, param_ord);
+        }
+        ModelOp::SetParameter { param, value } => {
+            hasher.tag(23);
+            hasher.usize(po(*param));
+            hasher.f64(*value);
+        }
+        ModelOp::SetParametersBulk { changes } => {
+            hasher.tag(24);
+            hasher.usize(changes.len());
+            for change in changes.iter() {
+                hasher.usize(po(change.param));
+                hasher.f64(change.old);
+                hasher.f64(change.new);
+            }
+        }
+        ModelOp::SetCoefficientPatchBatch { patches } => {
+            hasher.tag(25);
+            hasher.usize(patches.len());
+            for patch in patches.iter() {
+                target(hasher, patch.target);
+                hasher.usize(vo(patch.var));
+                hasher.f64(patch.old);
+                hasher.f64(patch.new);
+            }
+        }
+        ModelOp::SetSemiContinuousBound { var, lower } => {
+            hasher.tag(26);
+            hasher.usize(vo(*var));
+            hasher.f64(*lower);
+        }
+        _ => {
+            return Err(ModelError::JournalContract(
+                "op outside the frozen BESS journal contract",
+            ))
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod mir06_journal_fingerprint_tests {
+    use super::*;
+
+    /// Build a BESS formulation (packed balance rows + parametric objective)
+    /// and return the normalized semantic-journal fingerprint.
+    fn bess(extra_row: bool) -> u64 {
+        let (b, t) = (2usize, 3usize);
+        let mut model = Model::new();
+        let charge = model
+            .var("charge", [b, t])
+            .bounds(0.0, 1.0)
+            .build()
+            .unwrap();
+        let discharge = model
+            .var("discharge", [b, t])
+            .bounds(0.0, 1.0)
+            .build()
+            .unwrap();
+        let energy = model
+            .var("energy", [b, t])
+            .bounds(0.0, 4.0)
+            .build()
+            .unwrap();
+        let price = model.param("price", [b, t], &vec![5.0; b * t]).unwrap();
+
+        let balance = energy.slice(1, 1, t - 1).unwrap().clone()
+            - (energy.slice(1, 0, t - 1).unwrap().clone()
+                + 0.25 * (charge.slice(1, 1, t - 1).unwrap().clone()));
+        model.add_row(balance.eq(0.0)).unwrap();
+
+        if extra_row {
+            model
+                .add_row(charge.row(0).unwrap().expr().unwrap().eq(1.0))
+                .unwrap();
+        }
+
+        let objective = price
+            .try_mul(&(discharge.clone() - charge.clone()))
+            .unwrap()
+            .unwrap();
+        model.maximize_array(&objective).unwrap();
+        model.commit().unwrap();
+        model.normalized_journal_fingerprint().unwrap()
+    }
+
+    /// Different owners/absolute ids but identical construction produce the
+    /// same normalized journal fingerprint.
+    #[test]
+    fn identical_semantics_ignore_owners_and_ids() {
+        assert_eq!(bess(false), bess(false));
+    }
+
+    /// A structural difference changes the journal fingerprint.
+    #[test]
+    fn structural_difference_changes_journal_fingerprint() {
+        assert_ne!(bess(false), bess(true));
+    }
+
+    /// An uncommitted journal is a typed contract error (no silent partial
+    /// fingerprint).
+    #[test]
+    fn uncommitted_journal_is_a_typed_contract_error() {
+        let mut model = Model::new();
+        model.var("x", 2).bounds(0.0, 1.0).build().unwrap();
+        assert!(matches!(
+            model.normalized_journal_fingerprint(),
+            Err(ModelError::JournalContract(_))
+        ));
+        model.commit().unwrap();
+        assert!(model.normalized_journal_fingerprint().is_ok());
     }
 }
