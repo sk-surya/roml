@@ -18,9 +18,11 @@ pub(crate) mod eligibility;
 mod labeled;
 #[allow(clippy::op_ref)]
 mod ops;
+mod rules;
 mod view;
 
 pub use array::{ParamArray, Shape, VarArray};
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, RowBlockSpec, RowSpec, Term};
 pub use labeled::{Axis, LabelError, Labeled, Shaped};
+pub use rules::RuleBatch;
 pub use view::{ParamView, VarView, View, ViewError};
