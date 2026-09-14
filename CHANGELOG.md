@@ -29,14 +29,17 @@ before/after migration is in `MIGRATION.md`.
 #### Cross-language fingerprints (MIR-06, unreleased)
 - `Model::normalized_journal_fingerprint()` (Rust) and
   `Model.normalized_journal_fingerprint()` (Python) fingerprint the ordered
-  semantic journal with absolute ids/owners replaced by first-occurrence
-  ordinals. Combined with the existing `normalized_ordinal_fingerprint()`, this
-  freezes the cross-language equivalence contract (IR-28); ops outside the
-  frozen packed-construction set are a typed `ModelError::JournalContract`.
-- `Model::var_handle(span, shape)` / `Model::param_handle(span, shape)` wrap an
-  already-allocated trusted `VarSpan`/`ParamSpan` as a structured MIR-04 handle
-  (the public seam bindings use to share the array IR instead of gathering
-  per-element ids).
+  semantic journal with absolute ids/owners mapped through the final normalized
+  snapshot ordinal maps. Combined with the existing
+  `normalized_ordinal_fingerprint()`, this freezes the cross-language
+  equivalence contract (IR-28); ops outside the frozen packed-construction set
+  are a typed `ModelError::JournalContract`.
+- `Model::add_variable_array_block(shape, ty, bounds)` /
+  `Model::add_parameter_array_block(shape, values)` allocate a structured block
+  and return its shared MIR-04 handle in one atomic operation (the allocating
+  model stamps its own owner — there is no naked-span construction seam), and
+  `Model::set_parameter_array(&ParamArray, values)` performs an owner-checked
+  bulk update.
 
 #### Rule builders (MIR-05, unreleased)
 - `Model::add_indexed_rules(indices, |rules, i| ...)` drives the iteration

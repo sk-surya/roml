@@ -32,11 +32,12 @@ python -m pytest python/tests/test_mpc.py -q -rs       4 passed (oracle runs)
 Frozen contract (IR-25/IR-28):
 
 - `Model::normalized_journal_fingerprint()` (Rust) hashes the ordered
-  `ModelOp`s of the retained delta journal, normalizing absolute ids (incl.
-  generations) and owners to first-occurrence ordinals and excluding derived
-  caches (evaluated values, dependency layouts). The contract covers the packed
-  construction ops shared by the Rust/Python BESS formulations; an op outside
-  it is a typed `ModelError::JournalContract` (no silent under-approximation).
+  `ModelOp`s of the retained delta journal, mapping absolute ids (incl.
+  generations) and owners through the final normalized snapshot ordinal maps
+  and excluding derived caches (evaluated values, dependency layouts). The
+  contract covers the packed construction ops shared by the Rust/Python BESS
+  formulations; an op outside it is a typed `ModelError::JournalContract` (no
+  silent under-approximation).
   The model must be committed first (no partial fingerprint).
 - Python exposes `Model.normalized_ordinal_fingerprint()` and
   `Model.normalized_journal_fingerprint()`, flushing pending core changes first.
@@ -45,14 +46,25 @@ Frozen contract (IR-25/IR-28):
 - Python tests: determinism, owner independence, structural sensitivity
   (`python/tests/test_fingerprint.py`; suite now 154 passed, 4 skipped).
 
-## M6-1A — Public shared-handle construction seam (complete)
+## M6-1A — Atomic shared-handle construction seam (complete; ownership fixed)
 
-`Model::var_handle(span, shape)` / `Model::param_handle(span, shape)` wrap an
-already-allocated trusted `VarSpan`/`ParamSpan` as a `roml::modeling`
-`VarArray`/`ParamArray` (metadata over the span; shape product must equal the
-span length). This is the public seam the Python binding will use in M6-1A/B to
-hold shared handles instead of `Vec<VarId>`/`Vec<ParamId>` gathers. Tests:
-`model::mir06_handle_seam_tests`.
+`Model::add_variable_array_block(shape, ty, bounds)` /
+`Model::add_parameter_array_block(shape, values)` allocate a structured block and
+return its shared `roml::modeling` handle in one atomic operation; the allocating
+model stamps its own owner, so no foreign span can be relabeled. Parameter
+updates go through the owner-checked `Model::set_parameter_array(&ParamArray,
+values)` (packed bulk path for a full-block view, per-member for a sliced view),
+which accesses the trusted span internally.
+
+Ownership remediation (review round 1): the first cut exposed
+`var_handle(span, shape)` / `param_handle(span, shape)`, which accepted a naked
+span and stamped the caller's owner — a span allocated by model A could be
+relabeled as model B's. A RED test
+(`foreign_span_cannot_be_relabelled_as_this_model`) demonstrated that laundering
+succeeded before the fix; the naked-span seam is now removed, so the capability
+cannot be expressed in the public API. Tests: `model::mir06_handle_seam_tests`
+(atomic ownership; owner-checked update; foreign array rejected; length
+mismatch rejected).
 
 ## Status
 

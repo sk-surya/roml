@@ -2903,48 +2903,87 @@ impl Model {
         Ok(self.parameters.add_block(values))
     }
 
-    /// Wrap an already-allocated variable span as a structured L1 handle
-    /// (MIR-06): the public seam a binding uses to share the MIR-04 array IR
-    /// instead of gathering per-element ids.
+    /// Allocate a structured variable block and return its shared L1 handle in
+    /// **one atomic operation** (MIR-06).
     ///
-    /// The shape product must equal the span length. The handle is metadata
-    /// over the trusted span — no allocation and no per-element names.
-    pub fn var_handle(
-        &self,
-        span: VarSpan,
+    /// The model allocates the trusted span and immediately stamps its own
+    /// owner on the handle, so no foreign span can be relabeled as this model's.
+    /// This is the seam bindings use to share the MIR-04 array IR instead of
+    /// gathering per-element ids.
+    pub fn add_variable_array_block(
+        &mut self,
         shape: impl Into<crate::modeling::Shape>,
+        var_type: VarType,
+        bounds: BlockBounds<'_>,
     ) -> Result<crate::modeling::VarArray, ModelError> {
         let shape: crate::modeling::Shape = shape.into();
-        if shape.product() != Some(span.len()) {
-            return Err(ModelError::InvalidArrayShape(
-                "variable handle shape does not match the span length",
-            ));
-        }
-        let strides = crate::modeling::array::row_major_strides(shape.dims())
-            .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
-        let view = crate::modeling::View::new(span, shape.dims().to_vec(), strides, 0)?;
-        let var_view = crate::modeling::VarView::new(self.instance(), view)?;
-        Ok(crate::modeling::VarArray::from_view(var_view))
+        let n = shape
+            .product()
+            .ok_or(ModelError::InvalidArrayShape("shape overflow"))?;
+        let span = self.add_variable_block(n, var_type, bounds)?;
+        array_from_span(self.instance(), span, &shape)
     }
 
-    /// Wrap an already-allocated parameter span as a structured L1 handle
-    /// (MIR-06), the parameter counterpart of [`Self::var_handle`].
-    pub fn param_handle(
-        &self,
-        span: ParamSpan,
+    /// Allocate a structured parameter block and return its shared L1 handle in
+    /// **one atomic operation** (MIR-06), the parameter counterpart of
+    /// [`Self::add_variable_array_block`].
+    pub fn add_parameter_array_block(
+        &mut self,
         shape: impl Into<crate::modeling::Shape>,
+        values: &[f64],
     ) -> Result<crate::modeling::ParamArray, ModelError> {
         let shape: crate::modeling::Shape = shape.into();
-        if shape.product() != Some(span.len()) {
-            return Err(ModelError::InvalidArrayShape(
-                "parameter handle shape does not match the span length",
+        let n = shape
+            .product()
+            .ok_or(ModelError::InvalidArrayShape("shape overflow"))?;
+        if values.len() != n {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: n,
+                coeffs: values.len(),
+            });
+        }
+        let span = self.add_parameter_block(values)?;
+        param_array_from_span(self.instance(), span, &shape)
+    }
+
+    /// Bulk-update the values of a shared parameter array (MIR-06).
+    ///
+    /// Owner-checked: the array must belong to this model. The trusted span is
+    /// accessed internally, so no naked-span authority is reintroduced. A
+    /// full-block view uses the packed bulk path; a sliced view updates its
+    /// members individually.
+    pub fn set_parameter_array(
+        &mut self,
+        array: &crate::modeling::ParamArray,
+        values: &[f64],
+    ) -> Result<(), ModelError> {
+        if array.owner() != self.instance() {
+            return Err(ModelError::InvalidParamDepLayout(
+                "parameter array belongs to another model",
             ));
         }
-        let strides = crate::modeling::array::row_major_strides(shape.dims())
-            .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
-        let view = crate::modeling::View::new(span, shape.dims().to_vec(), strides, 0)?;
-        let param_view = crate::modeling::ParamView::new(self.instance(), view)?;
-        Ok(crate::modeling::ParamArray::from_view(param_view))
+        if values.len() != array.len() {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: array.len(),
+                coeffs: values.len(),
+            });
+        }
+        let view = array.view().view();
+        let span = *view.span();
+        let full_block = view.offset() == 0
+            && view.len() == span.len()
+            && crate::modeling::eligibility::is_contiguous_dense(view.shape(), view.strides());
+        if full_block {
+            self.set_parameters_bulk(span, values)
+        } else {
+            for (ordinal, value) in values.iter().enumerate() {
+                let param = array.get(ordinal).ok_or(ModelError::InvalidParamDepLayout(
+                    "stale parameter array member",
+                ))?;
+                self.set_parameter(param, *value)?;
+            }
+            Ok(())
+        }
     }
 
     /// Begin a structured variable array (MIR-04 L1):
@@ -3995,7 +4034,8 @@ impl Model {
     ///
     /// Normalization uses the same principle as
     /// [`Self::normalized_ordinal_fingerprint`]: absolute ids (including
-    /// generations) and owners are replaced by first-occurrence ordinals, and
+    /// generations) and owners are mapped through the final normalized snapshot
+    /// ordinal maps, and
     /// derived numeric caches (evaluated values, dependency layouts) are
     /// excluded, so two models with identical semantics produce the same value
     /// even when their ids differ. The contract covers the packed construction
@@ -5358,6 +5398,34 @@ impl Model {
 }
 
 // ── Constraint bounds validation ──────────────────────────────────────────
+
+/// Build a structured variable handle from a span this model just allocated
+/// (crate-private: the public API only allocates and wraps atomically, so no
+/// foreign span can be relabeled).
+fn array_from_span(
+    owner: ModelInstanceId,
+    span: VarSpan,
+    shape: &crate::modeling::Shape,
+) -> Result<crate::modeling::VarArray, ModelError> {
+    let strides = crate::modeling::array::row_major_strides(shape.dims())
+        .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
+    let view = crate::modeling::View::new(span, shape.dims().to_vec(), strides, 0)?;
+    let var_view = crate::modeling::VarView::new(owner, view)?;
+    Ok(crate::modeling::VarArray::from_view(var_view))
+}
+
+/// Parameter counterpart of [`array_from_span`].
+fn param_array_from_span(
+    owner: ModelInstanceId,
+    span: ParamSpan,
+    shape: &crate::modeling::Shape,
+) -> Result<crate::modeling::ParamArray, ModelError> {
+    let strides = crate::modeling::array::row_major_strides(shape.dims())
+        .ok_or(ModelError::InvalidArrayShape("stride overflow"))?;
+    let view = crate::modeling::View::new(span, shape.dims().to_vec(), strides, 0)?;
+    let param_view = crate::modeling::ParamView::new(owner, view)?;
+    Ok(crate::modeling::ParamArray::from_view(param_view))
+}
 
 /// Validate a variable domain before mutation.
 ///
@@ -8200,9 +8268,9 @@ mod mir05_rule_tests {
 }
 
 /// Normalize one semantic-journal op into the cross-language fingerprint
-/// contract (MIR-06, IR-28): absolute ids become first-occurrence ordinals,
-/// owners never appear, and derived caches (evaluated values, dependency
-/// layouts) are excluded.
+/// contract (MIR-06, IR-28): absolute ids are mapped through the final
+/// normalized snapshot ordinal maps, owners never appear, and derived caches
+/// (evaluated values, dependency layouts) are excluded.
 fn hash_journal_op(
     hasher: &mut crate::snapshot::Fnv,
     op: &ModelOp,
@@ -8544,37 +8612,55 @@ mod mir06_journal_fingerprint_tests {
 mod mir06_handle_seam_tests {
     use super::*;
 
+    /// Allocation and wrapping are one atomic operation: the handle always
+    /// carries the allocating model's owner (no naked-span seam exists).
     #[test]
-    fn var_handle_wraps_an_allocated_span() {
+    fn add_variable_array_block_owns_and_wraps_atomically() {
         let mut model = Model::new();
-        let span = model
-            .add_variable_block(
-                6,
+        let array = model
+            .add_variable_array_block(
+                [2, 3],
                 VarType::Continuous,
                 BlockBounds::Uniform(Bounds::new(0.0, 1.0)),
             )
-            .expect("block");
-        let array = model.var_handle(span, [2, 3]).expect("handle");
+            .expect("array");
         assert_eq!(array.shape(), &[2, 3]);
         assert_eq!(array.owner(), model.instance());
+        assert_eq!(model.num_variables(), 6);
         assert_eq!(array.get(4).expect("cell").index(), 4);
         let row = array.row(1).expect("row");
-        assert_eq!(row.shape(), &[3]);
         assert_eq!(row.get(0).expect("cell").index(), 3);
-        // A shape that does not match the span length is rejected.
-        assert!(model.var_handle(span, [2, 2]).is_err());
     }
 
+    /// Parameter allocation-and-wrap plus the owner-checked bulk update.
     #[test]
-    fn param_handle_wraps_an_allocated_span() {
+    fn add_parameter_array_block_and_owner_checked_update() {
         let mut model = Model::new();
-        let span = model
-            .add_parameter_block(&[1.0, 2.0, 3.0, 4.0])
-            .expect("block");
-        let array = model.param_handle(span, [2, 2]).expect("handle");
+        let array = model
+            .add_parameter_array_block([2, 2], &[1.0, 2.0, 3.0, 4.0])
+            .expect("array");
         assert_eq!(array.shape(), &[2, 2]);
         assert_eq!(array.owner(), model.instance());
-        assert_eq!(array.get(3).expect("cell").index(), 3);
-        assert!(model.param_handle(span, [3]).is_err());
+
+        model
+            .set_parameter_array(&array, &[5.0, 6.0, 7.0, 8.0])
+            .expect("update");
+        model.commit().expect("commit");
+        let snapshot = model.take_snapshot().expect("snapshot");
+        let values: Vec<f64> = snapshot.parameters.iter().map(|p| p.value).collect();
+        assert_eq!(values, vec![5.0, 6.0, 7.0, 8.0]);
+
+        // Wrong length is rejected.
+        assert!(model.set_parameter_array(&array, &[1.0]).is_err());
+
+        // A foreign parameter array is rejected by ownership, not by ids.
+        let mut other = Model::new();
+        let foreign = other
+            .add_parameter_array_block([1], &[9.0])
+            .expect("foreign");
+        assert!(matches!(
+            model.set_parameter_array(&foreign, &[1.0]),
+            Err(ModelError::InvalidParamDepLayout(_))
+        ));
     }
 }
