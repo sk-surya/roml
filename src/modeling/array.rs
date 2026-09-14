@@ -201,6 +201,28 @@ impl VarArray {
         let target = if rest.is_empty() { vec![1] } else { rest };
         self.slice(0, index, 1)?.reshape(target)
     }
+
+    /// Metadata-only strided subsample along `axis`.
+    pub fn subsample(
+        &self,
+        axis: usize,
+        start: usize,
+        step: usize,
+        len: usize,
+    ) -> Result<Self, ViewError> {
+        Ok(Self {
+            name: self.name.clone(),
+            view: self.view.subsample(axis, start, step, len)?,
+        })
+    }
+
+    /// Metadata-only squeeze of a length-1 `axis`.
+    pub fn squeeze(&self, axis: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            name: self.name.clone(),
+            view: self.view.squeeze(axis)?,
+        })
+    }
 }
 
 /// A model-owned multidimensional parameter array handle.
@@ -322,6 +344,28 @@ impl ParamArray {
         let rest = self.shape()[1..].to_vec();
         let target = if rest.is_empty() { vec![1] } else { rest };
         self.slice(0, index, 1)?.reshape(target)
+    }
+
+    /// Metadata-only strided subsample along `axis`.
+    pub fn subsample(
+        &self,
+        axis: usize,
+        start: usize,
+        step: usize,
+        len: usize,
+    ) -> Result<Self, ViewError> {
+        Ok(Self {
+            name: self.name.clone(),
+            view: self.view.subsample(axis, start, step, len)?,
+        })
+    }
+
+    /// Metadata-only squeeze of a length-1 `axis`.
+    pub fn squeeze(&self, axis: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            name: self.name.clone(),
+            view: self.view.squeeze(axis)?,
+        })
     }
 }
 

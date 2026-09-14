@@ -371,6 +371,86 @@ impl<S> View<S> {
             map: StridedMap::new(shape, strides, self.map.offset()),
         })
     }
+
+    /// Metadata-only strided subsample along `axis`: `out[k] = start + k*step`
+    /// for `k in 0..len` (`step >= 1`; negative steps use [`Self::reverse`]).
+    ///
+    /// The stride of the axis is multiplied by `step`; no buffer is gathered.
+    pub fn subsample(
+        &self,
+        axis: usize,
+        start: usize,
+        step: usize,
+        len: usize,
+    ) -> Result<Self, ViewError>
+    where
+        S: Clone,
+    {
+        let rank = self.map.shape().len();
+        if axis >= rank {
+            return Err(ViewError::AxisOutOfRange { axis, rank });
+        }
+        if step == 0 {
+            return Err(ViewError::Unsupported("index step must be >= 1"));
+        }
+        let dim = self.map.shape()[axis];
+        if len > 0 {
+            let span = step
+                .checked_mul(len - 1)
+                .and_then(|s| start.checked_add(s))
+                .ok_or(ViewError::IndexOverflow)?;
+            if span >= dim {
+                return Err(ViewError::SliceOutOfRange {
+                    axis,
+                    start,
+                    len,
+                    dim,
+                });
+            }
+        }
+        let mut shape = self.map.shape().to_vec();
+        shape[axis] = len;
+        let mut strides = self.map.strides().to_vec();
+        let step_isize = isize::try_from(step).map_err(|_| ViewError::IndexOverflow)?;
+        strides[axis] = strides[axis]
+            .checked_mul(step_isize)
+            .ok_or(ViewError::IndexOverflow)?;
+        let start_isize = isize::try_from(start).map_err(|_| ViewError::IndexOverflow)?;
+        let delta = start_isize
+            .checked_mul(self.map.strides()[axis])
+            .ok_or(ViewError::IndexOverflow)?;
+        let offset = self
+            .map
+            .offset()
+            .checked_add(delta)
+            .ok_or(ViewError::IndexOverflow)?;
+        Ok(Self {
+            span: self.span.clone(),
+            map: StridedMap::new(shape, strides, offset),
+        })
+    }
+
+    /// Metadata-only squeeze of a length-1 `axis` (the axis is dropped).
+    pub fn squeeze(&self, axis: usize) -> Result<Self, ViewError>
+    where
+        S: Clone,
+    {
+        let rank = self.map.shape().len();
+        if axis >= rank {
+            return Err(ViewError::AxisOutOfRange { axis, rank });
+        }
+        if self.map.shape()[axis] != 1 {
+            return Err(ViewError::Unsupported("squeeze requires a length-1 axis"));
+        }
+        let mut shape = self.map.shape().to_vec();
+        let mut strides = self.map.strides().to_vec();
+        shape.remove(axis);
+        strides.remove(axis);
+        Ok(Self {
+            span: self.span.clone(),
+            map: StridedMap::new(shape, strides, self.map.offset()),
+        })
+    }
 }
 
 /// A symbolic variable view owned by one model instance.
@@ -453,6 +533,28 @@ impl VarView {
         })
     }
 
+    /// Metadata-only strided subsample along `axis`.
+    pub fn subsample(
+        &self,
+        axis: usize,
+        start: usize,
+        step: usize,
+        len: usize,
+    ) -> Result<Self, ViewError> {
+        Ok(Self {
+            owner: self.owner,
+            view: self.view.subsample(axis, start, step, len)?,
+        })
+    }
+
+    /// Metadata-only squeeze of a length-1 `axis`.
+    pub fn squeeze(&self, axis: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            owner: self.owner,
+            view: self.view.squeeze(axis)?,
+        })
+    }
+
     /// Reject composition with a view from a different model instance.
     pub fn check_same_model(&self, other: &Self) -> Result<(), ViewError> {
         if self.owner != other.owner {
@@ -528,6 +630,28 @@ impl ParamView {
         Ok(Self {
             owner: self.owner,
             view: self.view.reshape(shape)?,
+        })
+    }
+
+    /// Metadata-only strided subsample along `axis`.
+    pub fn subsample(
+        &self,
+        axis: usize,
+        start: usize,
+        step: usize,
+        len: usize,
+    ) -> Result<Self, ViewError> {
+        Ok(Self {
+            owner: self.owner,
+            view: self.view.subsample(axis, start, step, len)?,
+        })
+    }
+
+    /// Metadata-only squeeze of a length-1 `axis`.
+    pub fn squeeze(&self, axis: usize) -> Result<Self, ViewError> {
+        Ok(Self {
+            owner: self.owner,
+            view: self.view.squeeze(axis)?,
         })
     }
 
