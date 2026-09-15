@@ -30,8 +30,10 @@ before/after migration is in `MIGRATION.md`.
 - Python `VarArray`/`ParamArray` now wrap the shared `roml::modeling` handles
   (`inner`); `__getitem__`/slicing lower to metadata `subsample`/`squeeze`
   transforms, and the per-element `vars`/`params`/`ordinals` stores plus the
-  `param_array_ids` registry are removed (IR-27). Parameter updates route
-  through the retained shared handle.
+  `param_array_ids`/`param_array_shapes` registries are removed (IR-27).
+- `m.update(name=...)` keeps a structured install plan: a root parameter-array
+  update routes through one owner-checked `Model::set_parameter_array` (one
+  packed `set_parameters_bulk` block), not N scalar parameter updates.
 - `Model::normalized_journal_fingerprint()` (Rust) and
   `Model.normalized_journal_fingerprint()` (Python) fingerprint the ordered
   semantic journal with absolute ids/owners mapped through the final normalized

@@ -26,6 +26,7 @@ EXPECTED_KEYS = {
     "overlay_lookups",
     "value_expr_evals",
     "coefficient_patch_batches",
+    "packed_parameter_updates",
 }
 
 
@@ -66,4 +67,19 @@ def test_update_reports_propagation_work():
     stats = m._debug_mir_stats()
     # One packed reverse-index position per cell, no ValueExpr evaluations.
     assert stats["param_position_lookups"] == 3
+    assert stats["value_expr_evals"] == 0
+
+
+def test_root_parameter_array_update_uses_one_packed_block():
+    """A root parameter-array update stays a single packed `set_parameters_bulk`
+    block, not N scalar parameter updates (MIR-06)."""
+    m = rm.Model()
+    price = m.params("price", np.array([1.0, 2.0, 3.0]))
+    x = m.vars("x", 3, ub=1.0)
+    m.maximize(rm.sum(price * x))
+
+    m.update(price=np.array([4.0, 5.0, 6.0]))
+    stats = m._debug_mir_stats()
+    assert stats["packed_parameter_updates"] == 1
+    assert stats["coefficient_patch_batches"] == 1
     assert stats["value_expr_evals"] == 0

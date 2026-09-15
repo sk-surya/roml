@@ -162,7 +162,6 @@ mod tests {
             var_array_lens: HashMap::new(),
             explicit_indices: HashMap::new(),
             array_names: std::collections::HashSet::new(),
-            param_array_shapes: HashMap::new(),
             param_arrays: HashMap::new(),
             obj_coeffs: HashMap::new(),
             con_coeffs: HashMap::new(),

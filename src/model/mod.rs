@@ -8714,3 +8714,36 @@ mod mir06_handle_seam_tests {
         assert_eq!(before, after, "a rejected sliced update is atomic");
     }
 }
+
+#[cfg(test)]
+mod mir06_bulk_update_tests {
+    use super::*;
+
+    /// `set_parameter_array` on a root parameter block reprices through the
+    /// packed path: one coefficient-patch batch, no per-cell lookups/evals.
+    #[test]
+    fn set_parameter_array_reprices_with_one_packed_batch() {
+        let mut model = Model::new();
+        let x = model.var("x", 4).bounds(0.0, 1.0).build().unwrap();
+        let price = model
+            .add_parameter_array_block([4], &[1.0; 4])
+            .expect("param array");
+        let objective = price
+            .try_mul(&x.expr().expect("expr"))
+            .expect("fast IR")
+            .expect("conservative IR covers price * x");
+        model.maximize_array(&objective).expect("objective");
+        model.commit().expect("commit");
+        assert!(model.lowering_stats().param_dep_blocks >= 1);
+
+        model
+            .set_parameter_array(&price, &[2.0; 4])
+            .expect("bulk reprice");
+        model.commit().expect("commit reprice");
+        let propagation = model.propagation_stats();
+        assert_eq!(propagation.param_position_lookups, 0);
+        assert_eq!(propagation.overlay_lookups, 0);
+        assert_eq!(propagation.value_expr_evals, 0);
+        assert_eq!(propagation.coefficient_patch_batches, 1);
+    }
+}

@@ -75,8 +75,15 @@ PyParamArray { owner: Py<Model>, inner: roml::modeling::ParamArray, base_name }
 ```
 - `Model.vars` allocates via `Model::add_variable_array_block` and returns the
   shared handle; `Model.params` allocates via `add_parameter_array_block` and
-  retains the handle in `ModelState.param_arrays` (`name -> ParamArray`) for
-  `m.update(name=...)` (which resolves members from the handle; no id vector).
+  retains the handle in `ModelState.param_arrays` (`name -> ParamArray`).
+- `m.update(name=...)` builds a structured `PendingUpdate` list (`Scalar`
+  or `Array`). A root parameter-array update installs through **one**
+  `set_parameter_array` -> `set_parameters_bulk` (one packed parameter block,
+  one coefficient patch batch), not N scalar updates. A flattened
+  `ParamId -> value` view is used only for the existing derived-bound and
+  coefficient-finite validation, so whole-call atomic preflight is retained.
+- Deleted `param_array_shapes` as well: `param_arrays[name].shape()` is the
+  authoritative shape.
 - `__getitem__` lowers `int`/positive-step `slice`/`ellipsis` to per-axis
   `subsample`/`squeeze` metadata transforms (`normalize_index` returns
   `AxisSelection`s, not a flat position vector). Scalar results resolve through
@@ -98,6 +105,12 @@ Evidence:
 - `python/tests/test_fingerprint.py`: array-built and explicit scalar-built
   models produce equal `normalized_ordinal_fingerprint()` (construction
   differential); fingerprints stay deterministic and structure-sensitive.
+- `python/tests/test_mir_diagnostics.py` (debug wheel): a root parameter-array
+  `m.update(price=[...])` reports `packed_parameter_updates == 1` and
+  `coefficient_patch_batches == 1` — it does not degrade to N scalar updates.
+- Rust `model::mir06_bulk_update_tests`:
+  `set_parameter_array` reprices with one packed patch batch and zero
+  per-cell lookups/evals.
 - `tests/mir06_view_subsample.rs`: rank-0 integer path, chained subsampling
   root mapping, empty selection.
 

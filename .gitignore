@@ -71,3 +71,5 @@ uv.lock
 # macOS
 .DS_Store
 .claude/worktrees/
+
+dist-debug/

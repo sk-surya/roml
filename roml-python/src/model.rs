@@ -50,7 +50,6 @@ pub(crate) struct ModelState {
     /// no element entries). Checked alongside the entity namespaces.
     pub array_names: std::collections::HashSet<String>,
     /// Parameter array base names with their immutable shapes.
-    pub param_array_shapes: HashMap<String, Vec<usize>>,
     /// Parameter array base names with their element identities in
     /// C order, so batch updates address elements without reformatting
     /// names or re-hashing per element.
@@ -214,7 +213,6 @@ impl Model {
                     explicit_indices: HashMap::new(),
                     bound_deps: Vec::new(),
                     array_names: std::collections::HashSet::new(),
-                    param_array_shapes: HashMap::new(),
                     param_arrays: HashMap::new(),
                     obj_coeffs: HashMap::new(),
                     con_coeffs: HashMap::new(),
@@ -418,8 +416,10 @@ impl Model {
     /// Returns a dict with the nine counters `numeric_bulk`,
     /// `parametric_bulk`, `general_affine`, `param_dep_blocks`,
     /// `param_positions_cells`, `param_position_lookups`, `overlay_lookups`,
-    /// `value_expr_evals`, `coefficient_patch_batches`. Observational only;
-    /// release wheels expose no such surface.
+    /// `value_expr_evals`, `coefficient_patch_batches`, plus
+    /// `packed_parameter_updates` (packed `SetParametersBulk` ops in the
+    /// retained journal). Observational only; release wheels expose no such
+    /// surface.
     #[cfg(debug_assertions)]
     fn _debug_mir_stats(slf: &Bound<'_, Self>) -> PyResult<Py<PyDict>> {
         let borrowed = slf.borrow();
@@ -436,6 +436,17 @@ impl Model {
         dict.set_item("overlay_lookups", p.overlay_lookups)?;
         dict.set_item("value_expr_evals", p.value_expr_evals)?;
         dict.set_item("coefficient_patch_batches", p.coefficient_patch_batches)?;
+        let mut packed_parameter_updates = 0u64;
+        if let Ok(batches) = state.model.deltas_since(roml::ModelRevision::ZERO) {
+            for batch in batches {
+                for op in &batch.operations {
+                    if matches!(op, roml::delta::ModelOp::SetParametersBulk { .. }) {
+                        packed_parameter_updates += 1;
+                    }
+                }
+            }
+        }
+        dict.set_item("packed_parameter_updates", packed_parameter_updates)?;
         Ok(dict.into())
     }
 
@@ -458,11 +469,26 @@ impl Model {
         // Scalar names set one parameter; parameter-array base names take
         // an exact-shape array (no partial updates).
         let mut batch: Vec<(ParamId, f64)> = Vec::new();
+        // Structured install plan: a root parameter-array update must stay a
+        // single packed `set_parameter_array` (not N scalar updates). `batch`
+        // is a flattened view used only for derived validation.
+        enum PendingUpdate {
+            Scalar {
+                param: ParamId,
+                value: f64,
+            },
+            Array {
+                array: roml::modeling::ParamArray,
+                values: Vec<f64>,
+            },
+        }
+        let mut updates: Vec<PendingUpdate> = Vec::new();
         for (key, value) in values.iter() {
             let name: String = key
                 .extract()
                 .map_err(|_| InvalidModelError::new_err("parameter names must be strings"))?;
-            if let Some(shape) = state.param_array_shapes.get(&name).cloned() {
+            if let Some(array) = state.param_arrays.get(&name).cloned() {
+                let shape = array.shape().to_vec();
                 use super::arrays::{numel, parse_numeric, NumericMode};
                 // Zero-dimensional arrays accept a scalar (or 0-d input):
                 // there is exactly one element, so scalar broadcast is
@@ -495,9 +521,6 @@ impl Model {
                     )));
                 }
                 debug_assert_eq!(parsed.values.len(), numel(&shape));
-                let array = state.param_arrays.get(&name).ok_or_else(|| {
-                    InvalidModelError::new_err(format!("unknown parameter {name:?}"))
-                })?;
                 debug_assert_eq!(array.len(), parsed.values.len());
                 for (i, v) in parsed.values.iter().enumerate() {
                     let id = array.get(i).ok_or_else(|| {
@@ -505,6 +528,10 @@ impl Model {
                     })?;
                     batch.push((id, *v));
                 }
+                updates.push(PendingUpdate::Array {
+                    array,
+                    values: parsed.values,
+                });
                 continue;
             }
             if state.var_names.contains_key(&name)
@@ -521,6 +548,10 @@ impl Model {
                 .ok_or_else(|| InvalidModelError::new_err(format!("unknown parameter {name:?}")))?;
             let v = py_numeric(&value, &format!("value for {name:?}"))?;
             batch.push((id, v));
+            updates.push(PendingUpdate::Scalar {
+                param: id,
+                value: v,
+            });
         }
         if batch.is_empty() {
             return Err(InvalidModelError::new_err(
@@ -638,11 +669,21 @@ impl Model {
         // stale identities) have no other documented failure mode for
         // pre-validated inputs, and identities cannot go stale under the
         // held model lock.
-        for (id, v) in &batch {
-            state
-                .model
-                .set_parameter(*id, *v)
-                .map_err(map_model_error)?;
+        for update in updates {
+            match update {
+                PendingUpdate::Scalar { param, value } => {
+                    state
+                        .model
+                        .set_parameter(param, value)
+                        .map_err(map_model_error)?;
+                }
+                PendingUpdate::Array { array, values } => {
+                    state
+                        .model
+                        .set_parameter_array(&array, &values)
+                        .map_err(map_model_error)?;
+                }
+            }
         }
         for (con, lo, hi) in bound_updates {
             state
@@ -836,9 +877,6 @@ impl Model {
         }
         state.array_names.insert(name.to_string());
         state.index_explicit_name(name);
-        state
-            .param_array_shapes
-            .insert(name.to_string(), parsed.shape.clone());
         // Retain the shared handle (not a gathered id vector) for updates.
         state.param_arrays.insert(name.to_string(), array.clone());
         state.pending = true;
@@ -1834,7 +1872,6 @@ mod lock_tests {
                 var_array_lens: HashMap::new(),
                 explicit_indices: HashMap::new(),
                 array_names: std::collections::HashSet::new(),
-                param_array_shapes: HashMap::new(),
                 param_arrays: HashMap::new(),
                 obj_coeffs: HashMap::new(),
                 con_coeffs: HashMap::new(),
