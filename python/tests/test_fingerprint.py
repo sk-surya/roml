@@ -52,3 +52,24 @@ def test_fingerprints_are_stable_across_repeated_calls():
     first_journal = m.normalized_journal_fingerprint()
     assert m.normalized_ordinal_fingerprint() == first_ordinal
     assert m.normalized_journal_fingerprint() == first_journal
+
+
+def test_array_and_scalar_construction_have_equal_ordinal_fingerprint():
+    """The shared-handle array path and the explicit scalar path lower to the
+    same normalized ordinal IR."""
+    array_model = rm.Model()
+    xa = array_model.vars("x", 3, ub=1.0)
+    pa = array_model.params("p", [1.0, 2.0, 3.0])
+    array_model.add(rm.sum(xa) <= 2.0)
+    array_model.maximize(rm.dot(pa, xa))
+
+    scalar_model = rm.Model()
+    xs = [scalar_model.var(f"x{i}", ub=1.0) for i in range(3)]
+    ps = [scalar_model.param(f"p{i}", float(i + 1)) for i in range(3)]
+    scalar_model.add(xs[0] + xs[1] + xs[2] <= 2.0)
+    scalar_model.maximize(ps[0] * xs[0] + ps[1] * xs[1] + ps[2] * xs[2])
+
+    assert (
+        array_model.normalized_ordinal_fingerprint()
+        == scalar_model.normalized_ordinal_fingerprint()
+    )

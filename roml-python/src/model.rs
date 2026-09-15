@@ -54,7 +54,8 @@ pub(crate) struct ModelState {
     /// Parameter array base names with their element identities in
     /// C order, so batch updates address elements without reformatting
     /// names or re-hashing per element.
-    pub param_array_ids: HashMap<String, Vec<ParamId>>,
+    /// Retained shared parameter handles for `m.update(name=...)` (MIR-06).
+    pub param_arrays: HashMap<String, roml::modeling::ParamArray>,
     /// Coefficient templates for derived-overflow pre-validation on update:
     /// every parameter-dependent coefficient the binding lowered, keyed by
     /// target. Coefficients update natively in the core; these copies exist
@@ -214,7 +215,7 @@ impl Model {
                     bound_deps: Vec::new(),
                     array_names: std::collections::HashSet::new(),
                     param_array_shapes: HashMap::new(),
-                    param_array_ids: HashMap::new(),
+                    param_arrays: HashMap::new(),
                     obj_coeffs: HashMap::new(),
                     con_coeffs: HashMap::new(),
                     has_complex_deps: false,
@@ -248,8 +249,8 @@ impl Model {
 
     /// A deterministic fingerprint over the normalized semantic journal
     /// (MIR-06, IR-28): the ordered packed construction ops with absolute ids
-    /// replaced by first-occurrence ordinals. Pending core changes are
-    /// committed first.
+    /// mapped through the final normalized snapshot ordinal maps. Pending core
+    /// changes are committed first.
     fn normalized_journal_fingerprint(slf: &Bound<'_, Self>) -> PyResult<u64> {
         let borrowed = slf.borrow();
         let mut state = lock_state(&borrowed)?;
@@ -494,12 +495,15 @@ impl Model {
                     )));
                 }
                 debug_assert_eq!(parsed.values.len(), numel(&shape));
-                let ids = state.param_array_ids.get(&name).ok_or_else(|| {
+                let array = state.param_arrays.get(&name).ok_or_else(|| {
                     InvalidModelError::new_err(format!("unknown parameter {name:?}"))
                 })?;
-                debug_assert_eq!(ids.len(), parsed.values.len());
-                for (id, v) in ids.iter().zip(parsed.values.iter()) {
-                    batch.push((*id, *v));
+                debug_assert_eq!(array.len(), parsed.values.len());
+                for (i, v) in parsed.values.iter().enumerate() {
+                    let id = array.get(i).ok_or_else(|| {
+                        InvalidModelError::new_err(format!("unknown parameter {name:?}"))
+                    })?;
+                    batch.push((id, *v));
                 }
                 continue;
             }
@@ -738,33 +742,25 @@ impl Model {
         state.array_names.insert(name.to_string());
         state.index_explicit_name(name);
         state.var_array_lens.insert(name.to_string(), n);
-        let mut vars = Vec::with_capacity(n);
-        // Domains pre-validated above; core insertion cannot fail on them.
-        // (A residual internal failure would leave partial state; core
-        // setters have no documented failure mode here.)
-        // No element strings are formatted, hashed, or stored: implicit
-        // names materialize on demand at handle creation.
-        for (lo, hi) in domains.iter().copied() {
-            let def = match var_type {
-                VarType::Continuous => roml::continuous().bounds(lo, hi),
-                VarType::Integer => roml::integer().bounds(lo, hi),
-                VarType::Binary => roml::binary().bounds(lo, hi),
-            };
-            let id = state.model.add_variable(def).map_err(map_model_error)?;
-            vars.push(id);
-            if var_type != VarType::Continuous {
-                state.has_discrete = true;
-            }
+        // Allocate one packed block and wrap it in the shared MIR-06 handle.
+        // No per-element ids are gathered or retained in the Python layer.
+        let bounds: Vec<roml::Bounds> = domains
+            .iter()
+            .map(|(lo, hi)| roml::Bounds::new(*lo, *hi))
+            .collect();
+        let array = state
+            .model
+            .add_variable_array_block(shape, var_type, roml::BlockBounds::PerElement(&bounds))
+            .map_err(map_model_error)?;
+        if var_type != VarType::Continuous {
+            state.has_discrete = true;
         }
         state.pending = true;
         state.py_revision += 1;
         Ok(super::arrays::VarArray {
             owner: slf.clone().unbind(),
-            shape,
-            vars,
+            inner: array,
             base_name: name.to_string(),
-            // Root arrays own the identity mapping: no side vector.
-            ordinals: None,
         })
     }
 
@@ -825,34 +821,32 @@ impl Model {
                 "namespace collision for array element {ename:?}"
             )));
         }
-        let mut params = Vec::with_capacity(n);
-        for (i, v) in parsed.values.iter().enumerate() {
-            let id = state.model.add_parameter(*v).map_err(map_model_error)?;
+        let array = state
+            .model
+            .add_parameter_array_block(parsed.shape.clone(), &parsed.values)
+            .map_err(map_model_error)?;
+        for i in 0..array.len() {
+            let id = array.get(i).expect("valid parameter array view");
             let ename = element_name(name, i);
             state.param_names.insert(ename.clone(), id);
             // Parameter elements stay eager, but their generated-looking
             // names join the reverse index so prospective variable arrays
             // see them without string scans.
             state.index_explicit_name(&ename);
-            params.push(id);
         }
         state.array_names.insert(name.to_string());
         state.index_explicit_name(name);
         state
             .param_array_shapes
             .insert(name.to_string(), parsed.shape.clone());
-        state
-            .param_array_ids
-            .insert(name.to_string(), params.clone());
+        // Retain the shared handle (not a gathered id vector) for updates.
+        state.param_arrays.insert(name.to_string(), array.clone());
         state.pending = true;
         state.py_revision += 1;
         Ok(super::arrays::ParamArray {
             owner: slf.clone().unbind(),
-            shape: parsed.shape,
-            params,
+            inner: array,
             base_name: name.to_string(),
-            // Root arrays own the identity mapping: no side vector.
-            ordinals: None,
         })
     }
 
@@ -1425,7 +1419,7 @@ impl Model {
         let py = slf.py();
         let varr = variables.borrow();
         super::handles::check_owner(&varr.owner, slf)?;
-        let columns: Vec<VarId> = varr.vars.clone();
+        let columns: Vec<VarId> = varr.members().clone();
         let ncols = columns.len();
         drop(varr);
         let indptr = parse_integer_vector(&indptr, "indptr")?;
@@ -1841,7 +1835,7 @@ mod lock_tests {
                 explicit_indices: HashMap::new(),
                 array_names: std::collections::HashSet::new(),
                 param_array_shapes: HashMap::new(),
-                param_array_ids: HashMap::new(),
+                param_arrays: HashMap::new(),
                 obj_coeffs: HashMap::new(),
                 con_coeffs: HashMap::new(),
                 has_complex_deps: false,

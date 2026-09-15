@@ -287,13 +287,27 @@ fn parse_sequence_level(
     })
 }
 
-/// Normalize an index tuple against a shape: returns (flat positions,
-/// result shape, is_scalar). Integers (negative-normalized), slices, and
-/// one ellipsis are supported; anything else is a typed error.
+/// One axis selection: `out[k] = start + k*step` for `k in 0..len`.
+///
+/// `is_index` marks an integer index (length 1, squeezed away).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AxisSelection {
+    pub start: usize,
+    pub step: usize,
+    pub len: usize,
+    pub is_index: bool,
+}
+
+/// Normalize an index tuple against a shape: returns (axis selections,
+/// result shape, is_scalar). Integers (negative-normalized), positive-step
+/// slices, and one ellipsis are supported; anything else is a typed error.
+///
+/// The selections are metadata transforms (`subsample`/`squeeze`), not a
+/// materialized position vector.
 pub(crate) fn normalize_index(
     shape: &[usize],
     index: &Bound<'_, PyAny>,
-) -> PyResult<(Vec<usize>, Vec<usize>, bool)> {
+) -> PyResult<(Vec<AxisSelection>, Vec<usize>, bool)> {
     let py = index.py();
     // Collect index items: a bare index counts as a 1-tuple.
     let items: Vec<Bound<'_, PyAny>> = if index.is_instance_of::<PyTuple>() {
@@ -356,7 +370,7 @@ pub(crate) fn normalize_index(
         }
     };
     // Per-dimension selection.
-    let mut selections: Vec<Vec<usize>> = Vec::with_capacity(rank);
+    let mut selections: Vec<AxisSelection> = Vec::with_capacity(rank);
     let mut result_shape: Vec<usize> = Vec::new();
     let mut scalar = true;
     for (dim, sel) in expanded.iter().enumerate().take(rank) {
@@ -370,16 +384,13 @@ pub(crate) fn normalize_index(
                     "negative slice steps are not supported",
                 ));
             }
-            let mut picked = Vec::new();
-            let mut i = indices.start.max(0);
-            let mut remaining = indices.slicelength;
-            while remaining > 0 {
-                picked.push(i as usize);
-                i += indices.step;
-                remaining -= 1;
-            }
-            result_shape.push(picked.len());
-            selections.push(picked);
+            result_shape.push(indices.slicelength);
+            selections.push(AxisSelection {
+                start: indices.start.max(0) as usize,
+                step: indices.step as usize,
+                len: indices.slicelength,
+                is_index: false,
+            });
             scalar = false;
         } else if sel.is_instance_of::<PyBool>() || is_numpy_bool_scalar(sel) {
             return Err(ShapeError::new_err("boolean indices are not supported"));
@@ -392,80 +403,161 @@ pub(crate) fn normalize_index(
                     "index {idx} out of range for dimension of size {len}"
                 )));
             }
-            selections.push(vec![idx as usize]);
+            selections.push(AxisSelection {
+                start: idx as usize,
+                step: 1,
+                len: 1,
+                is_index: true,
+            });
         } else {
             return Err(ShapeError::new_err(
                 "indices must be integers, slices, or an ellipsis",
             ));
         }
     }
-    // C-order flat positions via cartesian walk (first dim outermost).
+    Ok((
+        selections,
+        result_shape,
+        scalar && (rank > 0 || items.is_empty()),
+    ))
+}
+
+/// Apply per-axis metadata transforms to a shared variable handle.
+fn apply_var_selection(
+    mut array: roml::modeling::VarArray,
+    selections: &[AxisSelection],
+) -> PyResult<roml::modeling::VarArray> {
+    let mut axis = 0usize;
+    for sel in selections {
+        array = array
+            .subsample(axis, sel.start, sel.step, sel.len)
+            .map_err(|error| ShapeError::new_err(format!("invalid index: {error}")))?;
+        if sel.is_index {
+            array = array
+                .squeeze(axis)
+                .map_err(|error| ShapeError::new_err(format!("invalid index: {error}")))?;
+        } else {
+            axis += 1;
+        }
+    }
+    Ok(array)
+}
+
+/// Apply per-axis metadata transforms to a shared parameter handle.
+fn apply_param_selection(
+    mut array: roml::modeling::ParamArray,
+    selections: &[AxisSelection],
+) -> PyResult<roml::modeling::ParamArray> {
+    let mut axis = 0usize;
+    for sel in selections {
+        array = array
+            .subsample(axis, sel.start, sel.step, sel.len)
+            .map_err(|error| ShapeError::new_err(format!("invalid index: {error}")))?;
+        if sel.is_index {
+            array = array
+                .squeeze(axis)
+                .map_err(|error| ShapeError::new_err(format!("invalid index: {error}")))?;
+        } else {
+            axis += 1;
+        }
+    }
+    Ok(array)
+}
+
+/// C-order flat positions selected by per-axis selections.
+///
+/// Materialized representations (`Vec<Affine>`/`Vec<ConId>`) still gather by
+/// flat position; the shared handles above never do.
+fn selection_flat_positions(shape: &[usize], selections: &[AxisSelection]) -> Vec<usize> {
+    let rank = selections.len();
     let mut strides = vec![1usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() {
         strides[i] = strides[i + 1] * shape[i + 1];
     }
-    let mut flat = Vec::new();
     fn walk(
         dim: usize,
-        rank: usize,
-        selections: &[Vec<usize>],
+        selections: &[AxisSelection],
         strides: &[usize],
         offset: usize,
         out: &mut Vec<usize>,
     ) {
-        if dim == rank {
+        if dim == selections.len() {
             out.push(offset);
             return;
         }
-        for &s in &selections[dim] {
+        let sel = &selections[dim];
+        let mut k = 0usize;
+        while k < sel.len {
             walk(
                 dim + 1,
-                rank,
                 selections,
                 strides,
-                offset + s * strides[dim],
+                offset + (sel.start + k * sel.step) * strides[dim],
                 out,
             );
+            k += 1;
         }
     }
-    walk(0, rank, &selections, &strides, 0, &mut flat);
-    Ok((flat, result_shape, scalar && (rank > 0 || items.is_empty())))
+    let mut out = Vec::new();
+    walk(0, selections, &strides, 0, &mut out);
+    out
 }
 
 fn model_mismatch() -> PyErr {
     ModelMismatchError::new_err("array belongs to a different model")
 }
 
-/// Shaped variable array: C-order handle vector with shape metadata.
+/// Shaped variable array backed by the shared MIR-04 handle (MIR-06, IR-27).
+///
+/// The array stores no gathered per-element identities: every member, ordinal
+/// and slice transform is derived from the trusted `inner` view.
 #[pyclass(frozen, name = "VarArray")]
 pub struct VarArray {
     pub owner: pyo3::Py<Model>,
-    pub shape: Vec<usize>,
-    pub vars: Vec<VarId>,
+    pub inner: roml::modeling::VarArray,
     pub base_name: String,
-    /// Root flat ordinals parallel to [`VarArray::vars`] (P2A).
-    ///
-    /// `None` means identity (`vars[i]` is element `i`): root arrays pay
-    /// nothing. Slices/views carry the gathered root ordinals so scalar
-    /// handles display the canonical root element name, not the
-    /// view-relative offset (previously `x[2:7][0]` mislabeled the
-    /// underlying `x[2]` as `x[0]`; values always flowed by `VarId`).
-    pub ordinals: Option<Vec<usize>>,
 }
 
-/// Shaped parameter array: shape inferred once and immutable.
+impl VarArray {
+    /// Row-major shape (authoritative: derived from the shared view).
+    pub(crate) fn dims(&self) -> Vec<usize> {
+        self.inner.shape().to_vec()
+    }
+
+    /// The variable at a row-major ordinal.
+    pub(crate) fn member(&self, ordinal: usize) -> VarId {
+        self.inner.get(ordinal).expect("valid variable array view")
+    }
+
+    /// All members in row-major order (an operation-local gather, not a store).
+    pub(crate) fn members(&self) -> Vec<VarId> {
+        (0..self.inner.len()).map(|i| self.member(i)).collect()
+    }
+}
+
+/// Shaped parameter array backed by the shared MIR-04 handle (MIR-06, IR-27).
 #[pyclass(frozen, name = "ParamArray")]
 pub struct ParamArray {
     pub owner: pyo3::Py<Model>,
-    pub shape: Vec<usize>,
-    pub params: Vec<roml::ParamId>,
+    pub inner: roml::modeling::ParamArray,
     pub base_name: String,
-    /// Root flat ordinals parallel to [`ParamArray::params`] (same
-    /// principle as `VarArray` ordinals): `None` on roots (identity, no
-    /// side vector); views gather root ordinals so scalar handles
-    /// display the canonical name. Parameter namespace storage stays
-    /// eager — this field carries view lineage only.
-    pub ordinals: Option<Vec<usize>>,
+}
+
+impl ParamArray {
+    /// Row-major shape (authoritative: derived from the shared view).
+    pub(crate) fn dims(&self) -> Vec<usize> {
+        self.inner.shape().to_vec()
+    }
+
+    /// The parameter at a row-major ordinal.
+    pub(crate) fn member(&self, ordinal: usize) -> roml::ParamId {
+        self.inner.get(ordinal).expect("valid parameter array view")
+    }
+
+    /// All members in row-major order (an operation-local gather, not a store).
+    pub(crate) fn members(&self) -> Vec<roml::ParamId> {
+        (0..self.inner.len()).map(|i| self.member(i)).collect()
+    }
 }
 
 /// Shaped affine expression array.
@@ -645,19 +737,20 @@ fn normalize_operand(
     if let Ok(arr) = obj.cast::<VarArray>() {
         let arr = arr.borrow();
         owners_match(&arr.owner, owner)?;
-        if arr.shape.is_empty() {
+        if arr.dims().is_empty() {
             // 0-d arrays broadcast as scalars.
-            return Ok(Operand::Scalar(affine_of_var(py, owner, arr.vars[0])));
+            return Ok(Operand::Scalar(affine_of_var(py, owner, arr.members()[0])));
         }
-        if arr.shape != shape {
+        if arr.dims() != shape {
             return Err(ShapeError::new_err(format!(
                 "{op}: array shape {:?} does not match {:?}",
-                arr.shape, shape
+                arr.dims(),
+                shape
             )));
         }
         return Ok(Operand::Vector(
-            arr.shape.clone(),
-            arr.vars
+            arr.dims().clone(),
+            arr.members()
                 .iter()
                 .map(|v| affine_of_var(py, owner, *v))
                 .collect(),
@@ -666,22 +759,23 @@ fn normalize_operand(
     if let Ok(arr) = obj.cast::<ParamArray>() {
         let arr = arr.borrow();
         owners_match(&arr.owner, owner)?;
-        if arr.shape.is_empty() {
+        if arr.dims().is_empty() {
             return Ok(Operand::Scalar(Affine {
                 owner: owner.clone_ref(py),
                 terms: Vec::new(),
-                constant: ValueExpr::param(arr.params[0]),
+                constant: ValueExpr::param(arr.members()[0]),
             }));
         }
-        if arr.shape != shape {
+        if arr.dims() != shape {
             return Err(ShapeError::new_err(format!(
                 "{op}: array shape {:?} does not match {:?}",
-                arr.shape, shape
+                arr.dims(),
+                shape
             )));
         }
         return Ok(Operand::Vector(
-            arr.shape.clone(),
-            arr.params
+            arr.dims().clone(),
+            arr.members()
                 .iter()
                 .map(|p| Affine {
                     owner: owner.clone_ref(py),
@@ -938,23 +1032,6 @@ fn packed_dense_number(
     }
 }
 
-fn var_view(
-    py: Python<'_>,
-    owner: &pyo3::Py<Model>,
-    base: &str,
-    shape: Vec<usize>,
-    vars: Vec<VarId>,
-    ordinals: Option<Vec<usize>>,
-) -> VarArray {
-    VarArray {
-        owner: owner.clone_ref(py),
-        shape,
-        vars,
-        base_name: base.to_string(),
-        ordinals,
-    }
-}
-
 /// Packed fast path for `VarArray` arithmetic (P1C-1): same-shape
 /// `VarArray` or packed-`ExprArray` operands for `+`/`-`, finite numeric
 /// scalars, and dense numerics for scaling. Returns `None` when the general
@@ -969,7 +1046,7 @@ fn packed_vararray_op(
 ) -> PyResult<Option<ExprArray>> {
     let borrowed = slf.borrow();
     let owner = borrowed.owner.clone_ref(py);
-    let shape = borrowed.shape.clone();
+    let shape = borrowed.dims().clone();
     let make = |array: PackedLinearArray| {
         Ok(Some(ExprArray {
             owner: owner.clone_ref(py),
@@ -982,11 +1059,11 @@ fn packed_vararray_op(
     if let Ok(rhs) = other.cast::<VarArray>() {
         let rhs = rhs.borrow();
         owners_match(&rhs.owner, &owner)?;
-        if rhs.shape == shape && (op == '+' || op == '-') {
-            let mut array = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+        if rhs.dims() == shape && (op == '+' || op == '-') {
+            let mut array = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
             let sign = if op == '+' { 1.0 } else { -1.0 };
             array.combine(
-                &PackedLinearArray::from_vars(rhs.vars.clone(), rhs.shape.clone()),
+                &PackedLinearArray::from_vars(rhs.members().clone(), rhs.dims().clone()),
                 sign,
             );
             drop(rhs);
@@ -1002,7 +1079,8 @@ fn packed_vararray_op(
         owners_match(&arr.owner, &owner)?;
         if let ExprArrayRepr::Packed(rhs) = &arr.repr {
             if rhs.shape == shape && (op == '+' || op == '-') {
-                let mut array = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+                let mut array =
+                    PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
                 array.combine(rhs, if op == '+' { 1.0 } else { -1.0 });
                 drop(arr);
                 drop(borrowed);
@@ -1012,7 +1090,7 @@ fn packed_vararray_op(
         return Ok(None);
     }
     if let Some(v) = packed_scalar_number(other) {
-        let mut array = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+        let mut array = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
         match op {
             '+' => array.add_scalar(v),
             '-' => array.add_scalar(-v),
@@ -1030,7 +1108,7 @@ fn packed_vararray_op(
     }
     if op == '*' {
         if let Some(values) = packed_dense_number(py, other, &shape, opname)? {
-            let mut array = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+            let mut array = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
             array.scale_dense(&values);
             drop(borrowed);
             return make(array);
@@ -1048,8 +1126,8 @@ fn packed_vararray_rsub(
     if let Some(v) = packed_scalar_number(other) {
         let borrowed = slf.borrow();
         let owner = borrowed.owner.clone_ref(py);
-        let shape = borrowed.shape.clone();
-        let mut array = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+        let shape = borrowed.dims().clone();
+        let mut array = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
         drop(borrowed);
         array.scale(-1.0);
         array.add_scalar(v);
@@ -1066,15 +1144,15 @@ fn packed_vararray_rsub(
 impl VarArray {
     #[getter]
     fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        shape_tuple(py, &self.shape)
+        shape_tuple(py, &self.dims())
     }
 
     fn __len__(&self) -> usize {
-        self.shape.first().copied().unwrap_or(1)
+        self.dims().first().copied().unwrap_or(1)
     }
 
     fn __repr__(&self) -> String {
-        format!("VarArray({:?}, shape={:?})", self.base_name, self.shape)
+        format!("VarArray({:?}, shape={:?})", self.base_name, self.dims())
     }
 
     fn __bool__(&self) -> PyResult<bool> {
@@ -1092,16 +1170,19 @@ impl VarArray {
     fn __getitem__(slf: &Bound<'_, Self>, index: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let py = index.py();
         let borrowed = slf.borrow();
-        let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let (selections, _result_shape, scalar) = normalize_index(&borrowed.dims(), &index)?;
+        let inner = apply_var_selection(borrowed.inner.clone(), &selections)?;
         if scalar {
-            let id = borrowed.vars[flat[0]];
-            // Root ordinal, not the view-relative offset: `x[2:7][0]` is
-            // `x[2]`. Roots carry no side vector (`None` = identity).
-            let ordinal = borrowed
-                .ordinals
-                .as_ref()
-                .map(|o| o[flat[0]])
-                .unwrap_or(flat[0]);
+            let id = inner
+                .get(0)
+                .ok_or_else(|| ShapeError::new_err("index produced no element"))?;
+            // Root ordinal, not the view-relative offset: `x[2:7][0]` is `x[2]`.
+            let ordinal = inner
+                .view()
+                .view()
+                .get(0)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .unwrap_or(0);
             let var = Var {
                 owner: borrowed.owner.clone_ref(py),
                 id,
@@ -1109,19 +1190,11 @@ impl VarArray {
             };
             Ok(var.into_pyobject(py)?.into_any().unbind())
         } else {
-            let vars = flat.iter().map(|f| borrowed.vars[*f]).collect();
-            let ordinals = Some(match &borrowed.ordinals {
-                Some(o) => flat.iter().map(|f| o[*f]).collect(),
-                None => flat.clone(),
-            });
-            let view = var_view(
-                py,
-                &borrowed.owner,
-                &borrowed.base_name,
-                result_shape,
-                vars,
-                ordinals,
-            );
+            let view = VarArray {
+                owner: borrowed.owner.clone_ref(py),
+                inner,
+                base_name: borrowed.base_name.clone(),
+            };
             Ok(view.into_pyobject(py)?.into_any().unbind())
         }
     }
@@ -1129,9 +1202,10 @@ impl VarArray {
     fn __neg__(slf: &Bound<'_, Self>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let mut array = PackedLinearArray::from_vars(borrowed.vars.clone(), borrowed.shape.clone());
+        let mut array =
+            PackedLinearArray::from_vars(borrowed.members().clone(), borrowed.dims().clone());
         let owner = borrowed.owner.clone_ref(py);
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         drop(borrowed);
         array.scale(-1.0);
         Ok(ExprArray {
@@ -1148,11 +1222,11 @@ impl VarArray {
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         elementwise(py, &owner, shape, own, other, '+', "addition")
@@ -1169,11 +1243,11 @@ impl VarArray {
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         elementwise(py, &owner, shape, own, other, '-', "subtraction")
@@ -1186,11 +1260,11 @@ impl VarArray {
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         // Scalar/array minus self: negate self, then add the left operand.
@@ -1238,11 +1312,11 @@ impl VarArray {
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         elementwise(py, &owner, shape, own, other, '*', "multiplication")
@@ -1260,9 +1334,9 @@ impl VarArray {
             }
             let borrowed = slf.borrow();
             let mut array =
-                PackedLinearArray::from_vars(borrowed.vars.clone(), borrowed.shape.clone());
+                PackedLinearArray::from_vars(borrowed.members().clone(), borrowed.dims().clone());
             let owner = borrowed.owner.clone_ref(py);
-            let shape = borrowed.shape.clone();
+            let shape = borrowed.dims().clone();
             drop(borrowed);
             array.scale(1.0 / v);
             return Ok(ExprArray {
@@ -1276,15 +1350,15 @@ impl VarArray {
             return Err(InvalidModelError::new_err("division by zero"));
         }
         let borrowed = slf.borrow();
-        let mut exprs = Vec::with_capacity(borrowed.vars.len());
-        for v in &borrowed.vars {
+        let mut exprs = Vec::with_capacity(borrowed.members().len());
+        for v in &borrowed.members() {
             let mut affine = affine_of_var(py, &borrowed.owner, *v);
             affine.terms[0].coeff = ValueExpr::constant(1.0 / divisor);
             exprs.push(affine);
         }
         Ok(ExprArray {
             owner: borrowed.owner.clone_ref(py),
-            shape: borrowed.shape.clone(),
+            shape: borrowed.dims().clone(),
             repr: ExprArrayRepr::Materialized(exprs),
         })
     }
@@ -1292,16 +1366,16 @@ impl VarArray {
     fn __le__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ComparisonArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
-        let lhs = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+        let lhs = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
         drop(borrowed);
         if let Some(out) = packed_compare(py, &owner, &shape, lhs, &other, PackedSense::Le)? {
             return Ok(out);
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
@@ -1320,16 +1394,16 @@ impl VarArray {
     fn __ge__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ComparisonArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
-        let lhs = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+        let lhs = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
         drop(borrowed);
         if let Some(out) = packed_compare(py, &owner, &shape, lhs, &other, PackedSense::Ge)? {
             return Ok(out);
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
@@ -1348,16 +1422,16 @@ impl VarArray {
     fn __eq__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ComparisonArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let shape = borrowed.shape.clone();
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
-        let lhs = PackedLinearArray::from_vars(borrowed.vars.clone(), shape.clone());
+        let lhs = PackedLinearArray::from_vars(borrowed.members().clone(), shape.clone());
         drop(borrowed);
         if let Some(out) = packed_compare(py, &owner, &shape, lhs, &other, PackedSense::Eq)? {
             return Ok(out);
         }
         let borrowed = slf.borrow();
         let own: Vec<Affine> = borrowed
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &borrowed.owner, *v))
             .collect();
@@ -1421,13 +1495,13 @@ fn packed_compare(
     if let Ok(arr) = other.cast::<VarArray>() {
         let arr = arr.borrow();
         owners_match(&arr.owner, owner)?;
-        if arr.shape.is_empty() || arr.shape != shape {
+        if arr.dims().is_empty() || arr.dims() != shape {
             // 0-d broadcast and shape mismatches run generally.
             return Ok(None);
         }
         let mut array = lhs;
         array.combine(
-            &PackedLinearArray::from_vars(arr.vars.clone(), arr.shape.clone()),
+            &PackedLinearArray::from_vars(arr.members().clone(), arr.dims().clone()),
             -1.0,
         );
         drop(arr);
@@ -1542,10 +1616,10 @@ fn packed_expr_op(
         owners_match(&arr.owner, owner)?;
         // Same-shape variable vectors combine as unit terms for `+`/`-`
         // (0-d broadcast and products run generally).
-        if arr.shape == shape && (op == '+' || op == '-') {
+        if arr.dims() == shape && (op == '+' || op == '-') {
             let mut array = packed.clone();
             array.combine(
-                &PackedLinearArray::from_vars(arr.vars.clone(), arr.shape.clone()),
+                &PackedLinearArray::from_vars(arr.members().clone(), arr.dims().clone()),
                 if op == '+' { 1.0 } else { -1.0 },
             );
             drop(arr);
@@ -1659,15 +1733,15 @@ fn param_affines(py: Python<'_>, owner: &pyo3::Py<Model>, params: &[roml::ParamI
 impl ParamArray {
     #[getter]
     fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        shape_tuple(py, &self.shape)
+        shape_tuple(py, &self.dims())
     }
 
     fn __len__(&self) -> usize {
-        self.shape.first().copied().unwrap_or(1)
+        self.dims().first().copied().unwrap_or(1)
     }
 
     fn __repr__(&self) -> String {
-        format!("ParamArray({:?}, shape={:?})", self.base_name, self.shape)
+        format!("ParamArray({:?}, shape={:?})", self.base_name, self.dims())
     }
 
     fn __bool__(&self) -> PyResult<bool> {
@@ -1685,14 +1759,18 @@ impl ParamArray {
     fn __getitem__(slf: &Bound<'_, Self>, index: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let py = index.py();
         let borrowed = slf.borrow();
-        let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let (selections, _result_shape, scalar) = normalize_index(&borrowed.dims(), &index)?;
+        let inner = apply_param_selection(borrowed.inner.clone(), &selections)?;
         if scalar {
-            let id = borrowed.params[flat[0]];
-            let ordinal = borrowed
-                .ordinals
-                .as_ref()
-                .map(|o| o[flat[0]])
-                .unwrap_or(flat[0]);
+            let id = inner
+                .get(0)
+                .ok_or_else(|| ShapeError::new_err("index produced no element"))?;
+            let ordinal = inner
+                .view()
+                .view()
+                .get(0)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .unwrap_or(0);
             let param = super::handles::Param {
                 owner: borrowed.owner.clone_ref(py),
                 id,
@@ -1700,17 +1778,10 @@ impl ParamArray {
             };
             Ok(param.into_pyobject(py)?.into_any().unbind())
         } else {
-            let params = flat.iter().map(|f| borrowed.params[*f]).collect();
-            let ordinals = Some(match &borrowed.ordinals {
-                Some(o) => flat.iter().map(|f| o[*f]).collect(),
-                None => flat.clone(),
-            });
             let view = ParamArray {
                 owner: borrowed.owner.clone_ref(py),
-                shape: result_shape,
-                params,
+                inner,
                 base_name: borrowed.base_name.clone(),
-                ordinals,
             };
             Ok(view.into_pyobject(py)?.into_any().unbind())
         }
@@ -1719,8 +1790,8 @@ impl ParamArray {
     fn __neg__(slf: &Bound<'_, Self>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_neg(py, &owner, shape, own)
@@ -1729,8 +1800,8 @@ impl ParamArray {
     fn __add__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_binary(py, &owner, shape, own, other, '+', "addition")
@@ -1743,8 +1814,8 @@ impl ParamArray {
     fn __sub__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_binary(py, &owner, shape, own, other, '-', "subtraction")
@@ -1753,8 +1824,8 @@ impl ParamArray {
     fn __rsub__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_rsub(py, &owner, shape, own, other)
@@ -1763,8 +1834,8 @@ impl ParamArray {
     fn __mul__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_binary(py, &owner, shape, own, other, '*', "multiplication")
@@ -1777,8 +1848,8 @@ impl ParamArray {
     fn __truediv__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ExprArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_div(py, &owner, shape, own, other)
@@ -1787,8 +1858,8 @@ impl ParamArray {
     fn __le__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ComparisonArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_compare(
@@ -1804,8 +1875,8 @@ impl ParamArray {
     fn __ge__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ComparisonArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_compare(
@@ -1821,8 +1892,8 @@ impl ParamArray {
     fn __eq__(slf: &Bound<'_, Self>, other: Bound<'_, PyAny>) -> PyResult<ComparisonArray> {
         let py = slf.py();
         let borrowed = slf.borrow();
-        let own = param_affines(py, &borrowed.owner, &borrowed.params);
-        let shape = borrowed.shape.clone();
+        let own = param_affines(py, &borrowed.owner, &borrowed.members());
+        let shape = borrowed.dims().clone();
         let owner = borrowed.owner.clone_ref(py);
         drop(borrowed);
         array_compare(
@@ -1866,7 +1937,8 @@ impl ExprArray {
     fn __getitem__(slf: &Bound<'_, Self>, index: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let py = index.py();
         let borrowed = slf.borrow();
-        let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let (selections, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let flat = selection_flat_positions(&borrowed.shape, &selections);
         if scalar {
             let expr = super::expressions::Expr {
                 inner: super::expressions::Scalar::Lazy(super::expressions::Lazy::flat(
@@ -2169,7 +2241,8 @@ impl ComparisonArray {
     fn __getitem__(slf: &Bound<'_, Self>, index: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let py = index.py();
         let borrowed = slf.borrow();
-        let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let (selections, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let flat = selection_flat_positions(&borrowed.shape, &selections);
         if scalar {
             let (affine, side) = match &borrowed.repr {
                 ComparisonArrayRepr::Packed(packed) => {
@@ -2237,7 +2310,8 @@ impl ConstraintArray {
     fn __getitem__(slf: &Bound<'_, Self>, index: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let py = index.py();
         let borrowed = slf.borrow();
-        let (flat, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let (selections, result_shape, scalar) = normalize_index(&borrowed.shape, &index)?;
+        let flat = selection_flat_positions(&borrowed.shape, &selections);
         if scalar {
             let con = super::handles::Constraint {
                 owner: borrowed.owner.clone_ref(py),
@@ -2270,10 +2344,10 @@ pub(crate) fn sum(obj: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let py = obj.py();
     if let Ok(arr) = obj.cast::<VarArray>() {
         let arr = arr.borrow();
-        if !arr.vars.is_empty() {
+        if !arr.members().is_empty() {
             let packed = PackedVars {
                 owner: arr.owner.clone_ref(py),
-                array: PackedLinearArray::from_vars(arr.vars.clone(), arr.shape.clone()),
+                array: PackedLinearArray::from_vars(arr.members().clone(), arr.dims().clone()),
             };
             return Ok(super::expressions::Expr {
                 inner: Scalar::Packed(packed),
@@ -2318,7 +2392,7 @@ fn array_affines(obj: &Bound<'_, PyAny>) -> PyResult<(pyo3::Py<Model>, Vec<Affin
         let arr = arr.borrow();
         let owner = arr.owner.clone_ref(py);
         let affines = arr
-            .vars
+            .members()
             .iter()
             .map(|v| affine_of_var(py, &owner, *v))
             .collect();
@@ -2327,7 +2401,7 @@ fn array_affines(obj: &Bound<'_, PyAny>) -> PyResult<(pyo3::Py<Model>, Vec<Affin
     if let Ok(arr) = obj.cast::<ParamArray>() {
         let arr = arr.borrow();
         let owner = arr.owner.clone_ref(py);
-        let affines = param_affines(py, &owner, &arr.params);
+        let affines = param_affines(py, &owner, &arr.members());
         return Ok((owner, affines));
     }
     if let Ok(arr) = obj.cast::<ExprArray>() {
@@ -2400,12 +2474,12 @@ fn dot_structural(
     let (owner, right): (pyo3::Py<Model>, PackedLinearArray) =
         if let Ok(arr) = expressions.cast::<VarArray>() {
             let arr = arr.borrow();
-            if arr.vars.is_empty() {
+            if arr.members().is_empty() {
                 return Ok(None);
             }
             (
                 arr.owner.clone_ref(py),
-                PackedLinearArray::from_vars(arr.vars.clone(), arr.shape.clone()),
+                PackedLinearArray::from_vars(arr.members().clone(), arr.dims().clone()),
             )
         } else if let Ok(arr) = expressions.cast::<ExprArray>() {
             let arr = arr.borrow();
@@ -2429,13 +2503,14 @@ fn dot_structural(
     if let Ok(arr) = coefficients.cast::<ParamArray>() {
         let arr = arr.borrow();
         owners_match(&arr.owner, &owner)?;
-        if arr.shape != right.shape {
+        if arr.dims() != right.shape {
             return Err(ShapeError::new_err(format!(
                 "dot: coefficient shape {:?} does not match expression shape {:?}",
-                arr.shape, right.shape
+                arr.dims(),
+                right.shape
             )));
         }
-        left.extend(arr.params.iter().map(|p| DotLeft::Sym(DotSym::Bare(*p))));
+        left.extend(arr.members().iter().map(|p| DotLeft::Sym(DotSym::Bare(*p))));
     } else if let Ok(param) = coefficients.cast::<super::handles::Param>() {
         let param = param.borrow();
         owners_match(&param.owner, &owner)?;
@@ -2714,14 +2789,14 @@ pub(crate) fn dot(
     // through to the general path, which owns all error behavior.
     if let Ok(arr) = expressions.cast::<VarArray>() {
         let arr = arr.borrow();
-        if !arr.vars.is_empty() {
-            if let Some(coeffs) = packed_dot_coefficients(py, &coefficients, &arr.shape)? {
+        if !arr.members().is_empty() {
+            if let Some(coeffs) = packed_dot_coefficients(py, &coefficients, &arr.dims())? {
                 let packed = PackedVars {
                     owner: arr.owner.clone_ref(py),
                     array: PackedLinearArray {
-                        shape: arr.shape.clone(),
+                        shape: arr.dims().clone(),
                         terms: vec![PackedArrayTerm {
-                            vars: arr.vars.clone(),
+                            vars: arr.members().clone(),
                             coeffs,
                         }],
                         constant: 0.0,
@@ -2750,11 +2825,11 @@ pub(crate) fn dot(
             let arr = arr.borrow();
             let owner = arr.owner.clone_ref(py);
             let affines = arr
-                .vars
+                .members()
                 .iter()
                 .map(|v| affine_of_var(py, &owner, *v))
                 .collect();
-            (owner, arr.shape.clone(), affines)
+            (owner, arr.dims().clone(), affines)
         } else if let Ok(arr) = expressions.cast::<ExprArray>() {
             let arr = arr.borrow();
             (
@@ -2775,13 +2850,14 @@ pub(crate) fn dot(
     let left: Vec<ValueExpr> = if let Ok(arr) = coefficients.cast::<ParamArray>() {
         let arr = arr.borrow();
         owners_match(&arr.owner, &owner)?;
-        if arr.shape != right_shape {
+        if arr.dims() != right_shape {
             return Err(ShapeError::new_err(format!(
                 "dot: coefficient shape {:?} does not match expression shape {:?}",
-                arr.shape, right_shape
+                arr.dims(),
+                right_shape
             )));
         }
-        arr.params.iter().map(|p| ValueExpr::param(*p)).collect()
+        arr.members().iter().map(|p| ValueExpr::param(*p)).collect()
     } else if coefficients.cast::<VarArray>().is_ok() || coefficients.cast::<Var>().is_ok() {
         return Err(super::errors::UnsupportedExpressionError::new_err(
             "dot coefficients must be numeric or parameter-only; decision-dependent coefficients multiplying decision expressions are nonlinear",

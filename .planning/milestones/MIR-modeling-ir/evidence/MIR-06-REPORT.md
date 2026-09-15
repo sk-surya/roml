@@ -66,51 +66,48 @@ cannot be expressed in the public API. Tests: `model::mir06_handle_seam_tests`
 (atomic ownership; owner-checked update; foreign array rejected; length
 mismatch rejected).
 
-## M6-1B — Metadata indexing primitives (groundwork complete)
+## M6-1B/C — Python arrays on the shared handles (complete)
 
-`View::{subsample, squeeze}` plus `VarView`/`ParamView`/`VarArray`/`ParamArray`
-wrappers: strided subsampling along an axis scales the axis stride in place
-(no gathered positions), and squeezing drops a length-1 axis. Python
-`__getitem__` will lower `int`/positive-step `slice`/`ellipsis` selections to
-`subsample`/`squeeze` transforms instead of materializing a `Vec<usize>`
-selection. Tests: `tests/mir06_view_subsample.rs`.
-
-### Remaining M6-1B/C plan (next unit)
-Target Python storage:
+Python `VarArray`/`ParamArray` now wrap shared handles:
 ```text
 PyVarArray   { owner: Py<Model>, inner: roml::modeling::VarArray,   base_name }
 PyParamArray { owner: Py<Model>, inner: roml::modeling::ParamArray, base_name }
 ```
-Steps:
-1. Replace `VarArray.{vars, ordinals}` and `ParamArray.{params, ordinals}` with
-   `inner`; derive members (`inner.get(i)`), length (`inner.len()`) and root
-   ordinals (`inner.view().view().get(i)`) from the shared view. Keep `shape`
-   only as a cached `inner.shape()`.
-2. Rewrite `normalize_index` to apply per-axis `subsample`/`squeeze`
-   transforms (int axes squeeze; positive-step slices subsample) instead of
-   building `flat` positions; scalar results resolve through the squeezed view.
-3. Delete `ModelState.param_array_ids` and route `m.update(name=...)` through
-   `Model::set_parameter_array` (owner-checked), which requires retaining the
-   `ParamArray` handle (or its name->handle mapping) in `ModelState`.
-4. Differential + grep/LOC gate: no `vars`/`params`/`ordinals`/
-   `param_array_ids` fields remain; existing Python suite (154 passed, 4
-   skipped) stays green.
+- `Model.vars` allocates via `Model::add_variable_array_block` and returns the
+  shared handle; `Model.params` allocates via `add_parameter_array_block` and
+  retains the handle in `ModelState.param_arrays` (`name -> ParamArray`) for
+  `m.update(name=...)` (which resolves members from the handle; no id vector).
+- `__getitem__` lowers `int`/positive-step `slice`/`ellipsis` to per-axis
+  `subsample`/`squeeze` metadata transforms (`normalize_index` returns
+  `AxisSelection`s, not a flat position vector). Scalar results resolve through
+  the squeezed view; the root ordinal for naming comes from
+  `inner.view().view().get(0)`.
+- Deleted: `VarArray.{vars, ordinals}`, `ParamArray.{params, ordinals}`,
+  `ModelState.param_array_ids`. No cached `shape` field — `dims()` derives it
+  from `inner.shape()`.
+- Materialized expression/comparison/constraint arrays still need flat
+  positions to gather their own `Vec<Affine>`/`Vec<ConId>`; that is M6-2 work.
 
-This is a ~200-site migration across `arrays.rs`/`expressions.rs`/`model.rs`/
-`solution.rs` plus the `ModelState` update path; it is the next self-contained
-unit of work (the primitives above are its enabler).
+Evidence:
+- Full release wheel (`maturin build --release --locked`, installed outside the
+  source tree) + `pytest python/tests -q` — **157 passed, 4 skipped** (baseline
+  was 151 passed, 4 skipped; +3 gate/fingerprint tests, same skips).
+- `python/tests/test_ir27_gate.py`: no `pub vars:`/`pub params:`/`pub
+  ordinals`/`param_array_ids` in `arrays.rs`/`model.rs`/`solution.rs`; Python
+  arrays declare `inner: roml::modeling::{VarArray,ParamArray}`.
+- `python/tests/test_fingerprint.py`: array-built and explicit scalar-built
+  models produce equal `normalized_ordinal_fingerprint()` (construction
+  differential); fingerprints stay deterministic and structure-sensitive.
+- `tests/mir06_view_subsample.rs`: rank-0 integer path, chained subsampling
+  root mapping, empty selection.
 
 ## Status
 
-Complete: M6-0B (baseline + journal-fingerprint contract) and M6-1A (atomic
-shared-handle seam, ownership fixed). In progress: M6-1B — metadata indexing
-primitives are in (`View::{subsample, squeeze}` + wrappers); the remaining
-~200-site Python storage migration is documented above as the next unit.
+Complete: M6-0B, M6-1A, M6-1B/C. The gathered-ID layer is deleted; Python arrays
+are views over the shared IR.
 
-Planned next: M6-1B/C (Python shared handles + metadata `__getitem__`; delete
-`vars`/`params`/`ordinals`/`param_array_ids`; differential + grep/LOC gate),
-then M6-2A/B (shared general-expression fallback; Python `ExprArray` wrapper),
-M6-3 (decorator rules → `RuleBatch`), M6-4 (Rust vs Python BESS fingerprint +
-packed-counter gate).
+**Review checkpoint before M6-2** (per owner): deleting the gathered-ID layer
+was the biggest IR-27 transition; M6-2A/B (shared `GeneralLinArray` fallback +
+Python `ExprArray` wrapper) starts only after that checkpoint.
 
 

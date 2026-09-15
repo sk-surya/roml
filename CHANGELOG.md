@@ -27,6 +27,11 @@ before/after migration is in `MIGRATION.md`.
 ### Added
 
 #### Cross-language fingerprints (MIR-06, unreleased)
+- Python `VarArray`/`ParamArray` now wrap the shared `roml::modeling` handles
+  (`inner`); `__getitem__`/slicing lower to metadata `subsample`/`squeeze`
+  transforms, and the per-element `vars`/`params`/`ordinals` stores plus the
+  `param_array_ids` registry are removed (IR-27). Parameter updates route
+  through the retained shared handle.
 - `Model::normalized_journal_fingerprint()` (Rust) and
   `Model.normalized_journal_fingerprint()` (Python) fingerprint the ordered
   semantic journal with absolute ids/owners mapped through the final normalized

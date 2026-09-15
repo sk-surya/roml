@@ -168,13 +168,13 @@ impl Solution {
         }
         let arr = var_array.borrow();
         check_solution_owner(&arr.owner, &self.snapshot)?;
-        let mut data = Vec::with_capacity(arr.vars.len());
-        for (i, var) in arr.vars.iter().enumerate() {
+        let mut data = Vec::with_capacity(arr.members().len());
+        for (i, var) in arr.members().iter().enumerate() {
             data.push(self.snapshot.values.get(var).copied().ok_or_else(|| {
                 MissingValueError::new_err(format!("no value reported for array element {i}"))
             })?);
         }
-        let shape = arr.shape.clone();
+        let shape = arr.dims().clone();
         drop(arr);
         Python::attach(|py| {
             let flat = PyArray1::from_vec(py, data);
