@@ -71,3 +71,38 @@ ergonomics.
 - Fingerprint equality (IR-28) requires the Python formulation to lower through
   the same packed seams, not a parallel path — the differential fixture is the
   gate.
+
+## M6-2 boundary (frozen)
+
+`ExprArray` becomes a thin wrapper over the shared representation:
+
+```text
+ExprArrayInner { Compact(LinArray), General(GeneralLinArray) }
+```
+
+Lowering policy: an operation supported by `LinArray` stays compact; otherwise
+convert **once** to `GeneralLinArray` and remain correct. The covered BESS
+expression `price * (discharge - charge)` must stay compact
+(`general_affine == 0`). Delete `ExprArrayRepr`, the Python-owned
+`PackedLinearArray`, `PackedArrayTerm`, `PackedCoeffs`, and `Vec<Affine>` as the
+Python expression-array representation; keep `ConstraintArray { Vec<ConId> }`
+as committed-result storage.
+
+Frozen requirement — **do not regress parameterized constraint constants.** The
+shared `GeneralLinArray` permits `ValueExpr` constants, while
+`Model::add_general_rows` deliberately rejects parameter-dependent constants
+(no scalar-bounds form). Python comparisons equivalent to `x <= p` must keep
+working through the existing bound-dependency machinery (or a new shared
+equivalent); do not force every Python general comparison through the limited
+core sink.
+
+M6-2 gates:
+- Python `ExprArray` contains only shared `LinArray`/`GeneralLinArray`.
+- `ExprArrayRepr`/Python `PackedLinearArray`/`PackedArrayTerm`/persistent
+  `Vec<Affine>` array representation are gone.
+- covered BESS expression has `general_affine == 0`;
+- an intentionally unsupported form (parameter x parameter) becomes
+  `GeneralLinArray`;
+- cross-model compact/general/general-general composition rejects;
+- stale var/param in a general array rejects atomically at the sink;
+- current Python behavior/tests remain green.

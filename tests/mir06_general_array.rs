@@ -145,3 +145,39 @@ fn general_rows_commit_and_reject_stale_or_foreign() {
         ))
     ));
 }
+
+#[test]
+fn general_rows_reject_overflowing_coefficient_atomically() {
+    let mut model = Model::new();
+    let x = model.var("x", 1).bounds(0.0, 1.0).build().unwrap();
+    let p = model.add_parameter_array_block([1], &[1e150]).unwrap();
+    let pid = p.get(0).unwrap();
+    let coeff = ValueExpr::mul(ValueExpr::param(pid), ValueExpr::param(pid));
+    let array = model
+        .general_lin_array(
+            [1],
+            vec![GeneralAffine::new(
+                vec![GeneralTerm {
+                    var: x.get(0).unwrap(),
+                    coeff,
+                }],
+                ValueExpr::constant(0.0),
+            )],
+        )
+        .unwrap();
+
+    // Both parameter values are finite, but p*p overflows.
+    model.set_parameter(pid, 1e308).unwrap();
+    model.commit().unwrap();
+    let revision = model.current_revision();
+    let before = model.num_constraints();
+
+    let result = model.add_general_rows(&array, &[(0.0, 1.0)]);
+    assert!(matches!(result, Err(roml::ModelError::NonFiniteValue(_))));
+    assert_eq!(model.num_constraints(), before, "no row allocated");
+    assert_eq!(
+        model.current_revision(),
+        revision,
+        "no journal/revision change"
+    );
+}

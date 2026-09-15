@@ -137,7 +137,11 @@ Added to `roml::modeling` (not `roml-python`):
   counterpart of the fixed naked-span bug). The sink
   `Model::add_general_rows` revalidates every dependency before mutation, so an
   array that became stale (removed var/param) rejects atomically; a foreign
-  owner is a typed `ViewError::CrossModel`.
+  owner is a typed `ViewError::CrossModel`. Both `Model::general_lin_array`
+  (construction) and the sink evaluate every term coefficient against current
+  parameter values and reject non-finite **before any allocation**, so a later
+  parameter change that overflows a previously finite coefficient (e.g. `p*p`)
+  leaves no row/revision behind.
 - Tests: `tests/mir06_general_array.rs` (compact expansion; add/scale commute
   under evaluated canonicalization; uncovered parameter x parameter held;
   shape validation; general rows commit; stale and foreign arrays reject).

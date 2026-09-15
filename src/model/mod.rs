@@ -4178,6 +4178,16 @@ impl Model {
     ) -> Result<crate::modeling::GeneralLinArray, ModelError> {
         for cell in &cells {
             validate_general_affine_entities(self, cell)?;
+            // Current-value finiteness: a coefficient that is non-finite now
+            // must reject before any model mutation.
+            for term in &cell.terms {
+                if !term.coeff.eval(self.parameters.as_lookup()).is_finite() {
+                    return Err(ModelError::NonFiniteValue("coefficient value"));
+                }
+            }
+            if !cell.constant.eval(self.parameters.as_lookup()).is_finite() {
+                return Err(ModelError::NonFiniteValue("constant value"));
+            }
         }
         let shape: crate::modeling::Shape = shape.into();
         crate::modeling::GeneralLinArray::from_validated_parts(
@@ -4224,6 +4234,14 @@ impl Model {
                 .cell(ordinal)
                 .ok_or(ModelError::InvalidParamDepLayout("stale general cell"))?;
             validate_general_affine_entities(self, cell)?;
+            // Current-value finiteness of every coefficient, before any row is
+            // allocated: a later parameter change can overflow a previously
+            // finite coefficient (e.g. p*p).
+            for term in &cell.terms {
+                if !term.coeff.eval(self.parameters.as_lookup()).is_finite() {
+                    return Err(ModelError::NonFiniteValue("coefficient value"));
+                }
+            }
             if !cell.constant.dependencies().is_empty() {
                 return Err(ModelError::InvalidParamDepLayout(
                     "parameterized row constant",
