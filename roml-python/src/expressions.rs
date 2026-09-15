@@ -905,42 +905,6 @@ impl PackedLinearArray {
         }
     }
 
-    /// Scale every coefficient and the constant by a finite factor.
-    pub(crate) fn scale(&mut self, factor: f64) {
-        for term in &mut self.terms {
-            term.coeffs = match std::mem::replace(&mut term.coeffs, PackedCoeffs::One) {
-                PackedCoeffs::One => PackedCoeffs::Scalar(factor),
-                PackedCoeffs::Scalar(c) => PackedCoeffs::Scalar(c * factor),
-                PackedCoeffs::Dense(v) => {
-                    PackedCoeffs::Dense(v.into_iter().map(|x| x * factor).collect())
-                }
-            };
-        }
-        self.constant *= factor;
-    }
-
-    /// Elementwise dense scaling. Requires a zero scalar constant (a dense
-    /// factor would otherwise densify it); callers fall back to the general
-    /// path when the constant is nonzero.
-    pub(crate) fn scale_dense(&mut self, s: &[f64]) {
-        debug_assert_eq!(s.len(), self.numel());
-        debug_assert_eq!(self.constant, 0.0);
-        for term in &mut self.terms {
-            term.coeffs = match std::mem::replace(&mut term.coeffs, PackedCoeffs::One) {
-                PackedCoeffs::One => PackedCoeffs::Dense(s.to_vec()),
-                PackedCoeffs::Scalar(c) => PackedCoeffs::Dense(s.iter().map(|x| x * c).collect()),
-                PackedCoeffs::Dense(v) => {
-                    PackedCoeffs::Dense(v.into_iter().zip(s.iter()).map(|(a, b)| a * b).collect())
-                }
-            };
-        }
-    }
-
-    /// Add a scalar to the constant.
-    pub(crate) fn add_scalar(&mut self, v: f64) {
-        self.constant += v;
-    }
-
     /// Add (`sign` +1) or subtract (−1) another same-shape packed array.
     pub(crate) fn combine(&mut self, other: &PackedLinearArray, sign: f64) {
         debug_assert_eq!(self.shape, other.shape);

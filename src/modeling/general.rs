@@ -159,6 +159,14 @@ impl GeneralLinArray {
         self
     }
 
+    /// Add a scalar to every cell constant.
+    pub fn shifted(mut self, delta: f64) -> Self {
+        for cell in &mut self.cells {
+            cell.constant = cell.constant.clone() + delta;
+        }
+        self
+    }
+
     /// Add two general arrays of the same owner and shape (cell-wise).
     pub fn try_add(self, other: Self) -> Result<Self, ViewError> {
         if self.owner != other.owner {
