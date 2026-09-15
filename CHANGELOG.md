@@ -26,6 +26,12 @@ before/after migration is in `MIGRATION.md`.
 
 ### Added
 
+- `roml::modeling::GeneralLinArray` (`GeneralAffine`/`GeneralTerm`) is the
+  shared correct fallback: one general symbolic affine per cell with arbitrary
+  `ValueExpr` coefficients (including forms the compact families do not cover,
+  e.g. parameter x parameter). `LinArray::to_general()` lowers the compact
+  families one-way; covered expressions stay `LinArray`.
+
 #### Cross-language fingerprints (MIR-06, unreleased)
 - Python `VarArray`/`ParamArray` now wrap the shared `roml::modeling` handles
   (`inner`); `__getitem__`/slicing lower to metadata `subsample`/`squeeze`

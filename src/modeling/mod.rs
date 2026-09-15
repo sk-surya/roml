@@ -15,6 +15,7 @@ pub(crate) mod array;
 pub(crate) mod builder;
 mod coeff;
 pub(crate) mod eligibility;
+mod general;
 mod labeled;
 #[allow(clippy::op_ref)]
 mod ops;
@@ -23,6 +24,7 @@ mod view;
 
 pub use array::{ParamArray, Shape, VarArray};
 pub use coeff::{CoeffView, ConstantView, LinArray, NumView, RowBlockSpec, RowSpec, Term};
+pub use general::{GeneralAffine, GeneralLinArray, GeneralTerm};
 pub use labeled::{Axis, LabelError, Labeled, Shaped};
 pub use rules::RuleBatch;
 pub use view::{ParamView, VarView, View, ViewError};

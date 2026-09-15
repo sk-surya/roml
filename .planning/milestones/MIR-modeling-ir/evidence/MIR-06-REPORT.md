@@ -114,13 +114,39 @@ Evidence:
 - `tests/mir06_view_subsample.rs`: rank-0 integer path, chained subsampling
   root mapping, empty selection.
 
+## M6-2A — Shared `GeneralLinArray` fallback (complete)
+
+Added to `roml::modeling` (not `roml-python`):
+
+```text
+                 shared roml::modeling
+            ┌───────────┴───────────┐
+        LinArray              GeneralLinArray
+     compact / fast           correct fallback
+```
+
+- `GeneralAffine { terms: Vec<GeneralTerm{var, coeff: ValueExpr}>, constant }`
+  and `GeneralLinArray { owner, shape, cells }` with owner/shape validation,
+  `scaled`, `try_add`/`try_sub`.
+- `LinArray::to_general()` is the one-way boundary: every compact coefficient
+  family lowers to a `ValueExpr` coefficient per cell.
+- Tests: `tests/mir06_general_array.rs` (compact expansion; add/scale commute
+  under evaluated canonicalization; uncovered parameter x parameter held;
+  shape validation).
+
+M6-2B (Python `ExprArray` as a thin wrapper over `LinArray`/`GeneralLinArray`;
+delete `ExprArrayRepr`/`PackedLinearArray`/`Vec<Affine>`-as-Python-IR/
+`PackedArrayTerm`/`PackedCoeffs` where superseded; keep `ConstraintArray`) is
+the next unit.
+
 ## Status
 
-Complete: M6-0B, M6-1A, M6-1B/C. The gathered-ID layer is deleted; Python arrays
-are views over the shared IR.
+Complete: M6-0B, M6-1A, M6-1B/C, M6-2A. The gathered-ID layer is deleted and
+Python arrays are views over the shared IR; the shared correct fallback
+(`GeneralLinArray`) exists.
 
-**Review checkpoint before M6-2** (per owner): deleting the gathered-ID layer
-was the biggest IR-27 transition; M6-2A/B (shared `GeneralLinArray` fallback +
-Python `ExprArray` wrapper) starts only after that checkpoint.
+Next: M6-2B (Python `ExprArray` thin wrapper over `LinArray`/`GeneralLinArray`;
+delete the Python expression IR where superseded), then M6-3 (decorator rules)
+and M6-4 (Rust vs Python BESS fingerprint + packed-counter gate).
 
 
