@@ -4271,6 +4271,60 @@ impl Model {
         Ok(cons)
     }
 
+    /// Set a linear objective from a shared general array (MIR-06, IR-27).
+    ///
+    /// The objective is the cell-wise sum of the array. Every variable and
+    /// parameter dependency is revalidated and every coefficient/constant is
+    /// checked for finiteness **before** any mutation, so a stale or
+    /// non-finite general objective rejects atomically. The objective constant
+    /// is the sum of the (numeric) per-cell constants; a parameter-dependent
+    /// constant is a typed rejection.
+    pub fn set_general_objective(
+        &mut self,
+        sense: Sense,
+        array: &crate::modeling::GeneralLinArray,
+    ) -> Result<ObjId, ModelError> {
+        if array.owner() != self.instance() {
+            return Err(ModelError::View(ViewError::CrossModel {
+                left: self.instance(),
+                right: array.owner(),
+            }));
+        }
+        // ---- Preflight everything before mutation ----
+        let mut constant = 0.0f64;
+        for cell in array.cells() {
+            validate_general_affine_entities(self, cell)?;
+            for term in &cell.terms {
+                if !term.coeff.eval(self.parameters.as_lookup()).is_finite() {
+                    return Err(ModelError::NonFiniteValue("objective coefficient"));
+                }
+            }
+            if !cell.constant.dependencies().is_empty() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "parameterized objective constant",
+                ));
+            }
+            let value = cell.constant.eval(|_| 0.0);
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("objective constant"));
+            }
+            constant += value;
+        }
+        if !constant.is_finite() {
+            return Err(ModelError::NonFiniteValue("objective constant"));
+        }
+        // ---- Commit ----
+        let obj = self.add_objective_internal(sense, None);
+        for cell in array.cells() {
+            for term in &cell.terms {
+                self.add_objective_coefficient(obj, term.var, term.coeff.clone())?;
+            }
+        }
+        self.set_objective_constant_internal(obj, constant);
+        self.set_active_objective(obj)?;
+        Ok(obj)
+    }
+
     /// Accumulate rule-built rows from a closure and commit them in **one**
     /// bulk operation (MIR-05, IR-26).
     ///
@@ -8877,5 +8931,97 @@ mod mir06_bulk_update_tests {
         assert_eq!(propagation.overlay_lookups, 0);
         assert_eq!(propagation.value_expr_evals, 0);
         assert_eq!(propagation.coefficient_patch_batches, 1);
+    }
+}
+
+#[cfg(test)]
+mod mir06_general_objective_tests {
+    use super::*;
+    use crate::modeling::{GeneralAffine, GeneralTerm};
+
+    fn general_objective(model: &Model, vars: &[VarId]) -> crate::modeling::GeneralLinArray {
+        let cells: Vec<GeneralAffine> = vars
+            .iter()
+            .map(|var| {
+                GeneralAffine::new(
+                    vec![GeneralTerm {
+                        var: *var,
+                        coeff: ValueExpr::constant(2.0),
+                    }],
+                    ValueExpr::constant(1.0),
+                )
+            })
+            .collect();
+        model.general_lin_array(cells.len(), cells).expect("array")
+    }
+
+    #[test]
+    fn general_objective_commits_and_revalidates_atomically() {
+        let mut model = Model::new();
+        let x = model.var("x", 2).bounds(0.0, 1.0).build().unwrap();
+        let vars = [x.get(0).unwrap(), x.get(1).unwrap()];
+        let array = general_objective(&model, &vars);
+
+        let obj = model
+            .set_general_objective(Sense::Maximize, &array)
+            .expect("objective");
+        model.commit().unwrap();
+        let snapshot = model.take_snapshot().unwrap();
+        let entry = snapshot.objectives.iter().find(|o| o.id == obj).unwrap();
+        assert_eq!(entry.sense, Sense::Maximize);
+        assert_eq!(entry.constant, 2.0, "sum of cell constants");
+        assert_eq!(model.num_coefficients(), 2);
+
+        // Foreign owner rejects with a typed cross-model error.
+        let mut other = Model::new();
+        let _ = other.var("y", 1).bounds(0.0, 1.0).build().unwrap();
+        assert!(matches!(
+            other.set_general_objective(Sense::Minimize, &array),
+            Err(ModelError::View(ViewError::CrossModel { .. }))
+        ));
+
+        // Stale variable rejects atomically (no new objective/revision).
+        model.remove_variable(vars[0]).unwrap();
+        model.commit().unwrap();
+        let revision = model.current_revision();
+        let objectives = model.take_snapshot().unwrap().objectives.len();
+        assert!(matches!(
+            model.set_general_objective(Sense::Minimize, &array),
+            Err(ModelError::VariableNotFound(_))
+        ));
+        assert_eq!(model.current_revision(), revision, "no residue");
+        assert_eq!(model.take_snapshot().unwrap().objectives.len(), objectives);
+    }
+
+    #[test]
+    fn general_objective_rejects_non_finite_coefficient_atomically() {
+        let mut model = Model::new();
+        let x = model.var("x", 1).bounds(0.0, 1.0).build().unwrap();
+        let price = model.add_parameter_array_block([1], &[1e150]).unwrap();
+        let pid = price.get(0).unwrap();
+        let coeff = ValueExpr::mul(ValueExpr::param(pid), ValueExpr::param(pid));
+        let array = model
+            .general_lin_array(
+                [1],
+                vec![GeneralAffine::new(
+                    vec![GeneralTerm {
+                        var: x.get(0).unwrap(),
+                        coeff,
+                    }],
+                    ValueExpr::constant(0.0),
+                )],
+            )
+            .unwrap();
+
+        model.set_parameter(pid, 1e308).unwrap();
+        model.commit().unwrap();
+        let revision = model.current_revision();
+        let objectives = model.take_snapshot().unwrap().objectives.len();
+        assert!(matches!(
+            model.set_general_objective(Sense::Maximize, &array),
+            Err(ModelError::NonFiniteValue(_))
+        ));
+        assert_eq!(model.current_revision(), revision, "no residue");
+        assert_eq!(model.take_snapshot().unwrap().objectives.len(), objectives);
     }
 }

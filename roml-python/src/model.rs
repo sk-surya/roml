@@ -906,6 +906,11 @@ impl Model {
 
 impl Model {
     fn set_objective_impl(slf: &Bound<'_, Self>, e: Scalar, sense: Sense) -> PyResult<Objective> {
+        // Shared array objective/reduction (MIR-06 M6-2B.2): reach the core
+        // objective seam directly from the shared LinArray/GeneralLinArray.
+        if let Scalar::Array { owner, inner } = e {
+            return Self::set_objective_from_inner(slf, owner, inner, sense);
+        }
         // Packed constant-coefficient vectors bypass the term-by-term
         // lowering entirely and go straight to the core bulk primitive
         // (P0). Everything else keeps the existing general path.
@@ -994,6 +999,168 @@ impl Model {
         }
         .map_err(map_model_error)?;
         record_obj_coeffs(&mut state, obj, &e.terms);
+        state.pending = true;
+        state.py_revision += 1;
+        Ok(Objective {
+            owner: slf.clone().unbind(),
+            id: obj,
+        })
+    }
+
+    /// Shared array objective insertion (MIR-06 M6-2B.2).
+    ///
+    /// Compact all-parametric arrays reach `set_linear_objective_from_linarray`
+    /// (the packed core seam); compact all-numeric arrays reach the numeric
+    /// bulk primitive; compact mixed and general arrays use the revalidating
+    /// `set_general_objective` sink. No legacy packed Python objective IR is
+    /// involved.
+    fn set_objective_from_inner(
+        slf: &Bound<'_, Self>,
+        _owner: pyo3::Py<Model>,
+        inner: super::arrays::ExprArrayInner,
+        sense: Sense,
+    ) -> PyResult<Objective> {
+        use roml::modeling::CoeffView;
+        let expected = {
+            let borrowed = slf.borrow();
+            let state = lock_state(&borrowed)?;
+            state.model.instance()
+        };
+        if inner.owner() != expected {
+            return Err(super::errors::ModelMismatchError::new_err(
+                "objective array belongs to a different model",
+            ));
+        }
+        match inner {
+            super::arrays::ExprArrayInner::General(general) => {
+                Self::set_general_objective_shared(slf, general, sense)
+            }
+            super::arrays::ExprArrayInner::Compact(lin) => {
+                let all_parametric = !lin.terms().is_empty()
+                    && lin
+                        .terms()
+                        .iter()
+                        .all(|t| matches!(t.coeff, CoeffView::ScaledParam { .. }));
+                if all_parametric {
+                    // A parameter-dependent objective constant is unsupported
+                    // with the same error the scalar path raises.
+                    if matches!(
+                        lin.constant(),
+                        roml::modeling::ConstantView::ScaledParam { .. }
+                    ) {
+                        return Err(super::errors::UnsupportedExpressionError::new_err(
+                            "parameter-dependent objective constants are not supported; move the parameter into a coefficient or a constraint bound",
+                        ));
+                    }
+                    let borrowed = slf.borrow();
+                    let mut state = lock_state(&borrowed)?;
+                    let core_sense = match sense {
+                        Sense::Minimize => roml::Sense::Minimize,
+                        Sense::Maximize => roml::Sense::Maximize,
+                    };
+                    let obj = state
+                        .model
+                        .set_linear_objective_from_linarray(core_sense, &lin)
+                        .map_err(map_model_error)?;
+                    let mut terms: Vec<super::expressions::ExprTerm> = Vec::new();
+                    for term in lin.terms() {
+                        if let CoeffView::ScaledParam { scale, params } = &term.coeff {
+                            for i in 0..lin.len() {
+                                if let (Some(var), Some(param)) =
+                                    (term.vars.member(i), params.member(i))
+                                {
+                                    terms.push(super::expressions::ExprTerm {
+                                        var,
+                                        coeff: ValueExpr::scaled_param(*scale, param),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    record_obj_coeffs(&mut state, obj, &terms);
+                    state.pending = true;
+                    state.py_revision += 1;
+                    return Ok(Objective {
+                        owner: slf.clone().unbind(),
+                        id: obj,
+                    });
+                }
+                let all_numeric = lin.terms().iter().all(|t| !t.coeff.is_parametric());
+                if all_numeric {
+                    let mut vars = Vec::new();
+                    let mut coeffs = Vec::new();
+                    for term in lin.terms() {
+                        for i in 0..lin.len() {
+                            let var = term.vars.member(i).ok_or_else(|| {
+                                InvalidHandleError::new_err(
+                                    "objective references an unknown variable",
+                                )
+                            })?;
+                            let c = match &term.coeff {
+                                CoeffView::One => 1.0,
+                                CoeffView::Scalar(v) => *v,
+                                CoeffView::Dense { scale, values } => {
+                                    scale
+                                        * values.get(i).ok_or_else(|| {
+                                            InvalidModelError::new_err(
+                                                "objective references a stale dense coefficient",
+                                            )
+                                        })?
+                                }
+                                CoeffView::ScaledParam { .. } => unreachable!(),
+                            };
+                            vars.push(var);
+                            coeffs.push(c);
+                        }
+                    }
+                    let constant = match lin.constant() {
+                        roml::modeling::ConstantView::Zero => 0.0,
+                        roml::modeling::ConstantView::Scalar(v) => *v,
+                        _ => {
+                            return Err(InvalidModelError::new_err(
+                                "objective constant must be numeric",
+                            ))
+                        }
+                    };
+                    return Self::set_objective_numeric_bulk(slf, sense, &vars, &coeffs, constant);
+                }
+                // Mixed numeric + parametric: shared general fallback.
+                let general = lin
+                    .to_general()
+                    .map_err(|error| InvalidModelError::new_err(format!("objective: {error}")))?;
+                Self::set_general_objective_shared(slf, general, sense)
+            }
+        }
+    }
+
+    /// Revalidating shared general-objective sink wrapper (records the same
+    /// update-validation templates as the scalar path).
+    fn set_general_objective_shared(
+        slf: &Bound<'_, Self>,
+        general: roml::modeling::GeneralLinArray,
+        sense: Sense,
+    ) -> PyResult<Objective> {
+        let borrowed = slf.borrow();
+        let mut state = lock_state(&borrowed)?;
+        let core_sense = match sense {
+            Sense::Minimize => roml::Sense::Minimize,
+            Sense::Maximize => roml::Sense::Maximize,
+        };
+        let obj = state
+            .model
+            .set_general_objective(core_sense, &general)
+            .map_err(map_model_error)?;
+        let terms: Vec<super::expressions::ExprTerm> = general
+            .cells()
+            .iter()
+            .flat_map(|cell| {
+                cell.terms.iter().map(|term| super::expressions::ExprTerm {
+                    var: term.var,
+                    coeff: term.coeff.clone(),
+                })
+            })
+            .collect();
+        record_obj_coeffs(&mut state, obj, &terms);
         state.pending = true;
         state.py_revision += 1;
         Ok(Objective {

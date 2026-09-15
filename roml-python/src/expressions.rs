@@ -986,6 +986,13 @@ pub(crate) enum Scalar {
     Lazy(Lazy),
     Packed(PackedVars),
     PackedSymbolic(PackedSymbolic),
+    /// Shared array objective/reduction (MIR-06 M6-2B.2): a Python `ExprArray`
+    /// whose reduction reaches the core objective seam without converting to
+    /// the legacy packed/scalar objective IR.
+    Array {
+        owner: Py<Model>,
+        inner: crate::arrays::ExprArrayInner,
+    },
 }
 
 /// Packed scaled-parameter vector form (P1C-2).
@@ -1033,6 +1040,10 @@ impl Clone for Scalar {
                 })
             }),
             Self::PackedSymbolic(s) => Self::PackedSymbolic(s.clone()),
+            Self::Array { owner, inner } => Python::attach(|py| Self::Array {
+                owner: owner.clone_ref(py),
+                inner: inner.clone(),
+            }),
         }
     }
 }
@@ -1044,6 +1055,7 @@ impl Scalar {
             Self::Lazy(l) => l.owner.clone_ref(py),
             Self::Packed(p) => p.owner.clone_ref(py),
             Self::PackedSymbolic(s) => s.owner.clone_ref(py),
+            Self::Array { owner, .. } => owner.clone_ref(py),
         }
     }
 
@@ -1105,6 +1117,18 @@ impl Scalar {
                     constant: ValueExpr::constant(array.constant),
                 }
             }
+            Self::Array { owner, inner } => {
+                let affines = match inner {
+                    crate::arrays::ExprArrayInner::Compact(lin) => {
+                        crate::arrays::linarray_to_affines(py, owner, lin)
+                    }
+                    crate::arrays::ExprArrayInner::General(general) => {
+                        crate::arrays::general_to_affines(py, owner, general)
+                    }
+                };
+                let parts: Vec<(&Affine, f64)> = affines.iter().map(|a| (a, 1.0)).collect();
+                crate::arrays::fold_affines(py, owner, &parts)
+            }
         }
     }
 }
@@ -1158,6 +1182,10 @@ fn scalar_to_lazy(py: Python<'_>, base: &Scalar) -> Lazy {
                 has_vars: !s.vars.is_empty(),
                 size: s.vars.len(),
             }
+        }
+        Scalar::Array { owner, .. } => {
+            let affine = base.materialize(py);
+            Lazy::flat(owner.clone_ref(py), affine.into())
         }
     }
 }
@@ -1290,6 +1318,7 @@ impl Expr {
             Scalar::Lazy(l) => l.size,
             Scalar::Packed(p) => p.array.numel(),
             Scalar::PackedSymbolic(s) => s.vars.len(),
+            Scalar::Array { inner, .. } => inner.len(),
         }
     }
 }

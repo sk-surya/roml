@@ -577,21 +577,21 @@ pub(crate) enum ExprArrayInner {
 }
 
 impl ExprArrayInner {
-    fn owner(&self) -> roml::ModelInstanceId {
+    pub(crate) fn owner(&self) -> roml::ModelInstanceId {
         match self {
             Self::Compact(lin) => lin.owner(),
             Self::General(general) => general.owner(),
         }
     }
 
-    fn shape(&self) -> &[usize] {
+    pub(crate) fn shape(&self) -> &[usize] {
         match self {
             Self::Compact(lin) => lin.shape(),
             Self::General(general) => general.shape(),
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Compact(lin) => lin.len(),
             Self::General(general) => general.len(),
@@ -1042,7 +1042,11 @@ fn owners_match(a: &pyo3::Py<Model>, b: &pyo3::Py<Model>) -> PyResult<()> {
 /// (logarithmic depth): a linear fold would nest `ValueExpr` trees to
 /// depth O(n), overflowing the stack in recursive evaluation on large
 /// bulk reductions.
-fn fold_affines(py: Python<'_>, owner: &pyo3::Py<Model>, parts: &[(&Affine, f64)]) -> Affine {
+pub(crate) fn fold_affines(
+    py: Python<'_>,
+    owner: &pyo3::Py<Model>,
+    parts: &[(&Affine, f64)],
+) -> Affine {
     let mut terms: std::collections::HashMap<VarId, ValueExpr> = std::collections::HashMap::new();
     let mut consts: Vec<ValueExpr> = Vec::with_capacity(parts.len());
     for (affine, sign) in parts {
@@ -2435,15 +2439,29 @@ impl ConstraintArray {
 #[pyfunction]
 pub(crate) fn sum(obj: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let py = obj.py();
+    if let Ok(arr) = obj.cast::<ExprArray>() {
+        let arr = arr.borrow();
+        if arr.numel() > 0 {
+            return Ok(super::expressions::Expr {
+                inner: super::expressions::Scalar::Array {
+                    owner: arr.owner.clone_ref(py),
+                    inner: arr.inner.clone(),
+                },
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind());
+        }
+    }
     if let Ok(arr) = obj.cast::<VarArray>() {
         let arr = arr.borrow();
         if !arr.members().is_empty() {
-            let packed = PackedVars {
-                owner: arr.owner.clone_ref(py),
-                array: PackedLinearArray::from_vars(arr.members().clone(), arr.dims().clone()),
-            };
+            let inner = ExprArrayInner::Compact(arr.inner.expr().map_err(map_view_error)?);
             return Ok(super::expressions::Expr {
-                inner: Scalar::Packed(packed),
+                inner: super::expressions::Scalar::Array {
+                    owner: arr.owner.clone_ref(py),
+                    inner,
+                },
             }
             .into_pyobject(py)?
             .into_any()
@@ -2856,6 +2874,67 @@ fn dot_structural(
     ))
 }
 
+/// Shared `dot` fast path (MIR-06 M6-2B.2): `dot` is the elementwise product
+/// reduced, so shared `ExprArray`/`VarArray` expressions with parameter or
+/// scalar coefficients stay on the shared representation. Returns `None` for
+/// forms the legacy structural path owns (dense numeric coefficients,
+/// decision-dependent coefficients, shape errors).
+fn dot_shared(
+    py: Python<'_>,
+    coefficients: &Bound<'_, PyAny>,
+    expressions: &Bound<'_, PyAny>,
+) -> PyResult<Option<Py<PyAny>>> {
+    let (owner, inner) = if let Ok(arr) = expressions.cast::<ExprArray>() {
+        let arr = arr.borrow();
+        (arr.owner.clone_ref(py), arr.inner.clone())
+    } else if let Ok(arr) = expressions.cast::<VarArray>() {
+        let arr = arr.borrow();
+        (
+            arr.owner.clone_ref(py),
+            ExprArrayInner::Compact(arr.inner.expr().map_err(map_view_error)?),
+        )
+    } else {
+        return Ok(None);
+    };
+    // A nonzero right constant is owned by the scalar/general path, which
+    // rejects it with the same error it always has.
+    if let ExprArrayInner::Compact(lin) = &inner {
+        if !matches!(lin.constant(), roml::modeling::ConstantView::Zero) {
+            return Ok(None);
+        }
+    }
+    let product = if let Ok(p) = coefficients.cast::<ParamArray>() {
+        let p = p.borrow();
+        if p.inner.owner() != inner.owner() {
+            return Err(model_mismatch());
+        }
+        if p.dims() != inner.shape() {
+            return Err(ShapeError::new_err("dot: operand shapes differ"));
+        }
+        match &inner {
+            ExprArrayInner::Compact(lin) => p
+                .inner
+                .try_mul(lin)
+                .map_err(map_view_error)?
+                .map(ExprArrayInner::Compact),
+            ExprArrayInner::General(_) => None,
+        }
+    } else {
+        packed_scalar_number(coefficients).map(|v| inner.clone().scaled(v))
+    };
+    match product {
+        Some(inner) => Ok(Some(
+            super::expressions::Expr {
+                inner: Scalar::Array { owner, inner },
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        )),
+        None => Ok(None),
+    }
+}
+
 /// Scalar dot product of identical-shape arrays in C order: numeric or
 /// parameter-only coefficients times a `VarArray` or affine `ExprArray`.
 /// Two decision-dependent inputs reject as nonlinear.
@@ -2877,6 +2956,11 @@ pub(crate) fn dot(
                 ));
             }
         }
+    }
+    // Shared array path (MIR-06 M6-2B.2): `dot` is the elementwise product
+    // reduced, so a shared compact/general expression stays shared.
+    if let Some(out) = dot_shared(py, &coefficients, &expressions)? {
+        return Ok(out);
     }
     // P0 packed path: numeric coefficients over a nonempty `VarArray`
     // right side bypass affine folding entirely. Anything else
