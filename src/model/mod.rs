@@ -2958,9 +2958,10 @@ impl Model {
         values: &[f64],
     ) -> Result<(), ModelError> {
         if array.owner() != self.instance() {
-            return Err(ModelError::InvalidParamDepLayout(
-                "parameter array belongs to another model",
-            ));
+            return Err(ModelError::View(ViewError::CrossModel {
+                left: self.instance(),
+                right: array.owner(),
+            }));
         }
         if values.len() != array.len() {
             return Err(ModelError::MismatchedBulkLengths {
@@ -2974,16 +2975,30 @@ impl Model {
             && view.len() == span.len()
             && crate::modeling::eligibility::is_contiguous_dense(view.shape(), view.strides());
         if full_block {
-            self.set_parameters_bulk(span, values)
-        } else {
-            for (ordinal, value) in values.iter().enumerate() {
-                let param = array.get(ordinal).ok_or(ModelError::InvalidParamDepLayout(
-                    "stale parameter array member",
-                ))?;
-                self.set_parameter(param, *value)?;
-            }
-            Ok(())
+            return self.set_parameters_bulk(span, values);
         }
+        // Sliced view: preflight the **entire** update (members live, values
+        // finite) before queueing anything, so a later stale/NaN member cannot
+        // leave earlier members queued in the transaction.
+        let mut members = Vec::with_capacity(array.len());
+        for ordinal in 0..array.len() {
+            let param = array
+                .get(ordinal)
+                .ok_or(ModelError::View(ViewError::SpanOutOfRange))?;
+            if !self.parameters.contains(param) {
+                return Err(ModelError::ParameterNotFound(param));
+            }
+            members.push(param);
+        }
+        for value in values {
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("parameter value"));
+            }
+        }
+        for (param, value) in members.into_iter().zip(values.iter()) {
+            self.set_parameter(param, *value)?;
+        }
+        Ok(())
     }
 
     /// Begin a structured variable array (MIR-04 L1):
@@ -8660,7 +8675,42 @@ mod mir06_handle_seam_tests {
             .expect("foreign");
         assert!(matches!(
             model.set_parameter_array(&foreign, &[1.0]),
-            Err(ModelError::InvalidParamDepLayout(_))
+            Err(ModelError::View(ViewError::CrossModel { .. }))
         ));
+    }
+
+    /// A sliced update preflights the whole batch: a later non-finite value
+    /// must not leave earlier members queued/committed.
+    #[test]
+    fn sliced_parameter_update_is_atomic() {
+        let mut model = Model::new();
+        let array = model
+            .add_parameter_array_block([2, 2], &[1.0, 2.0, 3.0, 4.0])
+            .expect("array");
+        model.commit().expect("commit");
+        let before: Vec<f64> = model
+            .take_snapshot()
+            .expect("snapshot")
+            .parameters
+            .iter()
+            .map(|p| p.value)
+            .collect();
+
+        // Shape [1, 2]: not a full block, so the preflighted sliced path runs.
+        let slice = array.slice(0, 0, 1).expect("slice");
+        let error = model
+            .set_parameter_array(&slice, &[9.0, f64::NAN])
+            .expect_err("NaN must reject");
+        assert!(matches!(error, ModelError::NonFiniteValue(_)));
+
+        model.commit().expect("commit");
+        let after: Vec<f64> = model
+            .take_snapshot()
+            .expect("snapshot")
+            .parameters
+            .iter()
+            .map(|p| p.value)
+            .collect();
+        assert_eq!(before, after, "a rejected sliced update is atomic");
     }
 }
