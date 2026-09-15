@@ -4166,6 +4166,93 @@ impl Model {
         }
     }
 
+    /// Build a general symbolic array over this model (MIR-06, IR-27).
+    ///
+    /// Validates every variable and parameter dependency and stamps this
+    /// model's instance. There is no public constructor that accepts a foreign
+    /// owner, so general-expression ownership cannot be laundered.
+    pub fn general_lin_array(
+        &self,
+        shape: impl Into<crate::modeling::Shape>,
+        cells: Vec<crate::modeling::GeneralAffine>,
+    ) -> Result<crate::modeling::GeneralLinArray, ModelError> {
+        for cell in &cells {
+            validate_general_affine_entities(self, cell)?;
+        }
+        let shape: crate::modeling::Shape = shape.into();
+        crate::modeling::GeneralLinArray::from_validated_parts(
+            self.instance(),
+            shape.dims().to_vec(),
+            cells,
+        )
+        .map_err(ModelError::from)
+    }
+
+    /// Commit a general per-cell array as one constraint row per cell
+    /// (MIR-06, IR-27).
+    ///
+    /// Revalidates every variable/parameter dependency before any mutation, so
+    /// an array that became stale (a removed variable or parameter) rejects
+    /// atomically. A per-cell constant must be parameter-independent (folded
+    /// into the bounds); a parameterized constant has no scalar-bounds form and
+    /// is a typed rejection.
+    pub fn add_general_rows(
+        &mut self,
+        array: &crate::modeling::GeneralLinArray,
+        bounds: &[(f64, f64)],
+    ) -> Result<Vec<ConId>, ModelError> {
+        if array.owner() != self.instance() {
+            return Err(ModelError::View(ViewError::CrossModel {
+                left: self.instance(),
+                right: array.owner(),
+            }));
+        }
+        let nrows = array.len();
+        if bounds.len() != nrows {
+            return Err(ModelError::MismatchedBulkLengths {
+                vars: nrows,
+                coeffs: bounds.len(),
+            });
+        }
+        // ---- Preflight everything before mutation ----
+        for &(lower, upper) in bounds {
+            validate_constraint_bounds(ConstraintBounds { lower, upper })?;
+        }
+        let mut shifts = Vec::with_capacity(nrows);
+        for ordinal in 0..nrows {
+            let cell = array
+                .cell(ordinal)
+                .ok_or(ModelError::InvalidParamDepLayout("stale general cell"))?;
+            validate_general_affine_entities(self, cell)?;
+            if !cell.constant.dependencies().is_empty() {
+                return Err(ModelError::InvalidParamDepLayout(
+                    "parameterized row constant",
+                ));
+            }
+            let value = cell.constant.eval(|_| 0.0);
+            if !value.is_finite() {
+                return Err(ModelError::NonFiniteValue("row constant"));
+            }
+            shifts.push(value);
+        }
+        // ---- Commit ----
+        let mut cons = Vec::with_capacity(nrows);
+        for (ordinal, &(lower, upper)) in bounds.iter().enumerate() {
+            let cell = array
+                .cell(ordinal)
+                .ok_or(ModelError::InvalidParamDepLayout("stale general cell"))?;
+            let con = self.add_empty_constraint(ConstraintBounds {
+                lower: lower - shifts[ordinal],
+                upper: upper - shifts[ordinal],
+            });
+            for term in &cell.terms {
+                self.add_constraint_coefficient(con, term.var, term.coeff.clone())?;
+            }
+            cons.push(con);
+        }
+        Ok(cons)
+    }
+
     /// Accumulate rule-built rows from a closure and commit them in **one**
     /// bulk operation (MIR-05, IR-26).
     ///
@@ -5477,6 +5564,33 @@ pub(crate) fn validate_constraint_bounds(bounds: ConstraintBounds) -> Result<(),
     }
     if bounds.lower > bounds.upper {
         return Err(ModelError::InvalidBounds);
+    }
+    Ok(())
+}
+
+/// Revalidate every entity a general affine references (MIR-06).
+///
+/// A general array can be valid at construction and stale later; the sink
+/// calls this before any mutation so a removed variable/parameter rejects
+/// atomically.
+fn validate_general_affine_entities(
+    model: &Model,
+    cell: &crate::modeling::GeneralAffine,
+) -> Result<(), ModelError> {
+    for term in &cell.terms {
+        if !model.variables.contains(term.var) {
+            return Err(ModelError::VariableNotFound(term.var));
+        }
+        for param in term.coeff.dependencies() {
+            if !model.parameters.contains(param) {
+                return Err(ModelError::ParameterNotFound(param));
+            }
+        }
+    }
+    for param in cell.constant.dependencies() {
+        if !model.parameters.contains(param) {
+            return Err(ModelError::ParameterNotFound(param));
+        }
     }
     Ok(())
 }

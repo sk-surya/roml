@@ -91,8 +91,14 @@ pub struct GeneralLinArray {
 }
 
 impl GeneralLinArray {
-    /// Build a general array, validating the shape product against the cells.
-    pub fn new(
+    /// Build a general array from trusted parts (crate-private).
+    ///
+    /// Ownership/entity validation is the caller's responsibility: the public
+    /// path is [`Model::general_lin_array`](crate::Model::general_lin_array),
+    /// which validates every variable and parameter and stamps its own
+    /// instance. [`LinArray::to_general`] uses this trusted constructor because
+    /// its ownership is already established.
+    pub(crate) fn from_validated_parts(
         owner: ModelInstanceId,
         shape: impl Into<Arc<[usize]>>,
         cells: Vec<GeneralAffine>,
@@ -224,6 +230,6 @@ impl LinArray {
             };
             cells.push(GeneralAffine { terms, constant });
         }
-        GeneralLinArray::new(self.owner(), self.shape().to_vec(), cells)
+        GeneralLinArray::from_validated_parts(self.owner(), self.shape().to_vec(), cells)
     }
 }

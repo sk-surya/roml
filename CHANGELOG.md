@@ -30,7 +30,11 @@ before/after migration is in `MIGRATION.md`.
   shared correct fallback: one general symbolic affine per cell with arbitrary
   `ValueExpr` coefficients (including forms the compact families do not cover,
   e.g. parameter x parameter). `LinArray::to_general()` lowers the compact
-  families one-way; covered expressions stay `LinArray`.
+  families one-way; covered expressions stay `LinArray`. Construction is gated
+  through `Model::general_lin_array` (validates every variable/parameter and
+  stamps the model's owner — no publicly forgeable owner), and the sink
+  `Model::add_general_rows` revalidates before mutating so a stale array
+  rejects atomically.
 
 #### Cross-language fingerprints (MIR-06, unreleased)
 - Python `VarArray`/`ParamArray` now wrap the shared `roml::modeling` handles

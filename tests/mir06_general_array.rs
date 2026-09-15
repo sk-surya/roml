@@ -86,10 +86,62 @@ fn general_array_holds_uncovered_forms_and_validates_shape() {
             )
         })
         .collect();
-    let general = GeneralLinArray::new(model.instance(), [2], cells.clone()).unwrap();
+    let general = model.general_lin_array([2], cells.clone()).unwrap();
     assert_eq!(general.len(), 2);
     assert_eq!(general.cell(1).unwrap().terms.len(), 1);
 
     // Shape product must match the cell count.
-    assert!(GeneralLinArray::new(model.instance(), [3], cells).is_err());
+    assert!(model.general_lin_array([3], cells).is_err());
+}
+
+#[test]
+fn general_rows_commit_and_reject_stale_or_foreign() {
+    let mut model = Model::new();
+    let x = model.var("x", 2).bounds(0.0, 1.0).build().unwrap();
+    let cells = (0..2)
+        .map(|i| {
+            GeneralAffine::new(
+                vec![GeneralTerm {
+                    var: x.get(i).unwrap(),
+                    coeff: ValueExpr::constant(2.0),
+                }],
+                ValueExpr::constant(1.0),
+            )
+        })
+        .collect();
+    let array = model.general_lin_array([2], cells).unwrap();
+    let cons = model
+        .add_general_rows(&array, &[(0.0, 10.0); 2])
+        .expect("general rows");
+    assert_eq!(cons.len(), 2);
+    assert_eq!(model.num_constraints(), 2);
+
+    // A stale variable rejects atomically at the sink.
+    let before = model.num_constraints();
+    model.remove_variable(x.get(0).unwrap()).unwrap();
+    let result = model.add_general_rows(&array, &[(0.0, 1.0); 2]);
+    assert!(matches!(result, Err(roml::ModelError::VariableNotFound(_))));
+    assert_eq!(model.num_constraints(), before, "atomic rejection");
+
+    // A foreign owner rejects with a typed cross-model error.
+    let mut other = Model::new();
+    let y = other.var("y", 1).bounds(0.0, 1.0).build().unwrap();
+    let foreign = other
+        .general_lin_array(
+            [1],
+            vec![GeneralAffine::new(
+                vec![GeneralTerm {
+                    var: y.get(0).unwrap(),
+                    coeff: ValueExpr::constant(1.0),
+                }],
+                ValueExpr::constant(0.0),
+            )],
+        )
+        .unwrap();
+    assert!(matches!(
+        model.add_general_rows(&foreign, &[(0.0, 1.0)]),
+        Err(roml::ModelError::View(
+            roml::modeling::ViewError::CrossModel { .. }
+        ))
+    ));
 }

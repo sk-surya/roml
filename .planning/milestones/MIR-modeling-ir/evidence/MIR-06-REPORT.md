@@ -130,9 +130,17 @@ Added to `roml::modeling` (not `roml-python`):
   `scaled`, `try_add`/`try_sub`.
 - `LinArray::to_general()` is the one-way boundary: every compact coefficient
   family lowers to a `ValueExpr` coefficient per cell.
+- **Ownership (review round 1):** `GeneralLinArray` construction is
+  `pub(crate) from_validated_parts`; the public path is
+  `Model::general_lin_array`, which validates every variable and parameter
+  dependency and stamps the model's own instance (the general-expression
+  counterpart of the fixed naked-span bug). The sink
+  `Model::add_general_rows` revalidates every dependency before mutation, so an
+  array that became stale (removed var/param) rejects atomically; a foreign
+  owner is a typed `ViewError::CrossModel`.
 - Tests: `tests/mir06_general_array.rs` (compact expansion; add/scale commute
   under evaluated canonicalization; uncovered parameter x parameter held;
-  shape validation).
+  shape validation; general rows commit; stale and foreign arrays reject).
 
 M6-2B (Python `ExprArray` as a thin wrapper over `LinArray`/`GeneralLinArray`;
 delete `ExprArrayRepr`/`PackedLinearArray`/`Vec<Affine>`-as-Python-IR/
